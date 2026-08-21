@@ -12,6 +12,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.oauth import (
     HOSTED_CALLBACK_URL,
@@ -21,6 +22,28 @@ from music_assistant.helpers.oauth import (
     hosted_bounce_redirect,
 )
 from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
+from music_assistant.providers.spotify_connect import (
+    BACKEND_GO_LIBRESPOT as CONNECT_BACKEND_GO_LIBRESPOT,
+)
+from music_assistant.providers.spotify_connect import (
+    BACKEND_SOLOIST as CONNECT_BACKEND_SOLOIST,
+)
+from music_assistant.providers.spotify_connect import (
+    CONF_API_KEY,
+    CONF_MASS_PLAYER_ID,
+    CONF_SETUP_PENDING,
+    CONF_SOLOIST_CONSENT,
+    CONF_SYSTEM_MANAGED,
+    PLAYER_ID_AUTO,
+)
+from music_assistant.providers.spotify_connect import (
+    CONF_BACKEND as CONNECT_CONF_BACKEND,
+)
+from music_assistant.providers.spotify_connect.setup_flow import MIN_API_KEY_LENGTH
+from music_assistant.providers.spotify_connect.soloist import (
+    UnsupportedPlatformError,
+    verify_platform_supported,
+)
 
 from .constants import (
     BACKEND_CONNECT,
@@ -42,8 +65,8 @@ from .constants import (
 )
 from .helpers import (
     await_loopback_authorization,
-    ensure_connect_instance,
     get_librespot_binary,
+    get_system_wide_connect_config_id,
     has_running_system_wide_connect,
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
@@ -194,7 +217,7 @@ async def _setup_playback(session: SetupSession, setup_data: dict[str, Any]) -> 
         )
     selected = await _choose_playback_backend(session, preselect)
     if selected == BACKEND_CONNECT:
-        await _steer_to_connect_setup(session)
+        await _setup_connect_playback(session)
         # the librespot credential is of no further use; it only reaches the
         # stored setup_data when finish() succeeds, so an aborted or failed
         # switch keeps it intact
@@ -230,29 +253,216 @@ async def _choose_playback_backend(session: SetupSession, preselect: str) -> str
     return str(values[CONF_PLAYBACK_BACKEND])
 
 
-async def _steer_to_connect_setup(session: SetupSession) -> None:
+async def _setup_connect_playback(session: SetupSession) -> None:
     """
-    Ensure the system-wide Spotify Connect instance exists and steer the user to it.
+    Set up the system-wide Spotify Connect instance inline, when it still needs setup.
 
-    The plugin owns its whole setup (engine choice, consent, pairing), so this flow
-    never embeds those steps: a missing instance is created in setup-required state
-    and the user is pointed at the plugin's own setup flow.
+    A running system-wide instance is reused as-is; otherwise the instance's engine
+    settings (playback engine, and the Soloist consent/API key where chosen) are
+    collected right here and the instance is created/completed and started, so one
+    flow leaves a working Connect setup. The plugin keeps its own flow for
+    per-player instances and reconfiguration.
 
     :param session: The setup session driving the flow.
     """
-    created = await ensure_connect_instance(session.mass)
-    # a running system-wide instance means Connect playback works right away;
-    # anything else (just created, or existing but not set up yet) needs the user
-    ready = not created and has_running_system_wide_connect(session.mass)
-    await session.form(
+    if has_running_system_wide_connect(session.mass):
+        await session.form(
+            [ConfigEntry(key="connect_ready", type=ConfigEntryType.LABEL)],
+            step_id="connect_mode",
+        )
+        return
+    instance_id = await get_system_wide_connect_config_id(session.mass)
+    stored_engine = (
+        str(session.mass.config.get_provider_setup_value(instance_id, CONNECT_CONF_BACKEND) or "")
+        if instance_id
+        else ""
+    )
+    engine = stored_engine or _default_connect_engine()
+    errors: dict[str, str] | None = None
+    while True:
+        engine = await _choose_connect_engine(session, engine, errors)
+        errors = None
+        collected: dict[str, Any] = {CONNECT_CONF_BACKEND: engine}
+        if engine == CONNECT_BACKEND_SOLOIST:
+            consented = bool(
+                instance_id
+                and session.mass.config.get_provider_setup_value(instance_id, CONF_SOLOIST_CONSENT)
+            )
+            if not await _ask_connect_consent(session, consented):
+                # consent refused: back to the engine choice with a clear error
+                errors = {"base": "soloist_consent_required"}
+                continue
+            collected[CONF_SOLOIST_CONSENT] = True
+            has_stored_key = bool(
+                instance_id
+                and session.mass.config.get_provider_setup_value(instance_id, CONF_API_KEY)
+            )
+            await _ask_connect_api_key(session, collected, has_stored_key)
+        else:
+            # switching away from soloist: overwrite its secrets
+            collected[CONF_API_KEY] = ""
+            collected[CONF_SOLOIST_CONSENT] = False
+        try:
+            instance_id = await _provision_connect_instance(session, instance_id, collected)
+        except SetupFlowError as err:
+            errors = {"base": err.translation_key or str(err)}
+            continue
+        return
+
+
+def _default_connect_engine() -> str:
+    """Return the Connect engine to preselect for a fresh instance."""
+    try:
+        verify_platform_supported()
+    except UnsupportedPlatformError:
+        return CONNECT_BACKEND_GO_LIBRESPOT
+    # Spotify's official engine: works with every account, hence the default
+    return CONNECT_BACKEND_SOLOIST
+
+
+async def _choose_connect_engine(
+    session: SetupSession, preselect: str, errors: dict[str, str] | None
+) -> str:
+    """
+    Show the Connect engine choice step until a usable engine is selected.
+
+    :param session: The setup session driving the flow.
+    :param preselect: Engine to preselect (the stored or previously chosen one).
+    :param errors: Optional errors to display on the first render.
+    """
+    while True:
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONNECT_CONF_BACKEND,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    default_value=CONNECT_BACKEND_GO_LIBRESPOT,
+                    value=preselect,
+                    options=[
+                        ConfigValueOption(CONNECT_BACKEND_SOLOIST),
+                        ConfigValueOption(CONNECT_BACKEND_GO_LIBRESPOT),
+                    ],
+                ),
+            ],
+            step_id="connect_engine",
+            errors=errors,
+        )
+        selected = str(values[CONNECT_CONF_BACKEND])
+        if selected == CONNECT_BACKEND_SOLOIST:
+            try:
+                verify_platform_supported()
+            except UnsupportedPlatformError:
+                errors = {"base": "soloist_unsupported_platform"}
+                preselect = CONNECT_BACKEND_GO_LIBRESPOT
+                continue
+        return selected
+
+
+async def _ask_connect_consent(session: SetupSession, prefill: bool) -> bool:
+    """
+    Show the Soloist warning/consent step and return whether consent was given.
+
+    :param session: The setup session driving the flow.
+    :param prefill: Whether consent was already given on an earlier run.
+    """
+    values = await session.form(
         [
             ConfigEntry(
-                key="connect_ready" if ready else "connect_setup_needed",
-                type=ConfigEntryType.LABEL,
+                key=CONF_SOLOIST_CONSENT,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                value=prefill,
             ),
         ],
-        step_id="connect_mode",
+        step_id="soloist_terms",
     )
+    return bool(values.get(CONF_SOLOIST_CONSENT))
+
+
+async def _ask_connect_api_key(
+    session: SetupSession, collected: dict[str, Any], has_stored_key: bool
+) -> None:
+    """
+    Collect the Soloist API key for the Connect instance.
+
+    An already stored key is kept when the field is left empty; it is never shown
+    back to the user.
+
+    :param session: The setup session driving the flow.
+    :param collected: The values collected so far, updated in place.
+    :param has_stored_key: Whether the instance already stores an API key.
+    """
+    errors: dict[str, str] | None = None
+    while True:
+        entries = [
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=not has_stored_key,
+            ),
+        ]
+        if has_stored_key:
+            entries.insert(0, ConfigEntry(key="soloist_api_key_hint", type=ConfigEntryType.LABEL))
+        values = await session.form(entries, step_id="soloist_api_key", errors=errors)
+        api_key = str(values.get(CONF_API_KEY) or "").strip()
+        if api_key or not has_stored_key:
+            if len(api_key) < MIN_API_KEY_LENGTH:
+                errors = {CONF_API_KEY: "soloist_api_key_invalid"}
+                continue
+            collected[CONF_API_KEY] = api_key
+        return
+
+
+async def _provision_connect_instance(
+    session: SetupSession, instance_id: str | None, collected: dict[str, Any]
+) -> str:
+    """
+    Create or complete the system-wide Connect instance and start it.
+
+    Returns the instance id (also for a just-created instance, so a retry after a
+    failure completes that instance instead of creating another one).
+
+    :param session: The setup session driving the flow.
+    :param instance_id: The existing system-wide instance to complete, if any.
+    :param collected: The engine settings collected by the inline steps.
+    :raises SetupFlowError: When the instance did not start with these settings.
+    """
+    mass = session.mass
+    values: dict[str, Any] = {
+        CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
+        CONF_SYSTEM_MANAGED: True,
+        CONF_SETUP_PENDING: False,
+        **collected,
+    }
+    encrypted = {
+        key: mass.config.encrypt_string(value) if isinstance(value, str) else value
+        for key, value in values.items()
+    }
+    if instance_id is None:
+        config = await mass.config.create_pending_provider_config("spotify_connect", encrypted)
+        instance_id = config.instance_id
+    else:
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}/setup_data"
+        existing = dict(mass.config.get(conf_key) or {})
+        mass.config.set(conf_key, {**existing, **encrypted})
+        try:
+            config = await mass.config.get_provider_config(instance_id)
+            await mass.load_provider_config(config)
+        except Exception as err:
+            raise SetupFlowError(
+                str(err) or err.__class__.__name__,
+                translation_key=getattr(err, "translation_key", None),
+            ) from err
+    if mass.get_provider(instance_id) is None:
+        # the create path records the load failure instead of raising; surface it
+        last_error = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}/last_error") or {}
+        raise SetupFlowError(
+            str(last_error.get("message") or "The Spotify Connect instance failed to start"),
+            translation_key=last_error.get("translation_key"),
+        )
+    return instance_id
 
 
 async def _authorize_playback(session: SetupSession) -> str:

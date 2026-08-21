@@ -18,9 +18,18 @@ from music_assistant.providers.spotify.constants import (
     CONF_LIBRESPOT_CREDENTIALS,
     CONF_PLAYBACK_BACKEND,
 )
+from music_assistant.providers.spotify_connect import (
+    BACKEND_GO_LIBRESPOT,
+    BACKEND_SOLOIST,
+    CONF_API_KEY,
+    CONF_BACKEND,
+    CONF_SOLOIST_CONSENT,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.setup_flow import SetupFlowStep
+
+_VALID_API_KEY = "soloist-api-key-0123456789abcdef"
 
 
 def _make_session(
@@ -58,61 +67,122 @@ async def _wait_for_form(
     raise AssertionError("form step not published")
 
 
-async def _submit(session: SetupSession, values: dict[str, Any]) -> None:
-    """Submit form values (which must validate)."""
+async def _submit(session: SetupSession, values: dict[str, Any]) -> SetupFlowStep:
+    """Submit form values (which must validate) and return the next published step."""
+    previous = session.current_step
+    assert previous is not None
     assert session.handle_submit(values) is None
+    return await _wait_for_form(session, previous)
 
 
-async def test_connect_mode_ensures_instance_and_clears_librespot_credential() -> None:
-    """Choosing Connect ensures the system-wide instance and wipes the librespot secret."""
+def _entry(step: SetupFlowStep, key: str) -> Any:
+    """Return the form entry with the given key from a step."""
+    return next(entry for entry in step.entries if entry.key == key)
+
+
+async def test_connect_mode_sets_up_the_instance_inline() -> None:
+    """Choosing Connect runs the engine steps inline and provisions the instance."""
     session = _make_session(kind="reconfigure", setup_data={CONF_LIBRESPOT_CREDENTIALS: "secret"})
     setup_data: dict[str, Any] = {CONF_LIBRESPOT_CREDENTIALS: "secret"}
-    ensure = mock.AsyncMock(return_value=True)
-    with mock.patch.object(spotify_flow, "ensure_connect_instance", ensure):
+    provision = mock.AsyncMock(return_value="spotify_connect--new")
+    with (
+        mock.patch.object(spotify_flow, "has_running_system_wide_connect", return_value=False),
+        mock.patch.object(
+            spotify_flow, "get_system_wide_connect_config_id", mock.AsyncMock(return_value=None)
+        ),
+        mock.patch.object(spotify_flow, "_provision_connect_instance", provision),
+        mock.patch.object(spotify_flow, "verify_platform_supported"),
+    ):
         task = asyncio.create_task(spotify_flow._setup_playback(session, setup_data))
         step = await _wait_for_form(session)
 
         # an instance predating the choice preselects librespot
         assert step.step_id == "playback_backend"
-        entry = next(entry for entry in step.entries if entry.key == CONF_PLAYBACK_BACKEND)
-        assert entry.value == BACKEND_LIBRESPOT
+        assert _entry(step, CONF_PLAYBACK_BACKEND).value == BACKEND_LIBRESPOT
 
-        await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
-        steer = await _wait_for_form(session, step)
-        # a freshly created instance steers the user to complete its setup
-        assert steer.step_id == "connect_mode"
-        assert any(entry.key == "connect_setup_needed" for entry in steer.entries)
-        await _submit(session, {})
+        step = await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
+        assert step.step_id == "connect_engine"
+        # supported platform: the official engine is the default for a fresh instance
+        assert _entry(step, CONF_BACKEND).value == BACKEND_SOLOIST
+
+        session.handle_submit({CONF_BACKEND: BACKEND_GO_LIBRESPOT})
         await task
 
-    ensure.assert_awaited_once()
+    provision.assert_awaited_once_with(
+        session,
+        None,
+        {CONF_BACKEND: BACKEND_GO_LIBRESPOT, CONF_API_KEY: "", CONF_SOLOIST_CONSENT: False},
+    )
     assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_CONNECT
     assert setup_data[CONF_LIBRESPOT_CREDENTIALS] is None
+
+
+async def test_connect_soloist_engine_collects_consent_and_api_key() -> None:
+    """The Soloist engine branch collects consent (with refusal bounce) and the API key."""
+    session = _make_session()
+    setup_data: dict[str, Any] = {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT}
+    provision = mock.AsyncMock(return_value="spotify_connect--new")
+    with (
+        mock.patch.object(spotify_flow, "has_running_system_wide_connect", return_value=False),
+        mock.patch.object(
+            spotify_flow, "get_system_wide_connect_config_id", mock.AsyncMock(return_value=None)
+        ),
+        mock.patch.object(spotify_flow, "_provision_connect_instance", provision),
+        mock.patch.object(spotify_flow, "verify_platform_supported"),
+    ):
+        task = asyncio.create_task(spotify_flow._setup_playback(session, setup_data))
+        step = await _wait_for_form(session)
+        step = await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
+        assert step.step_id == "connect_engine"
+
+        step = await _submit(session, {CONF_BACKEND: BACKEND_SOLOIST})
+        assert step.step_id == "soloist_terms"
+
+        # refusing consent bounces back to the engine choice with an error
+        step = await _submit(session, {CONF_SOLOIST_CONSENT: False})
+        assert step.step_id == "connect_engine"
+        assert step.errors == {"base": "soloist_consent_required"}
+
+        step = await _submit(session, {CONF_BACKEND: BACKEND_SOLOIST})
+        step = await _submit(session, {CONF_SOLOIST_CONSENT: True})
+        assert step.step_id == "soloist_api_key"
+
+        # a too-short key is rejected
+        step = await _submit(session, {CONF_API_KEY: "too-short"})
+        assert step.step_id == "soloist_api_key"
+        assert step.errors == {CONF_API_KEY: "soloist_api_key_invalid"}
+
+        session.handle_submit({CONF_API_KEY: _VALID_API_KEY})
+        await task
+
+    provision.assert_awaited_once_with(
+        session,
+        None,
+        {
+            CONF_BACKEND: BACKEND_SOLOIST,
+            CONF_SOLOIST_CONSENT: True,
+            CONF_API_KEY: _VALID_API_KEY,
+        },
+    )
 
 
 async def test_connect_mode_reports_a_running_instance_as_ready() -> None:
     """An existing running system-wide instance is reused and reported as ready."""
     session = _make_session(setup_data={CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
     setup_data: dict[str, Any] = {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT}
-    ensure = mock.AsyncMock(return_value=False)
-    with (
-        mock.patch.object(spotify_flow, "ensure_connect_instance", ensure),
-        mock.patch.object(spotify_flow, "has_running_system_wide_connect", return_value=True),
-    ):
+    with mock.patch.object(spotify_flow, "has_running_system_wide_connect", return_value=True):
         task = asyncio.create_task(spotify_flow._setup_playback(session, setup_data))
         step = await _wait_for_form(session)
 
         # the stored mode preselects
-        entry = next(entry for entry in step.entries if entry.key == CONF_PLAYBACK_BACKEND)
-        assert entry.value == BACKEND_CONNECT
+        assert _entry(step, CONF_PLAYBACK_BACKEND).value == BACKEND_CONNECT
 
-        await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
-        steer = await _wait_for_form(session, step)
-        assert any(entry.key == "connect_ready" for entry in steer.entries)
-        await _submit(session, {})
+        step = await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
+        assert step.step_id == "connect_mode"
+        assert any(entry.key == "connect_ready" for entry in step.entries)
+        session.handle_submit({})
         await task
 
-    ensure.assert_awaited_once()
     assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_CONNECT
 
 
@@ -132,8 +202,7 @@ async def test_fresh_setup_preselects_connect_only_with_a_running_plugin(
     task = asyncio.create_task(spotify_flow._setup_playback(session, setup_data))
     step = await _wait_for_form(session)
 
-    entry = next(entry for entry in step.entries if entry.key == CONF_PLAYBACK_BACKEND)
-    assert entry.value == expected
+    assert _entry(step, CONF_PLAYBACK_BACKEND).value == expected
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

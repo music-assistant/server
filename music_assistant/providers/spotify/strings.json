@@ -49,11 +49,24 @@
         "librespot": "librespot (community)"
       }
     },
-    "connect_setup_needed": {
-      "label": "A Spotify Connect instance has been prepared for you. After finishing this setup, open it from the providers page and complete its setup (playback engine and pairing) to enable playback."
-    },
     "connect_ready": {
       "label": "A Spotify Connect instance is already running, so playback works right away. Playback requests target the Connect device paired to this Spotify account."
+    },
+    "backend": {
+      "label": "Playback engine",
+      "options": {
+        "soloist": "Spotify Soloist (official, recommended)",
+        "go_librespot": "go-librespot (community)"
+      }
+    },
+    "soloist_download_consent": {
+      "label": "I understand the above, and I allow Music Assistant to download, run, keep and automatically update Spotify Soloist from Spotify's servers"
+    },
+    "soloist_api_key": {
+      "label": "Soloist API key"
+    },
+    "soloist_api_key_hint": {
+      "label": "An API key is already configured. Leave the field below empty to keep using it."
     }
   },
   "setup_flow": {
@@ -76,6 +89,18 @@
     "connect_mode": {
       "title": "Playback through Spotify Connect",
       "description": "In this mode, playing Spotify content sends it to a Spotify Connect device hosted by Music Assistant, which then plays on the player you selected."
+    },
+    "connect_engine": {
+      "title": "Choose a playback engine",
+      "description": "The Spotify Connect device needs a playback engine:\n\n**Spotify Soloist (official, recommended)** — Spotify's own playback engine. Works with every account; setting it up requires a Spotify Premium account once, to create a personal API key.\n\n**go-librespot (community)** — a community-built engine. No API key needed, but intended for accounts created before December 2024.\n\nThis creates a system-wide Spotify Connect instance; you can adjust it (or add per-player instances) later from the providers page."
+    },
+    "soloist_terms": {
+      "title": "About Spotify Soloist",
+      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Spotify's terms do not clearly allow using Soloist this way. Using it through Music Assistant may violate Spotify's Terms of Service and is entirely at your own risk.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
+    },
+    "soloist_api_key": {
+      "title": "Create your Soloist API key",
+      "description": "Soloist needs a personal API key, created with a Spotify **Premium** account:\n\n1. Open the [Soloist API key page](https://developer.spotify.com/dashboard/soloist) and sign in with your Spotify account.\n2. Accept Spotify's terms if you are asked to.\n3. Choose **Generate API Key**.\n4. Copy the key and paste it below.\n\nMusic Assistant stores the key encrypted and only shares it with the Soloist app. Your Spotify username and password are never asked for."
     },
     "playback_auth": {
       "title": "Allow Music Assistant to play Spotify audio",
@@ -130,6 +155,9 @@
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
     "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
     "connect_no_session": "No Spotify Connect session is available for this Spotify account. Complete (or re-pair) the Spotify Connect setup, or switch the Spotify provider back to librespot playback.",
+    "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose go-librespot (community) instead.",
+    "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
+    "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose go-librespot (community) instead.",
     "connect_media_unsupported": "Podcasts and audiobooks cannot be played in the Spotify Connect playback mode. Switch the Spotify provider to librespot playback to play them.",
     "connect_no_session_for_enqueue": "There is no active Spotify Connect session on this player to add to. Start Spotify playback on it first."
   },

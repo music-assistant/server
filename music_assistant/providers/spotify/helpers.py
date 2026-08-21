@@ -59,13 +59,18 @@ def has_running_system_wide_connect(mass: MusicAssistant) -> bool:
     )
 
 
-async def has_system_wide_connect_config(mass: MusicAssistant) -> bool:
-    """Return whether a system-wide (auto-player) Spotify Connect instance is configured."""
+async def get_system_wide_connect_config_id(mass: MusicAssistant) -> str | None:
+    """Return the configured system-wide (auto-player) Spotify Connect instance id, if any."""
     for config in await mass.config.get_provider_configs(provider_domain="spotify_connect"):
         bound_player = mass.config.get_provider_setup_value(config.instance_id, CONF_MASS_PLAYER_ID)
         if bound_player in (None, PLAYER_ID_AUTO):
-            return True
-    return False
+            return config.instance_id
+    return None
+
+
+async def has_system_wide_connect_config(mass: MusicAssistant) -> bool:
+    """Return whether a system-wide (auto-player) Spotify Connect instance is configured."""
+    return await get_system_wide_connect_config_id(mass) is not None
 
 
 async def ensure_connect_instance(mass: MusicAssistant) -> bool:

@@ -91,6 +91,10 @@ from .streaming import LibrespotStreamer
 
 _PLAYLIST_PAGINATION_STATE_LIMIT = 32
 
+# The Web API's play request accepts at most this many uris; larger context-less
+# lists are truncated (with a log) rather than rejected wholesale.
+MAX_DELEGATED_TRACKS = 100
+
 
 class NotModifiedError(Exception):
     """Exception raised when a resource has not been modified."""
@@ -1916,13 +1920,26 @@ class SpotifyProvider(MusicProvider):
         return True
 
     def _delegate_track_uris(self, media_items: list[PlayableMediaItemType]) -> list[str]:
-        """Return the Spotify track uris for the given resolved items (tracks only)."""
+        """
+        Return the Spotify track uris for the given resolved items (tracks only).
+
+        Capped at the Web API's play-request limit: a context-less list larger than
+        that (e.g. Liked Songs) plays its first chunk only, until queue mirroring
+        brings proper continuation.
+        """
         uris: list[str] = []
         for item in media_items:
             if item.media_type != MediaType.TRACK:
                 continue
             if (item_id := self._item_id_for_this_provider(item)) is not None:
                 uris.append(f"spotify:track:{item_id}")
+        if len(uris) > MAX_DELEGATED_TRACKS:
+            self.logger.warning(
+                "Sending only the first %d of %d tracks to the Spotify Connect session",
+                MAX_DELEGATED_TRACKS,
+                len(uris),
+            )
+            return uris[:MAX_DELEGATED_TRACKS]
         return uris
 
     def _delegate_context(
