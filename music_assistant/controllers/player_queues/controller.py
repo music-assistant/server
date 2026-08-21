@@ -589,9 +589,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
-        # Only the explicit clear notifies the plugin, never `_clear` itself: replacing the
-        # queue and transferring it both clear as a step towards re-selecting the same source,
-        # and a release there would cost the user their playback position.
+        # Only the explicit clear notifies the plugin, never `_clear` itself: a replace or a
+        # transfer clears as a first step and may re-select the very same source right after,
+        # where releasing it would cost the user their playback position.
         self._notify_audio_source_removed(queue_id)
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
@@ -1857,8 +1857,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Tell the owning plugin that its AudioSource moved to another queue.
 
-        Awaited rather than dispatched: the plugin has to know the source changed hands before
-        the target queue resumes it. A plugin that raises must not break the transfer.
+        Awaited rather than dispatched so the plugin has settled the handover before the target
+        queue is resumed. A plugin that raises must not break the transfer.
 
         :param transferred_item: The current item the source queue handed over.
         :param from_queue_id: The queue that gave the source up.

@@ -274,8 +274,14 @@ class PluginProvider(Provider):
         current item. A transfer of a *playing* source re-selects it on the
         target by itself, but a paused one is moved without a stream request,
         so this is the only signal that the source changed hands. Override to
-        re-point any queue the plugin tracked, so later callbacks (this hook's
-        ``on_source_removed`` sibling included) arrive for the right queue.
+        re-point the queue the plugin tracks as its owner, so later callbacks
+        (this hook's ``on_source_removed`` sibling included) arrive for the
+        right queue.
+
+        Only long-lived ownership belongs here. Anything scoped to a stream —
+        an exclusive claim, the ``on_source_selected`` session id — must be
+        left alone: no stream exists on the target until it starts one, and
+        ``on_source_selected`` re-establishes those when it does.
 
         :param source_id: The AudioSource.item_id that was transferred.
         :param from_queue_id: The queue that gave the source up.

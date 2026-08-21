@@ -120,7 +120,8 @@ def test_replacing_or_transferring_the_queue_notifies_nothing() -> None:
 
     Playing the same live source again and transferring the queue to another player both drop
     the queue's items on their way to re-selecting that very source. Releasing it there would
-    end the upstream session and cost the user the position they were paused at.
+    end the upstream session and cost the user the position they were paused at. A replace
+    that brings different media is a gap this leaves open, not a case it decides.
     """
     ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
     provider = _plugin_provider(ctrl)
