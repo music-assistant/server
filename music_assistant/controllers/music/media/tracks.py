@@ -1049,14 +1049,18 @@ class TracksController(MediaControllerBase[Track]):
         :param limit: Maximum number of tracks to return.
         :raises UnsupportedFeaturedException: When no music provider supports similar tracks.
         """
-        providers = [
+        supported_providers = [
             prov
             for prov in self.mass.music.providers
             if ProviderFeature.SIMILAR_TRACKS in prov.supported_features
         ]
-        if not providers:
+        if not supported_providers:
             msg = "No Music Provider found that supports requesting similar tracks."
             raise UnsupportedFeaturedException(msg)
+        mapped_instances = {mapping.provider_instance for mapping in ref_item.provider_mappings}
+        providers = [
+            prov for prov in supported_providers if prov.instance_id not in mapped_instances
+        ]
 
         last_error: MusicAssistantError | ClientError | OSError | TimeoutError | None = None
         provider_responded = False

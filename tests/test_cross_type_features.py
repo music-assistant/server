@@ -232,6 +232,7 @@ async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty(
     mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
     lookup_provider = Mock(spec=MusicProvider)
     lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
     lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     lookup_provider.get_similar_tracks = AsyncMock(side_effect=ClientConnectionError("offline"))
     mass.get_provider.return_value = mapped_provider
@@ -273,6 +274,7 @@ async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
     mass = Mock()
     lookup_provider = Mock(spec=MusicProvider)
     lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
     lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     mass.get_providers_supporting_feature.return_value = []
     mass.music.providers = [lookup_provider]
@@ -305,6 +307,7 @@ async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented()
     mapped_provider.get_similar_tracks = AsyncMock(side_effect=client_error)
     lookup_provider = Mock(spec=MusicProvider)
     lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
     lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     lookup_provider.get_similar_tracks = AsyncMock(side_effect=NotImplementedError)
     mass.get_provider.return_value = mapped_provider
@@ -339,6 +342,39 @@ async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented()
         await controller.similar_tracks("seed", "mapped", allow_lookup=True)
 
     assert raised.value.__cause__ is client_error
+
+
+async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
+    """Cross-provider lookup does not retry an instance already mapped to the track."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.instance_id = "mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [mapped_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.match_provider = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert result == []
+    controller.match_provider.assert_not_awaited()
 
 
 def _artist(item_id: str, name: str, instance: str) -> Artist:
