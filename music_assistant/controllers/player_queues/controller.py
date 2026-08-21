@@ -1491,6 +1491,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         keep_remaining: bool = True,
         keep_played: bool = True,
         shuffle: bool = False,
+        pin_first: bool = False,
     ) -> None:
         """
         Load new items at index.
@@ -1500,6 +1501,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - insert_at_index: insert the item(s) at this index
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
+        - pin_first: keep the first item at the insert index instead of letting the shuffle
+          move it; only meaningful together with shuffle
         """
         prev_items = self._queue_data[queue_id].items[:insert_at_index] if keep_played else []
         next_items = queue_items
@@ -1514,10 +1517,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (re)shuffle the final batch if needed: smart shuffle when enabled, else pure random
         if shuffle:
             queue = self._queue_data[queue_id].queue
+            # a user-picked item must stay the one that plays, so hold it out of the shuffle
+            pinned = next_items[:1] if pin_first else []
+            shuffled = next_items[1:] if pin_first else next_items
             if self._smart_shuffle.is_enabled(queue_id):
-                next_items = await self._smart_shuffle.arrange(queue, next_items)
+                shuffled = await self._smart_shuffle.arrange(queue, shuffled)
             else:
-                next_items = random.sample(next_items, len(next_items))
+                shuffled = random.sample(shuffled, len(shuffled))
+            next_items = pinned + shuffled
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
