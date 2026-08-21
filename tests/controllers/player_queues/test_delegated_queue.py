@@ -6,7 +6,8 @@ While the queue's current item is a live (playing/paused) AudioSource declaring
 seek are forwarded to the owning plugin (the mirrored options event updates the queue
 state afterwards) and ``queue_owner`` tells clients who owns the ordering. MA-owned tail
 items behind the source stay editable. A transport-only AudioSource (no
-``queue_capabilities``) and an IDLE queue keep the exact pre-delegation behavior.
+``queue_capabilities``) keeps the exact pre-delegation behavior; playback state is
+deliberately not gated (a paused session may read as a stopped player).
 """
 
 from __future__ import annotations
@@ -115,7 +116,6 @@ def _controller(
         queue.items = 1
         queue.current_index = 0
         queue.current_item = item
-        # delegation requires a live session: an IDLE queue is never delegated
         queue.state = PlaybackState.PLAYING
     provider = MagicMock(spec=PluginProvider)
     provider.supported_features = {ProviderFeature.AUDIO_SOURCE}
@@ -229,17 +229,24 @@ async def test_repeat_refused_when_the_session_cannot_repeat() -> None:
     assert _queue(ctrl).repeat_mode == RepeatMode.OFF
 
 
-async def test_idle_queue_is_not_delegated() -> None:
-    """A stopped/restored queue is not delegated: commands apply to the MA queue as usual."""
+async def test_idle_queue_stays_delegated() -> None:
+    """
+    An IDLE queue with the session item current still forwards to the plugin.
+
+    Spotify Connect maps a paused session onto a stopped player, so the queue may
+    read IDLE while the session is alive and resumable; a genuinely dead session is
+    the plugin's call (it raises its localized not-active error) — same behavior as
+    the player-layer transport proxy.
+    """
     ctrl, provider = _controller(_audio_source(_capabilities()))
     _queue(ctrl).state = PlaybackState.IDLE
 
     await ctrl.set_shuffle(QUEUE_ID, True)
     ctrl.signal_update(QUEUE_ID)
 
-    provider.on_source_control.assert_not_awaited()
-    assert _queue(ctrl).shuffle_enabled is True
-    assert _queue(ctrl).queue_owner is None
+    provider.on_source_control.assert_awaited_once_with(SOURCE_ID, SourceControl.SHUFFLE, True)
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _queue(ctrl).queue_owner is not None
 
 
 async def test_delegated_next_forwards_instead_of_walking_the_queue() -> None:

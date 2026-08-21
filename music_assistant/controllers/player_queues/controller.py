@@ -1996,21 +1996,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Return the AudioSource owning the queue's commands, its capabilities and owning plugin.
 
-        While the queue's current item is a live (playing/paused) AudioSource declaring
-        ``queue_capabilities``, the external session owns the queue: commands are forwarded
-        to the owning plugin and the mirrored options event updates the queue state
-        afterwards. Returns None — queue commands then apply to the MA queue as usual —
-        when the current item is not such an AudioSource (a transport-only source keeps
-        queue commands with MA), when the owning plugin provider is no longer available,
-        or when the queue is IDLE: a stopped or cache-restored queue is not delegated.
+        While the queue's current item is an AudioSource declaring ``queue_capabilities``,
+        the external session owns the queue: commands are forwarded to the owning plugin
+        and the mirrored options event updates the queue state afterwards. This matches
+        the player-layer proxy: no playback-state gate, because a plugin may map a paused
+        session onto a stopped player (Spotify Connect does) — a genuinely dead session
+        is the owning plugin's call, surfaced as its localized not-active error. Returns
+        None — queue commands then apply to the MA queue as usual — when the current item
+        is not such an AudioSource (a transport-only source keeps queue commands with MA)
+        or when the owning plugin provider is no longer available.
 
         :param queue_id: The queue to inspect.
         """
         if (queue_data := self._queue_data.get(queue_id)) is None:
-            return None
-        # an IDLE queue holds no live session (stopped, or restored from cache after a
-        # restart), so nothing is delegated even while the session item is still current
-        if queue_data.queue.state == PlaybackState.IDLE:
             return None
         current_item = queue_data.queue.current_item
         if current_item is None or current_item.media_item is None:
