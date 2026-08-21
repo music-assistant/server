@@ -479,11 +479,7 @@ class PocketCastsProvider(MusicProvider):
         )
 
     async def _get_podcast_name(self, prov_podcast_id: str) -> str:
-        """
-        Return a podcast's name, empty when it cannot be looked up.
-
-        :param prov_podcast_id: The provider podcast id.
-        """
+        """Return a podcast's name, empty when it cannot be looked up."""
         # the podcast lookup is cached, so this is one call per podcast per day at most
         try:
             return (await self.get_podcast(prov_podcast_id)).name
@@ -498,11 +494,7 @@ class PocketCastsProvider(MusicProvider):
             return ""
 
     async def _get_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
-        """
-        Return show notes per episode uuid, empty when they cannot be read.
-
-        :param prov_podcast_id: The provider podcast id.
-        """
+        """Return show notes per episode uuid, empty when they cannot be read."""
         # show notes are supplementary, so a failure here must never break episode
         # resolution. The failure itself is not cached, so the next call tries again.
         try:
@@ -528,17 +520,7 @@ class PocketCastsProvider(MusicProvider):
         show_notes: dict[str, Any] | None = None,
         podcast_name: str = "",
     ) -> PodcastEpisode | None:
-        """
-        Convert Pocket Casts episode data to a PodcastEpisode object.
-
-        Returns None when the data has no episode UUID to key on.
-
-        :param episode_data: Raw episode data dict from the API.
-        :param podcast_uuid: The UUID of the parent podcast.
-        :param show_notes: The episode's show notes entry, or None when not looked up.
-        :param podcast_name: Name of the parent podcast, shown by players alongside the
-            episode title.
-        """
+        """Convert episode data to a PodcastEpisode, or None when it carries no episode uuid."""
         episode_uuid = episode_data.get("uuid")
         if not episode_uuid:
             return None
