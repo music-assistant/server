@@ -303,3 +303,39 @@ async def test_transferring_onto_a_paused_source_releases_it() -> None:
     await ctrl.transfer_queue("q1", "q2")
 
     provider.on_source_removed.assert_called_once_with("main", "q2")
+
+
+async def test_a_source_left_behind_by_a_play_is_still_released_later() -> None:
+    """
+    A source kept in the queue alongside other media is released when it does leave.
+
+    Starting a track with "play" leaves the live source in the queue behind it, so nothing is
+    released then. Clearing the queue afterwards is what finally removes it - and by then it is
+    no longer the item the queue is playing.
+    """
+    source_item = QueueItem.from_media_item("q1", _audio_source())
+    ctrl = _controller(source_item)
+    provider = _plugin_provider(ctrl)
+    # as a "play" leaves it: the source still queued, a track playing in front of it
+    track_item = QueueItem.from_media_item("q1", _track())
+    ctrl._queue_data["q1"].items = [source_item, track_item]
+    ctrl._queue_data["q1"].queue.current_item = track_item
+
+    ctrl.clear("q1")
+
+    provider.on_source_removed.assert_called_once_with("main", "q1")
+
+
+async def test_a_source_left_behind_by_a_play_is_released_when_replaced() -> None:
+    """The same source, no longer playing, is released when new media takes the queue over."""
+    source_item = QueueItem.from_media_item("q1", _audio_source())
+    ctrl = _controller(source_item)
+    provider = _plugin_provider(ctrl)
+    track_item = QueueItem.from_media_item("q1", _track())
+    ctrl._queue_data["q1"].items = [source_item, track_item]
+    ctrl._queue_data["q1"].queue.current_item = track_item
+    _play_media_replacing_with(ctrl, QueueItem.from_media_item("q1", _track()))
+
+    await ctrl.play_media("q1", "test://album/al1", QueueOption.REPLACE)
+
+    provider.on_source_removed.assert_called_once_with("main", "q1")
