@@ -54,6 +54,8 @@ LEAD_SECONDS = 5.0
 # it that means the audio moved (a seek) rather than the player simply reporting
 # its position coarsely. Well above the ~1s quantization of the coarsest
 # reporters (DLNA), whose jitter would otherwise restart the frame flow.
+# Scaled by playback speed where compared: report jitter lives in wall-clock
+# time and inflates by the speed factor on its way into media time.
 RESYNC_THRESHOLD_SECONDS = 3.0
 # Poll interval while there is nothing to read: idle player, or the tap having
 # read as far ahead as it may.
@@ -463,7 +465,7 @@ class TapManager:
             and cursor.item_id == item.queue_item_id
             and cursor.speed == speed
             and cursor.next_chunk >= oldest
-            and abs(cursor.playhead() - playhead) <= RESYNC_THRESHOLD_SECONDS
+            and abs(cursor.playhead() - playhead) <= RESYNC_THRESHOLD_SECONDS * speed
         ):
             return cursor
         start_chunk = max(int(max(0.0, playhead)), oldest)

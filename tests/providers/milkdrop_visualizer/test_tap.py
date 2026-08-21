@@ -207,6 +207,19 @@ def test_align_keeps_a_speed_aware_cursor_in_step() -> None:
     assert manager._align(tap, cursor, item, 10.0, buffer, 2.0) is cursor
 
 
+def test_align_scales_the_resync_threshold_by_speed() -> None:
+    """At 2x, report jitter inflates by the speed factor, so the threshold grows with it."""
+    manager = _manager()
+    tap = Tap("player-1")
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0)
+    cursor = manager._align(tap, None, item, 10.0, buffer, 2.0)
+    # a 5s media-time gap is within the scaled 6s threshold, not a seek
+    assert manager._align(tap, cursor, item, 15.0, buffer, 2.0) is cursor
+    # beyond the scaled threshold it is a seek and re-anchors
+    assert manager._align(tap, cursor, item, 17.0, buffer, 2.0) is not cursor
+
+
 def test_align_re_anchors_on_a_speed_change() -> None:
     """A playback speed change remaps media time to the clock, so the cursor restarts."""
     manager = _manager()
