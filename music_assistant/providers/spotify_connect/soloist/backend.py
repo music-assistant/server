@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from asyncio import FIRST_COMPLETED
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -691,26 +692,7 @@ class SoloistBackend(SpotifyConnectBackend):
                 await proc.start()
                 self.logger.info("Started Spotify Connect background daemon [%s]", self.name)
                 await self._reset_volume_state(sink)
-                # The log is drained by a side task while this one waits on the
-                # process itself. A close() from one of the other supervisors
-                # (sink replacement, binary refresh) locks readers out of the
-                # process streams for good, so waiting on the reader instead
-                # would hang here and the daemon would never be respawned.
-                log_task = asyncio.create_task(self._log_daemon_output(proc))
-                try:
-                    await proc.wait()
-                    # an exited daemon still has its last (often most telling)
-                    # lines in the stream buffer; the shield keeps the reader
-                    # alive across the timeout so it can drain them
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
-                finally:
-                    # a reader locked out by a close() from another supervisor
-                    # never ends on its own; joining it consumes its outcome the
-                    # way the other process readers in the codebase do
-                    log_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await log_task
+                await self._await_daemon_exit(proc)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -751,6 +733,48 @@ class SoloistBackend(SpotifyConnectBackend):
                 )
                 return
             await asyncio.sleep(RESTART_DELAY_S)
+
+    async def _await_daemon_exit(self, proc: AsyncProcess) -> None:
+        """
+        Wait for the daemon to exit, forwarding its log for as long as it runs.
+
+        :param proc: The running daemon process.
+        """
+        # The log is drained by a side task rather than inline: a close() from
+        # one of the other supervisors (sink replacement, binary refresh) locks
+        # readers out of the process streams for good, so waiting on the reader
+        # would hang here and the daemon would never be respawned.
+        log_task = asyncio.create_task(self._log_daemon_output(proc))
+        wait_task = asyncio.create_task(proc.wait())
+        try:
+            # Watch both: nothing else drains the daemon's stdout, so a reader
+            # that died would leave the daemon blocked on a full pipe and this
+            # wait would never return.
+            await asyncio.wait((wait_task, log_task), return_when=FIRST_COMPLETED)
+            reader_error = (
+                log_task.exception() if log_task.done() and not log_task.cancelled() else None
+            )
+            if reader_error is not None:
+                self.logger.error(
+                    "soloist log reader failed [%s]: %s; restarting the daemon",
+                    self.name,
+                    reader_error,
+                )
+                await proc.close()
+            await wait_task
+            # an exited daemon still has its last (often most telling) lines in
+            # the stream buffer; the shield keeps the reader alive across the
+            # timeout so it can drain them
+            with suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
+        finally:
+            # a reader locked out by a close() from another supervisor never
+            # ends on its own; joining it consumes its outcome the way the
+            # other process readers in the codebase do
+            wait_task.cancel()
+            log_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await log_task
 
     async def _log_daemon_output(self, proc: AsyncProcess) -> None:
         """

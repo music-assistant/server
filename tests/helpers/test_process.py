@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 
@@ -181,3 +182,22 @@ async def test_read_stdout_stops_once_the_process_is_closed() -> None:
     await proc.close()
 
     assert await proc.read_stdout() == b""
+
+
+@pytest.mark.asyncio
+async def test_second_close_returns_without_waiting_out_the_stream_locks() -> None:
+    """
+    Closing an already-closed process is cheap.
+
+    close() keeps the stdin/stdout locks it takes, so a second call used to sit
+    through both 5s acquire timeouts - a delay paid on every supervised restart
+    that closes the process before its own cleanup runs.
+    """
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    await proc.close()
+
+    started = time.monotonic()
+    await proc.close()
+
+    assert time.monotonic() - started < 1

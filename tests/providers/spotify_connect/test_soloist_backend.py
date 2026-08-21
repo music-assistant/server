@@ -1155,6 +1155,42 @@ async def test_daemon_runner_cancellation_stops_the_supervisor(
     assert task.cancelled()
 
 
+async def test_daemon_runner_restarts_when_the_log_reader_dies(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A reader that fails closes the daemon instead of leaving it wedged.
+
+    Nothing else drains the daemon's stdout, so once the pipe fills a daemon
+    with a dead reader can never make progress and the supervisor would wait
+    on it forever.
+    """
+
+    class _FailingReaderProc(_FakeProc):
+        """A daemon whose log reader raises while the process is still alive."""
+
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            for line in self._stdout_lines:
+                yield line
+            raise RuntimeError("reader blew up")
+
+        async def wait(self) -> int:
+            # only ever returns once something closes the daemon
+            await self._closed_event.wait()
+            return self._exit_code
+
+    backend, _events = _runner_backend()
+    proc = _FailingReaderProc(on_close=lambda: setattr(backend, "_stop_called", True))
+    _patch_spawn(monkeypatch, [proc])
+
+    with caplog.at_level(logging.ERROR):
+        async with asyncio.timeout(5):
+            await backend._daemon_runner()
+
+    assert proc.closed >= 1
+    assert any("log reader failed" in record.getMessage() for record in caplog.records)
+
+
 async def test_daemon_runner_drains_buffered_log_after_exit(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

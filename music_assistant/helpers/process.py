@@ -277,6 +277,11 @@ class AsyncProcess:
 
     async def close(self) -> None:
         """Close/terminate the process and wait for exit."""
+        if self._close_called and self.returncode is not None:
+            # Already closed and reaped, so there is nothing left to signal or
+            # drain. The stream locks below are still held by that first call
+            # and would only be waited out again (5s each).
+            return
         self._close_called = True
         if not self.proc:
             return
