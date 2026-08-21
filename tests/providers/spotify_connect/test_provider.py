@@ -377,6 +377,7 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
     assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
