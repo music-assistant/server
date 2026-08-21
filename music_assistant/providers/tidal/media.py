@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
@@ -19,17 +18,26 @@ from .parsers import (
     parse_playlist,
     parse_track,
 )
-from .parsers_v2 import parse_album as parse_album_v2
-from .parsers_v2 import parse_artist as parse_artist_v2
-from .parsers_v2 import parse_playlist as parse_playlist_v2
-from .parsers_v2 import parse_track as parse_track_v2
+from .parsers_v2 import (
+    _parse_items,
+    _parse_or_skip,
+)
+from .parsers_v2 import (
+    parse_album as parse_album_v2,
+)
+from .parsers_v2 import (
+    parse_artist as parse_artist_v2,
+)
+from .parsers_v2 import (
+    parse_playlist as parse_playlist_v2,
+)
+from .parsers_v2 import (
+    parse_track as parse_track_v2,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
-    from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
 
@@ -80,25 +88,26 @@ class TidalMediaManager:
             results.tracks = [
                 track
                 for res in doc.related(data, "tracks")[:limit]
-                if (track := self._parse_or_skip(parse_track_v2, doc, res)) is not None
+                if (track := _parse_or_skip(parse_track_v2, self.provider, doc, res)) is not None
             ]
         if MediaType.ALBUM in wanted:
             results.albums = [
                 album
                 for res in doc.related(data, "albums")[:limit]
-                if (album := self._parse_or_skip(parse_album_v2, doc, res)) is not None
+                if (album := _parse_or_skip(parse_album_v2, self.provider, doc, res)) is not None
             ]
         if MediaType.ARTIST in wanted:
             results.artists = [
                 artist
                 for res in doc.related(data, "artists")[:limit]
-                if (artist := self._parse_or_skip(parse_artist_v2, doc, res)) is not None
+                if (artist := _parse_or_skip(parse_artist_v2, self.provider, doc, res)) is not None
             ]
         if MediaType.PLAYLIST in wanted:
             results.playlists = [
                 playlist
                 for res in doc.related(data, "playlists")[:limit]
-                if (playlist := self._parse_or_skip(parse_playlist_v2, doc, res)) is not None
+                if (playlist := _parse_or_skip(parse_playlist_v2, self.provider, doc, res))
+                is not None
             ]
         return results
 
@@ -177,7 +186,7 @@ class TidalMediaManager:
                     continue
                 if not (resource := doc.resolve(item)):
                     continue
-                if (track := self._parse_or_skip(parse_track_v2, doc, resource)) is None:
+                if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is None:
                     continue
                 item_meta = item.get("meta") or {}
                 track.track_number = item_meta.get("trackNumber", 0) or 0
@@ -193,7 +202,7 @@ class TidalMediaManager:
             include=["albums.artists", "albums.coverArt"],
             replace_media="albums",
         ):
-            albums.extend(self._parse_items(parse_album_v2, doc))
+            albums.extend(_parse_items(parse_album_v2, self.provider, doc))
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -205,7 +214,7 @@ class TidalMediaManager:
             include=["tracks.artists", "tracks.albums.coverArt"],
             replace_media="tracks",
         )
-        return self._parse_items(parse_track_v2, doc)
+        return _parse_items(parse_track_v2, self.provider, doc)
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks."""
@@ -215,7 +224,7 @@ class TidalMediaManager:
             include=["similarTracks.artists", "similarTracks.albums.coverArt"],
             replace_media="similarTracks",
         )
-        return self._parse_items(parse_track_v2, doc)[:limit]
+        return _parse_items(parse_track_v2, self.provider, doc)[:limit]
 
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Get similar artists."""
@@ -224,7 +233,7 @@ class TidalMediaManager:
             f"artists/{prov_artist_id}/relationships/similarArtists",
             include=["similarArtists.profileArt"],
         )
-        return self._parse_items(parse_artist_v2, doc)[:limit]
+        return _parse_items(parse_artist_v2, self.provider, doc)[:limit]
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
@@ -282,7 +291,7 @@ class TidalMediaManager:
             for item in doc.data_list:
                 if not (resource := doc.resolve(item)):
                     continue
-                if (track := self._parse_or_skip(parse_track_v2, doc, resource)) is None:
+                if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is None:
                     continue
                 track.position = len(tracks) + 1
                 tracks.append(track)
@@ -313,56 +322,6 @@ class TidalMediaManager:
             return await self.api.get(f"tracks/{prov_track_id}/lyrics")
         except (ClientError, MusicAssistantError) as err:
             self.logger.debug("Failed to fetch lyrics for track %s: %s", prov_track_id, err)
-            return None
-
-    def _parse_items[ItemT](
-        self,
-        parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
-        doc: JsonApiDocument,
-    ) -> list[ItemT]:
-        """
-        Parse the document's primary collection, leaving out the items that cannot be parsed.
-
-        Only for a collection of a single resource type: every resource is handed to the
-        same parser, so a mixed-type relationship has to be filtered by the caller.
-
-        :param parser: The parser to apply to each resolved resource.
-        :param doc: The JSON:API document holding the collection.
-        """
-        items: list[ItemT] = []
-        for identifier in doc.data_list:
-            if not (resource := doc.resolve(identifier)):
-                continue
-            if (item := self._parse_or_skip(parser, doc, resource)) is not None:
-                items.append(item)
-        return items
-
-    def _parse_or_skip[ItemT](
-        self,
-        parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
-        doc: JsonApiDocument,
-        resource: dict[str, Any],
-    ) -> ItemT | None:
-        """
-        Parse a resource into a media item, or return None if it cannot be parsed.
-
-        :param parser: The parser to apply to the resource.
-        :param doc: The JSON:API document holding the resource.
-        :param resource: The resource object to parse.
-        """
-        try:
-            return parser(self.provider, doc, resource)
-        except SKIPPABLE_ITEM_ERRORS as err:
-            # Tidal sending one item in a shape its parser can not read must not discard
-            # the rest of the collection. Log the traceback (on debug) as well, so a
-            # parser bug caught here is still traceable to its origin.
-            self.logger.warning(
-                "Skipping Tidal %s %s: %s",
-                resource.get("type", "item"),
-                resource.get("id", "[no id]"),
-                err,
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-            )
             return None
 
     def _process_tracks(self, items: list[dict[str, Any]], offset: int) -> list[Track]:

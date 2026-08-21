@@ -20,6 +20,22 @@ def _load_doc(name: str) -> JsonApiDocument:
         return JsonApiDocument(json.load(f))
 
 
+def _load_raw(name: str) -> dict[str, Any]:
+    with open(FIXTURES_DIR / name) as f:
+        data: dict[str, Any] = json.load(f)
+        return data
+
+
+def _break_resource(raw: dict[str, Any], resource_id: str) -> dict[str, Any]:
+    """Blank the name or title of one included resource so its parser rejects it."""
+    for resource in raw["included"]:
+        if resource["id"] == resource_id:
+            attributes = resource["attributes"]
+            attributes["name" if "name" in attributes else "title"] = None
+            return raw
+    raise AssertionError(f"resource {resource_id} not in fixture")
+
+
 @pytest.fixture
 def library_manager(provider_mock: Mock) -> TidalLibraryManager:
     """Return a TidalLibraryManager instance."""
@@ -89,6 +105,59 @@ async def test_get_playlists(library_manager: TidalLibraryManager, provider_mock
     # mixes come through the same collection with the "mix_" item id prefix
     assert any(p.item_id.startswith("mix_") for p in playlists)
     assert any(not p.item_id.startswith("mix_") for p in playlists[:-1])
+
+
+_LIBRARY_READ_CASES = [
+    ("get_artists", "lib_artists.json", 19),
+    ("get_albums", "lib_albums.json", 19),
+    ("get_tracks", "lib_tracks.json", 19),
+    ("get_playlists", "lib_playlists.json", 19),
+]
+
+
+@pytest.mark.parametrize(("method_name", "fixture_name", "expected_count"), _LIBRARY_READ_CASES)
+async def test_library_listing_skips_unparsable_item(
+    method_name: str,
+    fixture_name: str,
+    expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test one unusable item does not prevent later library items from being yielded."""
+    raw = _load_raw(fixture_name)
+    broken_id = raw["data"][0]["id"]
+    doc = JsonApiDocument(_break_resource(raw, broken_id))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    assert all(item.item_id != broken_id for item in items)
+    provider_mock.logger.warning.assert_called_once()
+
+
+@pytest.mark.parametrize(("method_name", "fixture_name", "_expected_count"), _LIBRARY_READ_CASES)
+async def test_library_listing_fetch_failure_propagates(
+    method_name: str,
+    fixture_name: str,
+    _expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test a later page failure aborts the listing instead of returning partial results."""
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield _load_doc(fixture_name)
+        raise ClientError("connection lost")
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    with pytest.raises(ClientError):
+        [item async for item in getattr(library_manager, method_name)()]
 
 
 _COLLECTION_CASES = [

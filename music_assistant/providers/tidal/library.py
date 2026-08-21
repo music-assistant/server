@@ -11,10 +11,21 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
 from .parsers import parse_favorite_tracks_playlist
-from .parsers_v2 import parse_album as parse_album_v2
-from .parsers_v2 import parse_artist as parse_artist_v2
-from .parsers_v2 import parse_playlist as parse_playlist_v2
-from .parsers_v2 import parse_track as parse_track_v2
+from .parsers_v2 import (
+    _parse_or_skip,
+)
+from .parsers_v2 import (
+    parse_album as parse_album_v2,
+)
+from .parsers_v2 import (
+    parse_artist as parse_artist_v2,
+)
+from .parsers_v2 import (
+    parse_playlist as parse_playlist_v2,
+)
+from .parsers_v2 import (
+    parse_track as parse_track_v2,
+)
 
 # MediaType -> (official collection resource, JSON:API resource type).
 _COLLECTIONS = {
@@ -58,7 +69,10 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
-                    artist = parse_artist_v2(self.provider, doc, resource)
+                    if (
+                        artist := _parse_or_skip(parse_artist_v2, self.provider, doc, resource)
+                    ) is None:
+                        continue
                     _set_date_added(artist, item)
                     yield artist
 
@@ -71,7 +85,10 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
-                    album = parse_album_v2(self.provider, doc, resource)
+                    if (
+                        album := _parse_or_skip(parse_album_v2, self.provider, doc, resource)
+                    ) is None:
+                        continue
                     _set_date_added(album, item)
                     yield album
 
@@ -84,7 +101,10 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
-                    track = parse_track_v2(self.provider, doc, resource)
+                    if (
+                        track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)
+                    ) is None:
+                        continue
                     _set_date_added(track, item)
                     self.provider.note_replaced_track(item)
                     yield track
@@ -99,7 +119,10 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
-                    playlist = parse_playlist_v2(self.provider, doc, resource)
+                    if (
+                        playlist := _parse_or_skip(parse_playlist_v2, self.provider, doc, resource)
+                    ) is None:
+                        continue
                     _set_date_added(playlist, item)
                     yield playlist
 
