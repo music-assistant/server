@@ -245,14 +245,14 @@ class PluginProvider(Provider):
         """
         React to a queue dropping this AudioSource from its items.
 
-        Fired when the source leaves the queue it was playing on: the user
-        cleared that queue, or started media that took the source's place in
-        it. Unlike ``on_source_unselected`` this is not tied to a stream, so it
-        also fires when the stream was already torn down earlier (a paused
-        source, for example) — the one moment where nothing else tells the
-        plugin that MA is done with the source. Override to release state that
-        must not outlive the queue, such as an upstream session still pointing
-        at MA.
+        Fired when the source leaves a queue that held it — whether or not it
+        was the one playing: the user cleared that queue, or started media that
+        took the source's place in it. Unlike ``on_source_unselected`` this is
+        not tied to a stream, so it also fires when the stream was already torn
+        down earlier (a paused source, for example) — the one moment where
+        nothing else tells the plugin that MA is done with the source. Override
+        to release state that must not outlive the queue, such as an upstream
+        session still pointing at MA.
 
         Media that leaves the source among the queue's items does NOT fire
         this, nor does starting that very same source again, nor handing the
@@ -271,13 +271,13 @@ class PluginProvider(Provider):
         """
         React to this AudioSource being handed over to another queue.
 
-        Fired when the user transfers a queue that has this source as its
-        current item. A transfer of a *playing* source re-selects it on the
-        target by itself, but a paused one is moved without a stream request,
-        so this is the only signal that the source changed hands. Override to
-        re-point the queue the plugin tracks as its owner, so later callbacks
-        (this hook's ``on_source_removed`` sibling included) arrive for the
-        right queue.
+        Fired for every live source a transferred queue held, whether or not it
+        was the one playing. A transfer of a *playing* source re-selects it on
+        the target by itself, but one that was paused or merely queued is moved
+        without a stream request, so this is the only signal that the source
+        changed hands. Override to re-point the queue the plugin tracks as its
+        owner, so later callbacks (this hook's ``on_source_removed`` sibling
+        included) arrive for the right queue.
 
         Only long-lived ownership belongs here. Anything scoped to a stream —
         an exclusive claim, the ``on_source_selected`` session id — must be
