@@ -771,10 +771,11 @@ class SoloistBackend(SpotifyConnectBackend):
             # a reader locked out by a close() from another supervisor never
             # ends on its own; joining it consumes its outcome the way the
             # other process readers in the codebase do
-            wait_task.cancel()
-            log_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await log_task
+            for task in (wait_task, log_task):
+                task.cancel()
+            for task in (wait_task, log_task):
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
 
     async def _log_daemon_output(self, proc: AsyncProcess) -> None:
         """
