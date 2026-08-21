@@ -275,28 +275,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
-        queue.shuffle_enabled = shuffle_enabled
-        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        queue_items = self._queue_data[queue_id].items
-        cur_index = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
-        if cur_index is not None:
-            next_index = cur_index + 1
-            next_items = queue_items[next_index:]
-        else:
-            next_items = []
-            next_index = 0
-        if not shuffle_enabled:
-            # shuffle disabled, try to restore original sort order of the remaining items
-            next_items.sort(key=lambda x: x.sort_index, reverse=False)
-        await self.load(
-            queue_id=queue_id,
-            queue_items=next_items,
-            insert_at_index=next_index,
-            keep_remaining=False,
-            shuffle=shuffle_enabled,
-        )
+        await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
         """
@@ -1940,15 +1919,46 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         if self._get_delegated_source(queue_id) is not None:
             # the queue is still delegated to the external session this play is replacing,
-            # so set_shuffle would forward to that session; record the state directly
-            # (there is no shuffled tail to restore: the session is the only item)
-            queue.shuffle_enabled = shuffle
-            self.signal_update(queue_id)
+            # so set_shuffle would forward the toggle to that session; apply the state and
+            # the tail re-order locally instead — MA-owned items behind the session may
+            # sit in shuffled order and must not survive an ordered play unshuffled-in-name-only
+            await self._apply_local_shuffle(queue_id, shuffle)
             return
         # routed through set_shuffle so switching shuffle off also restores the order of
         # the items that stay in the queue: a play keeps them, and a tail left in shuffled
         # order behind a queue that now reads unshuffled would contradict its own flag
         await self.set_shuffle(queue_id, shuffle)
+
+    async def _apply_local_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """
+        Record the queue's shuffle state and re-order the un-played tail accordingly.
+
+        :param queue_id: The queue to apply the shuffle state to.
+        :param shuffle_enabled: The shuffle state to record and apply to the tail.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.shuffle_enabled = shuffle_enabled
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        queue_items = self._queue_data[queue_id].items
+        cur_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
+        )
+        if cur_index is not None:
+            next_index = cur_index + 1
+            next_items = queue_items[next_index:]
+        else:
+            next_items = []
+            next_index = 0
+        if not shuffle_enabled:
+            # shuffle disabled, try to restore original sort order of the remaining items
+            next_items.sort(key=lambda x: x.sort_index, reverse=False)
+        await self.load(
+            queue_id=queue_id,
+            queue_items=next_items,
+            insert_at_index=next_index,
+            keep_remaining=False,
+            shuffle=shuffle_enabled,
+        )
 
     def _get_delegated_source(
         self, queue_id: str

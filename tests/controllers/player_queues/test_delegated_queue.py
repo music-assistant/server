@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     EventType,
     PlaybackState,
     ProviderFeature,
+    QueueOption,
     RepeatMode,
     SourceControl,
 )
@@ -390,3 +391,25 @@ async def test_transport_only_source_keeps_normal_queue_behavior() -> None:
     assert _queue(ctrl).shuffle_enabled is True
     assert _queue(ctrl).repeat_mode == RepeatMode.ALL
     assert ctrl._queue_data[QUEUE_ID].items == []
+
+
+async def test_ordered_play_reorders_the_tail_locally_while_delegated() -> None:
+    """An ordered play on a delegated queue unshuffles the MA tail without forwarding."""
+    ctrl, provider = _controller(_audio_source(_capabilities()))
+    _add_tail_items(ctrl, "t1", "t2")
+    queue_data = ctrl._queue_data[QUEUE_ID]
+    # the tail sits in scattered order (mirrored session shuffle was on during an ADD)
+    queue_data.items[1].sort_index = 5
+    queue_data.items[2].sort_index = 4
+    queue = _queue(ctrl)
+    queue.shuffle_enabled = True
+
+    await ctrl._apply_shuffle(QUEUE_ID, QueueOption.PLAY, False)
+
+    # the session's own shuffle is not touched; the MA-owned tail is restored locally
+    provider.on_source_control.assert_not_awaited()
+    assert queue.shuffle_enabled is False
+    ctrl.load.assert_awaited_once()  # type: ignore[attr-defined]
+    kwargs = ctrl.load.await_args.kwargs  # type: ignore[attr-defined]
+    assert [item.queue_item_id for item in kwargs["queue_items"]] == ["t2", "t1"]
+    assert kwargs["shuffle"] is False
