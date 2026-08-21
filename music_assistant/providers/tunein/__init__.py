@@ -175,10 +175,15 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(
-            items: list[dict[str, Any]], folder: str | None = None
-        ) -> AsyncGenerator[Radio]:
+        async def parse_items(items: list[Any], folder: str | None = None) -> AsyncGenerator[Radio]:
             for item in items:
+                if not isinstance(item, dict):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn preset listing contains a non-object entry"),
+                    )
+                    continue
                 item_type = item.get("type", "")
                 if "unavailable" in item.get("key", ""):
                     continue
@@ -199,18 +204,26 @@ class TuneInProvider(MusicProvider):
                         self.report_skipped_sync_item(MediaType.RADIO, item["URL"], err)
                 elif item_type == "link":
                     # stations are in sublevel (new style)
-                    if sublevel := await self.__get_data(item["URL"], render="json"):
-                        async for subitem in parse_items(sublevel["body"], item["text"]):
-                            yield subitem
+                    sublevel = await self.__get_data(item["URL"], render="json")
+                    if sublevel is None or not isinstance(sublevel.get("body"), list):
+                        self.report_skipped_sync_item(
+                            MediaType.RADIO,
+                            None,
+                            InvalidDataError("TuneIn preset folder contains no item list"),
+                        )
+                        continue
+                    async for subitem in parse_items(sublevel["body"], item["text"]):
+                        yield subitem
                 elif item.get("children"):
                     # stations are in sublevel (old style ?)
                     async for subitem in parse_items(item["children"], item["text"]):
                         yield subitem
 
         data = await self.__get_data("Browse.ashx", c="presets")
-        if data and "body" in data:
-            async for item in parse_items(data["body"]):
-                yield item
+        if data is None or not isinstance(data.get("body"), list):
+            raise InvalidDataError("TuneIn preset response contains no item list")
+        async for item in parse_items(data["body"]):
+            yield item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_radio(self, prov_radio_id: str) -> Radio:

@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderPermissionDenied,
@@ -267,10 +268,17 @@ class EmbyProvider(MusicProvider):
                 params["StartIndex"] = str(page * ITEM_LIMIT)
                 params["Limit"] = ITEM_LIMIT
                 resp = await self._get("Artists", params=params)
-                items = resp.get(ITEMS, [])
+                items = self._get_response_items(resp, "artist")
                 if not items:
                     break
                 for artist in items:
+                    if not isinstance(artist, dict):
+                        self.report_skipped_sync_item(
+                            MediaType.ARTIST,
+                            None,
+                            InvalidDataError("Emby artist listing contains a non-object entry"),
+                        )
+                        continue
                     yield parse_artist(self.instance_id, self, artist)
                 page += 1
 
@@ -290,10 +298,17 @@ class EmbyProvider(MusicProvider):
                 params["StartIndex"] = str(page * ITEM_LIMIT)
                 params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get(ITEMS, [])
+                items = self._get_response_items(resp, "album")
                 if not items:
                     break
                 for album in items:
+                    if not isinstance(album, dict):
+                        self.report_skipped_sync_item(
+                            MediaType.ALBUM,
+                            None,
+                            InvalidDataError("Emby album listing contains a non-object entry"),
+                        )
+                        continue
                     yield parse_album(self.instance_id, self, album)
                 page += 1
 
@@ -313,11 +328,25 @@ class EmbyProvider(MusicProvider):
                 params["StartIndex"] = str(page * ITEM_LIMIT)
                 params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get(ITEMS, [])
+                items = self._get_response_items(resp, "track")
                 if not items:
                     break
                 for track in items:
-                    if not len(track.get(ITEM_KEY_MEDIA_STREAMS, [])):
+                    if not isinstance(track, dict):
+                        self.report_skipped_sync_item(
+                            MediaType.TRACK,
+                            None,
+                            InvalidDataError("Emby track listing contains a non-object entry"),
+                        )
+                        continue
+                    media_streams = track.get(ITEM_KEY_MEDIA_STREAMS)
+                    if not isinstance(media_streams, list) or not media_streams:
+                        item_id = track.get(ITEM_KEY_ID)
+                        self.report_skipped_sync_item(
+                            MediaType.TRACK,
+                            str(item_id) if item_id is not None else None,
+                            InvalidDataError("Emby track has no media streams"),
+                        )
                         continue
                     yield parse_track(self.instance_id, self, track)
                 page += 1
@@ -337,10 +366,17 @@ class EmbyProvider(MusicProvider):
                 params["StartIndex"] = str(page * ITEM_LIMIT)
                 params["Limit"] = ITEM_LIMIT
                 resp = await self._get(f"Users/{self._user_id}/Items", params=params)
-                items = resp.get(ITEMS, [])
+                items = self._get_response_items(resp, "playlist")
                 if not items:
                     break
                 for playlist in items:
+                    if not isinstance(playlist, dict):
+                        self.report_skipped_sync_item(
+                            MediaType.PLAYLIST,
+                            None,
+                            InvalidDataError("Emby playlist listing contains a non-object entry"),
+                        )
+                        continue
                     yield parse_playlist(self.instance_id, self, playlist)
                 page += 1
 
@@ -498,14 +534,24 @@ class EmbyProvider(MusicProvider):
 
     async def _get_music_libraries(self) -> list[dict[str, Any]]:
         resp = await self._get("Library/MediaFolders")
-        libs = resp.get(ITEMS, [])
+        libs = self._get_response_items(resp, "music library")
         result = []
         for library in libs:
+            if not isinstance(library, dict):
+                raise InvalidDataError("Emby music-library response contains a non-object entry")
             if ITEM_KEY_COLLECTION_TYPE in library:
                 collection_type = library.get(ITEM_KEY_COLLECTION_TYPE, "").lower()
                 if collection_type == "music":
                     result.append(library)
         return result
+
+    @staticmethod
+    def _get_response_items(response: dict[str, Any], item_type: str) -> list[Any]:
+        """Return the required item list from an Emby listing response."""
+        items = response.get(ITEMS)
+        if not isinstance(items, list):
+            raise InvalidDataError(f"Emby {item_type} response contains no item list")
+        return items
 
     async def on_played(
         self,
