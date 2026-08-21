@@ -187,6 +187,51 @@ def test_align_starts_inside_the_retained_window() -> None:
     assert cursor.next_chunk == 90
 
 
+def test_playhead_tracks_playback_speed() -> None:
+    """At 2x, media time advances two seconds per wall-clock second from the anchor."""
+    cursor = _cursor(anchor_us=server_now_us() - 10_000_000)
+    cursor.speed = 2.0
+    assert abs(cursor.playhead() - 20.0) < 0.1
+    # and the inverse mapping stamps media second 20 at (roughly) now
+    assert abs(cursor.media_to_clock_us(20.0) - server_now_us()) < 100_000
+
+
+def test_align_keeps_a_speed_aware_cursor_in_step() -> None:
+    """A cursor anchored at 2x stays matched against a queue advancing in media-time."""
+    manager = _manager()
+    tap = Tap("player-1")
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0)
+    cursor = manager._align(tap, None, item, 10.0, buffer, 2.0)
+    assert cursor.speed == 2.0
+    assert manager._align(tap, cursor, item, 10.0, buffer, 2.0) is cursor
+
+
+def test_align_scales_the_resync_threshold_by_speed() -> None:
+    """At 2x, report jitter inflates by the speed factor, so the threshold grows with it."""
+    manager = _manager()
+    tap = Tap("player-1")
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0)
+    cursor = manager._align(tap, None, item, 10.0, buffer, 2.0)
+    # a 5s media-time gap is within the scaled 6s threshold, not a seek
+    assert manager._align(tap, cursor, item, 15.0, buffer, 2.0) is cursor
+    # beyond the scaled threshold it is a seek and re-anchors
+    assert manager._align(tap, cursor, item, 17.0, buffer, 2.0) is not cursor
+
+
+def test_align_re_anchors_on_a_speed_change() -> None:
+    """A playback speed change remaps media time to the clock, so the cursor restarts."""
+    manager = _manager()
+    tap = Tap("player-1")
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0)
+    cursor = manager._align(tap, None, item, 10.0, buffer)
+    new_cursor = manager._align(tap, cursor, item, 10.0, buffer, 1.5)
+    assert new_cursor is not cursor
+    assert new_cursor.speed == 1.5
+
+
 def _beats_manager() -> TapManager:
     """Return a tap manager with the real beat scheduling in place."""
     provider = Mock()
@@ -209,6 +254,25 @@ def test_schedule_beats_rebuilds_from_cached_analysis() -> None:
     # the downbeat flag survives the rebuild
     assert tap.beats[0][1][9] == 1
     assert tap.beats[1][1][9] == 0
+
+
+def test_fan_out_beats_scales_media_time_by_speed() -> None:
+    """At 2x a beat at media second 2 sounds one wall-clock second after the anchor."""
+    manager = _beats_manager()
+    tap = Tap("player-1")
+    anchor_us = server_now_us()
+    manager._fan_out_beats(tap, AudioAnalysisData(beats=[2.0]), anchor_us, 2.0)
+    assert [timestamp_us for timestamp_us, _ in tap.beats] == [anchor_us + 1_000_000]
+
+
+def test_reset_cancels_an_in_flight_beat_hydration() -> None:
+    """A timeline reset stops a pending hydration from landing beats for a dead track."""
+    tap = Tap("player-1")
+    task = Mock()
+    tap.beats_task = task
+    tap.reset('{"type": "stream/end"}')
+    task.cancel.assert_called_once()
+    assert tap.beats_task is None
 
 
 def test_schedule_beats_does_not_serve_another_item_from_cache() -> None:
@@ -250,7 +314,7 @@ async def test_read_once_realigns_when_requested() -> None:
     manager = _manager()
     manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
-    queue = Mock(corrected_elapsed_time=100.0)
+    queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
     buffer = Mock(first_buffered_chunk=0, pcm_format=PCM_FORMAT)
     buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
@@ -271,7 +335,7 @@ async def test_read_once_ignores_realign_when_playhead_chunk_is_evicted() -> Non
     manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     tap.ring.append(b"frame")
-    queue = Mock(corrected_elapsed_time=100.0)
+    queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
     buffer = Mock(first_buffered_chunk=200, pcm_format=PCM_FORMAT)
     buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
