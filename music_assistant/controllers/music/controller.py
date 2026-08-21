@@ -1688,8 +1688,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        # play_count only ever rose for a completed play, so note whether we remove one
+        counted_play_removed = False
         for user_id in user_ids:
             params["userid"] = user_id
+            if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+                counted_play_removed = counted_play_removed or bool(row["fully_played"])
             await self.database.delete(DB_TABLE_PLAYLOG, params)
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
@@ -1716,9 +1720,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # also update playcount in library table
         ctrl = self.get_controller(media_item.media_type)
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if db_item:
+        if db_item and counted_play_removed:
             await self.database.execute(
-                f"UPDATE {ctrl.db_table} SET play_count = play_count - 1, "
+                f"UPDATE {ctrl.db_table} SET play_count = MAX(play_count - 1, 0), "
                 f"last_played = 0 WHERE item_id = {db_item.item_id}"
             )
             await self.database.commit()
