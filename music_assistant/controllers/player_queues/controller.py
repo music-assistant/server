@@ -885,12 +885,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if not audio_source.can_seek:
                 raise InvalidCommand("Cannot seek: the external session does not support seeking")
             position = max(0, int(position))
+            current_item = queue.current_item
             await provider.on_source_control(audio_source.item_id, SourceControl.SEEK, position)
             # publish the seek target so the progress bar does not snap back to the
-            # last position report (mirrors the non-delegated path below)
-            queue.elapsed_time = position
-            queue.elapsed_time_last_updated = time.time()
-            self.signal_update(queue_id)
+            # last position report (mirrors the non-delegated path below) — unless a
+            # concurrent play/stop replaced the current item during the forward
+            if queue.current_item is current_item:
+                queue.elapsed_time = position
+                queue.elapsed_time_last_updated = time.time()
+                self.signal_update(queue_id)
             return
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:

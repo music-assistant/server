@@ -425,3 +425,17 @@ async def test_ordered_play_reorders_the_tail_locally_while_delegated() -> None:
     kwargs = ctrl.load.await_args.kwargs  # type: ignore[attr-defined]
     assert [item.queue_item_id for item in kwargs["queue_items"]] == ["t2", "t1"]
     assert kwargs["shuffle"] is False
+
+
+async def test_delegated_seek_skips_the_progress_publish_when_the_item_changed() -> None:
+    """A concurrent item change during the seek forward must not get a stale progress stamp."""
+    ctrl, provider = _controller(_audio_source(_capabilities()))
+    queue = _queue(ctrl)
+
+    async def _swap_item(*_args: Any, **_kwargs: Any) -> None:
+        queue.current_item = _tail_item("other")
+
+    provider.on_source_control.side_effect = _swap_item
+    await ctrl.seek(QUEUE_ID, 42)
+
+    assert queue.elapsed_time == 0
