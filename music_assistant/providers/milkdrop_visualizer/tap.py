@@ -377,10 +377,11 @@ class TapManager:
         self._sync_color(tap)
         if tap.realign_requested:
             # a viewer found only future-stamped frames; drop the cursor so the
-            # re-anchor below restarts at the playhead (or the closest retained
-            # chunk) instead of the pinned eviction edge
+            # re-anchor below restarts at the playhead, but only while that
+            # chunk is still retained (past the edge a realign helps nobody)
             tap.realign_requested = False
-            cursor = None
+            if queue.corrected_elapsed_time >= buffer.first_buffered_chunk:
+                cursor = None
         cursor = self._align(tap, cursor, item, queue.corrected_elapsed_time, buffer)
         # Stay ahead of the listener, but never behind the buffer's retained
         # window: a rolling (radio) buffer discards as playback consumes it, and

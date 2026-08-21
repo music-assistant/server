@@ -265,6 +265,26 @@ async def test_read_once_realigns_when_requested() -> None:
     assert not tap.realign_requested
 
 
+async def test_read_once_ignores_realign_when_playhead_chunk_is_evicted() -> None:
+    """A realign past the eviction edge is dropped: healthy viewers keep their frames."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    tap.ring.append(b"frame")
+    queue = Mock(corrected_elapsed_time=100.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=200, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    # a cursor pinned at the eviction edge but otherwise in sync with the queue
+    pinned = _cursor(next_chunk=200, anchor_us=server_now_us() - 100_000_000)
+    tap.realign_requested = True
+    cursor = await manager._read_once(tap, pinned)
+    assert cursor is pinned
+    assert b"frame" in tap.ring
+    assert not tap.realign_requested
+
+
 def test_palette_payload_maps_every_field() -> None:
     """A palette becomes the color@v1 payload the wire format documents."""
     payload = palette_payload(MediaItemPalette(primary=(1, 2, 3)))
