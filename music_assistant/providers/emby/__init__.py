@@ -279,6 +279,13 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby artist listing contains a non-object entry"),
                         )
                         continue
+                    if not str(artist.get(ITEM_KEY_ID) or "").strip():
+                        self.report_skipped_sync_item(
+                            MediaType.ARTIST,
+                            None,
+                            InvalidDataError("Emby artist listing entry has no id"),
+                        )
+                        continue
                     yield parse_artist(self.instance_id, self, artist)
                 page += 1
 
@@ -309,6 +316,13 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby album listing contains a non-object entry"),
                         )
                         continue
+                    if not str(album.get(ITEM_KEY_ID) or "").strip():
+                        self.report_skipped_sync_item(
+                            MediaType.ALBUM,
+                            None,
+                            InvalidDataError("Emby album listing entry has no id"),
+                        )
+                        continue
                     yield parse_album(self.instance_id, self, album)
                 page += 1
 
@@ -337,6 +351,13 @@ class EmbyProvider(MusicProvider):
                             MediaType.TRACK,
                             None,
                             InvalidDataError("Emby track listing contains a non-object entry"),
+                        )
+                        continue
+                    if not str(track.get(ITEM_KEY_ID) or "").strip():
+                        self.report_skipped_sync_item(
+                            MediaType.TRACK,
+                            None,
+                            InvalidDataError("Emby track listing entry has no id"),
                         )
                         continue
                     media_streams = track.get(ITEM_KEY_MEDIA_STREAMS)
@@ -375,6 +396,13 @@ class EmbyProvider(MusicProvider):
                             MediaType.PLAYLIST,
                             None,
                             InvalidDataError("Emby playlist listing contains a non-object entry"),
+                        )
+                        continue
+                    if not str(playlist.get(ITEM_KEY_ID) or "").strip():
+                        self.report_skipped_sync_item(
+                            MediaType.PLAYLIST,
+                            None,
+                            InvalidDataError("Emby playlist listing entry has no id"),
                         )
                         continue
                     yield parse_playlist(self.instance_id, self, playlist)

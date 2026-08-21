@@ -191,6 +191,11 @@ class TuneInProvider(MusicProvider):
                     continue
                 if item_type == "audio":
                     if "preset_id" not in item:
+                        self.report_skipped_sync_item(
+                            MediaType.RADIO,
+                            None,
+                            InvalidDataError("TuneIn audio preset has no id"),
+                        )
                         continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self._get_stream_info(item["preset_id"])
@@ -214,9 +219,17 @@ class TuneInProvider(MusicProvider):
                         continue
                     async for subitem in parse_items(sublevel["body"], item["text"]):
                         yield subitem
-                elif item.get("children"):
+                elif "children" in item:
                     # stations are in sublevel (old style ?)
-                    async for subitem in parse_items(item["children"], item["text"]):
+                    children = item["children"]
+                    if not isinstance(children, list):
+                        self.report_skipped_sync_item(
+                            MediaType.RADIO,
+                            None,
+                            InvalidDataError("TuneIn preset folder contains no item list"),
+                        )
+                        continue
+                    async for subitem in parse_items(children, item["text"]):
                         yield subitem
 
         data = await self.__get_data("Browse.ashx", c="presets")

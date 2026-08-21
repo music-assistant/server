@@ -75,15 +75,19 @@ async def test_empty_item_list_is_a_valid_empty_library(provider: EmbyProvider) 
         ("get_library_playlists", MediaType.PLAYLIST),
     ],
 )
+@pytest.mark.parametrize("entry", [None, {}])
 async def test_non_object_entry_is_reported(
-    provider: EmbyProvider, method_name: str, media_type: MediaType
+    provider: EmbyProvider,
+    method_name: str,
+    media_type: MediaType,
+    entry: Any,
 ) -> None:
     """An unidentifiable malformed entry must hold back deletions for its listing."""
     provider._get_music_libraries = AsyncMock(  # type: ignore[method-assign]
         return_value=[{ITEM_KEY_ID: "library"}]
     )
     provider._get = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[{ITEMS: [None]}, {ITEMS: []}]
+        side_effect=[{ITEMS: [entry]}, {ITEMS: []}]
     )
     provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
 

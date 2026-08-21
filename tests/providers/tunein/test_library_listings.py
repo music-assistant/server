@@ -47,3 +47,33 @@ async def test_malformed_preset_entry_is_reported(provider: TuneInProvider) -> N
     args = provider.report_skipped_sync_item.call_args.args
     assert args[:2] == (MediaType.RADIO, None)
     assert isinstance(args[2], InvalidDataError)
+
+
+async def test_audio_preset_without_id_is_reported(provider: TuneInProvider) -> None:
+    """An audio preset without an id must hold back radio deletions."""
+    provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
+        return_value={"body": [{"type": "audio"}]}
+    )
+    provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
+
+    assert [radio async for radio in provider.get_library_radios()] == []
+
+    provider.report_skipped_sync_item.assert_called_once()
+    args = provider.report_skipped_sync_item.call_args.args
+    assert args[:2] == (MediaType.RADIO, None)
+    assert isinstance(args[2], InvalidDataError)
+
+
+async def test_old_style_folder_without_item_list_is_reported(provider: TuneInProvider) -> None:
+    """An old-style folder without an item list must hold back radio deletions."""
+    provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
+        return_value={"body": [{"children": None}]}
+    )
+    provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
+
+    assert [radio async for radio in provider.get_library_radios()] == []
+
+    provider.report_skipped_sync_item.assert_called_once()
+    args = provider.report_skipped_sync_item.call_args.args
+    assert args[:2] == (MediaType.RADIO, None)
+    assert isinstance(args[2], InvalidDataError)
