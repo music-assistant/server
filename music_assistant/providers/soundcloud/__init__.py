@@ -151,7 +151,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 # a single unusable result must not discard the rest of the search results
-                self._log_skipped_item(f"search result {item.get('kind')} {item.get('id')}", error)
+                self._log_skipped_item(f"search result {_item_id(item)}", error)
                 continue
 
         self._log_drm_skipped(drm_protected, "Soundcloud search results")
@@ -294,8 +294,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     continue
                 except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                     # a single unusable track must not empty the feed
-                    track_obj = item.get("track") or {}
-                    self._log_skipped_item(f"feed track {track_obj.get('id')}", error)
+                    self._log_skipped_item(f"feed track {_item_id(item.get('track'))}", error)
                     continue
             else:
                 self.logger.debug(
@@ -378,7 +377,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                item_ref = f"track {item.get('id')} in playlist {prov_playlist_id}"
+                item_ref = f"track {_item_id(item)} in playlist {prov_playlist_id}"
                 self._log_skipped_item(item_ref, error)
                 continue
         self._log_drm_skipped(drm_protected, f"Soundcloud playlist {prov_playlist_id}")
@@ -699,6 +698,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not count:
             return
         self.logger.debug("Skipped %s DRM protected track(s) in %s", count, listing)
+
+
+def _item_id(item_obj: Any) -> Any:
+    """Return the id of a raw api object, or None if it does not have a readable one."""
+    # called from the handlers that log an unusable object, so it must never raise itself
+    return item_obj.get("id") if isinstance(item_obj, dict) else None
 
 
 def _is_drm_protected(track_obj: dict[str, Any]) -> bool:

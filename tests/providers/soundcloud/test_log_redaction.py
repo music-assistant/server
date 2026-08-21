@@ -205,9 +205,7 @@ async def test_search_keyerror_is_debuggable(
     assert result.tracks == []
     assert SENTINEL not in caplog.text
     assert "PrivatePerson" not in caplog.text
-    assert (
-        "Skipping search result track 1 - error details: KeyError: 'permalink_url'" in caplog.text
-    )
+    assert "Skipping search result 1 - error details: KeyError: 'permalink_url'" in caplog.text
 
 
 async def test_get_playlist_tracks_typeerror_is_debuggable(
@@ -258,3 +256,30 @@ async def test_get_artist_invaliddataerror_is_debuggable(
     assert "PrivatePerson" not in caplog.text
     # one of our own errors, so its message is reported instead of the exception type name
     assert "Skipping artist 42 - error details: Artist does not have a valid ID" in caplog.text
+
+
+@pytest.mark.parametrize("bad_item", ["deadbeef", 12345, None])
+async def test_search_survives_a_non_dict_item(
+    provider: SoundcloudMusicProvider, bad_item: Any
+) -> None:
+    """An entry that is not an object at all is skipped without aborting the search."""
+    provider._soundcloud.search.return_value = {"collection": [bad_item]}
+
+    search: Any = SoundcloudMusicProvider.search.__wrapped__  # type: ignore[attr-defined]
+    result = await search(provider, "query", [MediaType.TRACK], 10)
+
+    assert result.tracks == []
+
+
+@pytest.mark.parametrize("bad_item", ["deadbeef", 12345, None])
+async def test_playlist_tracks_survive_a_non_dict_item(
+    provider: SoundcloudMusicProvider, bad_item: Any
+) -> None:
+    """An entry that is not an object at all is skipped without aborting the listing."""
+    provider._soundcloud.get_playlist_details.return_value = {"id": 13, "tracks": [bad_item]}
+
+    get_playlist_tracks: Any = (
+        SoundcloudMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+    )
+
+    assert await get_playlist_tracks(provider, "13") == []
