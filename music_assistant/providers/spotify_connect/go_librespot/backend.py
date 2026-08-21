@@ -15,7 +15,7 @@ import os
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
@@ -26,7 +26,13 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     select_free_port,
 )
-from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_NORMAL,
+    AUDIO_QUALITY_VERY_HIGH,
+    SpotifyConnectBackend,
+)
 from music_assistant.providers.spotify_connect.helpers import (
     generate_device_id,
     get_go_librespot_binary,
@@ -60,6 +66,17 @@ STREAM_READ_CHUNK = 16384
 API_PORT_RANGE_START = 38800
 API_PORT_RANGE_END = 38900
 
+# Quality tier -> go-librespot's `bitrate` setting, which only accepts these
+# three values. go-librespot cannot do lossless, so that tier gets the 320 kbps
+# ceiling rather than nothing.
+_MAX_BITRATE: Final = 320
+_BITRATES: Final[dict[str, int]] = {
+    AUDIO_QUALITY_NORMAL: 96,
+    AUDIO_QUALITY_HIGH: 160,
+    AUDIO_QUALITY_VERY_HIGH: _MAX_BITRATE,
+    AUDIO_QUALITY_LOSSLESS: _MAX_BITRATE,
+}
+
 
 class GoLibrespotBackend(SpotifyConnectBackend):
     """Spotify Connect backend wrapping a supervised go-librespot daemon."""
@@ -75,6 +92,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         event_callback: BackendEventCallback,
         crossfade_ms: int = 0,
         loudness_normalization: bool = True,
+        audio_quality: str = AUDIO_QUALITY_LOSSLESS,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -91,6 +109,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             (0 disables crossfade).
         :param loudness_normalization: Whether Spotify's loudness normalization
             should be applied to the audio.
+        :param audio_quality: Ceiling for the streaming quality Spotify is asked
+            to deliver (one of the AUDIO_QUALITY_* tiers).
         """
         self.mass = mass
         self.logger = logger
@@ -100,6 +120,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._event_callback = event_callback
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
+        self._audio_quality = audio_quality
         self.cache_dir = os.path.join(self.mass.cache_path, instance_id)
         self._binary: str | None = None
         self._api_port: int = 0
@@ -259,7 +280,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             "device_name": self._publish_name,
             "device_type": "speaker",
             "device_id": generate_device_id(self._instance_id),
-            "bitrate": 320,
+            "bitrate": _BITRATES.get(self._audio_quality, _MAX_BITRATE),
             "audio_backend": "pipe",
             # write decoded PCM to the daemon's stdout, which we capture and
             # forward (the process pipe is always attached, so the daemon's

@@ -13,12 +13,12 @@ import logging
 import os
 
 # if TYPE_CHECKING:
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from signal import SIGINT
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -237,30 +237,27 @@ class AsyncProcess:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stderr is not None  # for type checking
-        async with self._stderr_lock:
-            try:
-                return await self.proc.stderr.readline()
-            except ValueError as err:
-                # we're waiting for a line (separator found), but the line was too big
-                # this may happen with ffmpeg during a long (radio) stream where progress
-                # gets outputted to the stderr but no newline
-                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
-                # NOTE: this consumes the line that was too big
-                if "chunk exceed the limit" in str(err):
-                    return await self.proc.stderr.readline()
-                # raise for all other (value) errors
-                raise
+        return await self._readline(self.proc.stderr, self._stderr_lock)
+
+    async def read_stdout(self) -> bytes:
+        """Read line from stdout."""
+        # keyed on the close flag rather than the returncode (like read() and
+        # readexactly()): a process that already exited still has its last
+        # lines sitting in the stream buffer, and those must still be readable
+        if self._close_called:
+            return b""
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdout is not None  # for type checking
+        return await self._readline(self.proc.stdout, self._stdout_lock)
 
     async def iter_stderr(self) -> AsyncGenerator[str]:
         """Iterate lines from the stderr stream as string."""
-        line: str | bytes
-        while True:
-            line = await self.read_stderr()
-            if line == b"":
-                break
-            line = line.decode("utf-8", errors="ignore").strip()
-            if not line:
-                continue
+        async for line in self._iter_lines(self.read_stderr):
+            yield line
+
+    async def iter_stdout(self) -> AsyncGenerator[str]:
+        """Iterate lines from the stdout stream as string."""
+        async for line in self._iter_lines(self.read_stdout):
             yield line
 
     async def communicate(
@@ -280,6 +277,11 @@ class AsyncProcess:
 
     async def close(self) -> None:
         """Close/terminate the process and wait for exit."""
+        if self._close_called and self.returncode is not None:
+            # Already closed and reaped, so there is nothing left to signal or
+            # drain. The stream locks below are still held by that first call
+            # and would only be waited out again (5s each).
+            return
         self._close_called = True
         if not self.proc:
             return
@@ -443,6 +445,42 @@ class AsyncProcess:
     def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
         """Attach a stderr reader task to this process."""
         self._stderr_reader_task = task
+
+    async def _readline(self, stream: asyncio.StreamReader, lock: asyncio.Lock) -> bytes:
+        """
+        Read a single line from one of the process' output streams.
+
+        :param stream: The stream to read the line from.
+        :param lock: The lock guarding that stream's readers.
+        """
+        async with lock:
+            try:
+                return await stream.readline()
+            except ValueError as err:
+                # we're waiting for a line (separator found), but the line was too big
+                # this may happen with ffmpeg during a long (radio) stream where progress
+                # gets outputted to the stderr but no newline
+                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
+                # NOTE: this consumes the line that was too big
+                if "chunk exceed the limit" in str(err):
+                    return await stream.readline()
+                # raise for all other (value) errors
+                raise
+
+    async def _iter_lines(
+        self, read_line: Callable[[], Coroutine[Any, Any, bytes]]
+    ) -> AsyncGenerator[str]:
+        """
+        Yield decoded, non-empty lines until the underlying stream reaches EOF.
+
+        :param read_line: Coroutine function returning the next raw line.
+        """
+        while True:
+            raw = await read_line()
+            if raw == b"":
+                break
+            if line := raw.decode("utf-8", errors="ignore").strip():
+                yield line
 
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """

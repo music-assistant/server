@@ -18,6 +18,10 @@ from music_assistant.providers.spotify_connect import (
     CONF_VOLUME_MODE,
     SpotifyConnectProvider,
 )
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+)
 from music_assistant.providers.spotify_connect.go_librespot.backend import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
@@ -27,6 +31,7 @@ from music_assistant.providers.spotify_connect.go_librespot.client import GoLibr
 from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
 from music_assistant.providers.spotify_connect.provider import (
     AUDIO_SOURCE_ID,
+    CONF_AUDIO_QUALITY,
     CONF_LOUDNESS_NORMALIZATION,
 )
 from music_assistant.providers.spotify_connect.soloist.backend import (
@@ -358,6 +363,11 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
@@ -367,6 +377,7 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
     assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
@@ -378,6 +389,7 @@ def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 0
     assert backend._loudness_normalization is True
+    assert backend._audio_quality == AUDIO_QUALITY_LOSSLESS
 
 
 def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
@@ -393,12 +405,18 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
@@ -412,9 +430,30 @@ def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     backend.cache_dir = str(tmp_path)
     backend._crossfade_ms = 8000
     backend._loudness_normalization = False
+    backend._audio_quality = AUDIO_QUALITY_HIGH
 
     backend._write_config(None)
 
     config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
     assert config["crossfade_duration"] == 8000
     assert config["normalisation_disabled"] is True
+    assert config["bitrate"] == 160
+
+
+def test_write_config_caps_lossless_at_the_engine_maximum(tmp_path: Path) -> None:
+    """go-librespot cannot do lossless, so that tier lands on its 320 kbps ceiling."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend._publish_name = "Test Speaker"
+    backend._instance_id = "spotify_connect--test"
+    backend._api_port = 38800
+    backend.cache_dir = str(tmp_path)
+    backend._crossfade_ms = 0
+    backend._loudness_normalization = True
+    backend._audio_quality = AUDIO_QUALITY_LOSSLESS
+
+    backend._write_config(None)
+
+    config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert config["bitrate"] == 320

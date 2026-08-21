@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import RepeatMode
@@ -13,6 +13,16 @@ if TYPE_CHECKING:
         AudioChunkReader,
         BackendStreamSource,
     )
+
+# Streaming quality tiers, named after the Spotify apps' own vocabulary for
+# the same bitrates. They express a ceiling, not a guarantee: Spotify still
+# downshifts on a slow connection and falls back when a track (or the account)
+# has no file at the requested tier. Each backend maps these onto whatever its
+# engine understands, clamping to what that engine can actually deliver.
+AUDIO_QUALITY_NORMAL: Final = "normal"
+AUDIO_QUALITY_HIGH: Final = "high"
+AUDIO_QUALITY_VERY_HIGH: Final = "very_high"
+AUDIO_QUALITY_LOSSLESS: Final = "lossless"
 
 
 class SpotifyConnectBackend(ABC):
