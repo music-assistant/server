@@ -143,12 +143,26 @@ def test_clearing_a_queue_whose_plugin_is_gone_still_clears() -> None:
     assert ctrl._queue_data["q1"].items == []
 
 
-def _ready_for_transfer(ctrl: Any) -> None:
-    """Stub out the playback side of transfer_queue, leaving the handover itself real."""
+def _ready_for_transfer(ctrl: Any, target_current_item: QueueItem | None = None) -> None:
+    """
+    Stub out the playback side of transfer_queue, leaving the handover itself real.
+
+    :param ctrl: The controller to prepare.
+    :param target_current_item: What the target queue "q2" is playing when the transfer lands.
+    """
     ctrl.stop = AsyncMock()
     ctrl.load = AsyncMock()
-    ctrl.update_items = Mock()
+
+    def _apply_items(queue_id: str, items: list[QueueItem]) -> None:
+        ctrl._queue_data[queue_id].items = items
+
+    # the real thing, minus the signalling: the queues have to end up holding what they were
+    # handed, or a check on what survived the transfer reads the items it was supposed to replace
+    ctrl.update_items = Mock(side_effect=_apply_items)
     ctrl._queue_data["q1"].queue.state = PlaybackState.PAUSED
+    if target_current_item is not None:
+        ctrl._queue_data["q2"].queue.current_item = target_current_item
+        ctrl._queue_data["q2"].items = [target_current_item]
     target_player = MagicMock()
     target_player.state.active_group = None
     target_player.state.synced_to = None
@@ -273,3 +287,19 @@ async def test_media_that_fails_to_load_still_releases_the_emptied_queue() -> No
         await ctrl.play_media("q1", "test://album/gone", QueueOption.REPLACE)
 
     provider.on_source_removed.assert_called_once_with("main", "q1")
+
+
+async def test_transferring_onto_a_paused_source_releases_it() -> None:
+    """
+    A queue moved onto a player that was paused on a live source releases that source.
+
+    The transfer overwrites what the target was playing, so its source leaves the queue just as
+    surely as a clear would take it - and nothing else would tell its plugin.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _track()))
+    provider = _plugin_provider(ctrl)
+    _ready_for_transfer(ctrl, target_current_item=QueueItem.from_media_item("q2", _audio_source()))
+
+    await ctrl.transfer_queue("q1", "q2")
+
+    provider.on_source_removed.assert_called_once_with("main", "q2")

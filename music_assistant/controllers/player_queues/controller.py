@@ -1174,6 +1174,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._queue_data[source_queue_id].enqueued_media_items
         )
         target_queue.resume_pos = source_resume_pos
+        # the target's own current item is about to be overwritten by the transferred one
+        target_outgoing_item = target_queue.current_item
         target_queue.current_index = source_current_index
         if source_current_item:
             target_queue.current_item = source_current_item
@@ -1184,6 +1186,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         for item in source_items:
             item.queue_id = target_queue_id
         self.update_items(target_queue_id, source_items)
+        # a live source the target was playing has just been displaced by the transferred queue
+        self._notify_audio_source_replaced(target_queue_id, target_outgoing_item)
         await self._notify_audio_source_transferred(
             source_current_item, source_queue_id, target_queue_id
         )
@@ -1869,13 +1873,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _notify_audio_source_replaced(self, queue_id: str, outgoing_item: QueueItem | None) -> None:
         """
-        Tell the owning plugin when newly started media pushed its AudioSource out of the queue.
+        Tell the owning plugin when whatever took over the queue pushed its AudioSource out.
 
-        Starting the very same source again (a replace re-selects it) and options that keep the
-        source among the queue's items both leave it in place, and neither releases it.
+        The same source coming back (a replace re-selects it) and media that leaves the source
+        among the queue's items both leave it in place, and neither releases it.
 
-        :param queue_id: The queue the media was started on.
-        :param outgoing_item: The queue's current item from before the media was started.
+        :param queue_id: The queue whose contents were taken over.
+        :param outgoing_item: The queue's current item from before the takeover.
         """
         if outgoing_item is None or (media_item := outgoing_item.media_item) is None:
             return
