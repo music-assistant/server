@@ -949,6 +949,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
                 duration=300,
                 buffer=None,
                 seconds_streamed=None,
+                is_realtime=False,
                 audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
             ),
         )
@@ -1014,6 +1015,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
+        is_realtime=False,
     )
     queue_item = SimpleNamespace(
         queue_item_id="item-1",
@@ -1081,7 +1083,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
-        buffer=None,
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        is_realtime=False,
     )
     first_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1107,6 +1110,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=raw_seek_position,
         seconds_streamed=0,
         duration=120,
+        is_realtime=False,
     )
     skipped_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1156,8 +1160,9 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         if queue_item is first_item:
+            # warmup worth of audio, then a full crossfade tail
             yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size)
+            yield bytes(pcm_format.pcm_sample_size * 8)
         else:
             eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
@@ -1173,7 +1178,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
-    assert eager_seek_positions == [32]
+    # a source that hands over nothing is reopened, and both opens see the eager position
+    assert eager_seek_positions == [32, 32]
     assert skipped_streamdetails.seek_position == raw_seek_position
 
 
@@ -1198,6 +1204,7 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         seek_position=0,
         seconds_streamed=0,
         duration=300,
+        is_realtime=False,
     )
     queue_track = SimpleNamespace(
         queue_id="queue-1",

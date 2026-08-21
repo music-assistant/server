@@ -117,8 +117,8 @@ async def create_server_ssl_context(
         log.info("SSL/TLS enabled for server")
         return ssl_context
 
-    except Exception as e:
-        log.exception("Failed to create SSL context: %s. Server will start without SSL.", e)
+    except Exception:
+        log.exception("Failed to create SSL context. Server will start without SSL.")
         return None
     finally:
         # Clean up temporary files

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import ClientError
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, RepeatMode, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
@@ -34,8 +34,12 @@ from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendPlaybackOptions,
+    BackendQueueEntry,
+    BackendQueueState,
     BackendStreamSource,
     BackendTrackMetadata,
+    QueueEntrySource,
 )
 
 from .runtime import (
@@ -48,8 +52,10 @@ from .runtime import (
     SoloistDeviceChanged,
     SoloistError,
     SoloistErrorMessage,
+    SoloistOptionsChanged,
     SoloistPlaybackState,
     SoloistPositionSync,
+    SoloistQueueChanged,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -64,7 +70,7 @@ if TYPE_CHECKING:
         BackendEventCallback,
     )
 
-    from .runtime import SoloistEntity, SoloistEvent
+    from .runtime import SoloistEntity, SoloistEvent, SoloistPlaybackOptions, SoloistQueueEntry
 
 # How Spotify-side volume changes are handled (see set_volume).
 VOLUME_MODE_PLAYER_ONLY: Final = "player_only"
@@ -193,6 +199,8 @@ class SoloistBackend(SpotifyConnectBackend):
         self._respawn_requested: bool = False
         # serializes all volume handling (sink compensation + event forwarding)
         self._volume_lock = asyncio.Lock()
+        # serializes the two-command repeat sequences of concurrent set_repeat calls
+        self._repeat_lock = asyncio.Lock()
         # last volume reported by the daemon (None until the first event)
         self._spotify_volume: int | None = None
         # guards the player_only 100%-pin so overlapping resets are not issued
@@ -231,6 +239,11 @@ class SoloistBackend(SpotifyConnectBackend):
     def stream_ends_on_pause(self) -> bool:
         """The pipe sink delivers silence on pause; the provider stops the player."""
         return False
+
+    @property
+    def supports_queue_control(self) -> bool:
+        """The soloist session implements the queue verbs and queue/options events."""
+        return True
 
     async def start(self) -> None:
         """Start the backend and its supervised soloist daemon."""
@@ -403,6 +416,61 @@ class SoloistBackend(SpotifyConnectBackend):
             if self._spotify_volume == 100:
                 return
             await self._client.set_volume(100)
+
+    async def add_to_queue(self, uri: str) -> None:
+        """
+        Add a track to the session's play queue.
+
+        :param uri: Spotify track URI to queue.
+        """
+        assert self._client is not None
+        await self._client.add_to_queue(uri)
+
+    async def set_shuffle(self, enabled: bool) -> None:
+        """
+        Enable or disable shuffle on the active session.
+
+        :param enabled: True to enable shuffle, False to disable it.
+        """
+        assert self._client is not None
+        await self._client.set_shuffle(enabled)
+
+    async def set_repeat(self, repeat: RepeatMode) -> None:
+        """
+        Set the repeat mode on the active session.
+
+        Awaits the engine's acknowledgement of both underlying commands, so
+        this call can block and raise; never call it from the backend event
+        callback (the acknowledgements arrive on the same loop and the wait
+        could only time out).
+
+        :param repeat: OFF for no repeat, ONE for the current track, ALL for
+            the playing context.
+        """
+        assert self._client is not None
+        if repeat == RepeatMode.UNKNOWN:
+            raise ValueError("cannot apply an unknown repeat mode")
+        # soloist models repeat as two independent booleans (track/context) with
+        # both-true undefined: the lock serializes concurrent callers and the
+        # awaited acks order the pair, so one flag is always cleared before the
+        # other is raised
+        async with self._repeat_lock:
+            if repeat == RepeatMode.ONE:
+                await self._client.set_repeat_context(False, await_result=True)
+                await self._client.set_repeat_track(True, await_result=True)
+                return
+            await self._client.set_repeat_track(False, await_result=True)
+            await self._client.set_repeat_context(repeat == RepeatMode.ALL, await_result=True)
+
+    async def request_queue(self, limit: int = 10) -> None:
+        """
+        Ask the session to (re)emit its queue view (arrives as a QUEUE_CHANGED event).
+
+        :param limit: Maximum number of upcoming entries the snapshot should
+            include.
+        """
+        assert self._client is not None
+        await self._client.get_queue(limit)
 
     async def _ensure_fresh_sink(self) -> PipeSink:
         """
@@ -748,6 +816,16 @@ class SoloistBackend(SpotifyConnectBackend):
             await self._event_callback(
                 self._make_event(BackendEventType.METADATA, metadata=_entity_metadata(item))
             )
+        if isinstance(event.data, SoloistPlaybackState) and event.data.options is not None:
+            # a state snapshot/delta carrying the playback options doubles as an
+            # options report; emit a separate OPTIONS_CHANGED so consumers only
+            # ever need to watch one event type for options
+            await self._event_callback(
+                self._make_event(
+                    BackendEventType.OPTIONS_CHANGED,
+                    options=_backend_options(event.data.options),
+                )
+            )
         await self._event_callback(self._translate_event(event))
 
     async def _handle_volume_changed(self, volume: int) -> None:
@@ -839,9 +917,21 @@ class SoloistBackend(SpotifyConnectBackend):
             )
         if isinstance(data, SoloistErrorMessage):
             return self._make_event(BackendEventType.ERROR, error=data.message)
+        if isinstance(data, SoloistQueueChanged):
+            return self._make_event(
+                BackendEventType.QUEUE_CHANGED,
+                queue=BackendQueueState(
+                    previous=_queue_entries(data.previous),
+                    upcoming=_queue_entries(data.upcoming),
+                ),
+            )
+        if isinstance(data, SoloistOptionsChanged):
+            return self._make_event(
+                BackendEventType.OPTIONS_CHANGED, options=_backend_options(data.options)
+            )
         if isinstance(data, SoloistContextChanged):
             self._cache_uris(context=data.context)
-        # queue/options/context changes, command acks and unknown events
+        # context changes, command acks and unknown events
         return self._make_event(BackendEventType.OTHER)
 
     def _make_event(self, event_type: BackendEventType, **fields: Any) -> BackendEvent:
@@ -875,16 +965,54 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
     :param item: The soloist entity (track) to extract the metadata from.
     """
     decorations = item.decorations or {}
-    identity = _as_dict(decorations.get("identity"))
     playback = _as_dict(decorations.get("playback"))
     duration_ms = playback.get("duration_ms")
     return BackendTrackMetadata(
         track_uri=item.uri,
-        title=_as_str(identity.get("name")) or _as_str(identity.get("title")),
+        title=_identity_title(decorations),
         artist=_creator_name(decorations.get("creators")),
         album=_nested_entity_name(decorations.get("parent")),
         image_url=_cover_url(decorations),
         duration=int(duration_ms) // 1000 if isinstance(duration_ms, int | float) else None,
+    )
+
+
+def _queue_entries(entries: list[SoloistQueueEntry]) -> list[BackendQueueEntry]:
+    """
+    Map soloist queue entries onto normalized queue entries.
+
+    Entries without a resolvable uri are skipped.
+
+    :param entries: The soloist queue entries (previous or upcoming listing).
+    """
+    result: list[BackendQueueEntry] = []
+    for entry in entries:
+        if entry.item is None or not entry.item.uri:
+            continue
+        result.append(
+            BackendQueueEntry(
+                uid=entry.uid,
+                uri=entry.item.uri,
+                source=QueueEntrySource(entry.source),
+                name=_identity_title(entry.item.decorations or {}),
+            )
+        )
+    return result
+
+
+# soloist's repeat vocabulary mapped onto the MA repeat modes
+_REPEAT_MODES: Final = {
+    "off": RepeatMode.OFF,
+    "context": RepeatMode.ALL,
+    "track": RepeatMode.ONE,
+}
+
+
+def _backend_options(options: SoloistPlaybackOptions) -> BackendPlaybackOptions:
+    """Map soloist playback options onto the normalized model."""
+    return BackendPlaybackOptions(
+        shuffle=options.shuffle,
+        repeat=_REPEAT_MODES.get(options.repeat, RepeatMode.UNKNOWN),
     )
 
 
@@ -896,6 +1024,12 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _as_str(value: Any) -> str | None:
     """Return the value if it is a non-empty string, None otherwise."""
     return value if isinstance(value, str) and value else None
+
+
+def _identity_title(decorations: dict[str, Any]) -> str | None:
+    """Return the display title from a decorations bag's identity."""
+    identity = _as_dict(decorations.get("identity"))
+    return _as_str(identity.get("name")) or _as_str(identity.get("title"))
 
 
 def _entity_name(value: Any) -> str | None:

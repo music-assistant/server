@@ -18,6 +18,7 @@ def _mock_provider() -> MSXBridgeProvider:
     """Create a mock provider."""
     provider = MagicMock()
     provider.mass.metadata.get_image_url.return_value = "http://image.url"
+    provider.get_stream_token.return_value = "tok123"
     return provider
 
 
@@ -45,6 +46,7 @@ def test_map_track_to_msx() -> None:
     assert item.action is not None
     assert "audio:http://localhost/msx/audio/msx_123" in item.action
     assert "uri=library%3A%2F%2Ftrack%2F1" in item.action
+    assert "token=tok123" in item.action
     assert "device_id=abc" in item.action
 
 

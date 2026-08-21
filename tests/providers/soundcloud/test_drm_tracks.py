@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
+from music_assistant.models.music_provider import SyncRunState
 from music_assistant.providers.soundcloud import (
     DrmProtectedTrackError,
     SoundcloudMusicProvider,
@@ -102,6 +103,30 @@ async def test_library_tracks_skip_drm_and_log_count(
     assert [track.item_id for track in tracks] == ["2"]
     assert "2" in caplog.text
     assert "DRM" in caplog.text
+
+
+async def test_library_drm_tracks_are_not_reported_as_sync_failures(
+    provider: SoundcloudMusicProvider, sync_run: SyncRunState
+) -> None:
+    """
+    A DRM protected track is left out without counting as a failed sync item.
+
+    Soundcloud never allows those to be imported, so they are a permanent and expected
+    category rather than something that went wrong, and the count is logged in one go.
+    """
+
+    async def _liked_tracks(_user_id: str) -> AsyncGenerator[dict[str, Any]]:
+        yield _track_obj(1, "Danceteria", DRM_TRANSCODINGS)
+        yield _track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)
+
+    provider._soundcloud.get_track_details_liked = _liked_tracks
+
+    tracks = [track async for track in provider.get_library_tracks()]
+
+    assert [track.item_id for track in tracks] == ["2"]
+    assert sync_run.skipped_item_ids == {}
+    assert sync_run.failures == 0
+    assert not sync_run.incomplete_media_types
 
 
 async def test_playlist_tracks_skip_drm(provider: SoundcloudMusicProvider) -> None:
