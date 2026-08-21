@@ -45,7 +45,7 @@ from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import interface_name_for_ip
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
@@ -248,7 +248,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """
         Handle source control commands (no-op: AirPlay receiver is passive).

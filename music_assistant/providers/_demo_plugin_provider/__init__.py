@@ -55,7 +55,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -297,7 +297,7 @@ class MyDemoPluginprovider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         # OPTIONAL

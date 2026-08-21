@@ -91,6 +91,7 @@ class PlayerQueueData:
             "index_in_buffer",
             "smart_fades_active",
             "smart_shuffle_active",
+            "queue_owner",
         ):
             queue.pop(key, None)
         return {
