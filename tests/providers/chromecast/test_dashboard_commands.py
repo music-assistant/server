@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ from pychromecast.const import CAST_TYPE_CHROMECAST
 from music_assistant.providers.chromecast.dashboard import ChromecastDashboards
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.provider import ChromecastProvider
+
+from .conftest import FakeChromecast
 
 
 def _make_dashboards() -> ChromecastDashboards:
@@ -272,6 +275,31 @@ async def test_on_show_wraps_timeout_error() -> None:
     assert exc_info.value.translation_owner == "provider.chromecast"
 
 
+async def test_on_show_reports_a_connect_timeout_as_player_unavailable(
+    live_chromecast_factory: Callable[[], FakeChromecast],
+) -> None:
+    """A Cast device that never comes up is reported as unavailable, naming the device."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    disc_info = _cast_info(name="Living Room TV")
+    dashboards.provider.browser = MagicMock(devices={device_uuid: disc_info})
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="https://mass.example.com?path=%2Fparty"
+    )
+    chromecast = live_chromecast_factory()
+
+    with (
+        patch(
+            "music_assistant.providers.chromecast.dashboard.pychromecast.get_chromecast_from_cast_info",
+            return_value=chromecast,
+        ),
+        pytest.raises(PlayerUnavailableError) as exc_info,
+    ):
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
+
+    assert str(exc_info.value) == "Timed out connecting to Cast device: Living Room TV"
+
+
 ### on_hide: no-op / eviction behavior
 
 
@@ -385,6 +413,23 @@ async def test_unload_disconnects_without_executor_when_closing() -> None:
     await dashboards.unload()
 
     chromecast.disconnect.assert_called_once_with(0)
+
+
+async def test_unload_disconnects_every_connection_while_closing(
+    live_chromecast_factory: Callable[[], FakeChromecast],
+) -> None:
+    """Every cached connection is closed, also the ones behind a skipped socket wait."""
+    dashboards = _make_dashboards()
+    dashboards.mass.closing = True  # type: ignore[misc]
+    first = live_chromecast_factory()
+    second = live_chromecast_factory()
+    dashboards._dashboard_connections["device-1"] = first  # type: ignore[assignment]
+    dashboards._dashboard_connections["device-2"] = second  # type: ignore[assignment]
+
+    await dashboards.unload()
+
+    assert first.socket_client.disconnect_called is True
+    assert second.socket_client.disconnect_called is True
 
 
 async def test_register_after_unload_is_noop() -> None:

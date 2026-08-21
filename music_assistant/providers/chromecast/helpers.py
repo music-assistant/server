@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 import urllib.error
@@ -32,6 +33,19 @@ if TYPE_CHECKING:
 
 DEFAULT_PORT = 8009
 DASHBOARD_NAMESPACE_POLL_INTERVAL = 0.1
+
+
+def disconnect_no_wait(chromecast: Chromecast) -> None:
+    """
+    Close the socket connection to a Cast device without waiting for its thread to exit.
+
+    :param chromecast: Cast connection to close.
+    """
+    # pychromecast closes the socket and then reports the skipped wait as a TimeoutError.
+    # The socket thread is a daemon thread that winds down on its own, so there is nothing
+    # to report.
+    with contextlib.suppress(TimeoutError):
+        chromecast.disconnect(0)
 
 
 def send_show_dashboard(

@@ -15,7 +15,7 @@ from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
 
 from .constants import MASS_APP_ID
-from .helpers import send_hide_dashboard, send_show_dashboard
+from .helpers import disconnect_no_wait, send_hide_dashboard, send_show_dashboard
 from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
@@ -94,8 +94,7 @@ class ChromecastDashboards:
         if unregister_callback := self._unregister_callbacks.pop(device_id, None):
             unregister_callback()
         if chromecast := self._dashboard_connections.pop(device_id, None):
-            # non-blocking: close the socket, the daemon thread exits on its own
-            chromecast.disconnect(0)
+            disconnect_no_wait(chromecast)
         self._drop_active_cast(device_id)
 
     async def unload(self) -> None:
@@ -112,9 +111,7 @@ class ChromecastDashboards:
         self._dashboard_connections.clear()
         for chromecast in dashboard_connections:
             if self.mass.closing:
-                # Non-blocking disconnect: close socket, don't wait for thread.
-                # Socket threads are daemon threads and die on process exit.
-                chromecast.disconnect(0)
+                disconnect_no_wait(chromecast)
             else:
                 await self.mass.loop.run_in_executor(None, chromecast.disconnect, 10)
 
@@ -228,7 +225,7 @@ class ChromecastDashboards:
             )
             chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
             if not chromecast.socket_client.is_connected:
-                chromecast.disconnect(0)
+                disconnect_no_wait(chromecast)
                 msg = f"Timed out connecting to Cast device: {disc_info.friendly_name}"
                 raise PlayerUnavailableError(msg)
             return chromecast
@@ -284,8 +281,7 @@ class ChromecastDashboards:
         self.mass.dashboard.end_session(f"chromecast_{device_id}", reason)
 
         if chromecast := self._dashboard_connections.pop(device_id, None):
-            # non-blocking: close the socket, the daemon thread exits on its own
-            chromecast.disconnect(0)
+            disconnect_no_wait(chromecast)
 
     def _cancel_loss_timer(self, device_id: str) -> None:
         """Cancel the pending connection-loss timer for device_id, if any."""
