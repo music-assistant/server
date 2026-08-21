@@ -302,7 +302,7 @@ class TidalMediaManager:
             # The mix feed is not itself paginated, so slice MA's page window in memory.
             paged_items = all_items[offset : offset + limit]
             return self._process_tracks(paged_items, offset)
-        except (ClientError, KeyError, ValueError) as err:
+        except (KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Mix {mix_id} not found") from err
 
     async def _get_lyrics(self, prov_track_id: str) -> dict[str, str] | None:
