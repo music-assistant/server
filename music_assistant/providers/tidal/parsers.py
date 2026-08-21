@@ -26,7 +26,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .constants import BROWSE_URL, FAVORITE_TRACKS_PLAYLIST_ID, RESOURCES_URL
+from .constants import (
+    BROWSE_URL,
+    FAVORITE_TRACKS_PLAYLIST_ID,
+    RESOURCES_URL,
+    SKIPPABLE_ITEM_ERRORS,
+)
 
 if TYPE_CHECKING:
     from .provider import TidalProvider
@@ -108,7 +113,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
             if artist_obj.get("name") == "Various Artists":
                 various_artist_album = True
             album.artists.append(parse_artist(provider, artist_obj))
-        except (KeyError, TypeError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             provider.logger.warning("Error parsing artist in album %s: %s", name, err)
 
     # Safely determine album type
@@ -210,7 +215,7 @@ def parse_track(
     for track_artist in track_obj_data.get("artists", []):
         try:
             artist = parse_artist(provider, track_artist)
-        except (KeyError, TypeError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             provider.logger.warning("Error parsing artist in track %s: %s", name, err)
             continue
         track.artists.append(artist)

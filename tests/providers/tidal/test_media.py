@@ -2,19 +2,26 @@
 
 import json
 import pathlib
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.media import TidalMediaManager
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
+LEGACY_FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 
 
 def _load_raw(name: str) -> dict[str, Any]:
@@ -35,6 +42,21 @@ def _break_resource(raw: dict[str, Any], resource_id: str) -> dict[str, Any]:
             # artists carry a name where tracks and albums carry a title
             attributes["name" if "name" in attributes else "title"] = None
             return raw
+    raise AssertionError(f"resource {resource_id} not in fixture")
+
+
+def _corrupt_resource(
+    raw: dict[str, Any], resource_id: str, attribute: str | None, value: Any
+) -> dict[str, Any]:
+    """Corrupt one included resource in a fixture."""
+    for resource in raw["included"]:
+        if resource["id"] != resource_id:
+            continue
+        if attribute is None:
+            resource["attributes"] = value
+        else:
+            resource["attributes"][attribute] = value
+        return raw
     raise AssertionError(f"resource {resource_id} not in fixture")
 
 
@@ -213,11 +235,22 @@ async def test_get_album_tracks_skips_videos(
     assert all(track.item_id != "99999" for track in tracks)
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        (None, None),
+        ("copyright", "invalid"),
+        ("externalLinks", ["invalid"]),
+    ],
+    ids=["null-attributes", "string-copyright", "string-external-link"],
+)
 async def test_get_album_tracks_skips_unparsable_track(
-    media_manager: TidalMediaManager, provider_mock: Mock
+    attribute: str | None, value: Any, media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:
     """Test one unusable track does not take the rest of the album down with it."""
-    doc = JsonApiDocument(_break_resource(_load_raw("album_items.json"), "58756128"))
+    doc = JsonApiDocument(
+        _corrupt_resource(_load_raw("album_items.json"), "58756128", attribute, value)
+    )
 
     async def _pages(*_a: Any, **_k: Any) -> Any:
         yield doc
@@ -229,6 +262,85 @@ async def test_get_album_tracks_skips_unparsable_track(
     assert len(tracks) == 10
     assert all(track.item_id != "58756128" for track in tracks)
     provider_mock.logger.warning.assert_called_once()
+
+
+def test_process_tracks_skips_track_with_invalid_media_metadata(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a malformed playlist track is skipped without dropping valid siblings."""
+    with open(LEGACY_FIXTURES_DIR / "tracks" / "track.json", encoding="utf-8") as f:
+        malformed = json.load(f)
+    malformed["item"]["mediaMetadata"] = "invalid"
+    valid = {
+        "id": 2,
+        "title": "Valid Track",
+        "duration": 120,
+        "artists": [{"id": 2, "name": "Valid Artist"}],
+    }
+
+    tracks = media_manager._process_tracks([malformed, valid], 0)
+
+    assert [track.item_id for track in tracks] == ["2"]
+    provider_mock.logger.warning.assert_called_once()
+
+
+def test_process_tracks_skips_track_with_invalid_item_wrapper(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test logging a malformed track wrapper does not abort the collection."""
+    valid = {
+        "id": 2,
+        "title": "Valid Track",
+        "duration": 120,
+        "artists": [{"id": 2, "name": "Valid Artist"}],
+    }
+
+    tracks = media_manager._process_tracks([{"item": "invalid"}, valid], 0)
+
+    assert [track.item_id for track in tracks] == ["2"]
+    provider_mock.logger.warning.assert_called_once()
+
+
+def test_process_tracks_skips_non_mapping_item(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test logging a non-mapping track does not abort the collection."""
+    invalid = cast("dict[str, Any]", None)
+    valid = {
+        "id": 2,
+        "title": "Valid Track",
+        "duration": 120,
+        "artists": [{"id": 2, "name": "Valid Artist"}],
+    }
+
+    tracks = media_manager._process_tracks([invalid, valid], 0)
+
+    assert [track.item_id for track in tracks] == ["2"]
+    provider_mock.logger.warning.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ClientError("connection lost"),
+        LoginFailed("login failed"),
+        RateLimited("rate limited", backoff_time=1),
+        ResourceTemporarilyUnavailable("temporarily unavailable"),
+        MediaNotFoundError("not found"),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+@patch("music_assistant.providers.tidal.media.parse_track")
+def test_process_tracks_propagates_fetch_errors(
+    mock_parse_track: Mock,
+    error: Exception,
+    media_manager: TidalMediaManager,
+) -> None:
+    """Test fetch-level errors are never treated as skippable item errors."""
+    mock_parse_track.side_effect = error
+
+    with pytest.raises(type(error)):
+        media_manager._process_tracks([{"id": "1"}], 0)
 
 
 async def test_get_album_tracks_keeps_tracks_from_earlier_pages(
