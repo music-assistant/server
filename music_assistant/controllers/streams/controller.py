@@ -650,8 +650,12 @@ class StreamsController(CoreController):
             repeat_mode = None
         changed = False
         if shuffle_enabled is not None and queue.shuffle_enabled != shuffle_enabled:
-            queue.shuffle_enabled = shuffle_enabled
-            changed = True
+            # apply through the queue controller so any MA-owned tail behind the
+            # session is (un)shuffled along with the flag; scheduled as a task
+            # because this callback is synchronous
+            self.mass.create_task(
+                self.mass.player_queues._apply_local_shuffle(queue_id, shuffle_enabled)
+            )
         if repeat_mode is not None and queue.repeat_mode != repeat_mode:
             queue.repeat_mode = repeat_mode
             changed = True

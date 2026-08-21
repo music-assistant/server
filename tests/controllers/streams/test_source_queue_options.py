@@ -11,7 +11,7 @@ update must also work in the source-selection window before streamdetails exist.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import RepeatMode
 from music_assistant_models.media_items import AudioSource, PlayableMediaItemType, Radio
@@ -42,6 +42,9 @@ def _setup(media_item: PlayableMediaItemType | None) -> tuple[StreamsController,
     queue.current_item = item
     streams.mass.player_queues.get = Mock(return_value=queue)
     streams.mass.player_queues.signal_update = Mock()
+    # a mirrored shuffle change is applied via the queue controller in a task
+    streams.mass.player_queues._apply_local_shuffle = AsyncMock()
+    streams.mass.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
     return streams, queue
 
 
@@ -53,7 +56,10 @@ def test_options_update_writes_shuffle_and_repeat_and_signals() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ALL
     )
 
-    assert queue.shuffle_enabled is True
+    # the shuffle change routes through the queue controller (it also reorders
+    # any MA-owned tail), scheduled as a task; repeat lands directly
+    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
+    streams.mass.create_task.assert_called_once()  # type: ignore[attr-defined]
     assert queue.repeat_mode == RepeatMode.ALL
     streams.mass.player_queues.signal_update.assert_called_once_with(QUEUE_ID)  # type: ignore[attr-defined]
 
@@ -73,7 +79,7 @@ def test_options_update_accepted_before_streamdetails_exist() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ONE
     )
 
-    assert queue.shuffle_enabled is True
+    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
     assert queue.repeat_mode == RepeatMode.ONE
 
 
@@ -85,26 +91,26 @@ def test_options_update_rejected_for_a_different_source() -> None:
         QUEUE_ID, "other_source", INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ALL
     )
 
-    assert queue.shuffle_enabled is False
+    streams.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
     assert queue.repeat_mode == RepeatMode.OFF
     streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_options_update_rejected_for_a_different_provider() -> None:
     """An update from a provider that does not own the current item is dropped."""
-    streams, queue = _setup(_audio_source(provider="another_instance"))
+    streams, _queue = _setup(_audio_source(provider="another_instance"))
 
     streams.update_source_queue_options(
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ALL
     )
 
-    assert queue.shuffle_enabled is False
+    streams.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
     streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_options_update_rejected_when_current_item_is_no_audio_source() -> None:
     """Once the queue moved on to regular media, a late session callback is dropped."""
-    streams, queue = _setup(
+    streams, _queue = _setup(
         Radio(item_id=SOURCE_ID, provider=INSTANCE_ID, name="radio", provider_mappings=set())
     )
 
@@ -112,19 +118,19 @@ def test_options_update_rejected_when_current_item_is_no_audio_source() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ALL
     )
 
-    assert queue.shuffle_enabled is False
+    streams.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
     streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_options_update_rejected_without_media_item() -> None:
     """An item without a media item cannot receive session options."""
-    streams, queue = _setup(None)
+    streams, _queue = _setup(None)
 
     streams.update_source_queue_options(
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ALL
     )
 
-    assert queue.shuffle_enabled is False
+    streams.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
     streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]
 
 
@@ -136,9 +142,10 @@ def test_unknown_repeat_mode_is_skipped() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.UNKNOWN
     )
 
-    assert queue.shuffle_enabled is True
+    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
     assert queue.repeat_mode == RepeatMode.OFF
-    streams.mass.player_queues.signal_update.assert_called_once_with(QUEUE_ID)  # type: ignore[attr-defined]
+    # nothing landed directly on the queue, so no direct signal (the shuffle task signals)
+    streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_none_values_leave_the_options_untouched() -> None:
