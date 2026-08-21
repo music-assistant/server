@@ -25,7 +25,6 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerType,
-    ProviderFeature,
     QueueOption,
     RepeatMode,
     SourceControl,
@@ -82,6 +81,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.player import get_queue_audio_source
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
@@ -798,12 +798,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        if (delegated := self._get_delegated_source(queue_id)) is not None:
-            audio_source, _caps, provider = delegated
-            if not audio_source.can_next_previous:
+        if (active := self._get_current_audio_source(queue_id)) is not None:
+            audio_source, provider = active
+            # gate on the per-action flag alone so a transport-only source (no
+            # queue_capabilities) also skips within its own session
+            if audio_source.can_next_previous:
+                await provider.on_source_control(audio_source.item_id, SourceControl.NEXT)
+                return
+            if audio_source.queue_capabilities is not None:
                 raise InvalidCommand("Cannot skip: the external session does not support skipping")
-            await provider.on_source_control(audio_source.item_id, SourceControl.NEXT)
-            return
+            # a live source without skip support: fall through to the MA index walk
         self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
         if idx is None:
@@ -844,12 +848,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        if (delegated := self._get_delegated_source(queue_id)) is not None:
-            audio_source, _caps, provider = delegated
-            if not audio_source.can_next_previous:
+        if (active := self._get_current_audio_source(queue_id)) is not None:
+            audio_source, provider = active
+            # gate on the per-action flag alone so a transport-only source (no
+            # queue_capabilities) also skips within its own session
+            if audio_source.can_next_previous:
+                await provider.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
+                return
+            if audio_source.queue_capabilities is not None:
                 raise InvalidCommand("Cannot skip: the external session does not support skipping")
-            await provider.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
-            return
+            # a live source without skip support: fall through to the MA index walk
         self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
         if current_index is None:
@@ -900,21 +908,25 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        if (delegated := self._get_delegated_source(queue_id)) is not None:
-            audio_source, _caps, provider = delegated
-            if not audio_source.can_seek:
+        if (active := self._get_current_audio_source(queue_id)) is not None:
+            audio_source, provider = active
+            # gate on the per-action flag alone so a transport-only source (no
+            # queue_capabilities) also seeks within its own session
+            if audio_source.can_seek:
+                position = max(0, int(position))
+                current_item = queue.current_item
+                await provider.on_source_control(audio_source.item_id, SourceControl.SEEK, position)
+                # publish the seek target so the progress bar does not snap back to the
+                # last position report (mirrors the non-delegated path below) — unless a
+                # concurrent play/stop replaced the current item during the forward
+                if queue.current_item is current_item:
+                    queue.elapsed_time = position
+                    queue.elapsed_time_last_updated = time.time()
+                    self.signal_update(queue_id)
+                return
+            if audio_source.queue_capabilities is not None:
                 raise InvalidCommand("Cannot seek: the external session does not support seeking")
-            position = max(0, int(position))
-            current_item = queue.current_item
-            await provider.on_source_control(audio_source.item_id, SourceControl.SEEK, position)
-            # publish the seek target so the progress bar does not snap back to the
-            # last position report (mirrors the non-delegated path below) — unless a
-            # concurrent play/stop replaced the current item during the forward
-            if queue.current_item is current_item:
-                queue.elapsed_time = position
-                queue.elapsed_time_last_updated = time.time()
-                self.signal_update(queue_id)
-            return
+            # a non-seekable live source falls through: the duration guard below rejects it
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -2120,35 +2132,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         Return the AudioSource owning the queue's commands, its capabilities and owning plugin.
 
         While the queue's current item is an AudioSource declaring ``queue_capabilities``,
-        the external session owns the queue: commands are forwarded to the owning plugin
-        and the mirrored options event updates the queue state afterwards. This matches
-        the player-layer proxy: no playback-state gate, because a plugin may map a paused
-        session onto a stopped player (Spotify Connect does) — a genuinely dead session
-        is the owning plugin's call, surfaced as its localized not-active error. Returns
-        None — queue commands then apply to the MA queue as usual — when the current item
-        is not such an AudioSource (a transport-only source keeps queue commands with MA)
-        or when the owning plugin provider is no longer available.
+        the external session owns the queue: shuffle/repeat are forwarded to the owning
+        plugin and the mirrored options event updates the queue state afterwards. There is
+        no playback-state gate, because a plugin may map a paused session onto a stopped
+        player (Spotify Connect does) — a genuinely dead session is the owning plugin's
+        call, surfaced as its localized not-active error. Returns None — queue commands
+        then apply to the MA queue as usual — when the current item is not such an
+        AudioSource (a transport-only source keeps ownership of the queue with MA) or
+        when the owning plugin provider is no longer available. Transport commands
+        (next/previous/seek) do not use this gate: see ``_get_current_audio_source``.
+
+        :param queue_id: The queue to inspect.
+        """
+        if (resolved := self._get_current_audio_source(queue_id)) is None:
+            return None
+        audio_source, provider = resolved
+        if (caps := audio_source.queue_capabilities) is None:
+            return None
+        return audio_source, caps, provider
+
+    def _get_current_audio_source(self, queue_id: str) -> tuple[AudioSource, PluginProvider] | None:
+        """
+        Return the AudioSource current on the queue and its owning PluginProvider.
+
+        Unlike ``_get_delegated_source`` this does not require ``queue_capabilities``:
+        transport commands (next/previous/seek) delegate on the per-action capability
+        flags alone, so a transport-only source skips/seeks within its own session
+        via the queue API just like it does via the player-command API.
 
         :param queue_id: The queue to inspect.
         """
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return None
-        current_item = queue_data.queue.current_item
-        if current_item is None or current_item.media_item is None:
-            return None
-        media_item = current_item.media_item
-        if not isinstance(media_item, AudioSource):
-            return None
-        caps = media_item.queue_capabilities
-        if caps is None:
-            return None
-        provider = self.mass.get_provider(media_item.provider)
-        if not isinstance(provider, PluginProvider):
-            return None
-        # Belt-and-suspenders: a queue item carrying media_type=AUDIO_SOURCE
-        # can only have come from a provider that declared the feature, but
-        # a feature flag flipped off at runtime (provider reload, config
-        # change) would leave on_source_control raising NotImplementedError.
-        if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
-            return None
-        return media_item, caps, provider
+        return get_queue_audio_source(self.mass, queue_data.queue)
