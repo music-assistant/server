@@ -43,7 +43,7 @@ def _setup(media_item: PlayableMediaItemType | None) -> tuple[StreamsController,
     streams.mass.player_queues.get = Mock(return_value=queue)
     streams.mass.player_queues.signal_update = Mock()
     # a mirrored shuffle change is applied via the queue controller in a task
-    streams.mass.player_queues._apply_local_shuffle = AsyncMock()
+    streams.mass.player_queues._apply_mirrored_shuffle = AsyncMock()
     streams.mass.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
     return streams, queue
 
@@ -58,7 +58,9 @@ def test_options_update_writes_shuffle_and_repeat_and_signals() -> None:
 
     # the shuffle change routes through the queue controller (it also reorders
     # any MA-owned tail), scheduled as a task; repeat lands directly
-    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
+    streams.mass.player_queues._apply_mirrored_shuffle.assert_called_once_with(  # type: ignore[attr-defined]
+        QUEUE_ID, SOURCE_ID, INSTANCE_ID, True
+    )
     streams.mass.create_task.assert_called_once()  # type: ignore[attr-defined]
     assert queue.repeat_mode == RepeatMode.ALL
     streams.mass.player_queues.signal_update.assert_called_once_with(QUEUE_ID)  # type: ignore[attr-defined]
@@ -79,7 +81,9 @@ def test_options_update_accepted_before_streamdetails_exist() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.ONE
     )
 
-    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
+    streams.mass.player_queues._apply_mirrored_shuffle.assert_called_once_with(  # type: ignore[attr-defined]
+        QUEUE_ID, SOURCE_ID, INSTANCE_ID, True
+    )
     assert queue.repeat_mode == RepeatMode.ONE
 
 
@@ -142,7 +146,9 @@ def test_unknown_repeat_mode_is_skipped() -> None:
         QUEUE_ID, SOURCE_ID, INSTANCE_ID, shuffle_enabled=True, repeat_mode=RepeatMode.UNKNOWN
     )
 
-    streams.mass.player_queues._apply_local_shuffle.assert_called_once_with(QUEUE_ID, True)  # type: ignore[attr-defined]
+    streams.mass.player_queues._apply_mirrored_shuffle.assert_called_once_with(  # type: ignore[attr-defined]
+        QUEUE_ID, SOURCE_ID, INSTANCE_ID, True
+    )
     assert queue.repeat_mode == RepeatMode.OFF
     # nothing landed directly on the queue, so no direct signal (the shuffle task signals)
     streams.mass.player_queues.signal_update.assert_not_called()  # type: ignore[attr-defined]

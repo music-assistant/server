@@ -615,11 +615,14 @@ class SqueezelitePlayer(Player):
             else:
                 repeat_mode = RepeatMode.OFF
             await self.mass.player_queues.set_repeat(queue.queue_id, repeat_mode)
-            self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
+            # publish the requested mode: on a delegated queue the queue snapshot only
+            # updates once the session's options echo lands
+            self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[repeat_mode]
             self.client.signal_update()
         elif event.data == "button shuffle":
-            await self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
-            self.client.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+            shuffle_enabled = not queue.shuffle_enabled
+            await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled)
+            self.client.extra_data["playlist shuffle"] = int(shuffle_enabled)
             self.client.signal_update()
         elif event_data in ("button jump_fwd", "button fwd"):
             await self.mass.player_queues.next(queue.queue_id)

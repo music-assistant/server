@@ -1932,6 +1932,33 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # order behind a queue that now reads unshuffled would contradict its own flag
         await self.set_shuffle(queue_id, shuffle)
 
+    async def _apply_mirrored_shuffle(
+        self, queue_id: str, source_id: str, provider_instance: str, shuffle_enabled: bool
+    ) -> None:
+        """
+        Apply a session-mirrored shuffle change, serialized against playback commands.
+
+        Scheduled as a task by the streams controller; the delegation and source
+        identity are re-validated under the player lock so a session that ended (or
+        changed) between the options event and this task running cannot re-order an
+        unrelated queue.
+
+        :param queue_id: The queue the session mirror applies to.
+        :param source_id: The AudioSource.item_id that reported the change.
+        :param provider_instance: The provider instance id that reported the change.
+        :param shuffle_enabled: The session's shuffle state to mirror.
+        """
+        async with self.mass.players.get_player_lock(queue_id):
+            delegated = self._get_delegated_source(queue_id)
+            if delegated is None:
+                return
+            audio_source = delegated[0]
+            if audio_source.item_id != source_id or audio_source.provider != provider_instance:
+                return
+            if self._queue_data[queue_id].queue.shuffle_enabled == shuffle_enabled:
+                return
+            await self._apply_local_shuffle(queue_id, shuffle_enabled)
+
     async def _apply_local_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """
         Record the queue's shuffle state and re-order the un-played tail accordingly.

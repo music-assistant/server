@@ -439,3 +439,35 @@ async def test_delegated_seek_skips_the_progress_publish_when_the_item_changed()
     await ctrl.seek(QUEUE_ID, 42)
 
     assert queue.elapsed_time == 0
+
+
+async def test_mirrored_shuffle_applies_under_revalidated_delegation() -> None:
+    """The scheduled mirror task re-validates the delegation and applies the tail shuffle."""
+    ctrl, _provider = _controller(_audio_source(_capabilities()))
+    _add_tail_items(ctrl, "t1", "t2")
+
+    await ctrl._apply_mirrored_shuffle(QUEUE_ID, SOURCE_ID, INSTANCE_ID, True)
+
+    assert _queue(ctrl).shuffle_enabled is True
+    ctrl.load.assert_awaited_once()  # type: ignore[attr-defined]
+    assert ctrl.load.await_args.kwargs["shuffle"] is True  # type: ignore[attr-defined]
+
+
+async def test_mirrored_shuffle_skipped_when_the_session_changed() -> None:
+    """A mirror task for a source that is no longer current must not touch the queue."""
+    ctrl, _provider = _controller(_audio_source(_capabilities()))
+
+    await ctrl._apply_mirrored_shuffle(QUEUE_ID, "other_source", INSTANCE_ID, True)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    ctrl.load.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_mirrored_shuffle_skipped_when_already_mirrored() -> None:
+    """A mirror task carrying the already-applied value is a no-op."""
+    ctrl, _provider = _controller(_audio_source(_capabilities()))
+    _queue(ctrl).shuffle_enabled = True
+
+    await ctrl._apply_mirrored_shuffle(QUEUE_ID, SOURCE_ID, INSTANCE_ID, True)
+
+    ctrl.load.assert_not_awaited()  # type: ignore[attr-defined]

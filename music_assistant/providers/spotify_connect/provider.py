@@ -762,6 +762,8 @@ class SpotifyConnectProvider(PluginProvider):
             # and controllable; a fresh 'active' event re-establishes it.
             self._playing = False
             self._spotify_session_active = False
+            # stale options must not outlive the session they belong to
+            self._last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self.unload_with_error(event.error or "Spotify Connect backend failed")
@@ -891,6 +893,7 @@ class SpotifyConnectProvider(PluginProvider):
         # the provider and routes the user through the setup flow
         self._playing = False
         self._spotify_session_active = False
+        self._last_playback_options = None
         self.logger.warning("Spotify Connect backend for %s requires (re)authentication", self.name)
         self.unload_with_error(
             LoginFailed(

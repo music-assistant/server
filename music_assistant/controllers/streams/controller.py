@@ -652,9 +652,12 @@ class StreamsController(CoreController):
         if shuffle_enabled is not None and queue.shuffle_enabled != shuffle_enabled:
             # apply through the queue controller so any MA-owned tail behind the
             # session is (un)shuffled along with the flag; scheduled as a task
-            # because this callback is synchronous
+            # because this callback is synchronous — the task re-validates the
+            # delegation under the player lock before applying
             self.mass.create_task(
-                self.mass.player_queues._apply_local_shuffle(queue_id, shuffle_enabled)
+                self.mass.player_queues._apply_mirrored_shuffle(
+                    queue_id, source_id, provider, shuffle_enabled
+                )
             )
         if repeat_mode is not None and queue.repeat_mode != repeat_mode:
             queue.repeat_mode = repeat_mode
