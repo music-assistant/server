@@ -521,7 +521,14 @@ class TracksController(MediaControllerBase[Track]):
                 self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
             return []
 
-        result, error = await self._lookup_similar_tracks_provider(ref_item, limit)
+        try:
+            result, error = await self._lookup_similar_tracks_provider(ref_item, limit)
+        except UnsupportedFeaturedException:
+            if provider_responded:
+                return []
+            if last_provider_error is not None:
+                self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
+            raise
         if error is not None:
             last_provider_error = error
         if result is not None:

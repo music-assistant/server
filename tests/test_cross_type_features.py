@@ -377,6 +377,68 @@ async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
     controller.match_provider.assert_not_awaited()
 
 
+async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> None:
+    """A valid empty response is preserved when no lookup provider is available."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert result == []
+
+
+async def test_similar_tracks_failure_wins_without_lookup_provider() -> None:
+    """A provider failure is preserved when no lookup provider is available."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    client_error = ClientConnectionError("offline")
+    mapped_provider.get_similar_tracks = AsyncMock(side_effect=client_error)
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
 def _artist(item_id: str, name: str, instance: str) -> Artist:
     """Build a minimal Artist for the given provider instance."""
     return Artist(
