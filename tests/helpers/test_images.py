@@ -18,6 +18,7 @@ from aiohttp import ClientSession, web
 from aiohttp.client_exceptions import ClientError
 from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ImageType, ProviderIconVariant
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
@@ -33,6 +34,7 @@ from music_assistant.helpers.images import (
     load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
 from tests.common import collect_loop_errors
 
@@ -276,7 +278,7 @@ async def test_provider_bytes_use_disk_cache_across_restart(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("fake--1", "some/prov/path.jpg")
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # simulate a restart: memory tier gone, disk entry remains
     images._source_memory_cache.clear()
@@ -310,7 +312,7 @@ async def test_local_file_read_cached_on_disk(
     cache_key = create_thumb_hash("builtin", image_path)
     assert cache_key in images._source_memory_cache.entries
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # after a restart the disk entry serves the bytes without touching the origin
     # (which may live on a network mount) - local entries have no TTL
@@ -337,7 +339,7 @@ async def test_remote_disk_entry_expires_after_ttl(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("builtin", remote_url)
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # a fresh disk entry is used after a restart...
     images._source_memory_cache.clear()
@@ -378,6 +380,34 @@ async def test_failing_source_fails_fast_with_single_warning(
         await get_image_thumb(mass_minimal, remote_url, 256, "builtin")
 
     assert len(fetch_calls) == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_provider_reported_missing_image_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider reporting a missing image is asked once, then fails fast without new logs."""
+    fake_provider = MagicMock(spec=MusicProvider)
+    fake_provider.resolve_image = AsyncMock(
+        side_effect=MediaNotFoundError("Image path is a directory: Some Artist")
+    )
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+    # follow-up requests (a thumbnail, a palette) fail fast from the negative cache,
+    # without asking the provider again and without logging again
+    with pytest.raises(FileNotFoundError, match="Some Artist"):
+        await get_image_data(mass_minimal, "Some Artist", "filesystem_local--1")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
     warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
     assert len(warnings) == 1
     assert "not retrying" in warnings[0].getMessage()
@@ -592,7 +622,7 @@ async def test_embedded_art_retag_flow(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("builtin", track_path)
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)  # ffmpeg extraction is disk-cache worthy
+    assert Path(src_file).is_file()  # ffmpeg extraction is disk-cache worthy
 
     # a restart later, the disk entry avoids re-running ffmpeg
     images._source_memory_cache.clear()
@@ -605,7 +635,7 @@ async def test_embedded_art_retag_flow(
     assert len(fetch_calls) == 1
     # ...until it is invalidated, after which the new art is extracted
     await invalidate_cached_image(mass_minimal, "builtin", track_path)
-    assert not os.path.exists(src_file)
+    assert not Path(src_file).exists()
     new_art = await get_image_data(mass_minimal, track_path, "builtin")
     assert len(fetch_calls) == 2
     assert new_art != original_art

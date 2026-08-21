@@ -1,0 +1,16 @@
+{
+  "type": "plugin",
+  "stage": "experimental",
+  "domain": "milkdrop_visualizer",
+  "name": "MilkDrop Visualizer",
+  "description": "Stream real-time waveform data from any playing Sendspin group to the Music Assistant web interface, powering the MilkDrop visualizer in the now-playing views. The waveform is tapped from the Sendspin stream, so the visualizer is only available for players with a Sendspin output.",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "depends_on": "sendspin",
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/milkdrop-visualizer/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "water"
+}

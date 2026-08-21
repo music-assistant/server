@@ -13,8 +13,9 @@ import logging
 import os
 
 # if TYPE_CHECKING:
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from signal import SIGINT
 from types import TracebackType
 from typing import Self
@@ -68,7 +69,7 @@ class AsyncProcess:
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
-            name = args[0].split(os.sep)[-1]
+            name = Path(args[0]).name
         self.name = name
         self.logger = LOGGER.getChild(name)
         self._args = args
@@ -181,6 +182,33 @@ class AsyncProcess:
         async with self._stdin_lock:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
+
+    @asynccontextmanager
+    async def stdin_quiesced(self, timeout: float = 5.0) -> AsyncIterator[bool]:
+        """
+        Hold stdin quiet for a block, with what was already written seen through to the pipe.
+
+        :meth:`write` only waits while the transport is paused, which it is only
+        above the high-water mark, so it returns with up to that much still queued
+        locally (64 KiB by default). This first sees those bytes through to the
+        kernel pipe -- as far as it can guarantee; whether the process has read
+        them is its own business -- and then keeps the write lock for the body, so
+        no :meth:`write` or :meth:`write_eof` can interleave. For a caller telling
+        the process something about the bytes it has been handed -- out of band,
+        and in a sequence the process must not see a write inside -- that turns
+        "we happen to have stopped writing" into something the block enforces.
+
+        Yields True when stdin was emptied, False when it could not be: the
+        process is then still owed bytes, so a caller whose message depends on it
+        having received everything must give up rather than send it.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        """
+        if self._close_called or self.proc is None or self.proc.stdin is None:
+            yield True
+            return
+        async with self._stdin_lock:
+            yield await self._drain_stdin_locked(timeout)
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -415,6 +443,35 @@ class AsyncProcess:
     def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
         """Attach a stderr reader task to this process."""
         self._stderr_reader_task = task
+
+    async def _drain_stdin_locked(self, timeout: float) -> bool:
+        """
+        Empty the stdin write buffer, with the write lock already held.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        :return: True once the buffer is empty, False when the wait timed out.
+        """
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdin is not None  # for type checking
+        transport = self.proc.stdin.transport
+        low, high = transport.get_write_buffer_limits()
+        try:
+            # Pausing the transport at a zero high-water mark is what makes
+            # drain() resolve only once the buffer is completely empty: it
+            # otherwise resolves as soon as the transport is not paused.
+            transport.set_write_buffer_limits(high=0)
+            await asyncio.wait_for(self.proc.stdin.drain(), timeout)
+        except TimeoutError:
+            return False
+        except BrokenPipeError, RuntimeError, ConnectionResetError:
+            # already exited, race condition: nothing is left to arrive
+            return True
+        finally:
+            # Restore what this process was configured with rather than the
+            # asyncio defaults a bare call would reinstate.
+            with suppress(RuntimeError):
+                transport.set_write_buffer_limits(high=high, low=low)
+        return True
 
 
 async def check_output(

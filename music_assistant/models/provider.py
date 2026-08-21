@@ -7,7 +7,7 @@ import builtins
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
-from music_assistant_models.config_entries import ConfigValueType
+from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 
@@ -57,6 +57,10 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        # set by the controller once teardown of this provider starts, so work that is
+        # already in flight (e.g. a discovery running in a worker thread) can tell a
+        # provider on its way out apart from one that is not loaded yet
+        self.unloading = False
         self.initialized = asyncio.Event()
 
     @property
@@ -69,11 +73,12 @@ class Provider:
         """
         Return the (options) config entries to configure this provider instance.
 
-        Called only for an existing (loaded) instance: read the current values via
-        ``self.config``/``self.get_config_value`` and the capabilities via
-        ``self.supported_features``. One-time setup input is collected by the setup flow
-        (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION`` entries for
-        one-shot buttons and handle their presses in ``handle_config_action``.
+        Resolved on every load - before ``handle_async_init`` - as well as whenever the
+        options page is opened, so this may not read state that async init assigns. Read
+        the current values via ``self.config``/``self.get_config_value`` and the
+        capabilities via ``self.supported_features``. One-time setup input is collected by
+        the setup flow (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION``
+        entries for one-shot buttons and handle their presses in ``handle_config_action``.
         """
         return ()
 
@@ -94,7 +99,12 @@ class Provider:
         raise ActionUnavailable(f"Unknown action: {action}")
 
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """
+        Handle async initialization of the provider.
+
+        Runs after ``get_config_entries`` was already resolved, so state assigned here
+        is not available to it.
+        """
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -305,6 +315,10 @@ class Provider:
         """
         if (entry := self.config.values.get(key)) is None:
             return self.config.get_value(key, default)
+        if entry.type in UI_ONLY:
+            # a display-only entry holds label text rather than a value, so reading
+            # through it would shadow the caller's default
+            return default
         value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
         if value is None:
             return self.config.get_value(key, default)

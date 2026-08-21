@@ -1,10 +1,13 @@
 """Tests for playlist parsing and generation helpers."""
 
-from typing import Any, cast
+from types import TracebackType
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import client_exceptions
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -18,11 +21,14 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.helpers import playlists
 from music_assistant.helpers.playlists import (
     ImageInfo,
+    IsHLSPlaylist,
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
     parse_extinf_title,
@@ -973,3 +979,337 @@ async def test_tracks_stops_on_empty_page() -> None:
 
     assert len(result) == 7
     assert get_tracks.await_count == 2
+
+
+# --------------------------------------------------------------------------- #
+#  fetch_playlist                                                              #
+# --------------------------------------------------------------------------- #
+
+M3U_PLAYLIST = "#EXTM3U\n#EXTINF:-1,Test Station\nhttp://stream.example.com/aac\n"
+PLS_PLAYLIST = (
+    "[playlist]\n"
+    "NumberOfEntries=1\n"
+    "File1=http://stream.example.com/aac\n"
+    "Title1=Test Station\n"
+    "Length1=-1\n"
+)
+HLS_MEDIA_PLAYLIST = (
+    "#EXTM3U\n"
+    "#EXT-X-VERSION:3\n"
+    "#EXT-X-TARGETDURATION:10\n"
+    "#EXTINF:10.0,\n"
+    "http://stream.example.com/segment1.aac\n"
+)
+VERSIONLESS_HLS_MEDIA_PLAYLIST = (
+    "#EXTM3U\n"
+    "#EXT-X-TARGETDURATION:10\n"
+    '#EXT-X-KEY:METHOD=AES-128,URI="skd://test-key"\n'
+    "#EXTINF:10,\n"
+    "segment1.aac\n"
+)
+HLS_MASTER_PLAYLIST = (
+    "#EXTM3U\n"
+    '#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"\n'
+    "http://stream.example.com/low.m3u8\n"
+)
+
+
+class _FakeContent:
+    """Stand-in for the payload stream of an aiohttp response."""
+
+    def __init__(self, raw_data: bytes, chunk_size: int | None = None) -> None:
+        self._raw_data = raw_data
+        # like the real stream, a read hands over what has arrived so far, not the full
+        # amount asked for
+        self._chunk_size = chunk_size or max(len(raw_data), 1)
+        self._pos = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        available = len(self._raw_data) - self._pos
+        size = available if n < 0 else min(n, self._chunk_size, available)
+        chunk = self._raw_data[self._pos : self._pos + size]
+        self._pos += size
+        return chunk
+
+
+class _FakeResponse:
+    """Stand-in for the aiohttp response of a playlist fetch."""
+
+    def __init__(
+        self,
+        raw_data: bytes,
+        charset: str | None,
+        status: int = 200,
+        chunk_size: int | None = None,
+    ) -> None:
+        self.charset = charset
+        self.content = _FakeContent(raw_data, chunk_size)
+        self.status = status
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise client_exceptions.ClientResponseError(
+                request_info=MagicMock(),
+                history=(),
+                status=self.status,
+            )
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        return None
+
+
+class _FailingRequest:
+    """Stand-in for a playlist request that fails before a response is available."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def __aenter__(self) -> Self:
+        raise self._error
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        return None
+
+
+def _mass_serving(
+    raw_data: bytes,
+    charset: str | None = None,
+    status: int = 200,
+    chunk_size: int | None = None,
+) -> Any:
+    """
+    Return a mock mass whose http session serves the given playlist bytes.
+
+    :param raw_data: Raw response body handed to fetch_playlist.
+    :param charset: Charset the server declares in its Content-Type header, if any.
+    :param status: HTTP status the server answers with.
+    :param chunk_size: Largest amount a single read hands over, if the body is chunked.
+    """
+    mass = MagicMock()
+    mass.http_session.get = MagicMock(
+        return_value=_FakeResponse(raw_data, charset, status, chunk_size)
+    )
+    return mass
+
+
+def _mass_failing(error: BaseException) -> Any:
+    """
+    Return a mock mass whose http session fails the request with the given error.
+
+    :param error: Exception raised when the request is entered.
+    """
+    mass = MagicMock()
+    mass.http_session.get = MagicMock(return_value=_FailingRequest(error))
+    return mass
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_timeout() -> None:
+    """A timed out fetch is reported as invalid data instead of surfacing raw."""
+    mass = _mass_failing(TimeoutError())
+
+    with pytest.raises(InvalidDataError, match="Timeout while fetching playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_client_error() -> None:
+    """A connection failure is reported as invalid data instead of surfacing raw."""
+    mass = _mass_failing(client_exceptions.ClientConnectionError("boom"))
+
+    with pytest.raises(InvalidDataError, match="Error while fetching playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_error_status() -> None:
+    """
+    An error response is rejected instead of parsed.
+
+    Without the status check every markup line of the error page becomes an entry.
+    """
+    error_page = (
+        b"<html>\n<head><title>404 Not Found</title></head>\n"
+        b"<body>\n<center><h1>404 Not Found</h1></center>\n</body>\n</html>\n"
+    )
+    mass = _mass_serving(error_page, status=404)
+
+    with pytest.raises(InvalidDataError, match="Error while fetching playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_hls_media_playlist() -> None:
+    """An HLS media playlist is rejected for callers that cannot handle segments."""
+    mass = _mass_serving(HLS_MEDIA_PLAYLIST.encode())
+
+    with pytest.raises(IsHLSPlaylist):
+        await fetch_playlist(mass, "http://example.com/station.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist() -> None:
+    """A version-less HLS media playlist is recognised by its required tag."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
+
+    with pytest.raises(IsHLSPlaylist):
+        await fetch_playlist(mass, "http://example.com/station.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_hls_media_playlist_allowed() -> None:
+    """With raise_on_hls disabled an HLS media playlist parses like any other M3U."""
+    mass = _mass_serving(HLS_MEDIA_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u8", raise_on_hls=False)
+
+    assert len(result) == 1
+    assert result[0].path == "http://stream.example.com/segment1.aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_versionless_hls_media_playlist_allowed() -> None:
+    """Disabling HLS detection still exposes a version-less playlist's segment and key."""
+    mass = _mass_serving(VERSIONLESS_HLS_MEDIA_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u8", raise_on_hls=False)
+
+    assert len(result) == 1
+    assert result[0].path == "segment1.aac"
+    assert result[0].key == "skd://test-key"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_hls_master_playlist_always_raises() -> None:
+    """A master playlist holds no playable entries, so it is rejected either way."""
+    mass = _mass_serving(HLS_MASTER_PLAYLIST.encode())
+
+    with pytest.raises(IsHLSPlaylist):
+        await fetch_playlist(mass, "http://example.com/station.m3u8", raise_on_hls=False)
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_pls_by_extension(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A .pls url picks the PLS parser on the extension alone."""
+    # every real PLS body carries the marker too, so only a marker-free body can
+    # show which of the two conditions selected the parser
+    parsed = [PlaylistItem(path="http://stream.example.com/aac")]
+    parse_pls_mock = MagicMock(return_value=parsed)
+    monkeypatch.setattr(playlists, "parse_pls", parse_pls_mock)
+    mass = _mass_serving(M3U_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.pls")
+
+    parse_pls_mock.assert_called_once_with(M3U_PLAYLIST)
+    assert result == parsed
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_pls_by_marker() -> None:
+    """PLS content behind a url without the extension is still parsed as PLS."""
+    mass = _mass_serving(PLS_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/listen")
+
+    assert len(result) == 1
+    assert result[0].path == "http://stream.example.com/aac"
+    assert result[0].title == "Test Station"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_m3u() -> None:
+    """Anything else is parsed as M3U."""
+    mass = _mass_serving(M3U_PLAYLIST.encode())
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert len(result) == 1
+    assert result[0].path == "http://stream.example.com/aac"
+    assert result[0].title == "Test Station"
+    assert result[0].length is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_empty() -> None:
+    """A playlist without a single entry is rejected."""
+    mass = _mass_serving(b"#EXTM3U\n")
+
+    with pytest.raises(InvalidDataError, match="Empty playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_unknown_charset_falls_back_to_detection() -> None:
+    """
+    A charset the remote server made up must not break the fetch.
+
+    Stations do send names Python has no codec for, which decode() answers with a
+    LookupError that no caller on this path catches.
+    """
+    mass = _mass_serving(M3U_PLAYLIST.encode(), charset="utf8mb4")
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert len(result) == 1
+    assert result[0].path == "http://stream.example.com/aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_undecodable_byte_degrades_instead_of_raising() -> None:
+    """One bad byte costs a character, not the whole playlist."""
+    raw_data = M3U_PLAYLIST.encode().replace(b"#EXTM3U", b"#EXTM3U\n#\xff")
+    mass = _mass_serving(raw_data, charset="utf-8")
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert len(result) == 1
+    assert result[0].path == "http://stream.example.com/aac"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_declared_charset_is_used() -> None:
+    """A legacy charset the server declares is taken over guesswork."""
+    # a mostly-ASCII body gives the detector too little to go on, so a station that
+    # names its charset is the only thing keeping such a title readable
+    raw_data = "#EXTM3U\n#EXTINF:-1,Хит\nhttp://stream.example.com/aac\n".encode("cp1251")
+    mass = _mass_serving(raw_data, charset="cp1251")
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert result[0].title == "Хит"
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_reads_a_body_that_arrives_in_chunks() -> None:
+    """A playlist spread over several chunks is parsed whole, not just its first chunk."""
+    mass = _mass_serving(
+        b"#EXTM3U\n#EXTINF:-1,Station\nhttp://stream.example.com/aac\n", chunk_size=8
+    )
+
+    result = await fetch_playlist(mass, "http://example.com/station.m3u")
+
+    assert [x.path for x in result] == ["http://stream.example.com/aac"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_playlist_reads_only_the_head_of_the_body() -> None:
+    """An oversized playlist is truncated instead of being pulled in whole."""
+    padding = "#" + " " * (64 * 1024)
+    mass = _mass_serving(f"#EXTM3U\n{padding}\nhttp://stream.example.com/aac\n".encode())
+
+    # the entry sits past the read limit, so nothing is left to parse
+    with pytest.raises(InvalidDataError, match="Empty playlist"):
+        await fetch_playlist(mass, "http://example.com/station.m3u")

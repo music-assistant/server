@@ -196,7 +196,7 @@ def parse_album(
     if record_label := attributes.get("recordLabel"):
         album.metadata.label = record_label
     if upc := attributes.get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + upc))
+        album.external_ids.add((ExternalID.BARCODE, upc))
     if notes := attributes.get("editorialNotes"):
         album.metadata.description = notes.get("standard") or notes.get("short")
     if content_rating := attributes.get("contentRating"):
@@ -261,9 +261,9 @@ def parse_track(
     if track_number := attributes.get("trackNumber"):
         track.track_number = track_number
     # Prefer catalog information over library information for artists.
-    if "artists" in relationships:
-        artists = relationships["artists"]
-        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
+    # The artists relationship is empty when the artists are not in the user's library.
+    if artists_data := relationships.get("artists", {}).get("data"):
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists_data])
     elif artist_name := normalize_unicode(
         attributes.get("artistName") or raw_attributes.get("artistName")
     ):

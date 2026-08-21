@@ -313,9 +313,11 @@ class ImageProxyMixin:
             thumbnail_bytes, content_format = await self._resolve_thumbnail(
                 path, provider, size, image_format, flatten_transparency
             )
-        except (MediaNotFoundError, OSError) as err:
+        except (MediaNotFoundError, ProviderUnavailableError, OSError) as err:
             # normalize a missing/unreadable image into one typed error so callers
-            # (and not just the HTTP imageproxy handler) can handle it uniformly
+            # (and not just the HTTP imageproxy handler) can handle it uniformly.
+            # an unavailable provider is included: to a caller it is equally unreadable,
+            # and leaking it would abort sends that only meant to skip the artwork
             raise MediaNotFoundError(f"Image not found or unreadable: {path}") from err
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
@@ -419,8 +421,6 @@ class ImageProxyMixin:
         :param image_format: Requested output format (jpg/jpeg/png/svg).
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]

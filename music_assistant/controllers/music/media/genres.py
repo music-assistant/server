@@ -13,6 +13,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
 from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -48,7 +49,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_loads, serialize_to_json
@@ -1386,6 +1386,20 @@ class GenreController(MediaControllerBase[Genre]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
+        """Transfer media mappings and exclusions owned by a merged genre."""
+        await self._merge_genre_references(target_id, source_id)
+
+    async def _validate_library_item_merge(self, target: Genre, source: Genre) -> None:
+        """Validate that two genres belong to the same taxonomy."""
+        await super()._validate_library_item_merge(target, source)
+        if target.content_type != source.content_type:
+            msg = (
+                f"Cannot merge genre '{source.name}' into '{target.name}': "
+                "genres must belong to the same taxonomy (music / podcast / audiobook)."
+            )
+            raise InvalidDataError(msg)
 
     async def _bulk_scan_media_genres(self) -> None:
         """

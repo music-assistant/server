@@ -6,15 +6,22 @@ import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from mashumaro.exceptions import MissingField
+from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
 from music_assistant_models.media_items.metadata import LifeSpan
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import (
+    external_id_lookup_values,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -28,6 +35,7 @@ from .constants import (
 )
 from .models import (
     MusicBrainzArtist,
+    MusicBrainzBarcodeRelease,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
@@ -291,9 +299,9 @@ class MusicbrainzProvider(MetadataProvider):
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
         """
-        safe_isrc = isrc.replace("-", "").strip()
-        if not safe_isrc.isalnum():
+        if not is_valid_isrc(isrc):
             return []
+        safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
         # the isrc resource rejects inc= parameters and already carries the release dates
         result = await self._api_client.get_data(f"isrc/{safe_isrc}")
         if not result or not (recordings := result.get("recordings")):
@@ -333,6 +341,46 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Album ID provided"
         raise InvalidDataError(msg)
+
+    async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzBarcodeRelease]:
+        """
+        Get the releases MusicBrainz has on file for a barcode/UPC.
+
+        The result is complete: a truncated page or a release entry that cannot be parsed
+        raises :class:`InvalidDataError` so the caller abstains instead of mistaking a
+        partial release/group set for the whole set.
+
+        :param barcode: Album barcode (UPC/EAN/GTIN), with or without separators.
+        :return: Releases carrying this barcode, or an empty list if none are found.
+        """
+        if not is_valid_barcode(barcode):
+            return []
+        # a UPC-12 and its zero-padded EAN-13/GTIN forms are the same physical barcode,
+        # so query every compatible form to also resolve a provider's shorter/longer notation
+        barcodes = [
+            value
+            for value in external_id_lookup_values(ExternalID.BARCODE, barcode)
+            if value.isdigit()
+        ]
+        query = " OR ".join(f"barcode:{value}" for value in barcodes)
+        # a barcode identifies a single physical product, so one generously-sized page
+        # returns every release carrying it
+        result = await self._api_client.get_data("release", query=query, limit="100")
+        if not result or not (releases := result.get("releases")):
+            return []
+        if result.get("count", len(releases)) > len(releases):
+            msg = "MusicBrainz barcode result is truncated"
+            raise InvalidDataError(msg)
+        parsed: list[MusicBrainzBarcodeRelease] = []
+        for release in releases:
+            try:
+                parsed.append(MusicBrainzBarcodeRelease.from_raw(release))
+            except (MissingField, InvalidFieldValue) as err:
+                # dropping a malformed row would make the release/group set look complete
+                # when it is not, so the whole lookup is treated as unusable
+                msg = "MusicBrainz barcode result has an unparsable release"
+                raise InvalidDataError(msg) from err
+        return parsed
 
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""
@@ -439,8 +487,9 @@ class MusicbrainzProvider(MetadataProvider):
         Get the year a song was first released, by artist and track name.
 
         Weaker evidence than :meth:`get_release_year_by_isrc`, which identifies the exact
-        recording: this matches on name and only counts studio albums and singles named
-        after the song, so an ambiguous or unknown name yields no year rather than a guess.
+        recording: this matches on name and only counts studio albums, soundtracks and
+        singles named after the song, so an ambiguous or unknown name yields no year
+        rather than a guess.
         Costs up to two MusicBrainz requests.
 
         :param artist_name: Name of the track's primary artist.
@@ -488,7 +537,7 @@ class MusicbrainzProvider(MetadataProvider):
         :param track_name: Track name to search for.
         :return: Tuple of (raw artist, release groups with their earliest release date sorted
             oldest first), or None when no recording matched. The release groups are empty
-            when the matched recordings carry no studio album or same-named single.
+            when the matched recordings carry no studio album, soundtrack or same-named single.
         """
         search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
         search_track = re.sub(LUCENE_SPECIAL, r"\\\1", track_name)
@@ -557,7 +606,9 @@ class MusicbrainzProvider(MetadataProvider):
         """
         Collect release groups for a recording with their release dates.
 
-        Filters out compilations and other secondary-type releases.
+        Filters out compilations, live and other rereleases, including the compilations
+        credited to Various Artists rather than tagged as such. Soundtracks are kept,
+        since a song written for a film is first released on one.
         For singles, only includes those where the title matches the track name.
         Returns list of (release_group, release_date) tuples for singles and studio albums.
 
@@ -577,6 +628,12 @@ class MusicbrainzProvider(MetadataProvider):
             if release_status in ("Bootleg", "Pseudo-Release"):
                 continue
 
+            # Plenty of hits compilations carry no Compilation secondary type, so they pass
+            # for studio albums. Their releases are credited to Various Artists, which an
+            # album or single of one artist never is.
+            if _is_various_artists_release(release):
+                continue
+
             rg = release.get("release-group", {})
             rg_id = rg.get("id")
             if not rg_id:
@@ -588,7 +645,11 @@ class MusicbrainzProvider(MetadataProvider):
             # Only include singles and studio albums (no compilations, live, etc.)
             if primary_type not in ("Album", "Single"):
                 continue
-            if secondary_types:
+            # A song written for a film or musical is first released on its soundtrack, which
+            # MusicBrainz types as an album with a Soundtrack secondary type. Any other
+            # secondary type, alongside Soundtrack or not, means the release group is not
+            # where the song came out.
+            if secondary_types and secondary_types != ["Soundtrack"]:
                 continue
 
             # For singles, only include if the title matches the track name
@@ -639,6 +700,20 @@ class MusicbrainzProvider(MetadataProvider):
             if (year := _release_year(release_group.get("first-release-date") or "")) is not None
         ]
         return min(years, default=None)
+
+
+def _is_various_artists_release(release: dict[str, Any]) -> bool:
+    """
+    Return whether a MusicBrainz release is credited to Various Artists.
+
+    :param release: MusicBrainz release dict from a recording search.
+    """
+    # MusicBrainz always credits the Various Artists entity by id, while its display name is
+    # localized and other artists are named after it, so only the id identifies it.
+    return any(
+        (credit.get("artist") or {}).get("id") == VARIOUS_ARTISTS_MBID
+        for credit in release.get("artist-credit") or ()
+    )
 
 
 def _release_year(release_date: str) -> int | None:

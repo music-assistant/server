@@ -32,14 +32,18 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Track
 
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
     MANAGED_POOL_TARGET,
 )
-from music_assistant.controllers.player_queues.helpers import interleave_groups, space_by_artist
+from music_assistant.controllers.player_queues.helpers import (
+    interleave_groups,
+    is_dynamic_source,
+    space_by_artist,
+)
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -200,14 +204,14 @@ class ManagedPool:
         Group the queue's source items into dynamic sources and fetch each one's candidates.
 
         :param queue_id: The queue being filled.
-        :param include_dynamic: Whether to include dynamic-playlist sources; skipped on the initial
-            fill, where each dynamic playlist seeds its own first batch directly.
+        :param include_dynamic: Whether to include dynamic sources; skipped on the initial
+            fill, where each dynamic source seeds its own first batch directly.
         """
         # multiplicity = how often a source was added (adding a source more than once weights it up)
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
         for item in self.queues.queue_data(queue_id).source_items:
-            if isinstance(item, Playlist) and item.is_dynamic and not include_dynamic:
+            if is_dynamic_source(item) and not include_dynamic:
                 continue
             if not (uri := _uri(item)):
                 continue
@@ -218,7 +222,7 @@ class ManagedPool:
         materialized = self._materialized.setdefault(queue_id, {})
         sources: list[DynamicSource] = []
         for uri, media_item in items.items():
-            if isinstance(media_item, Playlist) and media_item.is_dynamic:
+            if is_dynamic_source(media_item):
                 fill_mode = DynamicFillMode.DYNAMIC
                 candidates = await self._fetch_dynamic(media_item)
             else:
@@ -243,12 +247,10 @@ class ManagedPool:
         return sources
 
     async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
-        """Fetch the next self-managed batch from a dynamic playlist (radio playlist, station)."""
-        if not isinstance(media_item, Playlist):
-            return []
+        """Fetch the next self-managed batch from a dynamic playlist or radio station."""
         with suppress(MusicAssistantError):
-            tracks = await self.queues.get_playlist_tracks(media_item, start_item=None)
-            return [track for track in tracks if isinstance(track, Track) and track.available]
+            tracks = await self.queues.get_dynamic_source_tracks(media_item)
+            return [track for track in tracks if track.available]
         return []
 
     async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:

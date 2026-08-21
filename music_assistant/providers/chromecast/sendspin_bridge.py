@@ -533,6 +533,7 @@ class SendspinChromecastBridge:
 
     async def _launch_sendspin_app(self) -> None:
         """Launch the Sendspin Cast Receiver app and send the server config."""
+        self.cast_player.cancel_pending_app_quit()
         try:
             # Launch the Sendspin Cast App on the Chromecast.
             # force_launch=True ensures the Cast device kills any running app

@@ -1,4 +1,4 @@
-"""Tests for PlayerQueuesController.transfer_queue protocol/ungroup handling."""
+"""Tests for PlayerQueuesController.transfer_queue protocol/ungroup and settings handover."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
 class _DummyACM:
@@ -80,3 +82,97 @@ async def test_transfer_queue_group_member_ungroups_group() -> None:
     )
 
     fake.mass.players.cmd_ungroup.assert_awaited_once_with("groupP")
+
+
+def _shuffle_controller(
+    source_shuffle_enabled: bool,
+    target_shuffle_enabled: bool = False,
+    source_is_dynamic: bool = False,
+) -> MagicMock:
+    """
+    Build a controller stand-in whose two queues carry real state records.
+
+    The shuffle flag lives on the per-queue state record, so unlike the ungroup tests above these
+    need real queues rather than one shared mock.
+
+    :param source_shuffle_enabled: Whether shuffle is on for the queue being handed over.
+    :param target_shuffle_enabled: Whether shuffle is on for the queue being handed to.
+    :param source_is_dynamic: Whether the source queue is managed by a dynamic source.
+    """
+    source_queue = PlayerQueue(
+        queue_id="src",
+        active=True,
+        display_name="Src",
+        available=True,
+        items=0,
+        shuffle_enabled=source_shuffle_enabled,
+        smart_shuffle_active=source_is_dynamic,
+        is_dynamic=source_is_dynamic,
+    )
+    target_queue = PlayerQueue(
+        queue_id="tgt",
+        active=True,
+        display_name="Tgt",
+        available=True,
+        items=0,
+        shuffle_enabled=target_shuffle_enabled,
+    )
+
+    fake = MagicMock()
+    fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
+    fake._queue_data = {
+        "src": PlayerQueueData(queue=source_queue),
+        "tgt": PlayerQueueData(queue=target_queue),
+    }
+    fake.stop = AsyncMock()
+    fake.load = AsyncMock()
+    fake.resume = AsyncMock()
+    fake._clear = MagicMock()
+    fake.update_items = MagicMock()
+    fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
+    target_player = MagicMock()
+    target_player.state.synced_to = None
+    target_player.state.active_group = None
+    fake.mass.players.get_player = MagicMock(return_value=target_player)
+    fake.mass.streams.is_smart_fades_active = MagicMock(return_value=False)
+    return fake
+
+
+async def test_transfer_queue_overwrites_the_targets_own_shuffle() -> None:
+    """The queue brings its own shuffle state, so the target's previous one does not survive."""
+    fake = _shuffle_controller(source_shuffle_enabled=False, target_shuffle_enabled=True)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").shuffle_enabled is False
+
+
+async def test_transfer_queue_carries_the_source_shuffle() -> None:
+    """A shuffled queue handed to another player stays shuffled there."""
+    fake = _shuffle_controller(source_shuffle_enabled=True)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").shuffle_enabled is True
+
+
+async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
+    """The shuffle imposed by a dynamic source follows it to the target queue."""
+    fake = _shuffle_controller(source_shuffle_enabled=True, source_is_dynamic=True)
+    fake._clear.side_effect = lambda queue_id, skip_stop=False: PlayerQueuesController._clear(
+        cast("PlayerQueuesController", fake), queue_id, skip_stop
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    assert fake.get("tgt").is_dynamic is True
+    assert fake.get("tgt").shuffle_enabled is True
+    assert fake.get("src").is_dynamic is False
+    assert fake.get("src").shuffle_enabled is False
+    assert fake.get("src").smart_shuffle_active is False

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import struct
 import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -52,6 +51,7 @@ from music_assistant.constants import (
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -85,11 +85,18 @@ from music_assistant.controllers.streams.constants import (
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    SINGLE_ITEM_READRATE,
+    SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
     get_available_buffer_sizes,
 )
+from music_assistant.controllers.streams.live_announcements import (
+    LIVE_ANNOUNCEMENT_STREAM_PATH,
+    LiveAnnouncementManager,
+)
 from music_assistant.helpers.audio import (
     calculate_content_length,
+    create_streaming_wave_header,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -111,7 +118,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
@@ -130,33 +137,11 @@ if TYPE_CHECKING:
 isfile = wrap(os.path.isfile)
 
 
-def _streaming_wav_header(output_format: AudioFormat) -> bytes:
-    """Build a WAV header with open-ended (0xFFFFFFFF) RIFF/data sizes for live streams."""
-    channels = output_format.channels
-    sample_rate = output_format.sample_rate
-    bits_per_sample = output_format.bit_depth
-    byte_rate = sample_rate * channels * (bits_per_sample // 8)
-    block_align = channels * (bits_per_sample // 8)
-    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
-    # length fields don't cut the stream off (default header hardcodes ~6.7h).
-    return (
-        b"RIFF"
-        + struct.pack("<L", 0xFFFFFFFF)
-        + b"WAVE"
-        + b"fmt "
-        + struct.pack(
-            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
-        )
-        + b"data"
-        + struct.pack("<L", 0xFFFFFFFF)
-    )
-
-
 async def _wav_passthrough_stream(
     audio_input: AsyncGenerator[bytes], output_format: AudioFormat
 ) -> AsyncGenerator[bytes]:
     """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
-    yield _streaming_wav_header(output_format)
+    yield create_streaming_wave_header(output_format)
     async for chunk in audio_input:
         yield chunk
 
@@ -200,6 +185,7 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
+        self.live_announcements = LiveAnnouncementManager(mass, self.logger)
         self._bind_ip: str = "0.0.0.0"
         self._base_url: str = ""
         self._configured_publish_ip: str | None = None
@@ -233,6 +219,7 @@ class StreamsController(CoreController):
             "active_output_streams": self._active_output_streams,
             "active_announcements": self.announcement_renderer.active_announcements,
             "active_announcement_renders": self.announcement_renderer.active_renders,
+            "active_live_announcements": self.live_announcements.active_sessions,
             "publish_ip_configured": self._configured_publish_ip is not None,
         }
 
@@ -468,8 +455,17 @@ class StreamsController(CoreController):
                     "/single/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}",
                     self.serve_queue_item_stream,
                 ),
-                ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
+                (
+                    "*",
+                    "/command/{session_id}/{queue_id}/{command}.mp3",
+                    self.serve_command_request,
+                ),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
+                (
+                    "GET",
+                    LIVE_ANNOUNCEMENT_STREAM_PATH,
+                    self.live_announcements.serve_stream,
+                ),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -492,9 +488,16 @@ class StreamsController(CoreController):
         )
         await self._reload_network_dependent_providers()
 
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
+        # the inbound half of a live announcement rides on the webserver: it is the only
+        # one of the two servers that authenticates (and that browsers reach over https)
+        self.live_announcements.setup()
+
     async def close(self) -> None:
         """Cleanup on exit."""
         await self._audio_analysis.close()
+        await self.live_announcements.close()
         await self._server.close()
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
@@ -508,25 +511,30 @@ class StreamsController(CoreController):
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         protocol_player = self.mass.players.get_player(player_id)
-        # AudioSource is realtime: serve as WAV (PCM + header) so the encode
-        # step is a no-op passthrough — drops a whole ffmpeg from the
-        # consumer-side pipeline and the latency that comes with it.
-        if media.media_type == MediaType.AUDIO_SOURCE:
-            output_codec = ContentType.WAV
-        else:
-            conf_output_codec = cast(
-                "str",
-                protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
-                if protocol_player
-                else "flac",
+        conf_output_codec = cast(
+            "str",
+            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+            if protocol_player
+            else "flac",
+        )
+        prefer_wav_for_live_sources = (
+            media.media_type == MediaType.AUDIO_SOURCE
+            and protocol_player is not None
+            and cast(
+                "bool",
+                protocol_player.config.get_value(CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False),
             )
-            output_codec = ContentType.try_parse(conf_output_codec)
+        )
+        output_codec = (
+            ContentType.WAV
+            if prefer_wav_for_live_sources
+            else ContentType.try_parse(conf_output_codec)
+        )
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
-        extra_data = media.custom_data or {}
-        session_id = extra_data.get("session_id")
+        session_id = media.queue_session_id
         queue_item_id = media.queue_item_id
         if not session_id or not queue_item_id:
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
@@ -740,7 +748,9 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    queue_item.available = False
+                    # a source capacity miss is transient, the item itself is fine
+                    if not isinstance(e, ProviderStreamLimitError):
+                        queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
@@ -749,6 +759,10 @@ class StreamsController(CoreController):
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
             if queue_item.media_type != MediaType.TRACK:
+                crossfade_mode = CrossfadeMode.DISABLED
+            elif queue_item.streamdetails.is_realtime:
+                # a realtime source delivers at playback pace, so it has no audio to
+                # spare for an overlap in either direction
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
@@ -894,6 +908,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
+                    extra_input_args=[
+                        "-readrate",
+                        SINGLE_ITEM_READRATE,
+                        "-readrate_initial_burst",
+                        SINGLE_ITEM_READRATE_INITIAL_BURST,
+                    ],
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -907,6 +927,15 @@ class StreamsController(CoreController):
                 # the abandoned generator.
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        if pq_data.session_id != session_id:
+                            # playback moved on (or stopped) while this response was open;
+                            # the flow path checks the same thing per chunk
+                            self.logger.debug(
+                                "Ending stream for %s: session %s is no longer current",
+                                queue_item.name,
+                                session_id,
+                            )
+                            break
                         try:
                             await resp.write(chunk)
                             bytes_sent += len(chunk)
@@ -1166,6 +1195,10 @@ class StreamsController(CoreController):
         """Handle special 'command' request for a player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
+        session_id = request.match_info["session_id"]
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        if queue_data is None or queue_data.session_id != session_id:
+            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         command = request.match_info["command"]
         if command == "next":
             self.mass.create_task(self.mass.player_queues.next(queue_id))
@@ -1248,9 +1281,17 @@ class StreamsController(CoreController):
 
         return resp
 
-    def get_command_url(self, player_or_queue_id: str, command: str) -> str:
-        """Get the url for the special command stream."""
-        return f"{self.base_url}/command/{player_or_queue_id}/{command}.mp3"
+    def get_command_url(self, player_or_queue_id: str, command: str) -> str | None:
+        """
+        Get the url for the special command stream, or None if the queue is not playing.
+
+        :param player_or_queue_id: Queue to send the command to.
+        :param command: Command the url triggers when fetched.
+        """
+        queue_data = self.mass.player_queues.queue_data_or_none(player_or_queue_id)
+        if queue_data is None or (session_id := queue_data.session_id) is None:
+            return None
+        return f"{self.base_url}/command/{session_id}/{player_or_queue_id}/{command}.mp3"
 
     def get_announcement_url(
         self,
@@ -1318,10 +1359,7 @@ class StreamsController(CoreController):
             protocol_player = self.mass.players.get_player(player_id) if player_id else None
             queue_id = media.source_id
             queue = self.mass.player_queues.get(queue_id)
-            queue_session_id = cast(
-                "str | None",
-                (media.custom_data or {}).get("session_id"),
-            )
+            queue_session_id = media.queue_session_id
             crossfade_needs_flow_mode = (
                 # crossfade only applies to tracks; if the queue has it enabled but the
                 # player(protocol) does not support gapless playback, we need to enforce flow mode
@@ -1387,7 +1425,9 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=(
                         self.get_crossfade_mode(queue)
+                        # a realtime source is never faded, in either direction
                         if queue_item.media_type == MediaType.TRACK
+                        and not (queue_item.streamdetails and queue_item.streamdetails.is_realtime)
                         else CrossfadeMode.DISABLED
                     ),
                     overlay_enabled=(
@@ -1398,6 +1438,9 @@ class StreamsController(CoreController):
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
+                seek_position=(
+                    int(queue_item.streamdetails.seek_position) if queue_item.streamdetails else 0
+                ),
                 playback_speed=cast(
                     "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                 ),
@@ -1566,13 +1609,12 @@ class StreamsController(CoreController):
         finally:
             try:
                 await prov.on_source_unselected(source_id, queue_id, stream_session_id)
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    "on_source_unselected raised for provider %s source %s queue %s",
                     prov.instance_id,
                     source_id,
                     queue_id,
-                    err,
                 )
 
     def _update_audio_processing_context(

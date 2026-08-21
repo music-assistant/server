@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
@@ -22,7 +23,6 @@ from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -87,6 +87,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         played_only: bool = False,
         *,
         summary: bool = True,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
         """
@@ -101,7 +102,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param genre: Filter by genre id(s).
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -109,10 +116,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            reachable_via=reachable_via,
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
@@ -128,11 +136,14 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
                 summary=summary,
+                reachable_via=reachable_via,
             )
         return result
 
@@ -181,7 +192,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
+            if MediaType.PODCAST not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
@@ -246,7 +257,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
+            if MediaType.PODCAST not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

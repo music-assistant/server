@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -44,9 +45,18 @@ CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
         ConfigValueOption("sound_effects"),
     ],
 )
-CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
-    {**CONF_ENTRY_CONTENT_TYPE.to_dict(), "read_only": True}
-)
+
+
+def content_type_config_entry(content_type: str) -> ConfigEntry:
+    """
+    Return the read-only mirror of the (setup flow owned) content type for the options page.
+
+    :param content_type: The content type resolved from the provider's setup data.
+    """
+    # mirrored as the entry default so the other entries resolve their depends_on chain
+    # against it without it ever being persisted back into the stored values
+    return replace(CONF_ENTRY_CONTENT_TYPE, read_only=True, default_value=content_type)
+
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
@@ -167,3 +177,7 @@ CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+
+# how often storage that went away during a scan is re-checked, so the provider comes
+# back within minutes instead of waiting for the next scheduled sync
+AVAILABILITY_PROBE_INTERVAL: Final[int] = 300

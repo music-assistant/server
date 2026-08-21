@@ -32,6 +32,8 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_valid_mac_address
@@ -77,6 +79,8 @@ class SonosQueue:
 
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
+
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,
@@ -193,6 +197,7 @@ class SonosPlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
     async def on_unload(self) -> None:
@@ -206,8 +211,6 @@ class SonosPlayer(Player):
             # so both are needed to cover the pending and the running case
             self.mass.cancel_timer(task_id)
             self.mass.cancel_task(task_id)
-        # unregister does not guard this call, and it runs before the provider's
-        # remaining players are unregistered: a raise here would strand them
         try:
             await self._disconnect()
         except Exception:
@@ -231,19 +234,29 @@ class SonosPlayer(Player):
 
         :param muted: bool if player should be muted.
         """
-        if not muted and self.volume_level:
-            # when Sonos is playing via Airplay and is muted, we will need to explicitly
-            # send the volume level after unmute as the Airplay cli is still at volume 0
-            await self.client.player.set_volume(volume=self.volume_level, muted=muted)
-        else:
-            await self.client.player.set_volume(muted=muted)
+        await self.client.player.set_volume(muted=muted)
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         if self.client.player.is_passive:
             self.logger.debug("Ignore PLAY command: Player is synced to another player.")
             return
-        await self.group_controller.play()
+        try:
+            await self.group_controller.play()
+        except FailedCommand as err:
+            if self._attr_active_source is None or "groupCoordinatorChanged" in str(err):
+                # only a source Sonos loaded itself can go away like this, and a coordinator
+                # change is a race condition rather than a source that disappeared
+                raise
+            # the loaded source refused to resume, so it is not merely paused after all
+            self.logger.debug(
+                "Source %s on Sonos player %s can not be resumed: %s",
+                self._attr_active_source,
+                self.player_id,
+                err,
+            )
+            self.mark_external_source_ended()
+            self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -492,13 +505,13 @@ class SonosPlayer(Player):
         """Handle incoming event from player."""
         try:
             self.update_attributes()
-        except Exception as err:
-            self.logger.exception("Failed to update player attributes: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player attributes")
             return
         try:
             self.update_state()
-        except Exception as err:
-            self.logger.exception("Failed to update player state: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player state")
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
@@ -771,7 +784,7 @@ class SonosPlayer(Player):
                 await self.client.start_listening(init_ready)
             except Exception as err:
                 if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                    self.logger.exception("Error in Sonos player listener: %s", err)
+                    self.logger.exception("Error in Sonos player listener")
             finally:
                 self.logger.info("Disconnected from player API")
                 if self.connected and not self.mass.closing:

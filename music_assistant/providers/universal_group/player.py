@@ -75,7 +75,11 @@ class UniversalGroupPlayer(Player):
         """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
-        self._attr_name = self.config.name or f"Universal Group {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = (
+            self.config.default_name or self.config.name or f"Universal Group {player_id}"
+        )
         self._attr_available = True
         # See SyncGroupPlayer: groups have no opinion on power by default; the
         # session lifecycle is what governs activity. Fake power control is the
@@ -336,9 +340,9 @@ class UniversalGroupPlayer(Player):
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
+                            queue_session_id=self.stream.session_id,
                             custom_data={
                                 "ugp_player_id": self.player_id,
-                                "session_id": self.stream.session_id,
                             },
                         ),
                     )
@@ -391,9 +395,9 @@ class UniversalGroupPlayer(Player):
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
                         source_id=self.player_id,
+                        queue_session_id=self.stream.session_id,
                         custom_data={
                             "ugp_player_id": self.player_id,
-                            "session_id": self.stream.session_id,
                         },
                     ),
                 )
@@ -505,7 +509,14 @@ class UniversalGroupPlayer(Player):
         # use state properties (not raw attributes) to account for protocol player propagation
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
             self._attr_playback_state = child_player.state.playback_state
-            if child_player.state.elapsed_time:
+            # a position is only meaningful together with the timestamp it was taken at,
+            # so the pair is adopted as a whole or not at all. Position 0 is a valid
+            # position: members that anchor the group stream once report a fixed 0 and
+            # let the timestamp carry both the progression and their own buffer delay.
+            if (
+                child_player.state.elapsed_time is not None
+                and child_player.state.elapsed_time_last_updated is not None
+            ):
                 self._attr_elapsed_time = child_player.state.elapsed_time
                 self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
             break

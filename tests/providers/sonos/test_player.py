@@ -2,33 +2,20 @@
 
 import asyncio
 import logging
-import threading
-from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
-from aiosonos.exceptions import CannotConnect
-from music_assistant_models.enums import CoreState
+from aiosonos.api.models import MusicService
+from aiosonos.api.models import PlayBackState as SonosPlayBackState
+from aiosonos.exceptions import CannotConnect, FailedCommand
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.sonos.const import SOURCE_SPOTIFY
 from music_assistant.providers.sonos.player import SonosPlayer
-
-
-@pytest.fixture
-async def timer_mass() -> AsyncGenerator[MusicAssistant]:
-    """Create a bare MusicAssistant exposing the real task/timer machinery."""
-    mass = object.__new__(MusicAssistant)
-    mass.loop = asyncio.get_running_loop()
-    mass.loop_thread_id = threading.get_ident()
-    mass._tracked_timers = {}
-    mass._tracked_tasks = {}
-    mass._state = CoreState.RUNNING
-    yield mass
-    for handle in mass._tracked_timers.values():
-        handle.cancel()
-    for task in mass._tracked_tasks.values():
-        task.cancel()
 
 
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
@@ -249,3 +236,98 @@ async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistan
 
     assert player.connected is False
     assert timer_mass._tracked_timers == {}
+
+
+def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
+    """Create a player reporting a paused external source, as Sonos does for Spotify Connect."""
+    mass = MagicMock()
+    mass.closing = False
+    player, client = _bind_player(mass)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = SOURCE_SPOTIFY
+    player._attr_current_media = PlayerMedia(uri="spotify:track:1", title="Shout")
+    return player, mass, client
+
+
+def _refuse_to_resume(client: MagicMock) -> None:
+    """Let the speaker reject the play command, as it does for a session it no longer has."""
+    client.player.is_passive = False
+    client.player.group.play = AsyncMock(side_effect=FailedCommand("ERROR_PLAYBACK_FAILED"))
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_refuses_to_resume_is_ended_right_away() -> None:
+    """Test a dead session does not have to sit out the grace period to be given up on."""
+    player, _, client = _make_externally_paused_player()
+    _refuse_to_resume(client)
+
+    await player.play()
+
+    assert player._attr_playback_state is PlaybackState.IDLE
+    assert player._attr_active_source is None
+    assert player._attr_current_media is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_play_on_our_own_queue_still_raises() -> None:
+    """Test a failure that is not about a stale external source is not swallowed."""
+    player, _, client = _make_externally_paused_player()
+    player._attr_active_source = None
+    _refuse_to_resume(client)
+
+    with pytest.raises(FailedCommand):
+        await player.play()
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_change_does_not_end_a_live_source() -> None:
+    """Test the race the speaker reports while regrouping is not read as a source that is gone."""
+    player, _, client = _make_externally_paused_player()
+    client.player.is_passive = False
+    client.player.group.play = AsyncMock(
+        side_effect=FailedCommand("ERROR_PLAYBACK_FAILED groupCoordinatorChanged")
+    )
+
+    with pytest.raises(FailedCommand):
+        await player.play()
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+
+
+def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player whose speaker reports the Spotify Connect state we captured."""
+    mass = MagicMock()
+    mass.closing = False
+    player, client = _bind_player(mass)
+    player.connected = True
+    player._attr_source_list = []
+    player._attr_group_members = []
+    player._attr_can_group_with = set()
+    player._provider = MagicMock(instance_id="sonos")
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    group = client.player.group
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+    group.position = 42.0
+    group.container_type = "spotify.connect"
+    group.active_service = MusicService.SPOTIFY
+    group.playback_metadata = {
+        "container": {"name": "Spotify", "service": {"name": "Spotify"}},
+        "currentItem": {"id": "1", "track": {"name": "Shout"}},
+    }
+    return player, mass
+
+
+def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
+    """Test what the speaker reports for Spotify Connect reaches the shared grace period."""
+    player, _ = _speaker_reporting_paused_spotify()
+
+    player.on_player_event(None)
+
+    assert player._attr_playback_state is PlaybackState.PAUSED
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    # giving up on such a source is handled for every player alike, from update_state,
+    # so the speaker only has to opt in and let the state calculation see it
+    assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]

@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
@@ -55,17 +56,18 @@ from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
+    CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    CREDENTIALS_FILE,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
 )
 from .helpers import get_librespot_binary, get_spotify_token
@@ -146,6 +148,8 @@ class SpotifyProvider(MusicProvider):
 
         # check if we have a librespot binary for this arch
         self._librespot_bin = await get_librespot_binary()
+        # playback authorization is independent of the Web API tokens
+        await self._setup_librespot_auth()
         # try login which will raise if it fails (logs in global session)
         await self.login()
 
@@ -173,6 +177,11 @@ class SpotifyProvider(MusicProvider):
                 "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                 "for supported countries."
             )
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
+        return 2
 
     @property
     def audiobooks_supported(self) -> bool:
@@ -249,7 +258,7 @@ class SpotifyProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
-            if item and item["track"]["id"]:
+            if item and item["track"] and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -622,23 +631,40 @@ class SpotifyProvider(MusicProvider):
             await self.get_playlist(prov_playlist_id)
             use_global = await self._playlist_requires_global_token(prov_playlist_id)
 
-        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+        known_global = use_global
 
-        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        while True:
+            try:
+                meta = await self._get_playlist_pagination_meta(uri, page, use_global)
+                cache_checksum = meta["etag"]
+                total = meta["total"]
 
-        # Spotify has started returning 5xx for offset >= total on some
-        # playlists (notably algorithmic ones like Daily Mix). The retry
-        # storm that follows surfaces as "No playable items found".
-        if total and offset >= total:
-            return result
+                # Spotify has started returning 5xx for offset >= total on some
+                # playlists (notably algorithmic ones like Daily Mix). The retry
+                # storm that follows surfaces as "No playable items found".
+                if total and offset >= total:
+                    spotify_result = {"total": total, "items": []}
+                else:
+                    spotify_result = await self._get_data_with_caching(
+                        uri,
+                        cache_checksum,
+                        limit=page_size,
+                        offset=offset,
+                        use_global_session=use_global,
+                    )
+                break
+            except MediaNotFoundError:
+                if use_global or not self.dev_session_active:
+                    raise
+                # Development Mode exposes metadata but restricts items for non-owned playlists.
+                use_global = True
 
-        spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
-        )
+        if use_global and not known_global:
+            await self._set_playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]
@@ -917,11 +943,6 @@ class SpotifyProvider(MusicProvider):
             immediate=token_rotated,
         )
 
-        # Setup librespot with global token only if dev token is not configured
-        # (if dev token exists, librespot will be set up in login_dev instead)
-        if not self.get_setup_value(CONF_REFRESH_TOKEN_DEV):
-            await self._setup_librespot_auth(auth_info["access_token"])
-
         # get logged-in user info
         if not self._sp_user:
             self._sp_user = userinfo = await self._get_data(
@@ -985,9 +1006,6 @@ class SpotifyProvider(MusicProvider):
             auth_info["refresh_token"],
             immediate=token_rotated,
         )
-
-        # Setup librespot with dev token (preferred over global token)
-        await self._setup_librespot_auth(auth_info["access_token"])
 
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
@@ -1079,35 +1097,34 @@ class SpotifyProvider(MusicProvider):
 
         return items_received
 
-    async def _setup_librespot_auth(self, access_token: str) -> None:
+    async def _setup_librespot_auth(self) -> None:
         """
-        Set up librespot authentication with the given access token.
+        Install the stored playback credential into librespot's cache directory.
 
-        :param access_token: Spotify access token to use for librespot authentication.
+        :raises LoginFailed: When no playback credential is configured, which requires the
+            user to re-run the setup flow.
         """
         if self._librespot_bin is None:
             raise LoginFailed("Librespot binary not available")
+        credentials = self.get_setup_value(CONF_LIBRESPOT_CREDENTIALS)
+        if not credentials:
+            # Spotify's login5 refuses credentials minted with any client id other than the one
+            # librespot presents, so installs predating the dedicated playback credential (and
+            # anything cached from before) cannot stream and must authorize playback again.
+            raise LoginFailed(
+                "Spotify playback authorization required",
+                translation_key="playback_auth_required",
+                translation_owner="provider.spotify",
+            )
+        await asyncio.to_thread(self._write_librespot_credentials, self.cache_dir, str(credentials))
 
-        args = [
-            self._librespot_bin,
-            "--cache",
-            self.cache_dir,
-            "--check-auth",
-        ]
-        ret_code, stdout = await check_output(*args)
-        if ret_code != 0:
-            # cached librespot creds are invalid, re-authenticate
-            # we can use the check-token option to send a new token to librespot
-            # librespot will then get its own token from spotify (somehow) and cache that.
-            args += [
-                "--access-token",
-                access_token,
-            ]
-            ret_code, stdout = await check_output(*args)
-            if ret_code != 0:
-                # this should not happen, but guard it just in case
-                err_str = stdout.decode("utf-8").strip()
-                raise LoginFailed(f"Failed to verify credentials on Librespot: {err_str}")
+    @staticmethod
+    def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
+        """Write the stored credential to librespot's cache, replacing any stale one."""
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
+        with open(credentials_file, "w", encoding="utf-8") as fileobj:
+            fileobj.write(credentials)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """

@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "sendspin_source",
+  "stage": "alpha",
+  "name": "Sendspin Source",
+  "description": "Play live audio inputs (line-in, turntable, microphone) from Sendspin clients that support the source role.",
+  "documentation": "https://music-assistant.io/plugins/sendspin-source/",
+  "codeowners": ["@music-assistant"],
+  "depends_on": "sendspin",
+  "requirements": ["soxr==1.1.0"],
+  "builtin": true,
+  "icon": "audio-input-rca"
+}

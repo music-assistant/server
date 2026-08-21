@@ -1,7 +1,8 @@
-"""Tests for HLS substream resolution."""
+"""Tests for HLS master playlist selection on the streams controller."""
 
 from __future__ import annotations
 
+from types import TracebackType
 from typing import Self
 from unittest.mock import MagicMock
 
@@ -9,60 +10,96 @@ import pytest
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 
+MASTER_PLAYLIST = (
+    "#EXTM3U\n"
+    '#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2"\n'
+    "https://radio.example.com/low.m3u8\n"
+    '#EXT-X-STREAM-INF:BANDWIDTH=320000,CODECS="mp4a.40.2"\n'
+    "https://radio.example.com/high.m3u8\n"
+)
 
-class _ResponseContext:
-    """Minimal async context manager for mocked playlist responses."""
 
-    def __init__(self, playlist: str) -> None:
-        self.charset = "utf-8"
-        self._playlist = playlist
+class _FakeResponse:
+    """Stand-in for the aiohttp response of a master playlist fetch."""
+
+    def __init__(self, raw_data: bytes, charset: str | None) -> None:
+        self._raw_data = raw_data
+        self.charset = charset
 
     async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc_info: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         return None
 
     def raise_for_status(self) -> None:
-        """No-op for successful mocked responses."""
+        """Accept the response as a successful one."""
 
     async def read(self) -> bytes:
-        """Return the mocked playlist body."""
-        return self._playlist.encode()
+        return self._raw_data
 
 
-@pytest.mark.asyncio
-async def test_get_hls_substream_resolves_root_relative_child() -> None:
-    """Root-relative child playlists should resolve against the master URL origin."""
-    playlist = """#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=128000
-/music/:/transcode/session/children/stream.m3u8?X-Plex-Token=token
-"""
+def _streams_audio(raw_data: bytes, charset: str | None) -> StreamsAudio:
+    """Build a streams audio controller whose HTTP session serves the given playlist."""
     mass = MagicMock()
-    mass.http_session_no_ssl.get.return_value = _ResponseContext(playlist)
-    audio = StreamsAudio(mass)
-
-    substream = await audio.get_hls_substream(
-        "http://plex.local:32400/music/:/transcode/universal/start.m3u8?path=%2Flibrary%2F1"
-    )
-
-    assert (
-        substream.path == "http://plex.local:32400/music/:/transcode/session/children/stream.m3u8?"
-        "X-Plex-Token=token"
-    )
+    mass.http_session_no_ssl.get = MagicMock(return_value=_FakeResponse(raw_data, charset))
+    return StreamsAudio(mass)
 
 
-@pytest.mark.asyncio
-async def test_get_hls_substream_resolves_directory_relative_child() -> None:
-    """Directory-relative child playlists should keep existing HLS behavior."""
-    playlist = """#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=128000
-children/stream.m3u8
-"""
-    mass = MagicMock()
-    mass.http_session_no_ssl.get.return_value = _ResponseContext(playlist)
-    audio = StreamsAudio(mass)
+class TestGetHlsSubstream:
+    """get_hls_substream picks the best child playlist of an HLS master playlist."""
 
-    substream = await audio.get_hls_substream("http://media.local/live/master.m3u8")
+    @pytest.mark.asyncio
+    async def test_unknown_charset_falls_back_to_detection(self) -> None:
+        """
+        A charset the remote server made up must not break substream selection.
 
-    assert substream.path == "http://media.local/live/children/stream.m3u8"
+        Stations do send names Python has no codec for, which decode() answers with a
+        LookupError that no caller on this path catches.
+        """
+        controller = _streams_audio(MASTER_PLAYLIST.encode(), charset="utf8mb4")
+        substream = await controller.get_hls_substream("https://radio.example.com/master.m3u8")
+        assert substream.path == "https://radio.example.com/high.m3u8"
+
+    @pytest.mark.asyncio
+    async def test_undecodable_byte_degrades_instead_of_raising(self) -> None:
+        """One bad byte costs a character, not the whole stream."""
+        raw_data = MASTER_PLAYLIST.encode().replace(b"#EXTM3U", b"#EXTM3U\n#\xff")
+        controller = _streams_audio(raw_data, charset="utf-8")
+        substream = await controller.get_hls_substream("https://radio.example.com/master.m3u8")
+        assert substream.path == "https://radio.example.com/high.m3u8"
+
+    @pytest.mark.asyncio
+    async def test_resolves_root_relative_child(self) -> None:
+        """Root-relative child playlists should resolve against the master URL origin."""
+        playlist = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=128000\n"
+            "/music/:/transcode/session/children/stream.m3u8?X-Plex-Token=token\n"
+        )
+        controller = _streams_audio(playlist.encode(), charset="utf-8")
+
+        substream = await controller.get_hls_substream(
+            "http://plex.local:32400/music/:/transcode/universal/start.m3u8?path=%2Flibrary%2F1"
+        )
+
+        assert (
+            substream.path
+            == "http://plex.local:32400/music/:/transcode/session/children/stream.m3u8?"
+            "X-Plex-Token=token"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolves_directory_relative_child(self) -> None:
+        """Directory-relative child playlists should resolve against the master URL."""
+        playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nchildren/stream.m3u8\n"
+        controller = _streams_audio(playlist.encode(), charset="utf-8")
+
+        substream = await controller.get_hls_substream("http://media.local/live/master.m3u8")
+
+        assert substream.path == "http://media.local/live/children/stream.m3u8"

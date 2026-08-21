@@ -24,12 +24,17 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.util import join_task
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
@@ -324,15 +329,11 @@ async def get_image_data(
         _depth,
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
+        # the failure reaches every waiter below; a fetch failure is reported here anyway,
+        # so a warning naming the task on top of that says nothing new
+        log_exceptions=False,
     )
-    # wait for the shared fetch instead of awaiting it directly: a caller awaiting a task
-    # holds it as its fut_waiter, so cancelling that caller would cancel the fetch for
-    # every other caller too. asyncio.shield achieves the same, but as of Python 3.14 a
-    # cancelled caller makes it report the fetch's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not task.done():
-        await asyncio.wait((task,))
-    return task.result()
+    return await join_task(task)
 
 
 async def _resolve_own_imageproxy_url(mass: MusicAssistant, url: str) -> tuple[str, str] | None:
@@ -393,7 +394,7 @@ async def _fetch_and_cache_source_image(
         # remote urls only count as fresh within the TTL (a CDN can serve new
         # content behind a stable url); local files rely on invalidation instead
         try:
-            if not os.path.isfile(filepath):
+            if not Path(filepath).is_file():
                 return None
             if (
                 path_or_url.startswith("http")
@@ -411,10 +412,12 @@ async def _fetch_and_cache_source_image(
 
     try:
         img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
-    except FileNotFoundError as err:
+    except (FileNotFoundError, MediaNotFoundError) as err:
         # remember the failure briefly and log it once, concisely: every
         # thumbnail/palette/metadata request for this source would otherwise
         # retry the origin and log the same error over and over
+        # a provider signals a missing source with MediaNotFoundError, which is not an
+        # OSError and would otherwise bypass this negative cache entirely
         _store_failed_source(cache_key, str(err))
         LOGGER.warning("%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
         raise
@@ -455,6 +458,18 @@ async def _fetch_source_image(
                 return resolved_image, True
             if isinstance(resolved_image, str):
                 path_or_url = resolved_image
+    elif (
+        not path_or_url.startswith(("http", "data:image"))
+        and not Path(path_or_url).is_absolute()
+        and mass.get_provider(provider, return_unavailable=True)
+    ):
+        # a relative path means only the provider can say what it is relative to, so a
+        # registered provider that is momentarily down leaves nothing to try: the routes
+        # below would probe a path relative to nothing (spawning ffmpeg per request for
+        # the whole outage) and reporting it as missing would cache that verdict. An
+        # unknown provider does fall through - it is gone for good, so missing is honest.
+        msg = f"{provider} is not available to resolve image {path_or_url}"
+        raise ProviderUnavailableError(msg)
     # handle HTTP location
     if path_or_url.startswith("http"):
         # handle imageproxy URLs pointing to our own server
@@ -638,11 +653,11 @@ async def _get_image_thumb(
         flatten_transparency,
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
+        # the failure reaches every waiter, which is where it belongs; a task that lost
+        # every waiter still leaves a debug line behind
+        log_exceptions=False,
     )
-    # wait for the shared generation rather than awaiting it: see get_image_data
-    if not task.done():
-        await asyncio.wait((task,))
-    thumb_data = task.result()
+    thumb_data = await join_task(task)
     _put_in_memory_cache(cache_filename, thumb_data)
     return thumb_data, cache_filepath
 
@@ -724,7 +739,7 @@ async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
     thumb_dir = os.path.join(cache_path, _THUMB_CACHE_DIR)
 
     def _cleanup() -> int:
-        if not os.path.isdir(thumb_dir):
+        if not Path(thumb_dir).is_dir():
             return 0
         entries = []
         for entry in os.scandir(thumb_dir):
@@ -770,7 +785,7 @@ async def invalidate_cached_image(mass: MusicAssistant, provider: str, path_or_u
 
     def _remove_disk_entries() -> None:
         # covers every size/format/flatten thumb variant plus the `_src` entry
-        if not os.path.isdir(thumb_dir):
+        if not Path(thumb_dir).is_dir():
             return
         for entry in os.scandir(thumb_dir):
             if entry.name.startswith(prefix) and entry.is_file():

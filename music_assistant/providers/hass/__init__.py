@@ -60,12 +60,12 @@ from .control_entities import (
     ControlEntitySearch,
     HassControlEntitySearchResult,
 )
-from .helpers import ControlCapabilities, get_control_name
+from .helpers import ControlCapabilities, get_control_name, is_entity_id
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
 
-    from aiohttp import ClientSession
+    from aiohttp import ClientResponse, ClientSession
     from hass_client.models import (
         Area,
         CompressedState,
@@ -666,7 +666,11 @@ class HomeAssistantProvider(PluginProvider):
         await asyncio.sleep(duration or 5)
 
     async def get_tts_message(
-        self, message: str, language: str | None = None, engine_id: str | None = None
+        self,
+        message: str,
+        language: str | None = None,
+        engine_id: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""
         entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
@@ -674,13 +678,15 @@ class HomeAssistantProvider(PluginProvider):
             raise UnsupportedFeaturedException("TTS entity is not available")
         ha_url, headers, http_session = self._get_ha_http()
         # the tts_get_url payload field is called engine_id but takes a tts entity_id
-        payload: dict[str, str] = {"engine_id": entity_id, "message": message}
+        payload: dict[str, Any] = {"engine_id": entity_id, "message": message}
         if language:
             payload["language"] = language
+        if options:
+            payload["options"] = options
         async with http_session.post(
             f"{ha_url}/api/tts_get_url", headers=headers, json=payload
         ) as response:
-            response.raise_for_status()
+            await self._raise_for_tts_error(response)
             data = await response.json()
         url = str(data["url"])
         return StreamDetails(
@@ -730,9 +736,9 @@ class HomeAssistantProvider(PluginProvider):
         # the wanted selection is determined inside the lock, so a reconcile that had to
         # wait for another one cannot apply a selection that was already superseded
         async with self._control_reconcile_lock:
-            power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
-            mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
-            volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
+            power_controls = self._selected_control_entities(CONF_POWER_CONTROLS)
+            mute_controls = self._selected_control_entities(CONF_MUTE_CONTROLS)
+            volume_controls = self._selected_control_entities(CONF_VOLUME_CONTROLS)
             wanted_controls: dict[str, ControlCapabilities] = {
                 entity_id: ControlCapabilities(
                     power=entity_id in power_controls,
@@ -759,6 +765,27 @@ class HomeAssistantProvider(PluginProvider):
                 await self.mass.players.register_or_update_player_control(control)
             await self._subscribe_control_states()
             self._wanted_controls = wanted_controls
+
+    def _selected_control_entities(self, conf_key: str) -> list[str]:
+        """
+        Return the entity IDs selected in the given player control setting.
+
+        :param conf_key: The control config key to read the selection from.
+        """
+        entity_ids: list[str] = []
+        for value in cast("list[str]", self.config.get_value(conf_key)):
+            if is_entity_id(value):
+                entity_ids.append(value)
+                continue
+            # Home Assistant rejects an entire state fetch or subscription over a single
+            # value that is not an entity ID, so a leftover selection would otherwise
+            # take down every control of this provider
+            self.logger.warning(
+                "Ignoring %r in the %s setting: it is not a Home Assistant entity ID",
+                value,
+                conf_key,
+            )
+        return entity_ids
 
     def _create_player_control(
         self,
@@ -798,7 +825,7 @@ class HomeAssistantProvider(PluginProvider):
             if not hass_state:
                 control.volume_muted = False
             elif entity_platform == "media_player":
-                control.volume_muted = hass_state["attributes"].get("volume_muted")
+                control.volume_muted = bool(hass_state["attributes"].get("is_volume_muted"))
             else:
                 control.volume_muted = hass_state["state"] not in OFF_STATES
             control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
@@ -888,7 +915,7 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
-                player_control.volume_muted = attributes.get("is_volume_muted")
+                player_control.volume_muted = bool(attributes.get("is_volume_muted"))
         self.mass.players.update_player_control(entity_id)
 
     async def _fetch_states(self, entity_ids: list[str]) -> list[State]:
@@ -927,6 +954,21 @@ class HomeAssistantProvider(PluginProvider):
         ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
+
+    async def _raise_for_tts_error(self, response: ClientResponse) -> None:
+        """Raise for a failed tts_get_url response without masking a language rejection."""
+        if response.ok:
+            return
+        try:
+            # content_type=None so an error body served as text/plain still parses
+            body = await response.json(content_type=None)
+        except ValueError:
+            body = None
+        error_message = body.get("error") if isinstance(body, dict) else None
+        # HA returns the same 400 for a rejected option and an unsupported language
+        if isinstance(error_message, str) and "Invalid options found" in error_message:
+            raise MusicAssistantError(error_message)
+        response.raise_for_status()
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""

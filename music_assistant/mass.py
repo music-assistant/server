@@ -12,6 +12,7 @@ import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -28,6 +29,10 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    AuthenticationFailed,
+    AuthenticationRequired,
+    InvalidToken,
+    LoginFailed,
     MusicAssistantError,
     SetupFailedError,
     UnsupportedSystemError,
@@ -102,7 +107,7 @@ EventSubscriptionType = tuple[
 
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = str(Path(__file__).resolve().parent)
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 # These bounds guard against a wedged provider, they are not a performance budget: several
 # providers load at once on a busy event loop, so a step can take much longer in wall clock
@@ -700,6 +705,7 @@ class MusicAssistant:
         task_id: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
+        log_exceptions: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """
@@ -714,6 +720,9 @@ class MusicAssistant:
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
                            when creating multiple tasks in sequence.
+        :param log_exceptions: Set to False when the caller awaits the task and reports
+                               its failures itself; the task then logs at debug level
+                               instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
@@ -756,7 +765,11 @@ class MusicAssistant:
             # "Task exception was never retrieved" error at garbage collection time
             if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-                LOGGER.warning(
+                # a failure the waiters report themselves is demoted rather than dropped:
+                # work that outlives every waiter (join_task keeps it running) would
+                # otherwise fail without a trace anywhere
+                LOGGER.log(
+                    logging.WARNING if log_exceptions else logging.DEBUG,
                     "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
@@ -987,7 +1000,14 @@ class MusicAssistant:
 
             # auto schedule a retry if the (re)load failed with a handled exception
             # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
-            will_retry = allow_retry and isinstance(exc, MusicAssistantError)
+            will_retry = (
+                allow_retry
+                and isinstance(exc, MusicAssistantError)
+                and not isinstance(
+                    exc,
+                    (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
+                )
+            )
             if will_retry:
                 self.call_later(
                     120,
@@ -1018,6 +1038,10 @@ class MusicAssistant:
         # down state the sync may still be using, such as the mount of a network share
         await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
+            # mark the provider as on its way out before anything is torn down: the steps
+            # below have await points, so without this a callback that is still in flight
+            # could register a player back onto a provider that is already gone
+            provider.unloading = True
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
@@ -1026,11 +1050,16 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
-            if is_player_provider(provider):
-                # unregister all players of this provider
-                for player in provider.players:
-                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
+                if is_player_provider(provider):
+                    # unregister all players of this provider, straight from the registry: the
+                    # provider's own players listing hides disabled and still-initializing
+                    # players, which must be unregistered here too so their on_unload runs
+                    # and no stale entry is left behind
+                    for player in list(self.players):
+                        if player.provider.instance_id != instance_id:
+                            continue
+                        await self.players.unregister(player.player_id, permanent=is_removed)
                 await provider.unload(is_removed)
             except Exception as err:
                 LOGGER.warning(
@@ -1368,7 +1397,18 @@ class MusicAssistant:
 
         # execute post load actions
         async def _on_provider_loaded() -> None:
-            await provider.loaded_in_mass()
+            try:
+                await provider.loaded_in_mass()
+            except Exception as err:
+                # the provider stays registered and available either way, so the steps
+                # below still run: an event left unset makes every waiter pay the full
+                # timeout, on every attempt, until the provider reloads
+                LOGGER.warning(
+                    "Error in the post load step of provider %s: %s",
+                    provider.name,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
             provider.initialized.set()
             self.get_provider_ready_event(provider.domain).set()
             await self.run_provider_discovery(provider.instance_id)

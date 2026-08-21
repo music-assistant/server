@@ -11,9 +11,14 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientResponseError
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.enums import EventType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
@@ -656,8 +661,22 @@ async def test_ai_query_not_advertised_without_entity() -> None:
 def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     """Let the Home Assistant tts_get_url endpoint return a URL and return the post mock."""
     response = AsyncMock()
+    response.ok = True
     response.raise_for_status = MagicMock()
     response.json.return_value = {"url": "http://homeassistant.local/tts.mp3"}
+    post = cast("MagicMock", provider.mass.http_session.post)
+    post.return_value.__aenter__.return_value = response
+    return post
+
+
+def _mock_tts_error_response(provider: HomeAssistantProvider, error_message: str) -> MagicMock:
+    """Let the tts_get_url endpoint fail with a 400 carrying the given HA error body."""
+    response = AsyncMock()
+    response.ok = False
+    response.json.return_value = {"error": error_message}
+    response.raise_for_status = MagicMock(
+        side_effect=ClientResponseError(MagicMock(), (), status=400, message=error_message)
+    )
     post = cast("MagicMock", provider.mass.http_session.post)
     post.return_value.__aenter__.return_value = response
     return post
@@ -699,6 +718,61 @@ async def test_tts_not_advertised_without_entity() -> None:
 
         with pytest.raises(UnsupportedFeaturedException):
             await provider.get_tts_message("Hello")
+
+
+async def test_tts_sends_options_in_the_payload() -> None:
+    """A host's TTS options are forwarded in the tts_get_url payload."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message(
+            "Hello", options={"voice": "en_US-lessac-medium", "length_scale": 1.2}
+        )
+
+        assert post.call_args.kwargs["json"] == {
+            "engine_id": "tts.first",
+            "message": "Hello",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+
+
+async def test_tts_omits_options_from_the_payload_when_empty() -> None:
+    """An empty options dict is not sent to Home Assistant."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", options={})
+
+        assert post.call_args.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
+
+
+async def test_tts_invalid_option_raises_music_assistant_error() -> None:
+    """HA rejecting an unknown TTS option surfaces as MusicAssistantError with HA's message."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, "Invalid options found: ['speaking_cadance']")
+
+        with pytest.raises(MusicAssistantError, match=r"Invalid options found"):
+            await provider.get_tts_message("Hello", options={"speaking_cadance": 1})
+
+
+async def test_tts_error_body_that_is_not_json_still_raises_the_generic_way() -> None:
+    """An unparsable error body leaves the status error to speak for itself."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_error_response(provider, "Invalid options found: ['x']")
+        response = post.return_value.__aenter__.return_value
+        response.json.side_effect = ValueError("not json")
+
+        with pytest.raises(ClientResponseError):
+            await provider.get_tts_message("Hello", options={"x": 1})
+
+
+async def test_tts_unsupported_language_still_raises_the_generic_way() -> None:
+    """An unsupported-language 400 keeps raising as before, so the caller's retry still fires."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, "Language 'xx' not supported")
+
+        with pytest.raises(ClientResponseError):
+            await provider.get_tts_message("Hello", language="xx")
 
 
 async def test_registry_update_refreshes_the_engines() -> None:
@@ -1516,6 +1590,19 @@ async def test_control_role_change_is_applied() -> None:
         control = (provider._player_controls or {})["media_player.kitchen"]
         assert control.supports_volume is True
         assert control.supports_power is False
+
+
+async def test_control_selection_drops_a_value_that_is_no_entity_id() -> None:
+    """A stored selection that is no entity ID must not take the other controls down."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(
+        states, **{CONF_POWER_CONTROLS: ["power_controls", "media_player.kitchen"]}
+    ) as (provider, hass):
+        await provider.loaded_in_mass()
+
+        assert set(provider._player_controls or {}) == {"media_player.kitchen"}
+        # Home Assistant refuses the whole subscription when it carries the stray value
+        assert hass.subscriptions[-1] == ["media_player.kitchen"]
 
 
 @pytest.mark.parametrize(

@@ -16,16 +16,20 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     PlayerCommandFailed,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource
+from music_assistant_models.streamdetails import StreamDetails
 from ya_passport_auth import SecretStr
 from ya_passport_auth.ma import BorrowedCredentialSource, list_yandex_music_instances
 
+from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
@@ -76,6 +80,18 @@ def _arm_play_media_recorder(provider: YandexYnisonProvider) -> list[tuple[str, 
 def _stub_attr(obj: object, name: str, value: Any) -> None:
     """Setattr that bypasses mypy method-assign and ruff B010."""
     setattr(obj, name, value)
+
+
+def _set_stream_owner(
+    provider: MagicMock,
+    *streamdetails: MagicMock,
+    instance_id: str = "yandex_music--test",
+) -> None:
+    """Assign one exact available Yandex Music owner to stream-details test doubles."""
+    provider.instance_id = instance_id
+    provider.available = True
+    for details in streamdetails:
+        details.provider = instance_id
 
 
 def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
@@ -1026,6 +1042,7 @@ class TestPCMNormalization:
         sd.expiration = 600
         sd.duration = 200
         sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
         mock_yandex.get_stream_details = AsyncMock(return_value=sd)
 
         async def _fake_audio_stream(_details: object) -> Any:
@@ -1052,6 +1069,7 @@ class TestPCMNormalization:
 
         assert collected == [b"pcm-normalized"]
         mock_ffmpeg.assert_called_once()
+        mock_yandex.acquire_stream_slot.assert_called_once_with(STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT)
         call_kwargs = mock_ffmpeg.call_args
         # Default (no YM provider linked) → lossy profile
         assert call_kwargs.kwargs["output_format"] == provider._normalized_format
@@ -1063,6 +1081,55 @@ class TestPCMNormalization:
         assert "-re" not in args
         assert "-ss" not in args
 
+    async def test_stream_track_preserves_linked_provider_capacity_error(self) -> None:
+        """A linked-provider slot timeout remains typed before the inner ffmpeg starts."""
+        provider = _make_provider()
+        streamdetails = MagicMock()
+        streamdetails.audio_format = AudioFormat(
+            content_type=ContentType.MP3,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        )
+        linked_provider = MagicMock(spec=MusicProvider)
+        linked_provider.max_concurrent_streams = 1
+        linked_provider.name = "Yandex Music"
+        linked_provider.instance_id = "yandex_music--1"
+        linked_provider.available = True
+        streamdetails.provider = linked_provider.instance_id
+        capacity_error = ProviderStreamLimitError(
+            linked_provider, STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
+        )
+
+        class _UnavailableSlot:
+            async def __aenter__(self) -> None:
+                raise capacity_error
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        linked_provider.acquire_stream_slot.return_value = _UnavailableSlot()
+
+        async def _raw_stream(_details: object) -> Any:
+            yield b"raw"
+
+        linked_provider.get_audio_stream = _raw_stream
+        provider._yandex_provider = linked_provider
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(return_value=streamdetails),
+        )
+        _stub_attr(provider, "_update_metadata_from_stream", AsyncMock())
+
+        with pytest.raises(ProviderStreamLimitError):
+            async for _ in provider._stream_track("track:123"):
+                pass
+
+        linked_provider.acquire_stream_slot.assert_called_once_with(
+            STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
+        )
+
     async def test_stream_track_seek_adds_ss_arg(self) -> None:
         """With seek > 0, _stream_track adds -ss to ffmpeg args."""
         provider = _make_provider()
@@ -1073,6 +1140,7 @@ class TestPCMNormalization:
         sd.expiration = 600
         sd.duration = 200
         sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
         mock_yandex.get_stream_details = AsyncMock(return_value=sd)
 
         async def _fake_audio_stream(_details: object) -> Any:
@@ -1125,6 +1193,7 @@ class TestPCMNormalization:
         sd.expiration = 600
         sd.duration = 200
         sd.audio_format = MagicMock()
+        _set_stream_owner(mock_yandex, sd)
         mock_yandex.get_stream_details = AsyncMock(return_value=sd)
 
         async def _fake_audio_stream(_details: object) -> Any:
@@ -1319,6 +1388,7 @@ class TestPCMNormalization:
         sd.audio_format = MagicMock()
         sd.to_dict.return_value = {"track_id": "t1"}
         sd.data = {"url": "https://cdn.example.com/audio.mp3"}
+        _set_stream_owner(mock_yandex, sd)
 
         async def fetch_and_null(_track_id: str, _media_type: Any = None) -> Any:
             # Simulate the background unload task firing while we awaited.
@@ -1335,6 +1405,63 @@ class TestPCMNormalization:
         assert collected == []
         assert provider._stream_stop_event.is_set()
 
+    async def test_stream_track_provider_switch_does_not_mix_owners(self) -> None:
+        """Details from the old owner are not handed to a newly linked provider instance."""
+        provider = _make_provider()
+        owner_a = MagicMock()
+        owner_b = MagicMock()
+        streamdetails = MagicMock()
+        streamdetails.expiration = 60
+        streamdetails.audio_format = MagicMock()
+        streamdetails.to_dict.return_value = {}
+        streamdetails.data = None
+        _set_stream_owner(owner_a, streamdetails, instance_id="yandex_music--a")
+        _set_stream_owner(owner_b, instance_id="yandex_music--b")
+
+        async def _fetch_and_switch(_track_id: str, _media_type: Any) -> MagicMock:
+            provider._yandex_provider = owner_b
+            return streamdetails
+
+        owner_a.get_stream_details = AsyncMock(side_effect=_fetch_and_switch)
+        owner_a.get_audio_stream = MagicMock()
+        owner_b.get_audio_stream = MagicMock()
+        provider._yandex_provider = owner_a
+
+        output = [chunk async for chunk in provider._stream_track("track:1")]
+
+        assert output == []
+        assert provider._stream_stop_event.is_set()
+        owner_a.get_audio_stream.assert_not_called()
+        owner_b.get_audio_stream.assert_not_called()
+
+    async def test_stream_track_provider_switch_during_metadata_aborts(self) -> None:
+        """A linked-owner switch during metadata preparation cannot start the old source."""
+        provider = _make_provider()
+        owner_a = MagicMock()
+        owner_b = MagicMock()
+        streamdetails = MagicMock()
+        streamdetails.audio_format = MagicMock()
+        _set_stream_owner(owner_a, streamdetails, instance_id="yandex_music--a")
+        _set_stream_owner(owner_b, instance_id="yandex_music--b")
+        owner_a.get_audio_stream = MagicMock()
+        provider._yandex_provider = owner_a
+        _stub_attr(
+            provider,
+            "_get_stream_details_with_retry",
+            AsyncMock(return_value=streamdetails),
+        )
+
+        async def _switch_owner(*_args: object) -> None:
+            provider._yandex_provider = owner_b
+
+        _stub_attr(provider, "_update_metadata_from_stream", AsyncMock(side_effect=_switch_owner))
+
+        output = [chunk async for chunk in provider._stream_track("track:1")]
+
+        assert output == []
+        assert provider._stream_stop_event.is_set()
+        owner_a.get_audio_stream.assert_not_called()
+
 
 def _make_ym_provider_stub(
     instance_id: str = "ym-inst",
@@ -1347,6 +1474,7 @@ def _make_ym_provider_stub(
     ym_config.get_value.side_effect = values.get
     ym = MagicMock()
     ym.instance_id = instance_id
+    ym.available = True
     ym.domain = "yandex_music"
     ym.type = ProviderType.MUSIC
     ym.config = ym_config
@@ -2239,14 +2367,24 @@ class TestGetStreamDetailsWithRetry:
         sd.expiration = 600
         sd.to_dict.return_value = {"track_id": "t1"}
         sd.data = {"url": "https://cdn.example.com/audio.mp3", "decryption_key": "abc"}
+        _set_stream_owner(mock_yp, sd)
         mock_yp.get_stream_details = AsyncMock(return_value=sd)
         provider._yandex_provider = mock_yp
 
         result = await provider._get_stream_details_with_retry("t1")
         assert result is sd
         mock_yp.get_stream_details.assert_awaited_once()
+        provider.mass.cache.get.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "ynison_sd_yandex_music--test_t1",
+            provider=provider.instance_id,
+            base_class=StreamDetails,
+        )
         # Verify cache.set was called with data field preserved
         provider.mass.cache.set.assert_awaited_once()  # type: ignore[attr-defined]
+        assert (
+            provider.mass.cache.set.call_args.args[0]  # type: ignore[attr-defined]
+            == "ynison_sd_yandex_music--test_t1"
+        )
         cached_value = provider.mass.cache.set.call_args[0][1]  # type: ignore[attr-defined]
         assert cached_value["data"] == sd.data
 
@@ -2257,12 +2395,52 @@ class TestGetStreamDetailsWithRetry:
         cached_sd.expiration = 600
         provider.mass.cache.get = AsyncMock(return_value=cached_sd)  # type: ignore[method-assign]
         mock_yp = MagicMock()
+        _set_stream_owner(mock_yp, cached_sd)
         mock_yp.get_stream_details = AsyncMock()
         provider._yandex_provider = mock_yp
 
         result = await provider._get_stream_details_with_retry("t1")
         assert result is cached_sd
         mock_yp.get_stream_details.assert_not_awaited()
+
+    async def test_cache_owner_mismatch_is_discarded(self) -> None:
+        """Cached details from another linked instance are never leased or streamed."""
+        provider = _make_provider()
+        cached_sd = MagicMock()
+        cached_sd.provider = "yandex_music--other"
+        provider.mass.cache.get = AsyncMock(return_value=cached_sd)  # type: ignore[method-assign]
+        fresh_sd = MagicMock()
+        fresh_sd.expiration = 60
+        fresh_sd.to_dict.return_value = {}
+        fresh_sd.data = None
+        mock_yp = MagicMock()
+        _set_stream_owner(mock_yp, fresh_sd)
+        mock_yp.get_stream_details = AsyncMock(return_value=fresh_sd)
+        provider._yandex_provider = mock_yp
+
+        result = await provider._get_stream_details_with_retry("t1")
+
+        assert result is fresh_sd
+        provider.mass.cache.delete.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "ynison_sd_yandex_music--test_t1",
+            provider=provider.instance_id,
+        )
+        mock_yp.get_stream_details.assert_awaited_once()
+
+    async def test_fresh_owner_mismatch_is_not_retried(self) -> None:
+        """A deterministic provider-owner violation remains actionable and immediate."""
+        provider = _make_provider()
+        streamdetails = MagicMock()
+        streamdetails.provider = "yandex_music--other"
+        mock_yp = MagicMock()
+        _set_stream_owner(mock_yp)
+        mock_yp.get_stream_details = AsyncMock(return_value=streamdetails)
+        provider._yandex_provider = mock_yp
+
+        with pytest.raises(InvalidDataError, match="expected yandex_music--test"):
+            await provider._get_stream_details_with_retry("t1")
+
+        mock_yp.get_stream_details.assert_awaited_once()
 
     async def test_retries_on_failure(self) -> None:
         """Retries on transient error, succeeds on second attempt."""
@@ -2271,6 +2449,7 @@ class TestGetStreamDetailsWithRetry:
         sd = MagicMock()
         sd.expiration = 600
         sd.to_dict.return_value = {"track_id": "t1"}
+        _set_stream_owner(mock_yp, sd)
         mock_yp.get_stream_details = AsyncMock(side_effect=[RuntimeError("transient"), sd])
         provider._yandex_provider = mock_yp
 
@@ -2285,6 +2464,7 @@ class TestGetStreamDetailsWithRetry:
         """Raises RuntimeError after all retries exhausted."""
         provider = _make_provider()
         mock_yp = MagicMock()
+        _set_stream_owner(mock_yp)
         mock_yp.get_stream_details = AsyncMock(side_effect=RuntimeError("always fails"))
         provider._yandex_provider = mock_yp
 
@@ -2302,6 +2482,7 @@ class TestGetStreamDetailsWithRetry:
         """CancelledError propagates immediately, no retry."""
         provider = _make_provider()
         mock_yp = MagicMock()
+        _set_stream_owner(mock_yp)
         mock_yp.get_stream_details = AsyncMock(side_effect=asyncio.CancelledError())
         provider._yandex_provider = mock_yp
 
@@ -2581,10 +2762,12 @@ class TestInvalidateStreamCache:
         provider.mass.cache = MagicMock()
         provider.mass.cache.delete = AsyncMock()
 
-        await provider._invalidate_stream_cache("track:42")
+        await provider._invalidate_stream_cache(
+            "track:42", provider_instance_id="yandex_music--test"
+        )
 
         provider.mass.cache.delete.assert_called_once_with(
-            "ynison_sd_track:42",
+            "ynison_sd_yandex_music--test_track:42",
             provider=provider.instance_id,
         )
 
@@ -2907,6 +3090,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert default_rate != 96_000  # sanity: ensure we'll see a change
 
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: MediaType) -> Any:
             sd = MagicMock()
@@ -2920,6 +3104,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
                 channels=2,
             )
             sd.to_dict = MagicMock(return_value={})
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)
@@ -3149,6 +3334,90 @@ class TestNaturalEndDifferentiation:
     # belt-and-braces; intentionally untested.
 
 
+class _TrackingSlot:
+    """Stream-slot double that records acquire/release ordering."""
+
+    def __init__(self, events: list[str], index: int) -> None:
+        self._events = events
+        self._index = index
+
+    async def __aenter__(self) -> None:
+        self._events.append(f"acquired-{self._index}")
+
+    async def __aexit__(self, *_args: object) -> None:
+        self._events.append(f"released-{self._index}")
+
+
+class TestLinkedSlotRelease:
+    """The linked provider's stream slot is released as soon as a track stops streaming."""
+
+    @staticmethod
+    def _build() -> YandexYnisonProvider:
+        provider = _make_provider()
+        provider._yandex_provider = MagicMock()
+        provider._in_use_by_queue = "player1"
+        provider._active_session_id = "session-1"
+        ynison = MagicMock()
+        ynison.connected = True
+        ynison.state.is_paused = False
+        ynison.state.current_track_id = "track42"
+        provider._ynison = ynison
+        return provider
+
+    async def test_consumer_close_releases_slot(self) -> None:
+        """Closing the audio stream mid-track finalizes the generator holding the slot."""
+        provider = self._build()
+        events: list[str] = []
+
+        async def _endless_stream(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params  # signature-compat with _stream_track
+            async with _TrackingSlot(events, 1):
+                while True:
+                    yield b"\x00\x00\x00\x00"
+
+        _stub_attr(provider, "_stream_track", _endless_stream)
+
+        gen = provider.get_audio_stream(MagicMock(), seek_position=0)
+        assert await anext(gen) == b"\x00\x00\x00\x00"
+        assert events == ["acquired-1"]
+
+        await gen.aclose()
+
+        assert events == ["acquired-1", "released-1"]
+
+    async def test_track_change_releases_slot_before_next_track(self) -> None:
+        """A track change never leaves the previous track's slot charged."""
+        provider = self._build()
+        events: list[str] = []
+        invocations = 0
+
+        async def _two_pass_stream(
+            _track_id: str, *, seek_ms: int = 0, session_params: dict[str, Any] | None = None
+        ) -> Any:
+            del seek_ms, session_params  # signature-compat with _stream_track
+            nonlocal invocations
+            invocations += 1
+            index = invocations
+            async with _TrackingSlot(events, index):
+                while True:
+                    yield b"\x00\x00\x00\x00"
+                    if index == 1:
+                        provider._track_changed_event.set()
+                    else:
+                        provider._stream_stop_event.set()
+
+        _stub_attr(provider, "_stream_track", _two_pass_stream)
+
+        gen = provider.get_audio_stream(MagicMock(), seek_position=0)
+        with suppress(StopAsyncIteration):
+            async for _ in gen:
+                pass
+
+        assert events == ["acquired-1", "released-1", "acquired-2", "released-2"]
+
+
 class TestBypassThrottlerScope:
     """`BYPASS_THROTTLER` is set inside `_stream_track`, NOT inside prefetch."""
 
@@ -3157,6 +3426,7 @@ class TestBypassThrottlerScope:
         provider = _make_provider()
         observed: list[bool] = []
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: Any) -> Any:
             observed.append(BYPASS_THROTTLER.get())
@@ -3164,6 +3434,7 @@ class TestBypassThrottlerScope:
             sd.expiration = 0
             sd.duration = 1
             sd.audio_format = MagicMock()
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)
@@ -3203,6 +3474,7 @@ class TestBypassThrottlerScope:
         provider = _make_provider()
         observed: list[bool] = []
         mock_yandex = MagicMock()
+        _set_stream_owner(mock_yandex)
 
         async def _fake_get_stream_details(_track_id: str, _media_type: Any) -> Any:
             observed.append(BYPASS_THROTTLER.get())
@@ -3211,6 +3483,7 @@ class TestBypassThrottlerScope:
             sd.audio_format = MagicMock()
             sd.audio_format.sample_rate = 44100
             sd.audio_format.bit_depth = 16
+            sd.provider = mock_yandex.instance_id
             return sd
 
         mock_yandex.get_stream_details = AsyncMock(side_effect=_fake_get_stream_details)

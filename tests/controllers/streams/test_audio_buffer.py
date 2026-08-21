@@ -7,7 +7,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,6 +31,7 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -115,6 +116,7 @@ def test_init_defaults() -> None:
     assert buf.max_size_seconds == BUFFER_SIZE_MAP[BufferSize.BALANCED]
     assert buf.size_seconds == 0
     assert buf.seconds_available == 0
+    assert buf.duration_available == 0
     assert not buf.cancelled
     assert not buf.has_error
     assert not buf.ready.is_set()
@@ -133,6 +135,16 @@ def test_init_rolling_mode() -> None:
 
 
 # -- Put and get --
+
+
+async def test_duration_available_uses_exact_resident_byte_count() -> None:
+    """A partial EOF chunk contributes its exact PCM duration."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._put(ONE_SECOND_CHUNK[: len(ONE_SECOND_CHUNK) // 2])
+
+    assert audio_buffer.seconds_available == 2
+    assert audio_buffer.duration_available == 1.5
 
 
 @pytest.mark.asyncio
@@ -255,12 +267,16 @@ async def test_fill_error_propagation() -> None:
 
     assert buf.has_error
 
-    # consumer should receive the valid chunk and get a clean EOF
+    # consumer should receive the valid chunk before the source error surfaces.
     result: list[bytes] = []
-    async for chunk in buf.get_raw_stream():
-        result.append(chunk)
-    assert len(result) == 1
-    assert result[0] == ONE_SECOND_CHUNK
+
+    async def _consume() -> None:
+        async for chunk in buf.get_raw_stream():
+            result.append(chunk)
+
+    with pytest.raises(RuntimeError, match="test error"):
+        await _consume()
+    assert result == [ONE_SECOND_CHUNK]
 
 
 @pytest.mark.asyncio
@@ -357,6 +373,55 @@ async def test_get_buffer_sound_effect_uses_default_ready_threshold_without_cros
     assert scheduled_tasks == []
     start_analysis.assert_not_called()
     await buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("max_concurrent_streams", "has_free_slot", "expect_released"),
+    [(1, False, True), (1, True, False), (None, True, False)],
+    ids=["slot_limited_saturated", "slot_limited_with_free_slot", "unlimited"],
+)
+@pytest.mark.asyncio
+async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
+    max_concurrent_streams: int | None, has_free_slot: bool, expect_released: bool
+) -> None:
+    """The superseded producer only gives up its slot when the provider has none to spare."""
+    mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = max_concurrent_streams
+    provider.has_available_stream_slot = has_free_slot
+    mass.get_provider.return_value = provider
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+    blocked = asyncio.Event()
+
+    async def _never_ending_source() -> AsyncGenerator[bytes]:
+        yield _make_chunk(0)
+        await blocked.wait()
+
+    stale_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    stale_buffer.fill(_never_ending_source())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    streamdetails.buffer = stale_buffer
+    # the producer is still charging a source slot and the consumer is active right now,
+    # so the 30s inactivity heuristic must not be what decides this
+    assert stale_buffer.is_buffering
+    assert time.time() - stale_buffer._last_access_time < 30
+
+    # a forward seek far past the buffered window can not be served by this buffer
+    assert not stale_buffer.is_valid((SEEK_WAIT_THRESHOLD + 60) * 1000)
+    replacement = await AudioBuffer.get_buffer(
+        mass,
+        streamdetails,
+        seek_position_ms=(SEEK_WAIT_THRESHOLD + 60) * 1000,
+        reason="test",
+    )
+
+    assert replacement is not stale_buffer
+    assert stale_buffer.cancelled is expect_released
+    assert stale_buffer.is_buffering is not expect_released
+    blocked.set()
+    await stale_buffer.clear()
+    await replacement.clear()
 
 
 @pytest.mark.asyncio
@@ -456,6 +521,23 @@ async def test_seek_in_raw_stream() -> None:
     assert chunks[0] == _make_chunk(5)
 
 
+async def test_exact_raw_seek_preserves_millisecond_position() -> None:
+    """Crossfade continuation does not round its media-time resume backward."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await audio_buffer._put(ONE_SECOND_CHUNK)
+    await audio_buffer._set_eof()
+
+    regular_stream = audio_buffer.get_raw_stream(seek_position_ms=250)
+    exact_stream = audio_buffer.get_raw_stream(seek_position_ms=250, exact_seek=True)
+    regular_chunk = await anext(regular_stream)
+    exact_chunk = await anext(exact_stream)
+    await regular_stream.aclose()
+    await exact_stream.aclose()
+
+    assert len(regular_chunk) == int(len(ONE_SECOND_CHUNK) * 0.8)
+    assert len(exact_chunk) == int(len(ONE_SECOND_CHUNK) * 0.75)
+
+
 # -- Analysis reader (read_chunk_for_analysis) --
 
 
@@ -549,6 +631,26 @@ async def test_rolling_buffer_fifo() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rolling_buffer_drained_surfaces_producer_error() -> None:
+    """A drained rolling buffer raises the producer error instead of a clean EOF."""
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        msg = "test error"
+        raise RuntimeError(msg)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
+    buf.fill(_failing_source(), source_name="test")
+    while not buf.has_error:
+        await asyncio.sleep(0.01)
+
+    # the buffered chunk is still delivered before the error surfaces
+    assert await buf._get() == ONE_SECOND_CHUNK
+    with pytest.raises(RuntimeError, match="test error"):
+        await buf._get()
+
+
+@pytest.mark.asyncio
 async def test_seekable_buffer_backpressure() -> None:
     """SEEKABLE mode waits on put when full, consumer frees space on get."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
@@ -557,7 +659,9 @@ async def test_seekable_buffer_backpressure() -> None:
     # use fill() so there's an active producer task (eviction only happens
     # when the producer is running and needs space)
     buf.fill(_make_source(max_size + 5), source_name="test")
-    await asyncio.sleep(0.1)
+    async with asyncio.timeout(5):
+        async with buf._data_available:
+            await buf._data_available.wait_for(lambda: buf.size_seconds == max_size)
 
     assert buf.size_seconds == max_size
 
@@ -834,3 +938,91 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
     )
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_real_buffer_producer_error_reaches_queue_item_stream(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A real AudioBuffer producer error is surfaced instead of a truncated stream."""
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        raise RuntimeError("source failed")
+
+    streamdetails = _make_stream_details(MediaType.SOUND_EFFECT, duration=90, allow_seek=True)
+    streamdetails.loudness = -10.0
+    queue_item = QueueItem(
+        queue_id="player_a",
+        queue_item_id="current",
+        name="Current",
+        duration=90,
+        streamdetails=streamdetails,
+    )
+    cast("Any", mass_minimal.player_queues).get = MagicMock(return_value=None)
+    cast("Any", mass_minimal.streams.audio).get_media_stream = MagicMock(
+        return_value=_failing_source()
+    )
+    controller = StreamsAudio(mass_minimal)
+
+    chunks: list[bytes] = []
+    async for chunk in controller.get_queue_item_stream(
+        queue_item, TEST_PCM_FORMAT, raise_on_error=False
+    ):
+        chunks.append(chunk)
+
+    # the stream waits for the buffer to become playable, so a producer failure is
+    # reported before any audio is served rather than truncating it mid-stream
+    assert chunks == []
+    assert streamdetails.stream_error is True
+    assert queue_item.available
+
+
+@pytest.mark.asyncio
+async def test_stale_stream_error_reset_on_stream_start(mass_minimal: MusicAssistant) -> None:
+    """A stream_error left on reused streamdetails is cleared when a new stream starts."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
+    streamdetails.loudness = -10.0  # skip the audio-analysis hydration call
+    streamdetails.stream_error = True  # left over from a previously failed attempt
+    queue_item = QueueItem(
+        queue_id="player_a",
+        queue_item_id="current",
+        name="Current",
+        duration=90,
+        streamdetails=streamdetails,
+    )
+    controller = StreamsAudio(mass_minimal)
+
+    with patch.object(audio_mod, "AudioBuffer", _FakeAudioBuffer):
+        async for _chunk in controller.get_queue_item_stream(queue_item, TEST_PCM_FORMAT):
+            pass
+
+    assert streamdetails.stream_error is False
+
+
+@pytest.mark.asyncio
+async def test_audio_source_stream_error_reset_on_retry(mass_minimal: MusicAssistant) -> None:
+    """A cached AudioSource stream clears a prior error before retrying."""
+    streamdetails = _make_stream_details(MediaType.AUDIO_SOURCE, duration=None, allow_seek=False)
+    streamdetails.stream_error = True
+    queue_item = QueueItem(
+        queue_id="player_a",
+        queue_item_id="source",
+        name="Source",
+        duration=0,
+        streamdetails=streamdetails,
+    )
+    controller = StreamsAudio(mass_minimal)
+
+    async def _source(
+        _streamdetails: StreamDetails, _pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+
+    with patch.object(controller, "_iter_audio_source_pcm", _source):
+        chunks = [
+            chunk async for chunk in controller.get_queue_item_stream(queue_item, TEST_PCM_FORMAT)
+        ]
+
+    assert chunks == [ONE_SECOND_CHUNK]
+    assert streamdetails.stream_error is False

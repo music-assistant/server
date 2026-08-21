@@ -168,7 +168,9 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         # the content type is collected by the setup flow (setup_data); the parent reads it
         # from the legacy config values, so re-resolve it setup-data-aware (read-through keeps
         # pre-flow installs working)
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self.root_folder_id = root_folder_id
         self._unregister_stream_route: Callable[[], None] | None = None
         # per-folder listing cache: folder path -> {child name -> (cloud id, item)};
@@ -181,6 +183,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        await super().unload(is_removed)
         if self._unregister_stream_route is not None:
             self._unregister_stream_route()
 
@@ -262,6 +265,13 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     # filesystem hooks (these are what the parent calls)
     # ------------------------------------------------------------------
 
+    async def _is_reachable(self) -> bool:
+        """Return whether the cloud storage can be read."""
+        # this provider has no local path to stat, so ask the API for the root listing;
+        # an outage (or expired credentials) surfaces as a raised error
+        await self._scandir("", use_cache=False)
+        return True
+
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
         List the children of a cloud folder.
@@ -304,7 +314,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],

@@ -10,7 +10,11 @@ import pytest
 from music_assistant_models.enums import PlayerType
 
 import music_assistant.providers.sendspin.provider as provider_module
-from music_assistant.providers.sendspin.player import SendspinBasePlayer
+from music_assistant.providers.sendspin.player import (
+    SendspinBasePlayer,
+    SendspinSourcePlayer,
+    SendspinVisualizerPlayer,
+)
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
@@ -115,3 +119,32 @@ def test_create_player_selects_class_on_negotiated_roles(
     provider = _class_selection_provider(monkeypatch)
     player = provider._create_player("c", _client(negotiated_role_ids), None)
     assert cast("_StubPlayer", player)._attr_type == expected_type
+
+
+class _StubSourcePlayer(_StubPlayer):
+    pass
+
+
+def test_create_player_uses_the_capture_only_class_for_source_only_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source-only client must not become a player that advertises playback."""
+    provider = _class_selection_provider(monkeypatch)
+    monkeypatch.setattr(provider_module, "SendspinSourcePlayer", _StubSourcePlayer)
+    source_only = provider._create_player("c", _client(["source@v1"]), None)
+    assert isinstance(cast("object", source_only), _StubSourcePlayer)
+    # A device that also plays keeps the full player class.
+    combo = provider._create_player("c", _client(["source@v1", "player@v1"]), None)
+    assert not isinstance(cast("object", combo), _StubSourcePlayer)
+
+
+def test_player_classes_declare_their_privacy() -> None:
+    """
+    Only players owned by a single device or by the server itself are private.
+
+    Visualizers and lights are hidden by default too, but clients keep offering
+    them as group members, so they must not be marked private.
+    """
+    assert SendspinVisualizerPlayer._attr_hidden_by_default is True
+    assert SendspinVisualizerPlayer._attr_private is False
+    assert SendspinSourcePlayer._attr_private is True

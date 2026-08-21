@@ -17,8 +17,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from aiohttp import ClientError
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -38,6 +36,7 @@ from music_assistant.providers.filesystem_cloud.base import (
 )
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -45,6 +44,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
 )
 
 from .auth import MAOneDriveAuth
@@ -52,7 +52,7 @@ from .constants import GRAPH_BASE_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -98,9 +98,11 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         """
         # the content type is set by the setup flow; surface it read-only so the sync
         # options' depends_on chains still resolve
-        content_type = getattr(self, "media_content_type", "music")
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,

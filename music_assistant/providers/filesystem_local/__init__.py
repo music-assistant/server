@@ -19,9 +19,7 @@ import aiofiles
 import shortuuid
 import xmltodict
 from aiofiles.os import wrap
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -36,6 +34,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -76,7 +75,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers import lyrics
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
@@ -90,6 +89,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
@@ -98,6 +98,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -115,9 +116,11 @@ from .constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
+    cue_metadata_checksum,
     cue_referenced_audio_stem,
     make_cue_track_id,
     parse_cue_track_id,
@@ -136,7 +139,7 @@ from .helpers import (
 from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -149,7 +152,6 @@ isfile = wrap(os.path.isfile)
 ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
-scandir = wrap(os.scandir)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -175,6 +177,8 @@ class LocalFileSystemProvider(MusicProvider):
 
     # parallel workers per sync; subclasses lower this for slower transports
     _SYNC_CONCURRENCY: ClassVar[int] = 16
+    _sync_tracks: bool = True
+    _sync_playlists: bool = True
 
     def __init__(
         self,
@@ -192,18 +196,20 @@ class LocalFileSystemProvider(MusicProvider):
         )
         self.write_access: bool = False
         self.sync_running: bool = False
-        self._sync_tracks: bool = True
-        self._sync_playlists: bool = True
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self._cue = CueSheetHandler(self)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
         # content type read-only so the sync options' depends_on chains still resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -244,7 +250,7 @@ class LocalFileSystemProvider(MusicProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        return self.base_path.split(os.sep)[-1]
+        return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -257,6 +263,13 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._cancel_availability_probe()
+        # a check that already started runs as a task under the same id, and it would
+        # otherwise keep talking to storage this unload is in the middle of tearing down
+        self.mass.cancel_task(self._availability_probe_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -457,12 +470,12 @@ class LocalFileSystemProvider(MusicProvider):
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # provider_mappings stores synthetic per-track ids for CUE sheets, not the
-        # CUE path, so derive a path-keyed checksum map for the scan classifier
-        cue_file_checksums: dict[str, str] = {}
+        # CUE path, so collect every track checksum per path for the scan classifier
+        cue_file_checksums: dict[str, set[str]] = {}
         for prov_item_id, checksum in file_checksums.items():
             parsed = parse_cue_track_id(prov_item_id)
             if parsed is not None:
-                cue_file_checksums[parsed[0]] = checksum
+                cue_file_checksums.setdefault(parsed[0], set()).add(checksum)
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames: set[str] = set()
@@ -1003,6 +1016,10 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+        if file_item.is_dir:
+            # handing the path back would have the image layer run an ffmpeg
+            # embedded-artwork extraction on the directory before giving up
+            raise MediaNotFoundError(f"Image path is a directory: {path}")
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
@@ -1023,7 +1040,7 @@ class LocalFileSystemProvider(MusicProvider):
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
+            if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
@@ -1061,7 +1078,7 @@ class LocalFileSystemProvider(MusicProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
@@ -1077,7 +1094,7 @@ class LocalFileSystemProvider(MusicProvider):
         ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
@@ -1119,7 +1136,7 @@ class LocalFileSystemProvider(MusicProvider):
         item: FileSystemItem,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
@@ -1131,7 +1148,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         :param item: The file to classify.
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
@@ -1139,6 +1156,11 @@ class LocalFileSystemProvider(MusicProvider):
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
         """
+        # a file this provider never imports gets no mapping, so it would flag as
+        # changed on every sync; it is still on disk, so record it as present
+        if not self._is_imported_file(item):
+            cur_filenames.add(item.relative_path)
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1147,12 +1169,17 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             return
         is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
+        item_checksum = item.checksum
         if is_cue:
             cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
-            prev_checksum = cue_file_checksums.get(item.relative_path)
+            item_checksum = cue_metadata_checksum(item.checksum)
+            prev_checksums = cue_file_checksums.get(item.relative_path, set())
+            prev_checksum = min(prev_checksums, default=None)
+            checksum_matches = prev_checksums == {item_checksum}
         else:
             prev_checksum = file_checksums.get(item.relative_path)
-        if item.checksum == prev_checksum:
+            checksum_matches = item_checksum == prev_checksum
+        if checksum_matches:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -1160,12 +1187,76 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             items_to_process.append((item, prev_checksum))
 
+    def _is_imported_file(self, item: FileSystemItem) -> bool:
+        """Return True when this provider imports the given file into the library."""
+        if self.media_content_type == "music":
+            if item.ext in CUE_EXTENSIONS:
+                return True
+            if item.ext in TRACK_EXTENSIONS:
+                return self._sync_tracks
+            if item.ext in PLAYLIST_EXTENSIONS:
+                return self._sync_playlists
+            return False
+        if self.media_content_type == "audiobooks":
+            return item.ext in AUDIOBOOK_EXTENSIONS
+        if self.media_content_type == "podcasts":
+            return item.ext in PODCAST_EPISODE_EXTENSIONS
+        return False
+
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
         if self.available == available:
             return
         self.available = available
+        if available:
+            self._cancel_availability_probe()
+        else:
+            self._schedule_availability_probe()
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the storage backing this provider can be read."""
+        return bool(await isdir(self.base_path))
+
+    @property
+    def _availability_probe_id(self) -> str:
+        """Return the timer id of this provider's reachability checks."""
+        return f"filesystem_availability_probe_{self.instance_id}"
+
+    def _schedule_availability_probe(self) -> None:
+        """Arm the next reachability check."""
+        self.mass.call_later(
+            AVAILABILITY_PROBE_INTERVAL,
+            self._probe_availability,
+            task_id=self._availability_probe_id,
+        )
+
+    def _cancel_availability_probe(self) -> None:
+        """Stop checking for the storage coming back."""
+        self.mass.cancel_timer(self._availability_probe_id)
+
+    async def _probe_availability(self) -> None:
+        """Mark the provider available again once its storage can be read."""
+        try:
+            reachable = await self._is_reachable()
+        except MusicAssistantError as err:
+            # storage that is simply still gone, which is what this loop waits for
+            self.logger.debug("%s is still unreachable: %s", self.name, err)
+            reachable = False
+        except Exception:
+            # an unexpected failure must not end the loop, since it is what brings the
+            # provider back, but it is a defect rather than an outage so it is logged loudly
+            self.logger.exception("Reachability check for %s failed", self.name)
+            reachable = False
+        if self.unloading:
+            # the provider was torn down while this check was running; re-arming here
+            # would leave a timer firing against an instance nothing owns anymore
+            return
+        if reachable:
+            self.logger.info("%s is reachable again", self.name)
+            self._set_available(True)
+            return
+        self._schedule_availability_probe()
 
     async def _process_item_async(
         self,
@@ -2174,7 +2265,7 @@ class LocalFileSystemProvider(MusicProvider):
                     track_path,
                     possible_artist_folder,
                 )
-                album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                album_artist_str = Path(possible_artist_folder).name
                 album_artists = UniqueList(
                     [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
                 )

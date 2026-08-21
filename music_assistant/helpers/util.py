@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import functools
 import html
 import importlib
+import inspect
 import logging
 import os
 import platform
@@ -25,6 +27,7 @@ from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
@@ -48,7 +51,6 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from chardet.resultdict import ResultDict
     from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -680,6 +682,7 @@ def normalize_unicode(value: str | None) -> str | None:
     return unicodedata.normalize("NFC", value)
 
 
+@functools.lru_cache(maxsize=2048)
 def parse_title_and_version(
     title: str,
     track_version: str | None = None,
@@ -694,7 +697,8 @@ def parse_title_and_version(
     :param strip_for_search: Aggressively strip for search matching.
     :param strip_for_display: Strip superfluous suffixes for display.
     """
-    version = track_version or ""
+    version_parts = [track_version] if track_version else []
+    version_keys = {track_version.casefold()} if track_version else set()
 
     # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
     if strip_for_search:
@@ -710,20 +714,25 @@ def parse_title_and_version(
         # Clean up dangling hyphens and extra spaces
         title = re.sub(r"\s*-\s*$", "", title)
         title = re.sub(r"\s+", " ", title).strip()
-        return title, version
+        return title, track_version or ""
 
     # Strip video/audio suffixes like "(Official Video)"
     if strip_for_display:
         title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
-        return title, version
+        return title, track_version or ""
 
     # Standard version parsing
-    for parts in (
-        _balanced_bracket_groups(title, "(", ")"),
-        _balanced_bracket_groups(title, "[", "]"),
-        re.findall(r" - .*", title),
+    # each pass extracts from the current title so removals from
+    # earlier passes are taken into account
+    for extract_parts in (
+        lambda t: _balanced_bracket_groups(t, "(", ")"),
+        lambda t: _balanced_bracket_groups(t, "[", "]"),
+        lambda t: re.findall(r" - .*", t),
     ):
-        for title_part in parts:
+        for title_part in extract_parts(title):
+            # skip parts already consumed by an earlier removal in this pass
+            if title_part not in title:
+                continue
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -754,10 +763,14 @@ def parse_title_and_version(
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
                     # Preserve original casing (and any nested brackets) for output
-                    version = _strip_outer_markers(title_part)
+                    version_part = _strip_outer_markers(title_part)
+                    if version_part.casefold() not in version_keys:
+                        version_parts.append(version_part)
+                        version_keys.add(version_part.casefold())
                     title = title.replace(title_part, "").strip()
-                    return title, version
-    return title, version
+                    break
+    title = re.sub(r"\s{2,}", " ", title).strip()
+    return title, " ".join(version_parts)
 
 
 def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
@@ -1010,14 +1023,7 @@ async def _get_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         pending = asyncio.create_task(_probe())
         pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[cache_key] = pending
-    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
-    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
-    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
-    # cancelled caller makes it report the probe's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not pending.done():
-        await asyncio.wait((pending,))
-    return pending.result()
+    return await join_task(pending)
 
 
 def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
@@ -1609,20 +1615,65 @@ async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     await agen.aclose()
 
 
-async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
-    """Detect charset of raw data."""
-    # imported here to keep chardet (~18MB) out of the idle import footprint:
-    # it is only needed on the rarely-hit playlist/radio charset fallback path
-    import chardet  # noqa: PLC0415
+async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | None = None) -> str:
+    """
+    Detect the charset to decode the given raw text with.
+
+    :param data: The raw text bytes to inspect.
+    :param fallback: Charset to return when the charset can not be determined.
+    :param preferred: Charset declared by the source, taken over detection when usable.
+    """
+    # a BOM outranks the declared charset: it names the very same UTF-8 but, unlike
+    # the declared name, also gets the marker itself stripped off the decoded text
+    if data.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+
+    if preferred:
+        # a declared charset is only worth anything if Python can actually decode text with
+        # it: servers do send misspelled or plain made-up names in their Content-Type, and a
+        # handful of names that do resolve to a codec still cannot decode text (base64, idna)
+        try:
+            data[:16].decode(preferred, errors="replace")
+        except (LookupError, ValueError) as err:
+            LOGGER.debug("Ignoring unusable charset %s: %s", preferred, err)
+        else:
+            return preferred
 
     try:
-        detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
-        if detected and detected["encoding"] and detected["confidence"] > 0.75:
-            assert isinstance(detected["encoding"], str)  # for type checking
-            return detected["encoding"]
+        data.decode()
+    except UnicodeDecodeError:
+        pass
+    else:
+        # valid UTF-8 is never a legacy charset by accident, so skip detection
+        return "utf-8"
+
+    # imported here to keep the detector out of the idle import footprint:
+    # it is only needed for the rare text that is not UTF-8
+    import chardet  # noqa: PLC0415
+    from chardet.enums import EncodingEra  # noqa: PLC0415
+
+    # the reported confidence is deliberately not gated on: CUE sheets and playlists
+    # are nearly all ASCII keywords, which holds the score far below any usable
+    # threshold even though the charset itself is named correctly (support #6093).
+    # With no score to weigh them against, DOS and mainframe codepages are dropped from
+    # the candidates so a stray weak match cannot outrank the Windows codepage these
+    # files are really written in. Only a superset is guaranteed to decode the bytes
+    # past the window the detector samples, so it wins ties over its subsets.
+    try:
+        detected = await asyncio.to_thread(
+            chardet.detect,
+            data,
+            encoding_era=EncodingEra.ALL & ~(EncodingEra.DOS | EncodingEra.MAINFRAME),
+            prefer_superset=True,
+            no_match_encoding=fallback,
+        )
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
-    return fallback
+        return fallback
+    if not (encoding := detected["encoding"]):
+        return fallback
+    LOGGER.debug("Detected charset %s (confidence %.2f)", encoding, detected["confidence"])
+    return encoding
 
 
 def parse_optional_bool(value: Any) -> bool | None:
@@ -2043,6 +2094,33 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
+async def join_task[T](task: asyncio.Future[T], timeout: float | None = None) -> T:
+    """
+    Wait for a task started elsewhere and return its result.
+
+    Cancelling the waiter leaves the task running, so work that is shared between callers -
+    or that must outlive a caller's deadline - keeps going and still reaches every other
+    waiter. A task that can lose all its waiters needs a done callback that retrieves its
+    exception (as mass.create_task installs) to keep asyncio quiet about it.
+
+    :param task: The task (or future) to wait for.
+    :param timeout: Optional number of seconds to wait before giving up.
+    :raises TimeoutError: If the task did not complete within the timeout.
+    :raises asyncio.CancelledError: If the task itself was cancelled.
+    :return: The task's result.
+    """
+    if not task.done():
+        # awaiting the task directly would hold it as this coroutine's fut_waiter, so
+        # cancelling the waiter would cancel the task itself. asyncio.shield achieves the
+        # same isolation, but as of Python 3.14 a cancelled waiter makes it report the task's
+        # exception through loop.call_exception_handler, even when another waiter already
+        # handled it.
+        await asyncio.wait((task,), timeout=timeout)
+    if not task.done():
+        raise TimeoutError
+    return task.result()
+
+
 # Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
 # lets it decorate providers, core controllers and media controllers alike without
 # coupling to their concrete base classes.
@@ -2060,11 +2138,16 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equally
-    represented arguments.
+    unaffected. Calls count as identical when they are made on the same object with equal
+    arguments, no matter whether those were passed positionally or by keyword; the request
+    runs with the arguments of the caller that started it.
+
+    Every argument must be a scalar or an object identified by its ``uri``, so that equal
+    arguments are guaranteed to produce an equal key.
 
     :param func: The coroutine method to guard.
     """
+    signature = inspect.signature(func)
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -2076,10 +2159,23 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         # (e.g. a provider set up twice), which must never join each other's flight.
         # id(self) is stable while a flight is live because the task references self;
         # the class name only serves to keep the task_id readable while debugging.
-        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
-        for key in sorted(kwargs.keys()):
-            cache_key_parts.append(f"{key}{kwargs[key]}")
-        task_id = ".".join(map(str, cache_key_parts))
+        # binding the arguments to their parameter names and filling in the defaults keys a
+        # call the same however it was spelled; repr of the resulting tuple keeps the parts
+        # apart, so an id that itself contains punctuation cannot run into the next one.
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        task_id = repr(
+            (
+                type(self).__name__,
+                id(self),
+                func.__qualname__,
+                # skip the instance: it is the first parameter and is keyed by id() above
+                *(
+                    (name, _canonical_key_part(value))
+                    for name, value in islice(bound.arguments.items(), 1, None)
+                ),
+            )
+        )
         task: asyncio.Task[R] = mass.create_task(
             func,
             self,
@@ -2087,15 +2183,22 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             task_id=task_id,
             abort_existing=False,
             eager_start=True,
+            # every caller awaits the flight below and so sees the failure itself; the
+            # task's own exception log would report a handled error as an unhandled one
+            log_exceptions=False,
             **kwargs,
         )
-        # wait for the shared task instead of awaiting it directly: a caller awaiting a
-        # task holds it as its fut_waiter, so cancelling that caller would cancel the
-        # request for every other caller too. asyncio.shield achieves the same, but as of
-        # Python 3.14 a cancelled caller makes it report the request's exception through
-        # loop.call_exception_handler, even when another caller already handled it.
-        if not task.done():
-            await asyncio.wait((task,))
-        return task.result()
+        return await join_task(task)
 
     return wrapper
+
+
+def _canonical_key_part(value: Any) -> Any:
+    """Return a stable stand-in for a single argument of a guarded request."""
+    if (uri := getattr(value, "uri", None)) is not None:
+        # a media item renders as a multi-kilobyte dataclass repr in which the set-typed
+        # fields (provider_mappings, external_ids) can iterate in different orders for two
+        # equal items. the uri identifies the item, and the type travels with it because a
+        # full item and an ItemMapping for that same item are not handled the same.
+        return (type(value).__name__, uri)
+    return value

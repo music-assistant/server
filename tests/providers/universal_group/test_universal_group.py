@@ -183,14 +183,14 @@ class TestPowerlessLifecycle:
                 MagicMock(
                     uri="track://x",
                     source_id="src",
-                    custom_data={"session_id": "session-1"},
+                    queue_session_id="session-1",
                 )
             )
 
         assert ugp.stream is not None
         assert mass.players._handle_play_media.await_count == 2
         for call in mass.players._handle_play_media.await_args_list:
-            assert call.args[1].custom_data["session_id"] == "session-1"
+            assert call.args[1].queue_session_id == "session-1"
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
 
@@ -302,6 +302,73 @@ class TestIdleGraceTimer:
 
         prior.cancel.assert_called_once()
         assert ugp._idle_grace_task is None
+
+
+class TestMemberPositionPropagation:
+    """The group mirrors the playback position reported by its active member."""
+
+    def test_position_is_adopted(self) -> None:
+        """A member's position anchor becomes the group's position anchor."""
+        ugp = self._ugp_with_member(self._member(42.0, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 42.0
+        assert ugp._attr_elapsed_time_last_updated == 2000.0
+
+    def test_zero_position_is_adopted(self) -> None:
+        """Position 0 is a real position and replaces the group's own anchor."""
+        ugp = self._ugp_with_member(self._member(0.0, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 0.0
+        assert ugp._attr_elapsed_time_last_updated == 2000.0
+
+    def test_position_without_timestamp_is_ignored(self) -> None:
+        """A position without its timestamp is unusable, so the group keeps its anchor."""
+        ugp = self._ugp_with_member(self._member(42.0, None))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 12.0
+        assert ugp._attr_elapsed_time_last_updated == 1000.0
+
+    def test_unknown_position_is_ignored(self) -> None:
+        """A member that reports no position leaves the group's own anchor in place."""
+        ugp = self._ugp_with_member(self._member(None, 2000.0))
+
+        with patch.object(ugp, "update_state"):
+            ugp._set_attributes()
+
+        assert ugp._attr_elapsed_time == 12.0
+        assert ugp._attr_elapsed_time_last_updated == 1000.0
+
+    @staticmethod
+    def _member(elapsed_time: float | None, last_updated: float | None) -> MagicMock:
+        """Create an active member reporting the given position anchor."""
+        member = _make_mock_player(
+            "m1", playback_state=PlaybackState.PLAYING, active_group="ugp_test"
+        )
+        member.state.elapsed_time = elapsed_time
+        member.state.elapsed_time_last_updated = last_updated
+        return member
+
+    @staticmethod
+    def _ugp_with_member(member: MagicMock) -> UniversalGroupPlayer:
+        """Create a playing UGP holding a stale anchor and deriving state from the member."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp._attr_playback_state = PlaybackState.PLAYING
+        ugp._attr_elapsed_time = 12.0
+        ugp._attr_elapsed_time_last_updated = 1000.0
+        mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter([member])
+        return ugp
 
 
 class TestFakePowerLifecycle:

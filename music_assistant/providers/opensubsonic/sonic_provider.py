@@ -234,7 +234,7 @@ class OpenSonicProvider(MusicProvider):
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
             for entry in extensions:
-                if entry.name == OpenSubsonicExtensions.STRUCTURED_LYRICS:
+                if entry.name == OpenSubsonicExtensions.SONG_LYRICS:
                     self._id_lyrics = True
                 elif entry.name == OpenSubsonicExtensions.GET_PODCAST_EPISODE:
                     self._direct_podcast_episode = True
@@ -242,7 +242,7 @@ class OpenSonicProvider(MusicProvider):
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
-        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS, True))
+        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -385,8 +385,7 @@ class OpenSonicProvider(MusicProvider):
             tr = []
             for entry in answer.song:
                 self._set_loudness(entry)
-                lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-                tr.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+                tr.append(parse_track(self.logger, self.instance_id, entry))
         else:
             tr = []
 
@@ -692,18 +691,14 @@ class OpenSonicProvider(MusicProvider):
         if not sonic_playlist.entry:
             return result
 
-        album: Album | None = None
         for index, sonic_song in enumerate(sonic_playlist.entry, 1):
-            aid = sonic_song.album_id or sonic_song.parent
-            if not aid:
-                self.logger.warning("Unable to find album for track %s", sonic_song.id)
-            if aid is not None and (not album or album.item_id != aid):
-                album = await self.get_album(prov_album_id=aid)
+            # A playlist can hold thousands of tracks, so we must not trigger a per-track
+            # metadata fetch here: parse_track derives the album reference from the playlist
+            # entry itself, and lyrics are fetched on demand when a track is played (get_track).
+            # Fetching album + lyrics per entry turned a single getPlaylist call into thousands
+            # of serial requests, making large playlists take minutes to start.
             self._set_loudness(sonic_song)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(sonic_song)
-            track = parse_track(
-                self.logger, self.instance_id, sonic_song, album=album, lyrics=lyrics
-            )
+            track = parse_track(self.logger, self.instance_id, sonic_song)
             track.position = index
             result.append(track)
         return result
@@ -724,8 +719,7 @@ class OpenSonicProvider(MusicProvider):
         tracks = []
         for entry in songs:
             self._set_loudness(entry)
-            lyrics: tuple[str, bool] | None = await self.get_track_lyrics(entry)
-            tracks.append(parse_track(self.logger, self.instance_id, entry, lyrics=lyrics))
+            tracks.append(parse_track(self.logger, self.instance_id, entry))
         return tracks
 
     @use_cache(3600 * 3)  # cache for 3 hours

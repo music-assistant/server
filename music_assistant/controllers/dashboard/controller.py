@@ -290,6 +290,19 @@ class DashboardController(CoreController):
         if sessions_changed:
             self._signal_sessions_updated()
 
+    def end_session(self, dashboard_id: str, reason: str) -> None:
+        """
+        End the active session for an endpoint that stopped showing its dashboard.
+
+        :param dashboard_id: Id of a registered dashboard endpoint.
+        :param reason: Human-readable cause, logged as a warning.
+        """
+        session = self._sessions.pop(dashboard_id, None)
+        if session is None:
+            return
+        self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
+        self._signal_sessions_updated()
+
     async def resolve_dashboard_url(
         self, dashboard: DashboardType, player_id: str | None, *, prefer_local: bool = False
     ) -> str:
@@ -390,7 +403,9 @@ class DashboardController(CoreController):
                 raise InvalidCommand(msg)
             return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
         if dashboard == DashboardType.MUSIC_QUIZ:
-            return "/music-quiz"
+            # the viewer-only kiosk view: the host page needs USERS_INVITE, which a
+            # dashboard viewer never has
+            return "/music-quiz/dashboard"
         msg = f"Unsupported dashboard type: {dashboard}"
         raise InvalidCommand(msg)
 

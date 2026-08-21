@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from soco.core import (
-    MUSIC_SRC_AIRPLAY,
-    MUSIC_SRC_LINE_IN,
-    MUSIC_SRC_RADIO,
-    MUSIC_SRC_SPOTIFY_CONNECT,
-    MUSIC_SRC_TV,
-)
+from soco.core import MUSIC_SRC_LINE_IN, MUSIC_SRC_TV
 
 from music_assistant.models.player import PlayerSource
 
@@ -18,38 +12,30 @@ CONF_NETWORK_SCAN = "network_scan"
 CONF_HOUSEHOLD_ID = "household_id"
 
 # Player Features
+# PAUSE is advertised unconditionally: whether a speaker can pause depends on what it has
+# loaded rather than on the model, so pause() reads that back from the speaker itself and
+# falls back to stop when it is refused.
+# The volume features are deliberately absent here: they depend on the individual speaker
+# and are added by SonosPlayer.
 PLAYER_FEATURES = (
     PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.PAUSE,
     PlayerFeature.SET_MEMBERS,
-    PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.SELECT_SOURCE,
 )
 
 # Source Mapping
-SOURCES_MAP = {
-    MUSIC_SRC_LINE_IN: "Line-in",
-    MUSIC_SRC_TV: "TV",
-    MUSIC_SRC_RADIO: "Radio",
-    MUSIC_SRC_SPOTIFY_CONNECT: "Spotify",
-    MUSIC_SRC_AIRPLAY: "AirPlay",
-}
-
-SOURCE_AIRPLAY = "AirPlay"
 SOURCE_LINEIN = "Line-in"
-SOURCE_SPOTIFY_CONNECT = "Spotify Connect"
 SOURCE_TV = "TV"
 
-SOURCE_MAPPING = {
-    MUSIC_SRC_AIRPLAY: SOURCE_AIRPLAY,
+# Line-in and TV are the only sources this provider can report or switch to.
+LINEIN_SOURCE_MAPPING = {
     MUSIC_SRC_TV: SOURCE_TV,
     MUSIC_SRC_LINE_IN: SOURCE_LINEIN,
-    MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
 }
 
-LINEIN_SOURCES = (MUSIC_SRC_TV, MUSIC_SRC_LINE_IN)
 LINEIN_SOURCE_IDS = (SOURCE_TV, SOURCE_LINEIN)
 
 PLAYER_SOURCE_MAP = {
@@ -68,22 +54,6 @@ PLAYER_SOURCE_MAP = {
         can_play_pause=False,
         can_next_previous=False,
         can_seek=False,
-    ),
-    SOURCE_AIRPLAY: PlayerSource(
-        id=SOURCE_AIRPLAY,
-        name="AirPlay",
-        passive=True,
-        can_play_pause=True,
-        can_next_previous=True,
-        can_seek=True,
-    ),
-    SOURCE_SPOTIFY_CONNECT: PlayerSource(
-        id=SOURCE_SPOTIFY_CONNECT,
-        name="Spotify Connect",
-        passive=True,
-        can_play_pause=True,
-        can_next_previous=True,
-        can_seek=True,
     ),
 }
 
@@ -116,8 +86,13 @@ SUBSCRIPTION_SERVICES = {
 }
 
 # Timing Constants
+DISCOVERY_INTERVAL = 1800
 NEVER_TIME = 0
 RESUB_COOLDOWN_SECONDS = 10.0
+# S1 speakers often drop or delay control requests while busy, so a single failed request
+# is not enough to mark a speaker offline. A failing ping is only trusted once events and
+# polls have both been silent for this long.
+AVAILABILITY_TIMEOUT = 60.0
 # S1 speakers apply a command a moment after acknowledging it, so the resulting state is
 # read back with a short delay instead of trusting the response to the command itself.
 COMMAND_POLL_DELAY = 2

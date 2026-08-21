@@ -50,12 +50,13 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
+    CONF_ICON,
     CONF_MUTE_CONTROL,
-    CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -98,6 +99,40 @@ def _first_enabled_control_value(options: list[ConfigValueOption]) -> ConfigValu
         if not option.disabled:
             return option.value
     return PLAYER_CONTROL_NONE
+
+
+def _reconcile_player_icon_value(
+    submitted_values: dict[str, ConfigValueType],
+    stored_values: dict[str, Any],
+    new_values: dict[str, ConfigValueType],
+) -> bool:
+    """Persist explicit icon selections while keeping None as automatic selection."""
+    stored_icon = stored_values.get(CONF_ICON)
+    has_explicit_icon = isinstance(stored_icon, str) and bool(stored_icon)
+    if CONF_ICON not in submitted_values:
+        if has_explicit_icon:
+            new_values[CONF_ICON] = stored_icon
+        else:
+            new_values.pop(CONF_ICON, None)
+        return False
+
+    submitted_icon = submitted_values[CONF_ICON]
+    if isinstance(submitted_icon, str) and submitted_icon:
+        new_values[CONF_ICON] = submitted_icon
+        return not has_explicit_icon or submitted_icon != stored_icon
+
+    new_values.pop(CONF_ICON, None)
+    return has_explicit_icon
+
+
+def _apply_raw_player_icon_value(
+    config: PlayerConfig,
+    raw_values: dict[str, Any],
+) -> None:
+    """Apply the stored icon value to a parsed player config."""
+    if icon_entry := config.values.get(CONF_ICON):
+        stored_icon = raw_values.get(CONF_ICON)
+        icon_entry.value = stored_icon if isinstance(stored_icon, str) and stored_icon else None
 
 
 class PlayerConfigMixin:
@@ -200,6 +235,7 @@ class PlayerConfigMixin:
                 raw_conf.setdefault("player_id", player_id)
 
             conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            _apply_raw_player_icon_value(conf, raw_conf.get("values", {}))
             # parse() stamps every entry with this player's owner; injected protocol entries
             # belong to their own protocol provider, so restore that owner for string resolution.
             for entry in conf.values.values():
@@ -438,17 +474,13 @@ class PlayerConfigMixin:
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
         values = await self._update_output_protocol_config(values)
-        config = await self.get_player_config(player_id)
-        changed_keys = config.update(values)
-        if not changed_keys:
-            # no changes
-            return config
-        # store updated config first (to prevent issues with enabling/disabling players)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        # Get existing raw config to preserve values that don't have config entries.
-        # e.g. protocol links etc.
         existing_raw = self.get(conf_key) or {}
         existing_values = existing_raw.get("values", {})
+        if values.get(CONF_ICON) is None and CONF_ICON not in existing_values:
+            values = {key: value for key, value in values.items() if key != CONF_ICON}
+        config = await self.get_player_config(player_id)
+        changed_keys = config.update(values)
         new_raw = config.to_raw()
         new_values = new_raw.get("values", {})
         # Preserve values from storage that don't have config entries in current context.
@@ -462,6 +494,13 @@ class PlayerConfigMixin:
         new_values = {
             key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
         }
+        if _reconcile_player_icon_value(values, existing_values, new_values):
+            changed_keys.add(f"values/{CONF_ICON}")
+        _apply_raw_player_icon_value(config, new_values)
+        if not changed_keys:
+            # no changes
+            return config
+        # store updated config first (to prevent issues with enabling/disabling players)
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
@@ -484,7 +523,6 @@ class PlayerConfigMixin:
     async def remove_player_config(self, player_id: str) -> None:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
-        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
         player_config = self.get(conf_key)
         if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
@@ -499,10 +537,8 @@ class PlayerConfigMixin:
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
             await self.mass.players.unregister(player_id, permanent=False)
-        # remove the actual config if all of the above passed
-        self.remove(conf_key)
-        # Also remove the DSP config if it exists
-        self.remove(dsp_conf_key)
+        # all of the above passed, so wipe the config (incl. DSP and linked protocol players)
+        self.mass.players.delete_player_config(player_id)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
@@ -546,14 +582,16 @@ class PlayerConfigMixin:
             # Player.__init__ where the type can still be a transient class default.
             # Genuine type changes are persisted by update_state after registration.
             return
-        # config does not yet exist, create a default one
+        # config does not yet exist, create a default one.
+        # the name is stored as the default name only: a stored (custom) name means
+        # the user renamed the player and must keep shadowing the default name.
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
             values={},
             provider=provider,
             player_id=player_id,
             enabled=enabled,
-            name=name,
+            name=None,
             default_name=name,
             player_type=player_type,
         )
@@ -620,6 +658,7 @@ class PlayerConfigMixin:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
                     CONF_ENTRY_OUTPUT_CODEC,
+                    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
@@ -651,6 +690,14 @@ class PlayerConfigMixin:
             # protocol players have no generic config entries
             # only audio/protocol specific ones
             return []
+
+        icon_entry = deepcopy(
+            CONF_ENTRY_PLAYER_ICON_GROUP
+            if player.state.type == PlayerType.GROUP
+            else CONF_ENTRY_PLAYER_ICON
+        )
+        icon_entry.default_value = player.default_icon
+        icon_entry.value = self.get_raw_player_config_value(player.player_id, CONF_ICON)
 
         # some base entries for all player types
         # note that these may NOT be playback/audio related
@@ -687,12 +734,12 @@ class PlayerConfigMixin:
         # group-player config entries
         if player.state.type == PlayerType.GROUP:
             entries += [
-                CONF_ENTRY_PLAYER_ICON_GROUP,
+                icon_entry,
             ]
             return entries
         # normal player (or stereo pair) config entries
         entries += [
-            CONF_ENTRY_PLAYER_ICON,
+            icon_entry,
             # add default entries for announce feature
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
             CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -893,8 +940,12 @@ class PlayerConfigMixin:
         if has_native:
             default_value = "native"
         else:
-            default_value = "auto"
+            # Without a native output the entry default stays "auto": runtime selection
+            # honours the player's default_output_protocol_domain (e.g. DLNA-first for a
+            # LinkPlay shell) with plain priority fallback, so the stored config default
+            # must not depend on which linked protocols happen to be available right now.
             options.append(ConfigValueOption("auto"))
+            default_value = "auto"
 
         all_entries.append(
             ConfigEntry(

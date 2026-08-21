@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
@@ -27,7 +27,13 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
+    DB_TABLE_PLAYLOG,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ROLE_SCOPES,
     get_current_client_id,
@@ -116,6 +122,9 @@ class AuthenticationManager:
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
+        # Serialises the read-modify-write of the user access filters
+        self._user_filter_lock = asyncio.Lock()
+        self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -138,6 +147,9 @@ class AuthenticationManager:
 
         # migrate the Home Assistant system user of pre-existing installs to the service role
         await self._migrate_system_user_role()
+
+        # repair filters that were left pointing at removed providers/players
+        await self._prune_stale_user_filters()
 
         self._schedule_join_code_cleanup()
 
@@ -708,6 +720,26 @@ class AuthenticationManager:
             token_id,
         )
 
+    def subscribe_user_access_revoked(self, callback: Callable[[User], None]) -> Callable[[], None]:
+        """
+        Subscribe to a user's access being withdrawn.
+
+        Fires on deliberate access withdrawal: bulk token revocation
+        (revoke_tokens_for_user), account disable, and account deletion. Revoking a
+        single token (e.g. a logout) does not fire it, so credentials bound to the
+        account survive a plain logout.
+
+        :param callback: Called with the affected user.
+        :return: Callable that removes the subscription.
+        """
+        self._access_revoked_callbacks.append(callback)
+
+        def _unsubscribe() -> None:
+            with contextlib.suppress(ValueError):
+                self._access_revoked_callbacks.remove(callback)
+
+        return _unsubscribe
+
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
         Revoke all auth tokens for a user.
@@ -719,21 +751,24 @@ class AuthenticationManager:
         :return: Number of tokens revoked.
         """
         token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
-        if not token_rows:
-            return 0
 
         # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
-        # Delete all tokens in one go
-        await self.database.execute(
-            "DELETE FROM auth_tokens WHERE user_id = :user_id",
-            {"user_id": user.user_id},
-        )
-        await self.database.commit()
+        if token_rows:
+            # Delete all tokens in one go
+            await self.database.execute(
+                "DELETE FROM auth_tokens WHERE user_id = :user_id",
+                {"user_id": user.user_id},
+            )
+            await self.database.commit()
+            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
 
-        self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        # Notify even with no tokens left: subscribers may hold credentials tied to
+        # this user's access that must be withdrawn regardless.
+        self._notify_user_access_revoked(user)
+
         return len(token_rows)
 
     @api_command("auth/tokens")
@@ -857,6 +892,11 @@ class AuthenticationManager:
         if user_id == admin_user.user_id:
             raise InvalidDataError("Cannot disable your own account")
 
+        # Look up the user before disabling (get_user hides disabled accounts)
+        user_row = await self.database.get_row("users", {"user_id": user_id})
+        if not user_row:
+            raise InvalidDataError("User not found")
+
         await self.database.update(
             "users",
             {"user_id": user_id},
@@ -865,6 +905,12 @@ class AuthenticationManager:
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
+
+        # A disabled account's tokens stop authenticating, so credentials bound to its
+        # access must be withdrawn with them (they return on the next login after enable).
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
 
         self.logger.info("User account disabled (user_id=%s)", user_id)
 
@@ -1160,6 +1206,12 @@ class AuthenticationManager:
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
+        # Deletion cascades the user's tokens away, so it must announce the access
+        # withdrawal itself for credentials bound to this user.
+        self._notify_user_access_revoked(
+            User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
+        )
+
         self.logger.info(
             "User '%s' deleted by admin '%s'",
             user_row["username"],
@@ -1196,13 +1248,67 @@ class AuthenticationManager:
             updates["provider_filter"] = json_dumps(provider_filter)
 
         if updates:
-            await self.database.update("users", {"user_id": target_user.user_id}, updates)
+            # the lock the automatic rewrites take as well, so a player or provider that is
+            # being removed cannot overwrite the filters an admin just saved
+            async with self._user_filter_lock:
+                await self.database.update("users", {"user_id": target_user.user_id}, updates)
+                self.webserver.update_active_user_filters(
+                    target_user.user_id,
+                    player_filter=player_filter,
+                    provider_filter=provider_filter,
+                )
             # Refresh target user to get updated filters
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
                 raise InvalidDataError("Failed to refresh user after filter update")
             return refreshed_user
         return target_user
+
+    async def remove_from_user_filters(
+        self,
+        provider_instance_ids: Collection[str] = (),
+        player_ids: Collection[str] = (),
+    ) -> None:
+        """
+        Remove the given providers and/or players from the access filters of all users.
+
+        Call this when a provider or player is permanently removed, so no user is left with
+        an access filter that points at something that no longer exists.
+
+        :param provider_instance_ids: Instance IDs of the removed providers.
+        :param player_ids: IDs of the removed players.
+        """
+        await self._rewrite_user_filters(
+            keep_provider=(lambda x: x not in provider_instance_ids)
+            if provider_instance_ids
+            else None,
+            keep_player=(lambda x: x not in player_ids) if player_ids else None,
+        )
+
+    async def replace_player_in_user_filters(
+        self,
+        old_player_id: str,
+        new_player_id: str,
+        removed_player_ids: Collection[str] = (),
+    ) -> None:
+        """
+        Point the access filters of all users at the replacement of a removed player.
+
+        Call this when a player is automatically replaced by another one, so a user that
+        is restricted to the old player follows the replacement instead of silently
+        ending up with access to every player.
+
+        :param old_player_id: ID of the player that is replaced.
+        :param new_player_id: ID of the player that takes its place, must not be one of
+            the removed players.
+        :param removed_player_ids: IDs of all players whose config is removed, which
+            normally includes the replaced player itself.
+        """
+        await self._rewrite_user_filters(
+            keep_provider=None,
+            keep_player=(lambda x: x not in removed_player_ids) if removed_player_ids else None,
+            map_player=lambda x: new_player_id if x == old_player_id else x,
+        )
 
     @api_command("auth/user/update")
     async def update_user_profile(
@@ -1868,6 +1974,94 @@ class AuthenticationManager:
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
             )
 
+    async def _prune_stale_user_filters(self) -> None:
+        """Drop user access filter entries for providers or players that no longer exist."""
+        known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
+        known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
+        # an empty config section means nothing is configured yet, which must not be
+        # mistaken for everything having been removed
+        await self._rewrite_user_filters(
+            keep_provider=(lambda x: x in known_providers) if known_providers else None,
+            keep_player=(lambda x: x in known_players) if known_players else None,
+        )
+
+    async def _rewrite_user_filters(
+        self,
+        keep_provider: Callable[[str], bool] | None,
+        keep_player: Callable[[str], bool] | None,
+        map_player: Callable[[str], str] | None = None,
+    ) -> None:
+        """
+        Rewrite the access filters of all users.
+
+        :param keep_provider: Returns False for the provider entries that must be dropped.
+        :param keep_player: Returns False for the player entries that must be dropped.
+        :param map_player: Maps a player entry onto its replacement, applied before keep_player.
+        """
+        if keep_provider is None and keep_player is None and map_player is None:
+            return
+        # removing a provider wipes the config of its players one by one, so without the lock
+        # those rewrites would read the same filter and each undo the other's removal
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                changed: dict[str, list[str]] = {}
+                for column, keep_func, map_func in (
+                    ("provider_filter", keep_provider, None),
+                    ("player_filter", keep_player, map_player),
+                ):
+                    if keep_func is None and map_func is None:
+                        continue
+                    current: list[str] = json_loads(row[column])
+                    remaining: list[str] = []
+                    dropped: list[str] = []
+                    for entry in current:
+                        mapped = map_func(entry) if map_func else entry
+                        if keep_func and not keep_func(mapped):
+                            dropped.append(entry)
+                        elif mapped not in remaining:
+                            remaining.append(mapped)
+                    if remaining == current:
+                        continue
+                    changed[column] = remaining
+                    if not dropped:
+                        self.logger.info(
+                            "Updated the %s of user '%s' to %s",
+                            column,
+                            row["username"],
+                            ", ".join(remaining),
+                        )
+                    elif remaining:
+                        self.logger.info(
+                            "Removed %s from the %s of user '%s'",
+                            ", ".join(dropped),
+                            column,
+                            row["username"],
+                        )
+                    else:
+                        # An empty filter means unrestricted. A user whose entries are all gone is
+                        # deliberately left unrestricted, the alternative being an account that
+                        # can see nothing at all.
+                        self.logger.warning(
+                            "Removed the last entries (%s) from the %s of user '%s'. This user is "
+                            "no longer restricted, adjust the access settings if needed.",
+                            ", ".join(dropped),
+                            column,
+                            row["username"],
+                        )
+                if changed:
+                    await self.database.update(
+                        "users",
+                        {"user_id": row["user_id"]},
+                        {column: json_dumps(value) for column, value in changed.items()},
+                    )
+                    # a session holds its own copy of the User object, so the live ones have to
+                    # follow or they keep applying the filter that was just rewritten
+                    self.webserver.update_active_user_filters(
+                        row["user_id"],
+                        player_filter=changed.get("player_filter"),
+                        provider_filter=changed.get("provider_filter"),
+                    )
+
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
         Migrate all existing playlog entries to the first user.
@@ -2082,6 +2276,11 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+    def _notify_user_access_revoked(self, user: User) -> None:
+        """Dispatch an access withdrawal to subscribers, isolating them from each other."""
+        for callback in list(self._access_revoked_callbacks):
+            self.mass.loop.call_soon(callback, user)
 
 
 def _join_code_rate_limit_key() -> tuple[str, bool]:
