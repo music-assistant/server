@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 from math import ceil
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -676,6 +677,7 @@ def _mock_tts_error_response(
     response = AsyncMock()
     response.ok = False
     response.status = status
+    response.reason = HTTPStatus(status).phrase
     if error_message is None:
         response.json.side_effect = ValueError("not json")
     else:
@@ -788,6 +790,19 @@ async def test_tts_bare_500_with_language_is_classified_as_possible_language_rej
 
         assert "500" in str(excinfo.value)
         assert "possibly" in str(excinfo.value)
+
+
+async def test_tts_401_points_at_the_access_token() -> None:
+    """An auth failure points at the connection settings instead of the core log."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=401)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "401 (Unauthorized)" in str(excinfo.value)
+        assert "access token" in str(excinfo.value)
 
 
 async def test_tts_bare_503_with_language_raises_generic_error() -> None:

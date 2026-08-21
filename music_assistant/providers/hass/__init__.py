@@ -980,10 +980,15 @@ class HomeAssistantProvider(PluginProvider):
                 f"(HTTP {response.status} from Home Assistant, which hides the reason, "
                 "possibly an unsupported language)"
             )
-        raise MusicAssistantError(
-            f"Home Assistant tts_get_url failed with HTTP {response.status}. "
-            "Check the Home Assistant core log for the reason."
+        failure = (
+            f"TTS request to engine '{entity_id}' failed: Home Assistant returned "
+            f"HTTP {response.status} ({response.reason}) on tts_get_url."
         )
+        if response.status in (401, 403):
+            raise MusicAssistantError(
+                f"{failure} Check your Home Assistant connection settings and access token."
+            )
+        raise MusicAssistantError(f"{failure} Check the Home Assistant core log for the reason.")
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""
