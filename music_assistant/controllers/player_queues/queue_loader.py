@@ -1093,7 +1093,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             rather than starting playback, which gates on the enqueueable media types.
         :param delegate_cache: Per-request cache of each provider's delegate answer.
         """
-        for mapping in item.provider_mappings:
+        # stable order: provider_mappings is a set, and every item of the batch must
+        # pick the same delegate when its mappings offer more than one (e.g. a library
+        # item mapped to two accounts of the same service)
+        mappings = sorted(
+            item.provider_mappings,
+            key=lambda mapping: (mapping.provider_domain, mapping.provider_instance),
+        )
+        for mapping in mappings:
             if not mapping.available:
                 continue
             if mapping.provider_instance not in delegate_cache:

@@ -130,6 +130,7 @@
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
     "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
     "connect_no_session": "No Spotify Connect session is available for this Spotify account. Complete (or re-pair) the Spotify Connect setup, or switch the Spotify provider back to librespot playback.",
+    "connect_media_unsupported": "Podcasts and audiobooks cannot be played in the Spotify Connect playback mode. Switch the Spotify provider to librespot playback to play them.",
     "connect_no_session_for_enqueue": "There is no active Spotify Connect session on this player to add to. Start Spotify playback on it first."
   },
   "manifest": {

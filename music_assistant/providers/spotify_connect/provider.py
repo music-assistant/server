@@ -154,6 +154,9 @@ class SpotifyConnectProvider(PluginProvider):
     # content was commanded on the session and its playback start (plus the
     # accompanying stream request) is expected any moment.
     _redirect_deadline: float = 0.0
+    # whether the pending redirect installed the player pre-target itself (and a
+    # rollback must remove it again)
+    _redirect_pre_targeted: bool = False
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -662,7 +665,8 @@ class SpotifyConnectProvider(PluginProvider):
         # only pre-target an idle session: an already-active player must keep its
         # claim so on_source_selected still kicks it when the redirect lands on
         # another player
-        if self._active_player_id is None:
+        self._redirect_pre_targeted = self._active_player_id is None
+        if self._redirect_pre_targeted:
             self._active_player_id = target_player_id
         self._redirect_deadline = self.mass.loop.time() + REDIRECT_GRACE_S
         try:
@@ -670,6 +674,19 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             # tolerated: the play command that follows claims the device itself
             self.logger.debug("Failed to pre-activate the Spotify session: %s", err)
+
+    def cancel_redirect(self) -> None:
+        """
+        Roll back a prepared redirect whose play command failed.
+
+        Closes the grace window (so an app-initiated session start is treated as
+        the external trigger it is) and drops the player pre-target this redirect
+        installed, so no later session-inactive event stops an unrelated player.
+        """
+        self._redirect_deadline = 0.0
+        if self._redirect_pre_targeted and not self._playing and self._in_use_by_queue is None:
+            self._active_player_id = None
+        self._redirect_pre_targeted = False
 
     async def play_media_on_source(
         self, uris: list[str], *, context_uri: str | None = None, start_uri: str | None = None

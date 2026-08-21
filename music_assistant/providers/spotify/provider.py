@@ -819,8 +819,17 @@ class SpotifyProvider(MusicProvider):
         """Return content details for the given track/episode/audiobook when it will be streamed."""
         if self._connect_mode:
             # in Connect mode this provider never streams audio itself; playback is
-            # redirected into a Spotify Connect session at enqueue time — reaching
-            # this point means no eligible session was found for this account
+            # redirected into a Spotify Connect session at enqueue time
+            if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
+                # these never delegate, so a missing-session hint would mislead
+                raise AudioError(
+                    "Podcasts and audiobooks cannot be played in the Spotify Connect "
+                    "playback mode. Switch the Spotify provider to librespot playback "
+                    "to play them.",
+                    translation_key="connect_media_unsupported",
+                    translation_owner=self.translation_owner,
+                )
+            # reaching this point with a track means no eligible session was found
             raise AudioError(
                 "No Spotify Connect session is available for this Spotify account. "
                 "Complete (or re-pair) the Spotify Connect setup, or switch the "
@@ -984,19 +993,26 @@ class SpotifyProvider(MusicProvider):
                 )
             await plugin.enqueue_on_source(self._delegate_track_uris(media_items))
             return
-        context_uri, start_uri = self._delegate_context(context, start_item)
+        context_uri, start_uri = self._delegate_context(context, start_item, media_items)
         uris = [] if context_uri else self._delegate_track_uris(media_items)
         if not context_uri and not uris:
             raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
         await plugin.prepare_redirect(target_player_id)
-        if await self._web_api_play(
-            plugin, context_uri=context_uri, start_uri=start_uri, uris=uris
-        ):
-            return
-        # Web API assist unavailable or rejected: the session's own play command
-        # starts the context from the beginning where it has no start offset and
-        # plays track lists as first-track + enqueue
-        await plugin.play_media_on_source(uris, context_uri=context_uri, start_uri=start_uri)
+        try:
+            if await self._web_api_play(
+                plugin, context_uri=context_uri, start_uri=start_uri, uris=uris
+            ):
+                return
+            # Web API assist unavailable or rejected: the session's own play command
+            # starts the context from the beginning where it has no start offset and
+            # plays track lists as first-track + enqueue
+            await plugin.play_media_on_source(uris, context_uri=context_uri, start_uri=start_uri)
+        except BaseException:
+            # nothing is going to start: roll the prepared redirect back so an
+            # app-initiated session start is not mistaken for this redirect and
+            # no stale player pre-target lingers
+            plugin.cancel_redirect()
+            raise
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
@@ -1777,8 +1793,10 @@ class SpotifyProvider(MusicProvider):
         caps = plugin.audio_source.queue_capabilities
         if caps is None or caps.provider_domain != self.domain:
             return None
-        if not plugin.session_active:
-            # a leftover source of an ended session: librespot streams normally
+        if not plugin.session_active or plugin.active_player_id != target_player_id:
+            # a leftover source of an ended session, or one whose live session has
+            # since moved to another player: librespot streams normally (redirecting
+            # would steal the session from wherever it plays now)
             return None
         if await self._verify_connect_account(plugin) != self._sp_user["id"]:
             return None
@@ -1911,6 +1929,7 @@ class SpotifyProvider(MusicProvider):
         self,
         context: MediaItemType | None,
         start_item: PlayableMediaItemType | str | None,
+        media_items: list[PlayableMediaItemType],
     ) -> tuple[str | None, str | None]:
         """
         Return the Spotify context uri and start-track uri for a single-container request.
@@ -1920,6 +1939,8 @@ class SpotifyProvider(MusicProvider):
 
         :param context: The single original container the request expanded from, if any.
         :param start_item: Optional item (or uri) within the context to start at.
+        :param media_items: The resolved items of the request, to resolve a start
+            item given as a foreign (e.g. library) uri to its Spotify mapping.
         """
         context_types = {
             MediaType.ALBUM: "album",
@@ -1934,13 +1955,28 @@ class SpotifyProvider(MusicProvider):
             return None, None
         start_uri: str | None = None
         if isinstance(start_item, str):
-            # only an MA uri of this provider's domain carries a Spotify item id in
-            # its tail (e.g. a library:// uri ends in a database id instead)
+            # only an MA uri of this provider's domain carries a Spotify item id in its
+            # tail (a library:// uri ends in a database id instead); anything else is
+            # resolved through the already-resolved batch, which media resolution built
+            # honoring the very same start item
             prefix, _, rest = start_item.partition("://")
             if (prefix == self.domain or prefix.startswith(f"{self.domain}--")) and rest.startswith(
                 "track/"
             ):
                 start_uri = f"spotify:track:{rest.removeprefix('track/')}"
+            else:
+                start_match = next(
+                    (
+                        item
+                        for item in media_items
+                        if item.media_type == MediaType.TRACK and item.uri == start_item
+                    ),
+                    None,
+                )
+                if start_match is not None and (
+                    start_id := self._item_id_for_this_provider(start_match)
+                ):
+                    start_uri = f"spotify:track:{start_id}"
         elif start_item is not None and (start_id := self._item_id_for_this_provider(start_item)):
             start_uri = f"spotify:track:{start_id}"
         return f"spotify:{uri_type}:{item_id}", start_uri

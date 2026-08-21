@@ -214,6 +214,7 @@ async def test_account_verification_fails_when_device_absent() -> None:
 async def test_librespot_mode_redirects_only_into_the_active_source() -> None:
     """Librespot mode drives a same-account session already active on the target player."""
     plugin = _plugin(account_id=USER_ID)
+    plugin.active_player_id = TARGET_PLAYER
     prov = _provider(mode=BACKEND_LIBRESPOT, plugins=[plugin])
     queue = MagicMock()
     queue.current_item.media_item = plugin.audio_source
@@ -221,7 +222,13 @@ async def test_librespot_mode_redirects_only_into_the_active_source() -> None:
 
     assert await prov.get_playback_delegate(TARGET_PLAYER) is plugin.audio_source
 
+    # a stale leftover source whose live session moved to another player is not
+    # hijacked back; librespot streams normally
+    plugin.active_player_id = "player2"
+    assert await prov.get_playback_delegate(TARGET_PLAYER) is None
+
     # a plain track as current item: no session to drive, librespot streams normally
+    plugin.active_player_id = TARGET_PLAYER
     queue.current_item.media_item = _track("t1")
     assert await prov.get_playback_delegate(TARGET_PLAYER) is None
 
@@ -349,24 +356,44 @@ def test_liked_songs_pseudo_playlist_is_no_spotify_context() -> None:
         },
     )
 
-    assert prov._delegate_context(playlist, None) == (None, None)
+    assert prov._delegate_context(playlist, None, []) == (None, None)
 
 
 def test_delegate_context_parses_a_start_item_uri_string() -> None:
     """A start item passed as MA uri string resolves to a Spotify track uri."""
     prov = _provider()
 
-    context_uri, start_uri = prov._delegate_context(_album("alb1"), f"{INSTANCE_ID}://track/t5")
+    context_uri, start_uri = prov._delegate_context(_album("alb1"), f"{INSTANCE_ID}://track/t5", [])
 
     assert context_uri == "spotify:album:alb1"
     assert start_uri == "spotify:track:t5"
 
 
-def test_delegate_context_ignores_a_foreign_start_item_uri() -> None:
-    """A non-Spotify start uri (e.g. a library item) yields no start offset."""
+def test_delegate_context_resolves_a_library_start_item_via_the_batch() -> None:
+    """A library start uri resolves through the resolved batch to its Spotify mapping."""
+    prov = _provider()
+    library_track = Track(
+        item_id="12345",
+        provider="library",
+        name="t",
+        provider_mappings={
+            ProviderMapping(item_id="t7", provider_domain="spotify", provider_instance=INSTANCE_ID)
+        },
+    )
+
+    context_uri, start_uri = prov._delegate_context(
+        _album("alb1"), "library://track/12345", [library_track]
+    )
+
+    assert context_uri == "spotify:album:alb1"
+    assert start_uri == "spotify:track:t7"
+
+
+def test_delegate_context_ignores_an_unresolvable_start_item_uri() -> None:
+    """A foreign start uri matching nothing in the batch yields no start offset."""
     prov = _provider()
 
-    context_uri, start_uri = prov._delegate_context(_album("alb1"), "library://track/12345")
+    context_uri, start_uri = prov._delegate_context(_album("alb1"), "library://track/12345", [])
 
     assert context_uri == "spotify:album:alb1"
     assert start_uri is None

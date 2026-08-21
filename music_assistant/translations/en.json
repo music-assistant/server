@@ -2295,6 +2295,7 @@
   "provider.spotify.config_entries.sync_podcast_progress.description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA. Only enable this if you use both the Spotify app and Music Assistant for podcast playback.",
   "provider.spotify.config_entries.sync_podcast_progress.label": "Sync Podcast Progress from Spotify",
   "provider.spotify.config_entries.use_developer_key.label": "Use my own Spotify developer key (advanced, optional)",
+  "provider.spotify.errors.connect_media_unsupported": "Podcasts and audiobooks cannot be played in the Spotify Connect playback mode. Switch the Spotify provider to librespot playback to play them.",
   "provider.spotify.errors.connect_no_session": "No Spotify Connect session is available for this Spotify account. Complete (or re-pair) the Spotify Connect setup, or switch the Spotify provider back to librespot playback.",
   "provider.spotify.errors.connect_no_session_for_enqueue": "There is no active Spotify Connect session on this player to add to. Start Spotify playback on it first.",
   "provider.spotify.errors.librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here.",
