@@ -287,3 +287,45 @@ async def test_special_folder_episodes_name_their_podcast(
 
     episodes = [item for item in items if isinstance(item, PodcastEpisode)]
     assert [episode.podcast.name for episode in episodes] == ["Podcast One"]
+
+
+async def test_special_folder_episodes_use_the_name_from_the_payload(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A podcast title carried by the folder payload is used without a podcast lookup."""
+    client.get_history.return_value = [
+        {
+            "uuid": "episode-1",
+            "title": "Episode 1",
+            "url": "https://example.com/ep1.mp3",
+            "podcastUuid": "podcast-1",
+            "podcastTitle": "Podcast One",
+        }
+    ]
+
+    items = await provider.browse("pocketcasts://history")
+
+    episodes = [item for item in items if isinstance(item, PodcastEpisode)]
+    assert [episode.podcast.name for episode in episodes] == ["Podcast One"]
+    client.get_podcast.assert_not_called()
+
+
+async def test_special_folder_looks_each_podcast_up_once(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Episodes of the same podcast share a single name lookup for the whole folder."""
+    client.get_history.return_value = [
+        {
+            "uuid": f"episode-{index}",
+            "title": f"Episode {index}",
+            "url": f"https://example.com/ep{index}.mp3",
+            "podcast": "podcast-1",
+        }
+        for index in (1, 2, 3)
+    ]
+
+    items = await provider.browse("pocketcasts://history")
+
+    episodes = [item for item in items if isinstance(item, PodcastEpisode)]
+    assert [episode.podcast.name for episode in episodes] == ["Podcast One"] * 3
+    assert client.get_podcast.await_count == 1

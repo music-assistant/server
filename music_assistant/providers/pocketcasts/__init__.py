@@ -640,7 +640,9 @@ class PocketCastsProvider(MusicProvider):
         }
         episode_list = await folder_getters[folder_name]()
 
-        items: list[MediaItemType | BrowseFolder] = []
+        # (episode, podcast uuid, podcast name) per episode, the name empty when the folder
+        # payload does not carry it
+        resolved: list[tuple[dict[str, Any], str, str]] = []
         for episode_data in episode_list:
             # the podcast reference is a string on some endpoints and an object on others
             podcast_field = episode_data.get("podcast")
@@ -654,12 +656,30 @@ class PocketCastsProvider(MusicProvider):
 
             if not podcast_uuid:
                 continue
-            # these folders mix podcasts, so the name is not known up front
-            podcast_name = podcast_field.get("title", "") if isinstance(podcast_field, dict) else ""
-            if not podcast_name:
-                podcast_name = await self._get_podcast_name(podcast_uuid)
+            # these folders mix podcasts, so the name is not known up front. Take it from the
+            # payload where that carries it, in either of the two shapes
+            payload_name = podcast_field.get("title") if isinstance(podcast_field, dict) else None
+            resolved.append(
+                (
+                    episode_data,
+                    podcast_uuid,
+                    payload_name or episode_data.get("podcastTitle") or "",
+                )
+            )
+
+        # every remaining name costs a full-podcast fetch, so look them up once per podcast and
+        # all at once: serialising them would stall the browse for as long as the folder is deep
+        missing = list({uuid for _, uuid, name in resolved if not name})
+        looked_up = await asyncio.gather(*(self._get_podcast_name(uuid) for uuid in missing))
+        names = dict(zip(missing, looked_up, strict=True))
+
+        items: list[MediaItemType | BrowseFolder] = []
+        for episode_data, podcast_uuid, podcast_name in resolved:
             if episode_item := self._convert_episode(
-                episode_data, podcast_uuid, None, podcast_name
+                episode_data,
+                podcast_uuid,
+                show_notes=None,
+                podcast_name=podcast_name or names.get(podcast_uuid, ""),
             ):
                 items.append(episode_item)
         return items
