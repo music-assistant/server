@@ -77,3 +77,28 @@ async def test_old_style_folder_without_item_list_is_reported(provider: TuneInPr
     args = provider.report_skipped_sync_item.call_args.args
     assert args[:2] == (MediaType.RADIO, None)
     assert isinstance(args[2], InvalidDataError)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"type": "link"},
+        {"type": "link", "URL": "https://example.com"},
+        {"type": "link", "item": "url", "text": "Custom station"},
+    ],
+)
+async def test_link_without_url_or_name_is_reported(
+    provider: TuneInProvider, item: dict[str, Any]
+) -> None:
+    """A link without its required fields must hold back radio deletions."""
+    provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
+        return_value={"body": [item]}
+    )
+    provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
+
+    assert [radio async for radio in provider.get_library_radios()] == []
+
+    provider.report_skipped_sync_item.assert_called_once()
+    args = provider.report_skipped_sync_item.call_args.args
+    assert args[:2] == (MediaType.RADIO, None)
+    assert isinstance(args[2], InvalidDataError)

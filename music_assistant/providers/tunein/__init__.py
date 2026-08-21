@@ -200,16 +200,31 @@ class TuneInProvider(MusicProvider):
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self._get_stream_info(item["preset_id"])
                     yield self._parse_radio(item, stream_info, folder)
-                elif item_type == "link" and item.get("item") == "url":
-                    # custom url
-                    try:
-                        yield self._parse_radio(item)
-                    except InvalidDataError as err:
-                        # there may be invalid custom urls, ignore those
-                        self.report_skipped_sync_item(MediaType.RADIO, item["URL"], err)
                 elif item_type == "link":
+                    item_url = item.get("URL")
+                    item_text = item.get("text")
+                    if (
+                        not isinstance(item_url, str)
+                        or not item_url
+                        or not isinstance(item_text, str)
+                        or not item_text
+                    ):
+                        self.report_skipped_sync_item(
+                            MediaType.RADIO,
+                            None,
+                            InvalidDataError("TuneIn link preset has no URL or name"),
+                        )
+                        continue
+                    if item.get("item") == "url":
+                        # custom url
+                        try:
+                            yield self._parse_radio(item)
+                        except InvalidDataError as err:
+                            # there may be invalid custom urls, ignore those
+                            self.report_skipped_sync_item(MediaType.RADIO, item_url, err)
+                        continue
                     # stations are in sublevel (new style)
-                    sublevel = await self.__get_data(item["URL"], render="json")
+                    sublevel = await self.__get_data(item_url, render="json")
                     if sublevel is None or not isinstance(sublevel.get("body"), list):
                         self.report_skipped_sync_item(
                             MediaType.RADIO,
@@ -217,7 +232,7 @@ class TuneInProvider(MusicProvider):
                             InvalidDataError("TuneIn preset folder contains no item list"),
                         )
                         continue
-                    async for subitem in parse_items(sublevel["body"], item["text"]):
+                    async for subitem in parse_items(sublevel["body"], item_text):
                         yield subitem
                 elif "children" in item:
                     # stations are in sublevel (old style ?)
