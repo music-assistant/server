@@ -1131,6 +1131,30 @@ async def test_daemon_runner_does_not_wait_for_the_log_reader(
     assert proc.closed == 1
 
 
+async def test_daemon_runner_cancellation_stops_the_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancelling the supervisor stops it instead of respawning the daemon.
+
+    The log reader is cleaned up on the way out, so the cancellation must not
+    be consumed by that cleanup and leave the loop running.
+    """
+    backend, _events = _runner_backend()
+    proc = _FakeProc(block_stdout=True)
+    _patch_spawn(monkeypatch, [proc])
+
+    task = asyncio.create_task(backend._daemon_runner())
+    # let the runner reach its wait on the (blocked) daemon before cancelling
+    for _ in range(20):
+        await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
 async def test_daemon_runner_drains_buffered_log_after_exit(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
