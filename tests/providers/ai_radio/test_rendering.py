@@ -603,7 +603,7 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
 
     session = renderer._sessions["sess"]
     assert session.skipped_sections == 1
-    assert "Check the Home Assistant core log" in session.last_render_error
+    assert "Check the logs of the TTS engine" in session.last_render_error
     # the hint is a guess, so the whole probe message travels with it - the url included,
     # since that is what tells a failing engine apart from a failing tts server behind it
     assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error

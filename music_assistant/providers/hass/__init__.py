@@ -970,11 +970,9 @@ class HomeAssistantProvider(PluginProvider):
         error_message = body.get("error") if isinstance(body, dict) else None
         if isinstance(error_message, str):
             if error_message.startswith("Language '") and error_message.endswith("' not supported"):
-                raise TTSLanguageNotSupportedError(
-                    f"TTS engine '{entity_id}' does not support language '{language}'"
-                )
+                raise TTSLanguageNotSupportedError(f"TTS engine '{entity_id}': {error_message}")
             raise MusicAssistantError(error_message)
-        if response.status >= 500 and language:
+        if response.status == 500 and language:
             # HA masks tts_get_url validation errors as a bare 500 (the error body fails
             # to serialize), so a rejected language is the one recoverable cause left
             raise TTSLanguageNotSupportedError(

@@ -790,6 +790,18 @@ async def test_tts_bare_500_with_language_is_classified_as_possible_language_rej
         assert "possibly" in str(excinfo.value)
 
 
+async def test_tts_bare_503_with_language_raises_generic_error() -> None:
+    """A bodyless 5xx other than 500 is an outage, not a masked validation error."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=503)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "503" in str(excinfo.value)
+
+
 async def test_tts_bare_500_without_language_raises_generic_error() -> None:
     """A bare 500 with no language requested has nothing to blame on a rejection."""
     async with _start_provider([_state("tts.first", "First")]) as (provider, _):
