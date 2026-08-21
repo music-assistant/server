@@ -268,6 +268,79 @@ async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty(
     lookup_provider.get_similar_tracks.assert_awaited_once_with("lookup_track", limit=25)
 
 
+async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
+    """A transport failure while matching a lookup provider is normalized."""
+    mass = Mock()
+    lookup_provider = Mock(spec=MusicProvider)
+    lookup_provider.name = "Lookup"
+    lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [lookup_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = set()
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    client_error = ClientConnectionError("offline")
+    controller.match_provider = AsyncMock(  # type: ignore[method-assign]
+        side_effect=client_error
+    )
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "library", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
+async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented() -> None:
+    """An unsupported matched lookup does not discard an earlier provider failure."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    client_error = ClientConnectionError("offline")
+    mapped_provider.get_similar_tracks = AsyncMock(side_effect=client_error)
+    lookup_provider = Mock(spec=MusicProvider)
+    lookup_provider.name = "Lookup"
+    lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    lookup_provider.get_similar_tracks = AsyncMock(side_effect=NotImplementedError)
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [lookup_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider = "mapped"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.match_provider = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            ProviderMapping(
+                item_id="lookup_track",
+                provider_domain="lookup",
+                provider_instance="lookup",
+            )
+        ]
+    )
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
 def _artist(item_id: str, name: str, instance: str) -> Artist:
     """Build a minimal Artist for the given provider instance."""
     return Artist(

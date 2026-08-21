@@ -521,28 +521,13 @@ class TracksController(MediaControllerBase[Track]):
                 self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
             return []
 
-        music_prov: MusicProvider | None = None
-        for prov in self.mass.music.providers:
-            if ProviderFeature.SIMILAR_TRACKS in prov.supported_features:
-                music_prov = prov
-                break
-        if music_prov is None:
-            msg = "No Music Provider found that supports requesting similar tracks."
-            raise UnsupportedFeaturedException(msg)
-
-        if mappings := await self.match_provider(ref_item, music_prov):
-            if ref_item.provider == "library":
-                # update database with new provider mappings
-                await self.add_provider_mappings(ref_item.item_id, mappings)
-            ref_item.provider_mappings.update(mappings)
-            result, error = await self._get_similar_tracks_from_provider(
-                music_prov, ref_item, limit, provider_track_id=mappings[0].item_id
-            )
-            if error is not None:
-                if not provider_responded:
-                    self._raise_similar_tracks_provider_error(ref_item, error)
-                return []
-            return result or []
+        result, error = await self._lookup_similar_tracks_provider(ref_item, limit)
+        if error is not None:
+            last_provider_error = error
+        if result is not None:
+            provider_responded = True
+            if result:
+                return result
 
         if not provider_responded and last_provider_error is not None:
             self._raise_similar_tracks_provider_error(ref_item, last_provider_error)
@@ -1027,6 +1012,76 @@ class TracksController(MediaControllerBase[Track]):
             )
             return None, err
         return result, None
+
+    async def _match_similar_tracks_provider(
+        self, ref_item: Track, provider: MusicProvider
+    ) -> tuple[
+        list[ProviderMapping] | None,
+        MusicAssistantError | ClientError | OSError | TimeoutError | None,
+    ]:
+        """
+        Find a matching track on a provider for a similar-tracks lookup.
+
+        :param ref_item: Track to match.
+        :param provider: Provider to search for a matching track.
+        """
+        try:
+            return await self.match_provider(ref_item, provider), None
+        except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
+            self.logger.warning(
+                "Failed to match %s on provider %s for similar tracks: %s",
+                ref_item.name,
+                provider.name,
+                err,
+            )
+            return None, err
+
+    async def _lookup_similar_tracks_provider(
+        self, ref_item: Track, limit: int
+    ) -> tuple[
+        list[Track] | None,
+        MusicAssistantError | ClientError | OSError | TimeoutError | None,
+    ]:
+        """
+        Find a provider match and request similar tracks from it.
+
+        :param ref_item: Track to match.
+        :param limit: Maximum number of tracks to return.
+        :raises UnsupportedFeaturedException: When no music provider supports similar tracks.
+        """
+        providers = [
+            prov
+            for prov in self.mass.music.providers
+            if ProviderFeature.SIMILAR_TRACKS in prov.supported_features
+        ]
+        if not providers:
+            msg = "No Music Provider found that supports requesting similar tracks."
+            raise UnsupportedFeaturedException(msg)
+
+        last_error: MusicAssistantError | ClientError | OSError | TimeoutError | None = None
+        provider_responded = False
+        for provider in providers:
+            mappings, error = await self._match_similar_tracks_provider(ref_item, provider)
+            if error is not None:
+                last_error = error
+                continue
+            if not mappings:
+                continue
+            if ref_item.provider == "library":
+                await self.add_provider_mappings(ref_item.item_id, mappings)
+            ref_item.provider_mappings.update(mappings)
+            result, error = await self._get_similar_tracks_from_provider(
+                provider, ref_item, limit, provider_track_id=mappings[0].item_id
+            )
+            if error is not None:
+                last_error = error
+                continue
+            if result is None:
+                continue
+            provider_responded = True
+            if result:
+                return result, None
+        return ([] if provider_responded else None), last_error
 
     @staticmethod
     def _raise_similar_tracks_provider_error(
