@@ -488,6 +488,11 @@ class SpotifyConnectProvider(PluginProvider):
             # start), so it gets a more generous startup window
             timeout = REDIRECT_START_TIMEOUT_S if redirect_pending else PLAYBACK_START_TIMEOUT_S
             if not await self._wait_for_playing(timeout):
+                if redirect_pending:
+                    # the redirect did not start in time and this stream fails here:
+                    # close the (longer) grace window so a late playing report is
+                    # treated as the external trigger it now is and recovers playback
+                    self.cancel_redirect()
                 raise self._not_active_error()
 
         # The backend reports 100% volume until told otherwise; push the player's
