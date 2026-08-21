@@ -154,19 +154,18 @@ async def test_unexpected_error_from_provider_album_tracks_does_not_abort_sync()
     mass.music.get_controller.return_value.get_library_item.assert_awaited_once_with(99)
 
 
-async def test_deletions_skipped_when_an_item_failed() -> None:
-    """A skipped item must not be read as removed from the provider."""
-    mass = _build_mass(prev_library_ids=[1, 2, 3])
+async def test_failed_item_is_protected_without_holding_back_deletions() -> None:
+    """A failed item must survive while unrelated deletions still run."""
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
     provider = _build_provider(mass)
-
+    _library_holds(mass, {"album_2": 2})
     _fail_add_for(mass, "album_2")
 
     await provider.sync_library(MediaType.ALBUM)
 
     controller = mass.music.get_controller.return_value
-    controller.get_library_item.assert_not_called()
-    controller.set_provider_mappings.assert_not_called()
-    controller.remove_item_from_library.assert_not_called()
+    controller.get_library_item.assert_awaited_once_with(99)
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
 
 
 async def test_deletions_run_on_a_clean_sync() -> None:
@@ -214,32 +213,54 @@ async def test_library_generator_error_still_propagates() -> None:
     mass.music.get_controller.return_value.set_provider_mappings.assert_not_called()
 
 
-async def test_expected_error_also_holds_back_deletions() -> None:
-    """A MusicAssistantError leaves the same gap in the result set as any other error."""
+async def test_expected_error_also_protects_only_failed_items() -> None:
+    """A MusicAssistantError protects its items without freezing unrelated cleanup."""
     mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
     provider = _build_provider(mass)
+    _library_holds(mass, DB_IDS)
     mass.music.albums.add_item_to_library = AsyncMock(side_effect=MediaNotFoundError("gone"))
 
     await provider.sync_library(MediaType.ALBUM)
 
-    mass.music.get_controller.return_value.get_library_item.assert_not_called()
+    mass.music.get_controller.return_value.get_library_item.assert_awaited_once_with(99)
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
 
 
-async def test_incomplete_run_keeps_the_previous_id_snapshot() -> None:
+async def test_failed_item_snapshot_drops_unrelated_deletions() -> None:
     """
-    A run that skipped items merges into the cached id's instead of replacing them.
+    A run with an identifiable failure replaces the cached id's with its surgical result.
 
-    Those id's are what a later run compares against; replacing them with an incomplete
-    set would drop the deletions this run could not process.
+    The failed item's id is retained, while an unrelated provider deletion must not survive
+    into the next snapshot.
     """
     mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
     provider = _build_provider(mass)
+    _library_holds(mass, {"album_2": 2})
     _fail_add_for(mass, "album_2")
 
     await provider.sync_library(MediaType.ALBUM)
 
-    # 99 (gone from the provider) and 2 (failed this run) both survive for the next run
-    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3, 99]
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
+
+
+async def test_resolved_failed_item_does_not_need_provider_id_lookup() -> None:
+    """A known db id is protected directly when later item processing fails."""
+    mass = _build_mass(prev_library_ids=[1, 2, 3, 99])
+    provider = _build_provider(mass)
+    sync_details = MagicMock(item_id=2, favorite=False)
+    mass.music.albums.get_library_item_sync_details = AsyncMock(
+        side_effect=[None, sync_details, None]
+    )
+    provider._library_item_needs_update = MagicMock(  # type: ignore[method-assign]
+        side_effect=KeyError("release_date")
+    )
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    controller = mass.music.get_controller.return_value
+    controller.get_library_items_by_prov_id.assert_not_awaited()
+    controller.get_library_item.assert_awaited_once_with(99)
+    assert sorted(mass.cache.set.await_args.kwargs["data"]) == [1, 2, 3]
 
 
 async def test_deletions_not_reported_when_disabled() -> None:

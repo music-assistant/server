@@ -1159,6 +1159,21 @@ class MusicProvider(Provider):
             ):
                 cur_db_ids.add(int(library_item.item_id))
 
+    def _protect_failed_sync_item(
+        self,
+        media_type: MediaType,
+        provider_item_id: str | None,
+        library_item_id: int | None,
+        cur_db_ids: set[int],
+    ) -> None:
+        """Keep a failed item out of this run's deletion pass."""
+        if library_item_id is not None:
+            cur_db_ids.add(library_item_id)
+        elif provider_item_id:
+            sync_run_state().skipped_item_ids.setdefault(media_type, set()).add(provider_item_id)
+        else:
+            sync_run_state().incomplete_media_types.add(media_type)
+
     async def _sync_item_genres(
         self,
         media_type: MediaType,
@@ -1185,10 +1200,12 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_artists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 sync_details = await self.mass.music.artists.get_library_item_sync_details(
                     prov_item.provider_mappings,
                 )
+                db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1224,8 +1241,10 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.ARTIST)
                 self._handle_sync_item_failure(MediaType.ARTIST, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.ARTIST, prov_item.item_id, db_id, cur_db_ids
+                )
         return cur_db_ids
 
     def library_sync_album_tracks_enabled(self) -> bool:
@@ -1246,10 +1265,12 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_albums():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ALBUM, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 sync_details = await self.mass.music.albums.get_library_item_sync_details(
                     prov_item.provider_mappings,
                 )
+                db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1285,8 +1306,10 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.ALBUM)
                 self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.ALBUM, prov_item.item_id, db_id, cur_db_ids
+                )
                 continue
             # optionally add album tracks to library. the album is already collected here,
             # so failing to import its tracks does not make the album result set incomplete
@@ -1395,6 +1418,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_audiobooks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 sync_details = cast(
                     "AudiobookSyncDetails | None",
@@ -1402,6 +1426,7 @@ class MusicProvider(Provider):
                         prov_item.provider_mappings,
                     ),
                 )
+                db_id = sync_details.item_id if sync_details else None
                 self._validate_audiobook_author_narrator_types(prov_item)
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
@@ -1474,8 +1499,10 @@ class MusicProvider(Provider):
 
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.AUDIOBOOK)
                 self._handle_sync_item_failure(MediaType.AUDIOBOOK, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.AUDIOBOOK, prov_item.item_id, db_id, cur_db_ids
+                )
         return cur_db_ids
 
     async def _sync_library_playlists(self) -> set[int]:
@@ -1491,10 +1518,12 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_playlists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PLAYLIST, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
+                db_id = int(library_item.item_id) if library_item else None
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:
@@ -1529,14 +1558,17 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.playlists.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
-                    cur_db_ids.add(int(library_item.item_id))
+                    db_id = int(library_item.item_id)
+                    cur_db_ids.add(db_id)
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.playlists.set_favorite(library_item.item_id, True)
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.PLAYLIST)
                 self._handle_sync_item_failure(MediaType.PLAYLIST, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.PLAYLIST, prov_item.item_id, db_id, cur_db_ids
+                )
                 continue
             # optionally sync playlist tracks. the playlist is already collected here, so
             # failing on its tracks does not make the playlist result set incomplete
@@ -1609,6 +1641,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_tracks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 sync_details = cast(
                     "TrackSyncDetails | None",
@@ -1616,6 +1649,7 @@ class MusicProvider(Provider):
                         prov_item.provider_mappings,
                     ),
                 )
+                db_id = sync_details.item_id if sync_details else None
                 if not sync_details and not prov_item.available:
                     # skip unavailable tracks
                     # TODO: do we want to search for substitutes at this point ?
@@ -1665,8 +1699,10 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.TRACK)
                 self._handle_sync_item_failure(MediaType.TRACK, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.TRACK, prov_item.item_id, db_id, cur_db_ids
+                )
         return cur_db_ids
 
     async def _sync_library_podcasts(self) -> set[int]:
@@ -1677,10 +1713,12 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_podcasts():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PODCAST, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
                     prov_item.provider_mappings,
                 )
+                db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not sync_details:
@@ -1716,8 +1754,10 @@ class MusicProvider(Provider):
                     )
                 await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.PODCAST)
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.PODCAST, prov_item.item_id, db_id, cur_db_ids
+                )
                 continue
             # the podcast is already collected here, so a feed that fails to deliver its
             # episodes does not make the podcast result set incomplete
@@ -1737,10 +1777,12 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_radios():
             item_count += 1
             self._update_sync_task_item_status(MediaType.RADIO, item_count, prov_item.name)
+            db_id: int | None = None
             try:
                 library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
+                db_id = int(library_item.item_id) if library_item else None
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
                     if not library_item:
@@ -1766,15 +1808,18 @@ class MusicProvider(Provider):
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
-                    cur_db_ids.add(int(library_item.item_id))
+                    db_id = int(library_item.item_id)
+                    cur_db_ids.add(db_id)
                     if not library_item.favorite and prov_item.favorite:
                         # existing library item not favorite but should be
                         await self.mass.music.radio.set_favorite(library_item.item_id, True)
                 await asyncio.sleep(0)  # yield to eventloop
 
             except Exception as err:
-                sync_run_state().incomplete_media_types.add(MediaType.RADIO)
                 self._handle_sync_item_failure(MediaType.RADIO, prov_item.uri, err)
+                self._protect_failed_sync_item(
+                    MediaType.RADIO, prov_item.item_id, db_id, cur_db_ids
+                )
         return cur_db_ids
 
     # DO NOT OVERRIDE BELOW
