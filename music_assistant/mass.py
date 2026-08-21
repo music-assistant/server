@@ -340,7 +340,7 @@ class MusicAssistant:
         if webserver := getattr(self, "webserver", None):
             try:
                 await webserver.stop_accepting_connections()
-            except Exception:
+            except OSError, RuntimeError:
                 LOGGER.exception("Error while stopping the webserver listeners")
         # cancel all running tasks
         for task in list(self._tracked_tasks.values()):
