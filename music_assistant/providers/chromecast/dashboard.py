@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -234,9 +233,14 @@ class ChromecastDashboards:
             chromecast = pychromecast.get_chromecast_from_cast_info(
                 disc_info, self.mass.discovery.aiozc.zeroconf
             )
-            with contextlib.suppress(RequestTimeout):
+            try:
                 chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
-            if not chromecast.socket_client.is_connected:
+                # the socket is reported as connected from the handshake onwards, so it
+                # only tells us the device is still reachable now that it has reported in
+                ready = chromecast.socket_client.is_connected
+            except RequestTimeout:
+                ready = False
+            if not ready:
                 disconnect_no_wait(chromecast)
                 msg = f"Timed out connecting to Cast device: {disc_info.friendly_name}"
                 raise PlayerUnavailableError(msg)

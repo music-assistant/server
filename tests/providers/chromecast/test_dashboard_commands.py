@@ -313,6 +313,8 @@ async def test_on_show_reports_an_unreachable_device_as_player_unavailable(
         return_value="https://mass.example.com?path=%2Fparty"
     )
     chromecast = live_chromecast_factory(wait_error=RequestTimeout("wait", 10.0))
+    # a device that answers the handshake but never reports in is the realistic shape here
+    chromecast.socket_client.is_connected = True
 
     with (
         patch(
