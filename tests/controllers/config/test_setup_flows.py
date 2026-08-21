@@ -1579,7 +1579,9 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
 ) -> None:
     """The real Spotify flow: hosted-bounce auth, playback authorization, stored credentials."""
     from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
         CONF_LIBRESPOT_CREDENTIALS,
+        CONF_PLAYBACK_BACKEND,
         CONF_REFRESH_TOKEN_GLOBAL,
     )
     from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
@@ -1629,6 +1631,16 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert step.flow_id in step.url
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # the playback mode choice comes first; keep librespot for this walk
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
         # playback needs its own authorization; pick the browser fallback
         await _wait_for(
             lambda: (

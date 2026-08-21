@@ -18,6 +18,7 @@ from music_assistant.providers.spotify_connect import (
     CONF_BACKEND,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
+    CONF_SETUP_PENDING,
     CONF_SOLOIST_CONSENT,
 )
 from music_assistant.providers.spotify_connect import setup_flow as spotify_flow
@@ -53,10 +54,14 @@ def _make_session(
 ) -> tuple[SetupSession, dict[str, Any]]:
     """Return a real setup session and the values collected by its finish handler."""
     mass = mock.Mock()
-    mass.players.all_players.return_value = [
+    players = [
         _player("living-room", "Living Room"),
         _player("kitchen", "Kitchen"),
     ]
+    mass.players.all_players.return_value = players
+    mass.players.get_player.side_effect = lambda player_id: next(
+        (player for player in players if player.player_id == player_id), None
+    )
     collected: dict[str, Any] = {}
 
     async def finish(_session: SetupSession, submitted: dict[str, Any]) -> dict[str, str]:
@@ -138,7 +143,7 @@ async def test_new_setup_go_librespot_path() -> None:
     assert backend_entry.value == BACKEND_GO_LIBRESPOT
 
     step = await _submit(session, {CONF_BACKEND: BACKEND_GO_LIBRESPOT})
-    assert step.step_id == "user"
+    assert step.step_id == "player"
     player_entry = _entry(step, CONF_MASS_PLAYER_ID)
     assert [option.value for option in player_entry.options] == [
         "__auto__",
@@ -146,9 +151,12 @@ async def test_new_setup_go_librespot_path() -> None:
         "living-room",
     ]
 
-    session.handle_submit(
-        {CONF_MASS_PLAYER_ID: "living-room", CONF_PUBLISH_NAME: "Living Room Spotify"}
-    )
+    # a new instance bound to a player is named after that player by default
+    step = await _submit(session, {CONF_MASS_PLAYER_ID: "living-room"})
+    assert step.step_id == "device_name"
+    assert _entry(step, CONF_PUBLISH_NAME).value == "Living Room"
+
+    session.handle_submit({CONF_PUBLISH_NAME: "Living Room Spotify"})
     await _wait_finished(session)
     await task
 
@@ -156,6 +164,7 @@ async def test_new_setup_go_librespot_path() -> None:
         CONF_BACKEND: BACKEND_GO_LIBRESPOT,
         CONF_MASS_PLAYER_ID: "living-room",
         CONF_PUBLISH_NAME: "Living Room Spotify",
+        CONF_SETUP_PENDING: False,
     }
 
 
@@ -191,13 +200,13 @@ async def test_new_setup_soloist_path() -> None:
         assert step.step_id == "soloist_api_key"
         assert step.errors == {CONF_API_KEY: "soloist_api_key_invalid"}
 
-        # a valid key advances to the player/name step
+        # a valid key advances to the player step, then the name step
         step = await _submit(session, {CONF_API_KEY: _VALID_API_KEY})
-        assert step.step_id == "user"
+        assert step.step_id == "player"
+        step = await _submit(session, {CONF_MASS_PLAYER_ID: "kitchen"})
+        assert step.step_id == "device_name"
 
-        session.handle_submit(
-            {CONF_MASS_PLAYER_ID: "kitchen", CONF_PUBLISH_NAME: "Kitchen Spotify"}
-        )
+        session.handle_submit({CONF_PUBLISH_NAME: "Kitchen Spotify"})
         await _wait_finished(session)
         await task
 
@@ -207,6 +216,7 @@ async def test_new_setup_soloist_path() -> None:
         CONF_API_KEY: _VALID_API_KEY,
         CONF_MASS_PLAYER_ID: "kitchen",
         CONF_PUBLISH_NAME: "Kitchen Spotify",
+        CONF_SETUP_PENDING: False,
     }
 
 
@@ -253,11 +263,13 @@ async def test_reconfigure_soloist_keeps_stored_key_on_empty_input() -> None:
         assert _entry(step, CONF_API_KEY).required is False
         assert any(entry.key == "soloist_api_key_hint" for entry in step.entries)
         step = await _submit(session, {CONF_API_KEY: ""})
-        assert step.step_id == "user"
+        assert step.step_id == "player"
+        step = await _submit(session, {CONF_MASS_PLAYER_ID: "living-room"})
+        # the stored name wins over the picked player's name on reconfigure
+        assert step.step_id == "device_name"
+        assert _entry(step, CONF_PUBLISH_NAME).value == "Living Room Spotify"
 
-        session.handle_submit(
-            {CONF_MASS_PLAYER_ID: "living-room", CONF_PUBLISH_NAME: "Living Room Spotify"}
-        )
+        session.handle_submit({CONF_PUBLISH_NAME: "Living Room Spotify"})
         await _wait_finished(session)
         await task
 
@@ -270,11 +282,11 @@ async def test_switch_soloist_to_go_librespot_clears_secrets_on_finish() -> None
     task, _step = await _start_flow(session)
 
     step = await _submit(session, {CONF_BACKEND: BACKEND_GO_LIBRESPOT})
-    assert step.step_id == "user"
+    assert step.step_id == "player"
+    step = await _submit(session, {CONF_MASS_PLAYER_ID: "living-room"})
+    assert step.step_id == "device_name"
 
-    session.handle_submit(
-        {CONF_MASS_PLAYER_ID: "living-room", CONF_PUBLISH_NAME: "Living Room Spotify"}
-    )
+    session.handle_submit({CONF_PUBLISH_NAME: "Living Room Spotify"})
     await _wait_finished(session)
     await task
 
@@ -289,7 +301,7 @@ async def test_switch_aborted_before_finish_keeps_soloist_secrets() -> None:
     task, _step = await _start_flow(session)
 
     step = await _submit(session, {CONF_BACKEND: BACKEND_GO_LIBRESPOT})
-    assert step.step_id == "user"
+    assert step.step_id == "player"
     await _cancel(task)
 
     # finish never ran, so nothing was persisted (the stored setup_data is untouched)
@@ -313,15 +325,15 @@ async def test_switch_go_librespot_to_soloist_keeps_existing_values() -> None:
         assert step.step_id == "soloist_terms"
         step = await _submit(session, {CONF_SOLOIST_CONSENT: True})
         step = await _submit(session, {CONF_API_KEY: _VALID_API_KEY})
-        assert step.step_id == "user"
+        assert step.step_id == "player"
 
         # the previously configured player and name are prefilled
         assert _entry(step, CONF_MASS_PLAYER_ID).value == "living-room"
+        step = await _submit(session, {CONF_MASS_PLAYER_ID: "living-room"})
+        assert step.step_id == "device_name"
         assert _entry(step, CONF_PUBLISH_NAME).value == "Legacy Speaker"
 
-        session.handle_submit(
-            {CONF_MASS_PLAYER_ID: "living-room", CONF_PUBLISH_NAME: "Legacy Speaker"}
-        )
+        session.handle_submit({CONF_PUBLISH_NAME: "Legacy Speaker"})
         await _wait_finished(session)
         await task
 
@@ -331,6 +343,7 @@ async def test_switch_go_librespot_to_soloist_keeps_existing_values() -> None:
         CONF_API_KEY: _VALID_API_KEY,
         CONF_MASS_PLAYER_ID: "living-room",
         CONF_PUBLISH_NAME: "Legacy Speaker",
+        CONF_SETUP_PENDING: False,
     }
 
 

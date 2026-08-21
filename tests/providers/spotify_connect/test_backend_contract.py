@@ -720,27 +720,44 @@ def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
     assert caps.provider_domain == "spotify"
     assert caps.can_shuffle is True
     assert caps.can_repeat is True
-    # the queue-view mirror and the play/enqueue redirect are not built yet,
-    # so those capabilities are not declared
+    # the queue-view mirror is not built yet, so that capability is not declared
     assert caps.provides_queue_view is False
-    assert caps.playable_media_types == []
-    assert caps.enqueueable_media_types == []
+    assert caps.playable_media_types == [
+        MediaType.TRACK,
+        MediaType.ALBUM,
+        MediaType.PLAYLIST,
+        MediaType.ARTIST,
+    ]
+    assert caps.enqueueable_media_types == [MediaType.TRACK]
     assert caps.native_autoplay is False
     assert caps.native_crossfade is False
     assert caps.native_volume_normalization is False
-    # account verification arrives with the play redirect
+    # account verification runs at redirect time, not at construction
     assert source.account_id is None
 
 
-def test_audio_source_stays_transport_only_without_queue_control() -> None:
-    """A transport-only backend leaves the AudioSource without queue capabilities."""
+def test_audio_source_without_queue_control_declares_playable_only() -> None:
+    """A transport-only backend is a redirect target but declares no queue-session verbs."""
     backend = FakeBackend()
     provider, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
     source = provider._build_audio_source()
 
-    assert source.queue_capabilities is None
+    caps = source.queue_capabilities
+    assert caps is not None
+    # every backend can start Spotify content via play(), so the source remains a
+    # valid playback-redirect target for the Spotify music provider
+    assert caps.playable_media_types == [
+        MediaType.TRACK,
+        MediaType.ALBUM,
+        MediaType.PLAYLIST,
+        MediaType.ARTIST,
+    ]
+    # ...but the queue-session verbs need queue control
+    assert caps.can_shuffle is False
+    assert caps.can_repeat is False
+    assert caps.enqueueable_media_types == []
 
 
 async def test_source_selected_takes_playback_back_via_backend() -> None:
