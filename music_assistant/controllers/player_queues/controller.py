@@ -259,8 +259,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         if (delegated := self._get_delegated_source(queue_id)) is not None:
             audio_source, caps, provider = delegated
-            if queue.shuffle_enabled == shuffle_enabled:
-                return  # no change (also damps mirror echo loops)
+            # always forward: the mirrored state lags the session (options echo), so an
+            # equality check here would drop a quick second toggle as a false no-change
             if not caps.can_shuffle:
                 raise InvalidCommand(
                     "Cannot change shuffle: the external session does not support it"
@@ -327,8 +327,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         if (delegated := self._get_delegated_source(queue_id)) is not None:
             audio_source, caps, provider = delegated
-            if queue.repeat_mode == repeat_mode:
-                return  # no change (also damps mirror echo loops)
+            # always forward: the mirrored state lags the session (options echo), so an
+            # equality check here would drop a quick second toggle as a false no-change
             if repeat_mode == RepeatMode.UNKNOWN:
                 raise InvalidCommand("Cannot set an unknown repeat mode")
             if not caps.can_repeat:

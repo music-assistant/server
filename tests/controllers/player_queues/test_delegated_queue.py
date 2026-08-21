@@ -152,14 +152,19 @@ async def test_delegated_shuffle_forwards_without_touching_the_queue() -> None:
     ctrl.load.assert_not_awaited()  # type: ignore[attr-defined]
 
 
-async def test_delegated_shuffle_with_the_mirrored_value_is_a_noop() -> None:
-    """Setting shuffle to the already-mirrored value forwards nothing (damps echo loops)."""
+async def test_delegated_shuffle_with_the_mirrored_value_still_forwards() -> None:
+    """
+    Setting shuffle to the already-mirrored value still forwards to the session.
+
+    The mirrored state lags the session's options echo, so an equality no-op check
+    would drop a quick second toggle; the session itself is the deduplicating end.
+    """
     ctrl, provider = _controller(_audio_source(_capabilities()))
     _queue(ctrl).shuffle_enabled = True
 
     await ctrl.set_shuffle(QUEUE_ID, True)
 
-    provider.on_source_control.assert_not_awaited()
+    provider.on_source_control.assert_awaited_once_with(SOURCE_ID, SourceControl.SHUFFLE, True)
     ctrl.load.assert_not_awaited()  # type: ignore[attr-defined]
 
 
@@ -175,14 +180,21 @@ async def test_delegated_repeat_forwards_the_repeat_mode() -> None:
     assert _queue(ctrl).repeat_mode == RepeatMode.OFF
 
 
-async def test_delegated_repeat_with_the_mirrored_value_is_a_noop() -> None:
-    """Setting repeat to the already-mirrored mode forwards nothing (damps echo loops)."""
+async def test_delegated_repeat_with_the_mirrored_value_still_forwards() -> None:
+    """
+    Setting repeat to the already-mirrored mode still forwards to the session.
+
+    The mirrored state lags the session's options echo, so an equality no-op check
+    would drop a quick second change; the session itself is the deduplicating end.
+    """
     ctrl, provider = _controller(_audio_source(_capabilities()))
     _queue(ctrl).repeat_mode = RepeatMode.ALL
 
     await ctrl.set_repeat(QUEUE_ID, RepeatMode.ALL)
 
-    provider.on_source_control.assert_not_awaited()
+    provider.on_source_control.assert_awaited_once_with(
+        SOURCE_ID, SourceControl.REPEAT, RepeatMode.ALL
+    )
 
 
 async def test_delegated_repeat_unknown_is_refused() -> None:
