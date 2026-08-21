@@ -819,6 +819,9 @@ class SpotifyConnectProvider(PluginProvider):
                 MediaType.ALBUM,
                 MediaType.PLAYLIST,
                 MediaType.ARTIST,
+                MediaType.PODCAST,
+                MediaType.PODCAST_EPISODE,
+                MediaType.AUDIOBOOK,
             ],
         )
         if self._backend.supports_queue_control:

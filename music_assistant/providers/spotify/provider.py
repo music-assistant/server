@@ -823,17 +823,8 @@ class SpotifyProvider(MusicProvider):
         """Return content details for the given track/episode/audiobook when it will be streamed."""
         if self._connect_mode:
             # in Connect mode this provider never streams audio itself; playback is
-            # redirected into a Spotify Connect session at enqueue time
-            if media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK):
-                # these never delegate, so a missing-session hint would mislead
-                raise AudioError(
-                    "Podcasts and audiobooks cannot be played in the Spotify Connect "
-                    "playback mode. Switch the Spotify provider to librespot playback "
-                    "to play them.",
-                    translation_key="connect_media_unsupported",
-                    translation_owner=self.translation_owner,
-                )
-            # reaching this point with a track means no eligible session was found
+            # redirected into a Spotify Connect session at enqueue time — reaching
+            # this point means no eligible session was found for this account
             raise AudioError(
                 "No Spotify Connect session is available for this Spotify account. "
                 "Complete (or re-pair) the Spotify Connect setup, or switch the "
@@ -995,10 +986,10 @@ class SpotifyProvider(MusicProvider):
                     translation_key="connect_no_session_for_enqueue",
                     translation_owner=self.translation_owner,
                 )
-            await plugin.enqueue_on_source(self._delegate_track_uris(media_items))
+            await plugin.enqueue_on_source(self._delegate_item_uris(media_items))
             return
         context_uri, start_uri = self._delegate_context(context, start_item, media_items)
-        uris = [] if context_uri else self._delegate_track_uris(media_items)
+        uris = [] if context_uri else self._delegate_item_uris(media_items)
         if not context_uri and not uris:
             raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
         await plugin.prepare_redirect(target_player_id)
@@ -1919,9 +1910,9 @@ class SpotifyProvider(MusicProvider):
             return False
         return True
 
-    def _delegate_track_uris(self, media_items: list[PlayableMediaItemType]) -> list[str]:
+    def _delegate_item_uris(self, media_items: list[PlayableMediaItemType]) -> list[str]:
         """
-        Return the Spotify track uris for the given resolved items (tracks only).
+        Return the Spotify uris for the given resolved playable items.
 
         Capped at the Web API's play-request limit: a context-less list larger than
         that (e.g. Liked Songs) plays its first chunk only, until queue mirroring
@@ -1929,18 +1920,29 @@ class SpotifyProvider(MusicProvider):
         """
         uris: list[str] = []
         for item in media_items:
-            if item.media_type != MediaType.TRACK:
-                continue
-            if (item_id := self._item_id_for_this_provider(item)) is not None:
-                uris.append(f"spotify:track:{item_id}")
+            if (uri := self._delegate_item_uri(item)) is not None:
+                uris.append(uri)
         if len(uris) > MAX_DELEGATED_TRACKS:
             self.logger.warning(
-                "Sending only the first %d of %d tracks to the Spotify Connect session",
+                "Sending only the first %d of %d items to the Spotify Connect session",
                 MAX_DELEGATED_TRACKS,
                 len(uris),
             )
             return uris[:MAX_DELEGATED_TRACKS]
         return uris
+
+    def _delegate_item_uri(self, item: MediaItem) -> str | None:
+        """Return the Spotify uri for a single resolved playable item, if it has one."""
+        uri_types = {
+            MediaType.TRACK: "track",
+            MediaType.PODCAST_EPISODE: "episode",
+            MediaType.AUDIOBOOK: "audiobook",
+        }
+        if (uri_type := uri_types.get(item.media_type)) is None:
+            return None
+        if (item_id := self._item_id_for_this_provider(item)) is None:
+            return None
+        return f"spotify:{uri_type}:{item_id}"
 
     def _delegate_context(
         self,
@@ -1963,6 +1965,7 @@ class SpotifyProvider(MusicProvider):
             MediaType.ALBUM: "album",
             MediaType.PLAYLIST: "playlist",
             MediaType.ARTIST: "artist",
+            MediaType.PODCAST: "show",
         }
         if context is None or (uri_type := context_types.get(context.media_type)) is None:
             return None, None
@@ -1977,25 +1980,27 @@ class SpotifyProvider(MusicProvider):
             # resolved through the already-resolved batch, which media resolution built
             # honoring the very same start item
             prefix, _, rest = start_item.partition("://")
-            if (prefix == self.domain or prefix.startswith(f"{self.domain}--")) and rest.startswith(
-                "track/"
+            media_type_str, _, start_id = rest.partition("/")
+            if (
+                (prefix == self.domain or prefix.startswith(f"{self.domain}--"))
+                and media_type_str in ("track", "podcast_episode")
+                and start_id
             ):
-                start_uri = f"spotify:track:{rest.removeprefix('track/')}"
+                uri_kind = "episode" if media_type_str == "podcast_episode" else "track"
+                start_uri = f"spotify:{uri_kind}:{start_id}"
             else:
                 start_match = next(
-                    (
-                        item
-                        for item in media_items
-                        if item.media_type == MediaType.TRACK and item.uri == start_item
-                    ),
+                    (item for item in media_items if item.uri == start_item),
                     None,
                 )
-                if start_match is not None and (
-                    start_id := self._item_id_for_this_provider(start_match)
-                ):
-                    start_uri = f"spotify:track:{start_id}"
-        elif start_item is not None and (start_id := self._item_id_for_this_provider(start_item)):
-            start_uri = f"spotify:track:{start_id}"
+                if start_match is not None:
+                    start_uri = self._delegate_item_uri(start_match)
+        elif start_item is not None:
+            start_uri = self._delegate_item_uri(start_item)
+        if uri_type == "show" and start_uri is not None:
+            # show contexts have no reliable start offset; the expanded episode list
+            # (which media resolution already starts at the chosen episode) plays instead
+            return None, None
         return f"spotify:{uri_type}:{item_id}", start_uri
 
     def _item_id_for_this_provider(self, item: MediaItem) -> str | None:

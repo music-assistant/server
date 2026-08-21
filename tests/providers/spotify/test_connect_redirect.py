@@ -419,4 +419,4 @@ def test_track_uris_prefer_this_instances_mapping() -> None:
         },
     )
 
-    assert prov._delegate_track_uris([track]) == ["spotify:track:own"]
+    assert prov._delegate_item_uris([track]) == ["spotify:track:own"]

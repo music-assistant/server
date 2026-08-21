@@ -279,8 +279,8 @@ async def _choose_playback_backend(
                 default_value=BACKEND_LIBRESPOT,
                 value=preselect,
                 options=[
-                    ConfigValueOption(BACKEND_CONNECT),
                     ConfigValueOption(BACKEND_LIBRESPOT),
+                    ConfigValueOption(BACKEND_CONNECT),
                 ],
             ),
         ],

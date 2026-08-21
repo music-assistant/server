@@ -893,7 +893,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             if len(resolved_parents) == 1
             and not isinstance(resolved_parents[0], BrowseFolder)
             and resolved_parents[0].media_type
-            in (MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST)
+            in (MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST, MediaType.PODCAST)
             else None
         )
         had_media_items = bool(media_items)

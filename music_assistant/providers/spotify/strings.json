@@ -80,7 +80,7 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can play Spotify audio in two ways:\n\n**Spotify Connect** — playback is handed to a Spotify Connect session hosted through the Spotify Connect provider, so the music plays just like it does in the Spotify apps and the Spotify app can be used as a remote. Some queue features are handled by Spotify instead of Music Assistant, and podcasts and audiobooks are not available in this mode.\n\n**librespot (community)** — Music Assistant streams the audio itself, with all Music Assistant features available — including podcasts and audiobooks. Based on a community-built client, it works best for accounts created before December 2024."
+      "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community)** — Music Assistant streams the audio itself, with all Music Assistant features available. Based on a community-built client, it only works for Spotify accounts created before December 2024.\n\n**Spotify Connect** — playback is handed to a Spotify Connect session hosted through the Spotify Connect provider, so the music plays just like it does in the Spotify apps and the Spotify app can be used as a remote. Some queue features are handled by Spotify instead of Music Assistant."
     },
     "connect_mode": {
       "title": "Playback through Spotify Connect",

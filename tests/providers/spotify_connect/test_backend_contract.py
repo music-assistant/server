@@ -727,6 +727,9 @@ def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
         MediaType.ALBUM,
         MediaType.PLAYLIST,
         MediaType.ARTIST,
+        MediaType.PODCAST,
+        MediaType.PODCAST_EPISODE,
+        MediaType.AUDIOBOOK,
     ]
     assert caps.enqueueable_media_types == [MediaType.TRACK]
     assert caps.native_autoplay is False
@@ -753,6 +756,9 @@ def test_audio_source_without_queue_control_declares_playable_only() -> None:
         MediaType.ALBUM,
         MediaType.PLAYLIST,
         MediaType.ARTIST,
+        MediaType.PODCAST,
+        MediaType.PODCAST_EPISODE,
+        MediaType.AUDIOBOOK,
     ]
     # ...but the queue-session verbs need queue control
     assert caps.can_shuffle is False
