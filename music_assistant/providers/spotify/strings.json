@@ -52,6 +52,9 @@
     "connect_ready": {
       "label": "A Spotify Connect instance is already running and paired to this Spotify account, so playback works right away."
     },
+    "connect_pairing_intro": {
+      "label": "Have the Spotify app at hand, then press Next to start."
+    },
     "connect_pairing_retry": {
       "label": "The Music Assistant device was not selected in the Spotify app yet. Press Next to try again — and make sure you select it with the same Spotify account you just signed in with."
     },
@@ -86,9 +89,13 @@
       "title": "Playback through Spotify Connect",
       "description": "In this mode, playing Spotify content sends it to a Spotify Connect device hosted by Music Assistant, which then plays on the player you selected."
     },
+    "connect_pairing_intro": {
+      "title": "One last step: link your Spotify account",
+      "description": "The new Spotify Connect device now needs to be linked to your Spotify account. This happens in the **Spotify app** itself, not in this dialog.\n\nGrab a phone, tablet or computer with the Spotify app, signed in with the **same Spotify account** you just used. On the next screen, you select \"Music Assistant\" as the playback device there — this dialog then continues by itself."
+    },
     "connect_pairing": {
-      "title": "Select Music Assistant in your Spotify app",
-      "progress_text": "Waiting for you to select the Music Assistant device in the Spotify app.\n\n1. Open the Spotify app on your phone, tablet or computer, signed in with the same account you just used.\n2. Start playing any song, so the player bar appears at the bottom.\n3. Tap the speaker icon in the player bar (Connect to a device).\n4. Choose \"Music Assistant\" from the list of devices.\n\nThis logs the device in to your account; you can switch back to your usual speaker right after. This screen continues by itself once you have done it.\n\nNot seeing it? Make sure the device running Spotify is on the same network as Music Assistant."
+      "title": "Select \"Music Assistant\" in your Spotify app",
+      "progress_text": "In the Spotify app: play any song, tap the speaker icon (Connect to a device) and choose \"Music Assistant\".\n\nYou can switch back to your usual speaker right after — this screen continues by itself.\n\nNot seeing the device? Make sure the phone or computer running Spotify is on the same network as Music Assistant."
     },
     "connect_pairing_retry": {
       "title": "Device not selected yet"

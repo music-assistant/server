@@ -131,7 +131,10 @@ async def test_connect_mode_sets_up_soloist_and_pairs_inline() -> None:
         step = await _submit(session, {CONF_SOLOIST_CONSENT: True})
         assert step.step_id == "soloist_api_key"
 
-        session.handle_submit({CONF_API_KEY: _VALID_API_KEY})
+        step = await _submit(session, {CONF_API_KEY: _VALID_API_KEY})
+        # the pairing is announced first, so the user has the Spotify app at hand
+        assert step.step_id == "connect_pairing_intro"
+        session.handle_submit({})
         # provisioning and the pairing wait are stubbed; the flow completes
         await asyncio.wait_for(task, timeout=5)
     finally:
@@ -213,8 +216,10 @@ async def test_connect_running_but_unpaired_instance_goes_to_pairing() -> None:
     try:
         task = asyncio.create_task(spotify_flow._setup_playback(session, setup_data, _ACCESS_TOKEN))
         await _wait_for_step(session)
-        session.handle_submit({CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
-        # no consent/key steps: straight to the pairing progress step
+        step = await _submit(session, {CONF_PLAYBACK_BACKEND: BACKEND_CONNECT})
+        # no consent/key steps: straight to the pairing intro + progress step
+        assert step.step_id == "connect_pairing_intro"
+        session.handle_submit({})
         step = await _wait_for_step(session, step_type=FlowStepType.PROGRESS)
         assert step.step_id == "connect_pairing"
         await asyncio.wait_for(task, timeout=5)

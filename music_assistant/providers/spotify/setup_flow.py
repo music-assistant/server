@@ -360,7 +360,12 @@ async def _setup_connect_playback(session: SetupSession, access_token: str) -> b
                     key_errors = {"base": err.translation_key or str(err)}
     # pairing: the user selects the device in the Spotify app; the device showing
     # up in this account's own device list confirms both the pairing and that the
-    # session belongs to this account
+    # session belongs to this account. An intro step first, so the user has the
+    # Spotify app at hand before the timed wait starts.
+    await session.form(
+        [ConfigEntry(key="connect_pairing_intro", type=ConfigEntryType.LABEL)],
+        step_id="connect_pairing_intro",
+    )
     while True:
         try:
             await session.progress_until(
