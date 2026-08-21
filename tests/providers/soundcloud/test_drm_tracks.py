@@ -146,20 +146,87 @@ async def test_playlist_tracks_skip_drm(provider: SoundcloudMusicProvider) -> No
 
 
 async def test_search_skips_drm_track_and_keeps_others(
-    provider: SoundcloudMusicProvider,
+    provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A DRM protected search hit is skipped without dropping the other results."""
     provider._soundcloud.search.return_value = {
         "collection": [
             _track_obj(1, "Danceteria", DRM_TRANSCODINGS),
             _track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS),
+            _track_obj(3, "The Fate of Ophelia", DRM_TRANSCODINGS),
         ]
     }
 
     search: Any = SoundcloudMusicProvider.search.__wrapped__  # type: ignore[attr-defined]
-    result = await search(provider, "madonna", [MediaType.TRACK], 10)
+    with caplog.at_level(logging.DEBUG):
+        result = await search(provider, "madonna", [MediaType.TRACK], 10)
 
     assert [track.item_id for track in result.tracks] == ["2"]
+    # two skipped tracks must produce one summary line saying 2, not one line each
+    drm_lines = [line for line in caplog.text.splitlines() if "DRM protected" in line]
+    assert len(drm_lines) == 1
+    assert "Skipped 2 DRM protected track(s) in Soundcloud search results" in drm_lines[0]
+
+
+async def test_subscribed_feed_skips_drm_track_and_keeps_others(
+    provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DRM protected track in the subscribed feed is skipped without emptying it."""
+    provider._soundcloud.get_subscribe_feed.return_value = {
+        "collection": [
+            {"type": "track", "track": _track_obj(1, "Danceteria", DRM_TRANSCODINGS)},
+            {"type": "track", "track": _track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)},
+        ]
+    }
+
+    get_feed_tracks: Any = (
+        SoundcloudMusicProvider._get_subscribed_feed_tracks.__wrapped__  # type: ignore[attr-defined]
+    )
+    with caplog.at_level(logging.DEBUG):
+        tracks = await get_feed_tracks(provider)
+
+    assert [track.item_id for track in tracks] == ["2"]
+    assert "Skipped 1 DRM protected track(s) in the Soundcloud subscribed feed" in caplog.text
+
+
+async def test_artist_toptracks_skips_drm_track_and_keeps_others(
+    provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DRM protected track in an artist's top tracks is skipped without dropping others."""
+    provider._soundcloud.get_tracks_from_user.return_value = {"collection": [{"id": 1}, {"id": 2}]}
+    provider._soundcloud.get_track_details.side_effect = [
+        [_track_obj(1, "Danceteria", DRM_TRANSCODINGS)],
+        [_track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)],
+    ]
+
+    get_toptracks: Any = (
+        SoundcloudMusicProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
+    )
+    with caplog.at_level(logging.DEBUG):
+        tracks = await get_toptracks(provider, "99")
+
+    assert [track.item_id for track in tracks] == ["2"]
+    assert (
+        "Skipped 1 DRM protected track(s) in the top tracks of Soundcloud artist 99" in caplog.text
+    )
+
+
+async def test_similar_tracks_skips_drm_track_and_keeps_others(
+    provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DRM protected similar track is skipped without dropping the other results."""
+    provider._soundcloud.get_recommended.return_value = {"collection": [{"id": 1}, {"id": 2}]}
+    provider._soundcloud.get_track_details.side_effect = [
+        [_track_obj(1, "Danceteria", DRM_TRANSCODINGS)],
+        [_track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)],
+    ]
+
+    get_similar: Any = SoundcloudMusicProvider.get_similar_tracks.__wrapped__  # type: ignore[attr-defined]
+    with caplog.at_level(logging.DEBUG):
+        tracks = await get_similar(provider, "5")
+
+    assert [track.item_id for track in tracks] == ["2"]
+    assert "Skipped 1 DRM protected track(s) in tracks similar to Soundcloud track 5" in caplog.text
 
 
 async def test_get_stream_details_reports_drm(provider: SoundcloudMusicProvider) -> None:
@@ -172,14 +239,16 @@ async def test_get_stream_details_reports_drm(provider: SoundcloudMusicProvider)
         await provider.get_stream_details("1", MediaType.TRACK)
 
 
-async def test_get_track_raises_media_not_found_when_unparsable(
-    provider: SoundcloudMusicProvider,
+async def test_get_track_raises_media_not_found_when_drm_protected(
+    provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """An unparsable track results in MediaNotFoundError instead of an internal error."""
+    """A DRM protected track raises MediaNotFoundError naming the cause, without logging."""
     provider._soundcloud.get_track_details.return_value = [
         _track_obj(1, "Danceteria", DRM_TRANSCODINGS)
     ]
 
     get_track: Any = SoundcloudMusicProvider.get_track.__wrapped__  # type: ignore[attr-defined]
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.DEBUG), pytest.raises(MediaNotFoundError, match="DRM"):
         await get_track(provider, "1")
+
+    assert caplog.text == ""
