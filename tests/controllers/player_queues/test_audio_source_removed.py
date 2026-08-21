@@ -13,7 +13,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import PlaybackState, QueueOption
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioSource, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -248,3 +250,26 @@ async def test_media_played_alongside_the_source_keeps_it() -> None:
     await ctrl.play_media("q1", "test://album/al1", QueueOption.PLAY)
 
     provider.on_source_removed.assert_not_called()
+
+
+async def test_media_that_fails_to_load_still_releases_the_emptied_queue() -> None:
+    """
+    A replace gives up the queue's items before it knows the new media is playable.
+
+    Nothing plays afterwards and the source is just as gone, so it has to be released even
+    though starting the media failed.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+    _play_media_replacing_with(ctrl)
+
+    async def _fail(*_args: Any, **_kwargs: Any) -> None:
+        ctrl._queue_data["q1"].items = []
+        raise MediaNotFoundError("No playable items found")
+
+    ctrl._handle_play_media = _fail
+
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_media("q1", "test://album/gone", QueueOption.REPLACE)
+
+    provider.on_source_removed.assert_called_once_with("main", "q1")

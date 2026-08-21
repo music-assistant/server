@@ -504,11 +504,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # what is playing now may not survive what is being started; remembered here so the
         # owning plugin can be told once we know whether it did
         outgoing_item = self._queue_data[queue_id].queue.current_item
-        # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning, shuffle
-        )
-        self._notify_audio_source_replaced(queue_id, outgoing_item)
+        try:
+            # Lock is acquired by the @handle_play_action decorator on the internal handler
+            await self._handle_play_media(
+                queue_id,
+                media,
+                option,
+                radio_mode,
+                start_item,
+                sort_by,
+                start_from_beginning,
+                shuffle,
+            )
+        finally:
+            # also when the media failed to load: the queue may already have given up its items
+            # for it, and the source is just as gone either way
+            self._notify_audio_source_replaced(queue_id, outgoing_item)
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -1857,7 +1868,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _notify_audio_source_replaced(self, queue_id: str, outgoing_item: QueueItem | None) -> None:
         """
-        Tell the owning plugin when the media just started pushed its AudioSource out of the queue.
+        Tell the owning plugin when newly started media pushed its AudioSource out of the queue.
 
         Starting the very same source again (a replace re-selects it) and options that keep the
         source among the queue's items both leave it in place, and neither releases it.
@@ -1867,9 +1878,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         if outgoing_item is None or (media_item := outgoing_item.media_item) is None:
             return
-        if (owner := self._audio_source_plugin(outgoing_item)) is None:
-            return
         if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if (owner := self._audio_source_plugin(outgoing_item)) is None:
             return
         if any(
             item.media_item is not None and item.media_item.uri == media_item.uri
