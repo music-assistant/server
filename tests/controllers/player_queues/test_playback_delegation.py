@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, QueueOption
-from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     AudioSource,
@@ -212,8 +211,8 @@ async def test_mixed_batch_keeps_items_of_a_normally_streaming_provider() -> Non
     provider.play_on_delegate.assert_not_awaited()
 
 
-async def test_conflicting_delegates_raise_when_nothing_plays_normally() -> None:
-    """Two accounts' items delegating to different sessions cannot be mixed."""
+async def test_conflicting_delegates_keep_the_batch_whole() -> None:
+    """Two accounts' items delegating to different sessions cannot ride one redirect."""
     provider_a = _music_provider(_delegate_source("spotify_connect--a"))
     provider_b = _music_provider(_delegate_source("spotify_connect--b"), instance_id="spotify--b")
     ctrl = _controller({"spotify--a": provider_a, "spotify--b": provider_b})
@@ -222,8 +221,32 @@ async def test_conflicting_delegates_raise_when_nothing_plays_normally() -> None
         _track("t2", "spotify--b", "spotify"),
     ]
 
-    with pytest.raises(MediaNotFoundError):
-        await ctrl._apply_playback_delegation(QUEUE_ID, items, QueueOption.PLAY, None, None)
+    # nothing in the batch plays normally, so it passes through whole: each item then
+    # surfaces its provider's own actionable error at stream time
+    result = await ctrl._apply_playback_delegation(QUEUE_ID, items, QueueOption.PLAY, None, None)
+
+    assert result == items
+    provider_a.play_on_delegate.assert_not_awaited()
+    provider_b.play_on_delegate.assert_not_awaited()
+
+
+async def test_mixed_batch_keeps_items_with_another_streaming_mapping() -> None:
+    """A delegating item that also maps to a normally-streaming provider is kept."""
+    provider = _music_provider(_delegate_source())
+    other = _music_provider(None, requires_delegate=False, instance_id="tidal--a")
+    ctrl = _controller({"spotify--a": provider, "tidal--a": other})
+    dual_mapped = _track("t1", "spotify--a", "spotify")
+    dual_mapped.provider_mappings.add(
+        ProviderMapping(item_id="t1t", provider_domain="tidal", provider_instance="tidal--a")
+    )
+    tidal_track = _track("t2", "tidal--a", "tidal")
+
+    result = await ctrl._apply_playback_delegation(
+        QUEUE_ID, [dual_mapped, tidal_track], QueueOption.PLAY, None, None
+    )
+
+    assert result == [dual_mapped, tidal_track]
+    provider.play_on_delegate.assert_not_awaited()
 
 
 async def test_no_delegates_leaves_the_batch_untouched() -> None:

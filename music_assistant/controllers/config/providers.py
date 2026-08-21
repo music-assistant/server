@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, SetupFailedError
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
@@ -443,14 +443,18 @@ class ProviderConfigMixin:
             ),
         )
         self.set(f"{CONF_PROVIDERS}/{instance_id}", config.to_raw())
-        # the load is expected to fail (setup still required); load_provider_config
-        # records that failure on the config, which is the state the UI surfaces
+        # the load is expected to fail with setup-required; load_provider_config
+        # records any failure on the config, which is the state the UI surfaces
         try:
             await self.mass.load_provider_config(config)
-        except Exception as err:
+        except SetupFailedError as err:
             LOGGER.debug(
                 "Provisioned provider instance %s awaits its setup flow: %s", instance_id, err
             )
+        except Exception as err:
+            # unexpected failure: the config is kept (the user can still repair it
+            # through its setup flow), but this is worth surfacing in the log
+            LOGGER.warning("Provisioned provider instance %s failed to load: %s", instance_id, err)
         return config
 
     if TYPE_CHECKING:

@@ -1048,27 +1048,34 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 return []
             # the session plays the items; the MA queue plays the session
             return [delegate]
-        # mixed batch (or conflicting delegates): items whose provider streams normally
-        # keep playing through the regular path, delegate-only items are dropped
-        kept: list[MediaItemType] = []
-        dropped: list[MediaItemType] = []
-        for item, delegated in zip(media_items, item_delegates, strict=True):
-            if delegated is not None and delegated[1].playback_requires_delegate:
-                dropped.append(item)
-            else:
-                kept.append(item)
-        if dropped:
-            self.logger.warning(
-                "Skipping %d item(s) (%s): mixing session-redirected items with other content "
-                "in one queue is not supported yet - play them separately",
-                len(dropped),
-                ", ".join(item.name for item in dropped[:5]),
-            )
-            if not kept:
-                raise MediaNotFoundError(
-                    "No playable items found", translation_key="no_playable_items"
-                )
-        return kept
+        # The batch cannot ride one session. Items with a normal playback path (any
+        # available mapping on a provider that streams itself) play through the
+        # regular path; in a mixed batch the delegate-only items are dropped. A batch
+        # where NOTHING plays normally is kept whole, so the delegate-only provider's
+        # own actionable error surfaces at stream time instead of a silent drop.
+        plays_normally = [self._has_normal_playback_path(item) for item in media_items]
+        if all(plays_normally) or not any(plays_normally):
+            return media_items
+        dropped = [
+            item for item, normal in zip(media_items, plays_normally, strict=True) if not normal
+        ]
+        self.logger.warning(
+            "Skipping %d item(s) (%s): mixing session-redirected items with other content "
+            "in one queue is not supported yet - play them separately",
+            len(dropped),
+            ", ".join(item.name for item in dropped[:5]),
+        )
+        return [item for item, normal in zip(media_items, plays_normally, strict=True) if normal]
+
+    def _has_normal_playback_path(self, item: MediaItemType) -> bool:
+        """Return whether any of the item's mappings plays through the regular streaming path."""
+        for mapping in item.provider_mappings:
+            if not mapping.available:
+                continue
+            provider = self.mass.get_provider(mapping.provider_instance)
+            if isinstance(provider, MusicProvider) and not provider.playback_requires_delegate:
+                return True
+        return False
 
     async def _get_item_delegate(
         self,

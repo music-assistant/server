@@ -44,6 +44,7 @@ from .helpers import (
     await_loopback_authorization,
     ensure_connect_instance,
     get_librespot_binary,
+    has_running_system_wide_connect,
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
 )
@@ -240,9 +241,9 @@ async def _steer_to_connect_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     created = await ensure_connect_instance(session.mass)
-    # a running plugin instance means Connect playback works right away; anything
-    # else (just created, or existing but not set up yet) still needs the user
-    ready = not created and session.mass.get_provider("spotify_connect") is not None
+    # a running system-wide instance means Connect playback works right away;
+    # anything else (just created, or existing but not set up yet) needs the user
+    ready = not created and has_running_system_wide_connect(session.mass)
     await session.form(
         [
             ConfigEntry(

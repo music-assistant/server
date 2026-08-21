@@ -647,10 +647,6 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.debug("Failed to read the session account from the backend: %s", err)
             return None
 
-    async def activate_session(self) -> None:
-        """Claim active Spotify Connect device status for this session."""
-        await self._backend.activate()
-
     async def prepare_redirect(self, target_player_id: str) -> None:
         """
         Prepare the session for an MA-initiated playback redirect to the given player.
@@ -692,16 +688,12 @@ class SpotifyConnectProvider(PluginProvider):
             return
         if not uris:
             raise AudioError("Nothing to play on the Spotify session")
+        if len(uris) > 1 and not self._backend.supports_queue_control:
+            # refuse before starting anything: playing only the first track while
+            # silently discarding the rest would misrepresent the play request
+            raise AudioError(f"'{self._publish_name}' can only start a single track or context")
         await self._backend.play(uris[0])
-        if not (remainder := uris[1:]):
-            return
-        if not self._backend.supports_queue_control:
-            self.logger.warning(
-                "This Spotify Connect device cannot enqueue; only the first of %d tracks plays",
-                len(uris),
-            )
-            return
-        for uri in remainder:
+        for uri in uris[1:]:
             await self._backend.add_to_queue(uri)
 
     async def enqueue_on_source(self, uris: list[str]) -> None:

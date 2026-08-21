@@ -1788,13 +1788,15 @@ class SpotifyProvider(MusicProvider):
         """
         Return the Spotify account the plugin's session belongs to, verifying when unknown.
 
-        Verification is passive where possible: the backend's own account report
-        when it has one, else the silent device-list check — a paired running daemon
-        appears in its own account's Connect device list, so a name match on this
-        account's list establishes the account without any playback. Only colliding
-        device names need the active cross-check (activate + read the active
-        device). The result is cached on the plugin instance; None means the account
-        could not be established and the instance is not used as a redirect target.
+        Verification is passive and side-effect-free (it also runs for play requests
+        that end up not redirecting): the backend's own account report when it has
+        one, else the silent device-list check — a paired running daemon appears in
+        its own account's Connect device list, so a name match on this account's
+        list establishes the account without any playback. Colliding device names
+        are disambiguated to a concrete device id at play time (after the redirect
+        activated the session), not here. The result is cached on the plugin
+        instance; None means the account could not be established and the instance
+        is not used as a redirect target.
 
         :param plugin: The Spotify Connect plugin instance to verify.
         """
@@ -1809,21 +1811,9 @@ class SpotifyProvider(MusicProvider):
         except Exception as err:
             self.logger.debug("Connect device lookup failed: %s", err)
             return None
-        if len(matches) == 1:
+        if matches:
             plugin.set_verified_account_id(str(self._sp_user["id"]))
             return plugin.verified_account_id
-        if len(matches) > 1:
-            # colliding device names: activate the session and cross-check which
-            # device this account then reports as its active one
-            try:
-                await plugin.activate_session()
-                state = await self._get_player_data("me/player")
-            except Exception as err:
-                self.logger.debug("Active-device cross-check failed: %s", err)
-                return None
-            if state and state.get("device", {}).get("name") == plugin.publish_name:
-                plugin.set_verified_account_id(str(self._sp_user["id"]))
-                return plugin.verified_account_id
         return None
 
     async def _get_connect_devices(self, device_name: str) -> list[dict[str, Any]]:
@@ -1944,9 +1934,13 @@ class SpotifyProvider(MusicProvider):
             return None, None
         start_uri: str | None = None
         if isinstance(start_item, str):
-            # an MA uri ends in the provider item id
-            if "://track/" in start_item:
-                start_uri = f"spotify:track:{start_item.rsplit('/', 1)[-1]}"
+            # only an MA uri of this provider's domain carries a Spotify item id in
+            # its tail (e.g. a library:// uri ends in a database id instead)
+            prefix, _, rest = start_item.partition("://")
+            if (prefix == self.domain or prefix.startswith(f"{self.domain}--")) and rest.startswith(
+                "track/"
+            ):
+                start_uri = f"spotify:track:{rest.removeprefix('track/')}"
         elif start_item is not None and (start_id := self._item_id_for_this_provider(start_item)):
             start_uri = f"spotify:track:{start_id}"
         return f"spotify:{uri_type}:{item_id}", start_uri

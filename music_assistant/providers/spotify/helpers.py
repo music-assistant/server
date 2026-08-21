@@ -22,12 +22,18 @@ from music_assistant.providers.spotify_connect import (
     CONF_SETUP_PENDING,
     CONF_SYSTEM_MANAGED,
     PLAYER_ID_AUTO,
+    SpotifyConnectProvider,
 )
 
 from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
 
 LOGGER = logging.getLogger(__name__)
 PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
+
+# serializes the check+create of the system-wide Connect instance: multiple
+# Spotify instances (multi-account) load concurrently and must not each
+# provision one
+_ENSURE_CONNECT_LOCK = asyncio.Lock()
 
 LOOPBACK_RESPONSE_HTML = """
 <html>
@@ -41,6 +47,16 @@ if TYPE_CHECKING:
     import aiohttp
 
     from music_assistant.mass import MusicAssistant
+
+
+def has_running_system_wide_connect(mass: MusicAssistant) -> bool:
+    """Return whether a system-wide (auto-player) Spotify Connect instance is up and running."""
+    return any(
+        isinstance(prov, SpotifyConnectProvider)
+        and prov.available
+        and prov.configured_player_id is None
+        for prov in mass.providers
+    )
 
 
 async def has_system_wide_connect_config(mass: MusicAssistant) -> bool:
@@ -65,17 +81,18 @@ async def ensure_connect_instance(mass: MusicAssistant) -> bool:
     :param mass: The MusicAssistant instance.
     :return: True when a new instance was created, False when one already existed.
     """
-    if await has_system_wide_connect_config(mass):
-        return False
-    await mass.config.create_pending_provider_config(
-        "spotify_connect",
-        {
-            CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
-            CONF_SETUP_PENDING: True,
-            CONF_SYSTEM_MANAGED: True,
-        },
-    )
-    return True
+    async with _ENSURE_CONNECT_LOCK:
+        if await has_system_wide_connect_config(mass):
+            return False
+        await mass.config.create_pending_provider_config(
+            "spotify_connect",
+            {
+                CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
+                CONF_SETUP_PENDING: True,
+                CONF_SYSTEM_MANAGED: True,
+            },
+        )
+        return True
 
 
 async def get_librespot_binary() -> str:

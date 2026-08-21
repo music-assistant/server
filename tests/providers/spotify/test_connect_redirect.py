@@ -90,7 +90,6 @@ def _plugin(
     plugin.prepare_redirect = AsyncMock()
     plugin.play_media_on_source = AsyncMock()
     plugin.enqueue_on_source = AsyncMock()
-    plugin.activate_session = AsyncMock()
     return plugin
 
 
@@ -361,6 +360,16 @@ def test_delegate_context_parses_a_start_item_uri_string() -> None:
 
     assert context_uri == "spotify:album:alb1"
     assert start_uri == "spotify:track:t5"
+
+
+def test_delegate_context_ignores_a_foreign_start_item_uri() -> None:
+    """A non-Spotify start uri (e.g. a library item) yields no start offset."""
+    prov = _provider()
+
+    context_uri, start_uri = prov._delegate_context(_album("alb1"), "library://track/12345")
+
+    assert context_uri == "spotify:album:alb1"
+    assert start_uri is None
 
 
 def test_track_uris_prefer_this_instances_mapping() -> None:
