@@ -426,6 +426,36 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
+    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+        """Release the Spotify session when the queue drops this source."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != queue_id:
+            return
+        if not self._spotify_session_active:
+            return
+        # Released whether or not a stream is still winding down: a paused source
+        # already ended its stream, so its teardown released nothing and the
+        # Spotify app would stay tethered to a device that has no queue left.
+        #
+        # Let the player go first. The backend answers a deactivate with the same
+        # 'inactive' event a deselect in the Spotify app produces, and that stops
+        # the player we were on - which by now is playing whatever took our place.
+        self._active_player_id = None
+        try:
+            await self._backend.deactivate()
+        except Exception as err:
+            self.logger.debug("Failed to release Spotify session on queue clear: %s", err)
+
+    async def on_source_transferred(
+        self, source_id: str, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """Follow this AudioSource to the queue it was handed over to."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != from_queue_id:
+            return
+        # A transfer while playing re-selects the source on the target and re-claims it there,
+        # but a paused one moves without a stream request: without this the plugin would stay
+        # pointed at the queue it left behind.
+        self._active_player_id = to_queue_id
+
     async def on_source_control(
         self,
         source_id: str,

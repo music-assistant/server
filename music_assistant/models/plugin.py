@@ -241,6 +241,54 @@ class PluginProvider(Provider):
             not match the currently stored active session id.
         """
 
+    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+        """
+        React to a queue dropping this AudioSource from its items.
+
+        Fired when the source leaves a queue that held it — whether or not it
+        was the one playing: the user cleared that queue, or started media that
+        took the source's place in it. Unlike ``on_source_unselected`` this is
+        not tied to a stream, so it also fires when the stream was already torn
+        down earlier (a paused source, for example) — the one moment where
+        nothing else tells the plugin that MA is done with the source. Override
+        to release state that must not outlive the queue, such as an upstream
+        session still pointing at MA.
+
+        Media that leaves the source among the queue's items does NOT fire
+        this, nor does starting that very same source again, nor handing the
+        queue to another player (see ``on_source_transferred``).
+
+        May fire while a stream for this source is still being torn down, so
+        the release has to be safe to run alongside ``on_source_unselected``.
+
+        :param source_id: The AudioSource.item_id that was removed.
+        :param queue_id: The queue that dropped the source.
+        """
+
+    async def on_source_transferred(
+        self, source_id: str, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """
+        React to this AudioSource being handed over to another queue.
+
+        Fired for every live source a transferred queue held, whether or not it
+        was the one playing. A transfer of a *playing* source re-selects it on
+        the target by itself, but one that was paused or merely queued is moved
+        without a stream request, so this is the only signal that the source
+        changed hands. Override to re-point the queue the plugin tracks as its
+        owner, so later callbacks (this hook's ``on_source_removed`` sibling
+        included) arrive for the right queue.
+
+        Only long-lived ownership belongs here. Anything scoped to a stream —
+        an exclusive claim, the ``on_source_selected`` session id — must be
+        left alone: no stream exists on the target until it starts one, and
+        ``on_source_selected`` re-establishes those when it does.
+
+        :param source_id: The AudioSource.item_id that was transferred.
+        :param from_queue_id: The queue that gave the source up.
+        :param to_queue_id: The queue that took it over.
+        """
+
     async def on_volume_change(self, source_id: str, volume: int) -> None:
         """
         React to a volume change on the player streaming this AudioSource.
