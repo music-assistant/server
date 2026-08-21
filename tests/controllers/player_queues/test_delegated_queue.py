@@ -5,9 +5,11 @@ While the queue's current item is a live (playing/paused) AudioSource declaring
 ``queue_capabilities``, the external session owns the queue: shuffle/repeat/next/previous/
 seek are forwarded to the owning plugin (the mirrored options event updates the queue
 state afterwards) and ``queue_owner`` tells clients who owns the ordering. MA-owned tail
-items behind the source stay editable. A transport-only AudioSource (no
-``queue_capabilities``) keeps the exact pre-delegation behavior; playback state is
-deliberately not gated (a paused session may read as a stopped player).
+items behind the source stay editable. Transport commands (next/previous/seek) delegate
+on the per-action capability flags alone, so a transport-only AudioSource (no
+``queue_capabilities``) also skips/seeks within its own session — matching the
+player-command API — while queue ownership (shuffle/repeat/items) stays with MA.
+Playback state is deliberately not gated (a paused session may read as a stopped player).
 """
 
 from __future__ import annotations
@@ -396,13 +398,12 @@ async def test_signal_update_refreshes_the_derived_shuffle_flag() -> None:
     assert queue.smart_shuffle_active is True
 
 
-async def test_transport_only_source_keeps_normal_queue_behavior() -> None:
-    """Regression: without queue_capabilities nothing is forwarded to the plugin."""
+async def test_transport_only_source_keeps_queue_ownership_with_ma() -> None:
+    """Regression: without queue_capabilities no ownership command reaches the plugin."""
     ctrl, provider = _controller(_audio_source(None))
 
     await ctrl.set_shuffle(QUEUE_ID, True)
     await ctrl.set_repeat(QUEUE_ID, RepeatMode.ALL)
-    await ctrl.next(QUEUE_ID)
     ctrl.delete_item(QUEUE_ID, 0)
 
     provider.on_source_control.assert_not_awaited()
@@ -410,6 +411,58 @@ async def test_transport_only_source_keeps_normal_queue_behavior() -> None:
     assert _queue(ctrl).shuffle_enabled is True
     assert _queue(ctrl).repeat_mode == RepeatMode.ALL
     assert ctrl._queue_data[QUEUE_ID].items == []
+
+
+async def test_transport_only_next_and_previous_forward_to_the_session() -> None:
+    """
+    A transport-only source (yandex_ynison/ariacast shape) skips within its session.
+
+    The per-action flag gates the delegation, not queue_capabilities — so the queue
+    API behaves the same as the player-command API for next/previous.
+    """
+    ctrl, provider = _controller(_audio_source(None))
+
+    await ctrl.next(QUEUE_ID)
+    await ctrl.previous(QUEUE_ID)
+
+    assert provider.on_source_control.await_count == 2
+    provider.on_source_control.assert_any_await(SOURCE_ID, SourceControl.NEXT)
+    provider.on_source_control.assert_any_await(SOURCE_ID, SourceControl.PREVIOUS)
+    # no MA index walk: the source stays current
+    assert _queue(ctrl).current_index == 0
+    ctrl.play_index.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_transport_only_seek_forwards_and_publishes_the_target() -> None:
+    """A transport-only seekable source seeks within its session, with progress published."""
+    ctrl, provider = _controller(_audio_source(None))
+
+    await ctrl.seek(QUEUE_ID, 42)
+
+    provider.on_source_control.assert_awaited_once_with(SOURCE_ID, SourceControl.SEEK, 42)
+    assert _queue(ctrl).elapsed_time == 42
+    ctrl.play_index.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_transport_incapable_source_walks_the_ma_index() -> None:
+    """A live source without skip support (sendspin/vban shape) keeps the MA index walk."""
+    ctrl, provider = _controller(_audio_source(None, can_seek=False, can_next_previous=False))
+    _add_tail_items(ctrl, "t1")
+
+    await ctrl.next(QUEUE_ID)
+
+    provider.on_source_control.assert_not_awaited()
+    assert _queue(ctrl).current_index == 1
+
+
+async def test_transport_incapable_seek_hits_the_duration_guard() -> None:
+    """Seek on a non-seekable live source falls through and fails on the missing duration."""
+    ctrl, provider = _controller(_audio_source(None, can_seek=False, can_next_previous=False))
+
+    with pytest.raises(InvalidCommand):
+        await ctrl.seek(QUEUE_ID, 42)
+
+    provider.on_source_control.assert_not_awaited()
 
 
 async def test_ordered_play_reorders_the_tail_locally_while_delegated() -> None:
