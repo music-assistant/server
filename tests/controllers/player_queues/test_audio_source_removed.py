@@ -339,3 +339,22 @@ async def test_a_source_left_behind_by_a_play_is_released_when_replaced() -> Non
     await ctrl.play_media("q1", "test://album/al1", QueueOption.REPLACE)
 
     provider.on_source_removed.assert_called_once_with("main", "q1")
+
+
+async def test_transferring_hands_over_a_source_that_was_not_playing() -> None:
+    """
+    Every live source the queue holds moves with it, not just the one that was playing.
+
+    A source left in the queue by a "play" travels to the target like any other item, so its
+    plugin has to follow it there - otherwise a later clear on the target releases nothing.
+    """
+    source_item = QueueItem.from_media_item("q1", _audio_source())
+    track_item = QueueItem.from_media_item("q1", _track())
+    ctrl = _controller(track_item)
+    provider = _plugin_provider(ctrl)
+    ctrl._queue_data["q1"].items = [source_item, track_item]
+    _ready_for_transfer(ctrl)
+
+    await ctrl.transfer_queue("q1", "q2")
+
+    provider.on_source_transferred.assert_awaited_once_with("main", "q1", "q2")

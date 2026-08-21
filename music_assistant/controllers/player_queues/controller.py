@@ -1180,6 +1180,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if source_current_item:
             target_queue.current_item = source_current_item
             target_queue.current_item.queue_id = target_queue_id
+        # every live source the queue holds moves with it, not just the one that was playing
+        transferred_sources = self._audio_sources_in(source_queue_id)
         self._clear(source_queue_id, skip_stop=True)
 
         await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
@@ -1189,7 +1191,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # a live source the target was holding has just been displaced by the transferred queue
         self._notify_audio_source_replaced(target_queue_id, target_outgoing_sources)
         await self._notify_audio_source_transferred(
-            source_current_item, source_queue_id, target_queue_id
+            transferred_sources, source_queue_id, target_queue_id
         )
         if auto_play:
             await self.resume(target_queue_id)
@@ -1913,30 +1915,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.mass.create_task(prov.on_source_removed(source_id, queue_id))
 
     async def _notify_audio_source_transferred(
-        self, transferred_item: QueueItem | None, from_queue_id: str, to_queue_id: str
+        self,
+        transferred: dict[str, tuple[PluginProvider, str]],
+        from_queue_id: str,
+        to_queue_id: str,
     ) -> None:
         """
-        Tell the owning plugin that its AudioSource moved to another queue.
+        Tell the owning plugins that their AudioSources moved to another queue.
 
-        Awaited rather than dispatched so the plugin has settled the handover before the target
+        Awaited rather than dispatched so the plugins have settled the handover before the target
         queue is resumed. A plugin that raises must not break the transfer.
 
-        :param transferred_item: The current item the source queue handed over.
-        :param from_queue_id: The queue that gave the source up.
-        :param to_queue_id: The queue that took it over.
+        :param transferred: The live AudioSources the source queue handed over.
+        :param from_queue_id: The queue that gave the sources up.
+        :param to_queue_id: The queue that took them over.
         """
-        if (owner := self._audio_source_plugin(transferred_item)) is None:
+        if not transferred or (queue_data := self._queue_data.get(to_queue_id)) is None:
             return
-        prov, source_id = owner
-        try:
-            await prov.on_source_transferred(source_id, from_queue_id, to_queue_id)
-        except Exception:
-            self.logger.warning(
-                "on_source_transferred raised for provider %s source %s",
-                prov.instance_id,
-                source_id,
-                exc_info=True,
-            )
+        arrived = {item.media_item.uri for item in queue_data.items if item.media_item is not None}
+        for uri, (prov, source_id) in transferred.items():
+            if uri not in arrived:
+                continue
+            try:
+                await prov.on_source_transferred(source_id, from_queue_id, to_queue_id)
+            except Exception:
+                self.logger.warning(
+                    "on_source_transferred raised for provider %s source %s",
+                    prov.instance_id,
+                    source_id,
+                    exc_info=True,
+                )
 
     def _reset_shuffle(self, queue_id: str) -> None:
         """Switch shuffle off."""
