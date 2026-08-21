@@ -271,6 +271,18 @@ def _extract_data(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _extract_item_id(item: dict[str, Any], *keys: str) -> str:
+    """Return a provider item id from the first populated key."""
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, str | int):
+            return ""
+        return str(value).strip()
+    return ""
+
+
 def _extract_cookie(payload: dict[str, Any]) -> str:
     """Extract login cookie string from payload."""
     data = _extract_data(payload)
@@ -692,7 +704,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse artist object."""
-        artist_id = str(artist_obj.get("id") or artist_obj.get("artistId") or "").strip()
+        artist_id = _extract_item_id(artist_obj, "id", "artistId")
         if not artist_id:
             raise InvalidDataError("Artist object missing id")
         name = str(artist_obj.get("name") or "Unknown Artist").strip()
@@ -721,7 +733,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_album(self, album_obj: dict[str, Any]) -> Album:
         """Parse album object."""
-        album_id = str(album_obj.get("id") or album_obj.get("albumId") or "").strip()
+        album_id = _extract_item_id(album_obj, "id", "albumId")
         if not album_id:
             raise InvalidDataError("Album object missing id")
         name = str(album_obj.get("name") or "Unknown Album").strip()
@@ -766,7 +778,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_track(self, song_obj: dict[str, Any]) -> Track:
         """Parse song object."""
-        track_id = str(song_obj.get("id") or song_obj.get("songId") or "").strip()
+        track_id = _extract_item_id(song_obj, "id", "songId")
         if not track_id:
             raise InvalidDataError("Track object missing id")
         name = str(song_obj.get("name") or "Unknown Track").strip()
@@ -825,7 +837,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse playlist object."""
-        playlist_id = str(playlist_obj.get("id") or playlist_obj.get("playlistId") or "").strip()
+        playlist_id = _extract_item_id(playlist_obj, "id", "playlistId")
         if not playlist_id:
             raise InvalidDataError("Playlist object missing id")
         name = str(playlist_obj.get("name") or "Unknown Playlist").strip()
@@ -1396,11 +1408,20 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 cookie=self._cookie,
             )
             data = _extract_data(payload)
-            artists = data.get("data") or data.get("artists")
-            if not isinstance(artists, list) or not artists:
+            artists = data.get("data")
+            if artists is None:
+                artists = data.get("artists")
+            if not isinstance(artists, list):
+                raise InvalidDataError("Netease artist sublist contains no artist list")
+            if not artists:
                 break
             for artist_obj in artists:
                 if not isinstance(artist_obj, dict):
+                    self.report_skipped_sync_item(
+                        MediaType.ARTIST,
+                        None,
+                        InvalidDataError("Netease artist sublist contains a non-object entry"),
+                    )
                     continue
                 try:
                     yield self._parse_artist(artist_obj)
@@ -1422,11 +1443,20 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 cookie=self._cookie,
             )
             data = _extract_data(payload)
-            albums = data.get("data") or data.get("albums")
-            if not isinstance(albums, list) or not albums:
+            albums = data.get("data")
+            if albums is None:
+                albums = data.get("albums")
+            if not isinstance(albums, list):
+                raise InvalidDataError("Netease album sublist contains no album list")
+            if not albums:
                 break
             for album_obj in albums:
                 if not isinstance(album_obj, dict):
+                    self.report_skipped_sync_item(
+                        MediaType.ALBUM,
+                        None,
+                        InvalidDataError("Netease album sublist contains a non-object entry"),
+                    )
                     continue
                 try:
                     yield self._parse_album(album_obj)
@@ -1445,10 +1475,22 @@ class NeteaseCloudMusicProvider(MusicProvider):
             cookie=self._cookie,
         )
         data = _extract_data(payload)
-        ids = data.get("ids") or payload.get("ids")
+        ids = data.get("ids")
+        if ids is None:
+            ids = payload.get("ids")
         if not isinstance(ids, list):
-            return
-        track_ids = [str(item) for item in ids if str(item).isdigit()]
+            raise InvalidDataError("Netease liked-track response contains no id list")
+        track_ids: list[str] = []
+        for item in ids:
+            item_id = str(item)
+            if item_id.isdigit():
+                track_ids.append(item_id)
+                continue
+            self.report_skipped_sync_item(
+                MediaType.TRACK,
+                None,
+                InvalidDataError("Netease liked-track response contains an invalid id"),
+            )
         chunk_size = 200
         for idx in range(0, len(track_ids), chunk_size):
             chunk_ids = track_ids[idx : idx + chunk_size]
@@ -1480,9 +1522,14 @@ class NeteaseCloudMusicProvider(MusicProvider):
         data = _extract_data(payload)
         playlists = data.get("playlist")
         if not isinstance(playlists, list):
-            return
+            raise InvalidDataError("Netease user-playlist response contains no playlist list")
         for playlist_obj in playlists:
             if not isinstance(playlist_obj, dict):
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST,
+                    None,
+                    InvalidDataError("Netease user-playlist response contains a non-object entry"),
+                )
                 continue
             try:
                 yield self._parse_playlist(playlist_obj)

@@ -32,7 +32,7 @@ from soundcloudpy import SoundcloudAsyncAPI
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, describe_sync_error
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 CONF_CLIENT_ID = "client_id"
@@ -61,8 +61,15 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 DRM_PROTOCOL_MARKER = "encrypted"
 
 
-class DrmProtectedTrackError(InvalidDataError):
-    """Error raised when a Soundcloud track is DRM protected and can not be streamed."""
+class DrmProtectedTrackError(MediaNotFoundError):
+    """Error raised when a Soundcloud track can only be played in Soundcloud's own apps."""
+
+    def __init__(self, item_id: str | int | None) -> None:
+        """Initialize with the id of the track that can not be streamed."""
+        super().__init__(
+            f"Soundcloud track {item_id} is DRM protected, "
+            "which Soundcloud only allows to be played in its own apps"
+        )
 
 
 if TYPE_CHECKING:
@@ -131,6 +138,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         searchresult = await self._soundcloud.search(quote(search_query), limit)
 
+        drm_protected = 0
         for item in searchresult["collection"]:
             try:
                 media_type = item["kind"]
@@ -145,12 +153,20 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                         result.tracks = [*result.tracks, await self._parse_track(item)]
                 elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
                     result.playlists = [*result.playlists, await self._parse_playlist(item)]
+            except DrmProtectedTrackError:
+                drm_protected += 1
+                continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                # a single unusable result (e.g. a DRM protected track) must not
-                # discard the rest of the search results
-                self.logger.debug("Parse search result failed: %s", item, exc_info=error)
+                # a single unusable result must not discard the rest of the search results
+                self.logger.debug(
+                    "Skipping search result %s: %s", _item_id(item), describe_sync_error(error)
+                )
                 continue
 
+        if drm_protected:
+            self.logger.debug(
+                "Skipped %s DRM protected track(s) in Soundcloud search results", drm_protected
+            )
         return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -280,19 +296,32 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         feed = await self._soundcloud.get_subscribe_feed(40)
         if not feed or "collection" not in feed:
             return tracks
+        drm_protected = 0
         for item in feed["collection"]:
             if item.get("type") == "track" or item.get("type") == "track-repost":
                 try:
                     tracks.append(await self._parse_track(item.get("track")))
+                except DrmProtectedTrackError:
+                    drm_protected += 1
+                    continue
                 except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                    # a single unplayable track (e.g. DRM protected) must not empty the feed
-                    self.logger.debug("Parse track failed: %s", item, exc_info=error)
+                    # a single unusable track must not empty the feed
+                    self.logger.debug(
+                        "Skipping feed track %s: %s",
+                        _item_id(item.get("track")),
+                        describe_sync_error(error),
+                    )
                     continue
             else:
                 self.logger.debug(
                     "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
                 )
                 continue
+        if drm_protected:
+            self.logger.debug(
+                "Skipped %s DRM protected track(s) in the Soundcloud subscribed feed",
+                drm_protected,
+            )
         return tracks
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -303,7 +332,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             if artist_obj:
                 artist = await self._parse_artist(artist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("Parse artist failed: %s", artist_obj, exc_info=error)
+            self.logger.debug("Skipping artist %s: %s", prov_artist_id, describe_sync_error(error))
         return artist
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -313,7 +342,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         try:
             return await self._parse_track(track_obj[0])
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("Parse track failed: %s", track_obj, exc_info=error)
+            self.logger.debug("Skipping track %s: %s", prov_track_id, describe_sync_error(error))
             msg = f"Soundcloud track {prov_track_id} is not available"
             raise MediaNotFoundError(msg) from error
 
@@ -324,7 +353,9 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         try:
             playlist = await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-            self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
+            self.logger.debug(
+                "Skipping playlist %s: %s", prov_playlist_id, describe_sync_error(error)
+            )
         return playlist
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
@@ -366,7 +397,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse track failed: %s", item, exc_info=error)
+                self.logger.debug(
+                    "Skipping track %s in playlist %s: %s",
+                    _item_id(item),
+                    prov_playlist_id,
+                    describe_sync_error(error),
+                )
                 continue
         if drm_protected:
             self.logger.debug(
@@ -404,14 +440,24 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             )
             return tracks
 
+        drm_protected = 0
         for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 tracks.append(track)
-            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse track failed: %s", song, exc_info=error)
+            except DrmProtectedTrackError:
+                drm_protected += 1
                 continue
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
+                continue
+        if drm_protected:
+            self.logger.debug(
+                "Skipped %s DRM protected track(s) in the top tracks of Soundcloud artist %s",
+                drm_protected,
+                prov_artist_id,
+            )
         return tracks
 
     def _extract_collection(
@@ -435,15 +481,25 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.warning("No similar tracks found for track %s", prov_track_id)
             return tracks
 
+        drm_protected = 0
         for item in collection:
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 tracks.append(track)
+            except DrmProtectedTrackError:
+                drm_protected += 1
+                continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse track failed: %s", song, exc_info=error)
+                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
                 continue
 
+        if drm_protected:
+            self.logger.debug(
+                "Skipped %s DRM protected track(s) in tracks similar to Soundcloud track %s",
+                drm_protected,
+                prov_track_id,
+            )
         return tracks
 
     async def _get_stream_url(self, track_info: dict[str, Any]) -> str | None:
@@ -484,11 +540,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         track_info = full_json[0] if full_json and isinstance(full_json, list) else None
         if track_info and _is_drm_protected(track_info):
             # this track should never have been imported, but it may predate that check
-            msg = (
-                f"Soundcloud track {item_id} is DRM protected, "
-                "which Soundcloud only allows to be played in its own apps"
-            )
-            raise MediaNotFoundError(msg)
+            raise DrmProtectedTrackError(item_id)
         url = await self._get_stream_url(track_info) if track_info else None
         if not url:
             msg = f"No stream URL available for Soundcloud track {item_id}"
@@ -607,8 +659,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _parse_track(self, track_obj: dict[str, Any], playlist_position: int = 0) -> Track:
         """Parse a Soundcloud Track response to a Track model object."""
         if _is_drm_protected(track_obj):
-            msg = f"Track {track_obj.get('id')} is DRM protected and can not be streamed"
-            raise DrmProtectedTrackError(msg)
+            raise DrmProtectedTrackError(track_obj.get("id"))
         name, version = parse_title_and_version(track_obj["title"])
         track_id = str(track_obj["id"])
         track = Track(
@@ -673,6 +724,12 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """
         item_id = item_obj.get("id")
         self.report_skipped_sync_item(media_type, str(item_id) if item_id else None, err)
+
+
+def _item_id(item_obj: Any) -> Any:
+    """Return the id of a raw api object, or None if it does not have a readable one."""
+    # called from the handlers that log an unusable object, so it must never raise itself
+    return item_obj.get("id") if isinstance(item_obj, dict) else None
 
 
 def _is_drm_protected(track_obj: dict[str, Any]) -> bool:

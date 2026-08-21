@@ -20,14 +20,19 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     ProviderFeature,
+    RepeatMode,
     SourceControl,
 )
 from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import AudioSource, ProviderMapping
+from music_assistant_models.media_items import (
+    AudioSource,
+    ProviderMapping,
+    SourceQueueCapabilities,
+)
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
@@ -42,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
     from .base import SpotifyConnectBackend
-    from .models import BackendEvent, BackendTrackMetadata
+    from .models import BackendEvent, BackendPlaybackOptions, BackendTrackMetadata
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
@@ -164,6 +169,11 @@ class SpotifyConnectProvider(PluginProvider):
         # the active device away in the Spotify app and then presses play in MA.
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
+        # Latest playback options reported by the backend. Cached on every
+        # OPTIONS_CHANGED — an externally triggered session reports them before
+        # the queue claim exists — and pushed to the queue once claimed in
+        # on_source_selected. Cleared when the session ends.
+        self._last_playback_options: BackendPlaybackOptions | None = None
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -364,6 +374,17 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_player_id = active_player_id
         self.logger.debug("Active player set to: %s", active_player_id)
 
+        # Push the options the session reported before this claim existed, so the
+        # queue mirrors the session's shuffle/repeat state from the start.
+        if self._last_playback_options is not None:
+            self.mass.streams.update_source_queue_options(
+                queue_id,
+                AUDIO_SOURCE_ID,
+                self.instance_id,
+                shuffle_enabled=self._last_playback_options.shuffle,
+                repeat_mode=self._last_playback_options.repeat,
+            )
+
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
             self._save_last_player_id(active_player_id)
@@ -426,11 +447,41 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
+    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+        """Release the Spotify session when the queue drops this source."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != queue_id:
+            return
+        if not self._spotify_session_active:
+            return
+        # Released whether or not a stream is still winding down: a paused source
+        # already ended its stream, so its teardown released nothing and the
+        # Spotify app would stay tethered to a device that has no queue left.
+        #
+        # Let the player go first. The backend answers a deactivate with the same
+        # 'inactive' event a deselect in the Spotify app produces, and that stops
+        # the player we were on - which by now is playing whatever took our place.
+        self._active_player_id = None
+        try:
+            await self._backend.deactivate()
+        except Exception as err:
+            self.logger.debug("Failed to release Spotify session on queue clear: %s", err)
+
+    async def on_source_transferred(
+        self, source_id: str, from_queue_id: str, to_queue_id: str
+    ) -> None:
+        """Follow this AudioSource to the queue it was handed over to."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != from_queue_id:
+            return
+        # A transfer while playing re-selects the source on the target and re-claims it there,
+        # but a paused one moves without a stream request: without this the plugin would stay
+        # pointed at the queue it left behind.
+        self._active_player_id = to_queue_id
+
     async def on_source_control(
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Proxy playback control commands to the backend."""
         if source_id != AUDIO_SOURCE_ID:
@@ -446,8 +497,20 @@ class SpotifyConnectProvider(PluginProvider):
                 await self._backend.next()
             elif action == SourceControl.PREVIOUS:
                 await self._backend.previous()
-            elif action == SourceControl.SEEK and value is not None:
-                await self._backend.seek(value * 1000)
+            elif (
+                action == SourceControl.SEEK
+                # tolerate float positions from internal callers; bool is an int
+                # subclass, so a misrouted toggle must not become a 1-second seek
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                await self._backend.seek(int(value) * 1000)
+            elif action == SourceControl.SHUFFLE and isinstance(value, bool):
+                # strict bool: None or a misrouted enum (bool(RepeatMode.OFF) is
+                # True) must not silently toggle shuffle
+                await self._backend.set_shuffle(value)
+            elif action == SourceControl.REPEAT and isinstance(value, RepeatMode):
+                await self._backend.set_repeat(value)
         except Exception as err:
             self.logger.warning("Failed to send %s command to backend: %s", action, err)
             raise
@@ -532,7 +595,20 @@ class SpotifyConnectProvider(PluginProvider):
         Backends provide a full control surface, so play / pause / seek /
         next / previous are always available while a session is active — the
         capability flags are static (no dependency on the Spotify Web API).
+        Backends implementing the queue-session verbs additionally declare
+        queue capabilities, so the queue controller delegates queue commands
+        to this plugin while the source is playing.
         """
+        queue_capabilities: SourceQueueCapabilities | None = None
+        if self._backend.supports_queue_control:
+            # only what is consumed today is declared; the remaining declarations
+            # (queue view, enqueue/play media types, native_* flags) arrive with
+            # the queue-view mirror and the play-redirect
+            queue_capabilities = SourceQueueCapabilities(
+                provider_domain="spotify",
+                can_shuffle=True,
+                can_repeat=True,
+            )
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -554,6 +630,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Spotify context (claiming active device status). Without any
             # prior context a localized error points the user to the app.
             can_initiate=True,
+            queue_capabilities=queue_capabilities,
         )
 
     def _get_target_player_id(self) -> str | None:
@@ -715,6 +792,8 @@ class SpotifyConnectProvider(PluginProvider):
             # and controllable; a fresh 'active' event re-establishes it.
             self._playing = False
             self._spotify_session_active = False
+            # stale options must not outlive the session they belong to
+            self._last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
             self.unload_with_error(event.error or "Spotify Connect backend failed")
@@ -727,12 +806,15 @@ class SpotifyConnectProvider(PluginProvider):
             self._handle_auth_required()
             return
 
-        # Remember the latest context/track so we can take playback back if the
-        # user moves the active device away in the Spotify app (see on_source_selected).
-        if event.context_uri:
-            self._last_context_uri = event.context_uri
-        if event.track_uri:
-            self._last_track_uri = event.track_uri
+        self._remember_context_uris(event)
+
+        if event.type is BackendEventType.QUEUE_CHANGED:
+            # queue snapshots are not consumed yet (full queue-item mirroring comes later)
+            return
+        if event.type is BackendEventType.OPTIONS_CHANGED:
+            # an options report is no reason to re-push the (unchanged) stream metadata below
+            self._handle_options_changed(event)
+            return
 
         if event.type is BackendEventType.SESSION_ACTIVE:
             self._spotify_session_active = True
@@ -752,6 +834,8 @@ class SpotifyConnectProvider(PluginProvider):
         elif event.type is BackendEventType.SESSION_INACTIVE:
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
+            # stale options must not outlive the session they belong to
+            self._last_playback_options = None
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
@@ -817,6 +901,21 @@ class SpotifyConnectProvider(PluginProvider):
                 self._stream_metadata,
             )
 
+    def _remember_context_uris(self, event: BackendEvent) -> None:
+        """
+        Memoize the latest context/track URIs seen on the event stream.
+
+        Used to take playback back (make MA the active Spotify device) when the user
+        switched the active device away in the Spotify app and then presses play in MA
+        (see ``on_source_selected``).
+
+        :param event: The backend event to read the URIs from.
+        """
+        if event.context_uri:
+            self._last_context_uri = event.context_uri
+        if event.track_uri:
+            self._last_track_uri = event.track_uri
+
     def _handle_auth_required(self) -> None:
         """Handle a lost Spotify login: reset session state and unload with an auth error."""
         # the backend lost its Spotify login mid-session: stop treating the
@@ -824,6 +923,7 @@ class SpotifyConnectProvider(PluginProvider):
         # the provider and routes the user through the setup flow
         self._playing = False
         self._spotify_session_active = False
+        self._last_playback_options = None
         self.logger.warning("Spotify Connect backend for %s requires (re)authentication", self.name)
         self.unload_with_error(
             LoginFailed(
@@ -831,6 +931,28 @@ class SpotifyConnectProvider(PluginProvider):
                 translation_key="soloist_auth_required",
                 translation_owner=self.translation_owner,
             )
+        )
+
+    def _handle_options_changed(self, event: BackendEvent) -> None:
+        """
+        Cache the session's playback options and mirror them onto the consuming queue.
+
+        :param event: The OPTIONS_CHANGED event to handle.
+        """
+        if event.options is None:
+            return
+        # cache regardless of claim state: an externally triggered session reports its
+        # options before the queue claim exists; on_source_selected pushes the cached
+        # value once claimed
+        self._last_playback_options = event.options
+        if not self._in_use_by_queue:
+            return
+        self.mass.streams.update_source_queue_options(
+            self._in_use_by_queue,
+            AUDIO_SOURCE_ID,
+            self.instance_id,
+            shuffle_enabled=event.options.shuffle,
+            repeat_mode=event.options.repeat,
         )
 
     def _apply_metadata(self, metadata: BackendTrackMetadata) -> None:

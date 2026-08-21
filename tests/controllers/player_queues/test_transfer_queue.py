@@ -44,6 +44,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     fake.resume = AsyncMock()
     fake.clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.players.cmd_ungroup = AsyncMock()
     fake.mass.players.wait_for_player_update = MagicMock(return_value=_DummyACM())
@@ -129,6 +130,7 @@ def _shuffle_controller(
     fake.resume = AsyncMock()
     fake._clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
     target_player = MagicMock()
     target_player.state.synced_to = None

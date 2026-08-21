@@ -3282,7 +3282,8 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                result.add(player)
+                if player.type != PlayerType.UNKNOWN:
+                    result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
@@ -3291,7 +3292,8 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    result.add(player)
+                    if player.type != PlayerType.UNKNOWN:
+                        result.add(player)
         return result
 
     # The id of the (last) active mass source.
