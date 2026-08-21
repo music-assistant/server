@@ -123,7 +123,7 @@ class YotoAdapter:
                 )
             except ProviderUnavailableError:
                 raise
-            except (KeyError, YotoError) as err:
+            except (KeyError, TimeoutError, YotoError) as err:
                 msg = "Yoto stream is unavailable"
                 raise ProviderUnavailableError(msg) from err
 
@@ -161,7 +161,7 @@ class YotoAdapter:
                 if refresh_all_details:
                     self._last_detail_refresh = monotonic()
                 return catalogue
-            except YotoError as err:
+            except (TimeoutError, YotoError) as err:
                 msg = "Unable to refresh the Yoto library"
                 raise ProviderUnavailableError(msg) from err
 
@@ -171,7 +171,7 @@ class YotoAdapter:
             raise LoginFailed(msg)
         try:
             token = await self._api.check_and_refresh_token()
-        except YotoError as err:
+        except (TimeoutError, YotoError) as err:
             msg = "Yoto authentication failed"
             raise LoginFailed(msg) from err
         refresh_token = getattr(token, "refresh_token", None)

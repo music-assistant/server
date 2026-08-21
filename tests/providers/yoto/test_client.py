@@ -8,7 +8,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from yoto_api import YotoAPIError
 
 import music_assistant.providers.yoto.client as client_module
@@ -159,6 +159,38 @@ async def test_unexpected_authentication_and_persistence_errors_are_not_masked()
     api.check_and_refresh_token = expected_auth_failure  # type: ignore[method-assign]
     with pytest.raises(Exception, match="authentication failed"):
         await adapter.ensure_authenticated()
+
+
+async def test_raw_transport_timeouts_retain_temporary_failure_semantics() -> None:
+    """Bare transport timeouts are translated at every yoto-api boundary."""
+    auth_api = _API()
+
+    async def auth_timeout() -> _Token:
+        raise TimeoutError("auth timed out")
+
+    auth_api.check_and_refresh_token = auth_timeout  # type: ignore[method-assign]
+    with pytest.raises(LoginFailed, match="authentication failed"):
+        await YotoAdapter("client-id", "old-refresh-token", api=auth_api).ensure_authenticated()
+
+    stream_api = _API()
+
+    async def detail_timeout(_card_id: str) -> None:
+        raise TimeoutError("detail timed out")
+
+    cast("Any", stream_api).update_card_detail = detail_timeout
+    with pytest.raises(ProviderUnavailableError, match="stream is unavailable"):
+        await YotoAdapter("client-id", "old-refresh-token", api=stream_api).resolve_stream(
+            encode_track_id("card", "chapter", "track")
+        )
+
+    catalogue_api = _API()
+
+    async def library_timeout() -> None:
+        raise TimeoutError("library timed out")
+
+    catalogue_api.update_library = library_timeout  # type: ignore[method-assign]
+    with pytest.raises(ProviderUnavailableError, match="refresh the Yoto library"):
+        await YotoAdapter("client-id", "old-refresh-token", api=catalogue_api).refresh_catalogue()
 
 
 async def test_stream_resolution_clears_stale_url_and_refetches_just_in_time() -> None:
