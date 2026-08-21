@@ -470,13 +470,13 @@ class WiimPlayer(Player):
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
         elif play_mode == SOURCE_NETWORK:
+            # the queue is registered just after the player, so an early poll can precede it
             ma_queue = self.mass.player_queues.get(self.player_id)
-            assert ma_queue is not None
             if device_uri == "wiimu_airplay":
                 self._attr_active_source = SOURCE_AIRPLAY
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
-            elif ma_queue.current_item:
+            elif ma_queue and ma_queue.current_item:
                 self._attr_active_source = self.player_id
             else:
                 self._attr_active_source = SOURCE_UNKNOWN
