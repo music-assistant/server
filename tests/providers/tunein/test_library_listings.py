@@ -49,10 +49,13 @@ async def test_malformed_preset_entry_is_reported(provider: TuneInProvider) -> N
     assert isinstance(args[2], InvalidDataError)
 
 
-async def test_audio_preset_without_id_is_reported(provider: TuneInProvider) -> None:
+@pytest.mark.parametrize("preset_id", [None, "", {}])
+async def test_audio_preset_without_id_is_reported(
+    provider: TuneInProvider, preset_id: Any
+) -> None:
     """An audio preset without an id must hold back radio deletions."""
     provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
-        return_value={"body": [{"type": "audio"}]}
+        return_value={"body": [{"type": "audio", "preset_id": preset_id}]}
     )
     provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
 

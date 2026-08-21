@@ -190,7 +190,8 @@ class TuneInProvider(MusicProvider):
                 if not item.get("is_available", True):
                     continue
                 if item_type == "audio":
-                    if "preset_id" not in item:
+                    preset_id = item.get("preset_id")
+                    if not isinstance(preset_id, str) or not preset_id:
                         self.report_skipped_sync_item(
                             MediaType.RADIO,
                             None,
@@ -198,7 +199,7 @@ class TuneInProvider(MusicProvider):
                         )
                         continue
                     # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self._get_stream_info(item["preset_id"])
+                    stream_info = await self._get_stream_info(preset_id)
                     yield self._parse_radio(item, stream_info, folder)
                 elif item_type == "link":
                     item_url = item.get("URL")

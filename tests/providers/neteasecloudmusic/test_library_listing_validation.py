@@ -42,6 +42,9 @@ async def test_malformed_listing_field_raises(
         ("get_library_artists", {"artists": [None]}, MediaType.ARTIST),
         ("get_library_albums", {"albums": [None]}, MediaType.ALBUM),
         ("get_library_playlists", {"playlist": [None]}, MediaType.PLAYLIST),
+        ("get_library_artists", {"artists": [{"id": {}}]}, MediaType.ARTIST),
+        ("get_library_albums", {"albums": [{"id": {}}]}, MediaType.ALBUM),
+        ("get_library_playlists", {"playlist": [{"id": {}}]}, MediaType.PLAYLIST),
     ],
 )
 async def test_malformed_listing_entry_is_reported(

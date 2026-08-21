@@ -271,6 +271,18 @@ def _extract_data(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _extract_item_id(item: dict[str, Any], *keys: str) -> str:
+    """Return a provider item id from the first populated key."""
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, str | int):
+            return ""
+        return str(value).strip()
+    return ""
+
+
 def _extract_cookie(payload: dict[str, Any]) -> str:
     """Extract login cookie string from payload."""
     data = _extract_data(payload)
@@ -692,7 +704,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse artist object."""
-        artist_id = str(artist_obj.get("id") or artist_obj.get("artistId") or "").strip()
+        artist_id = _extract_item_id(artist_obj, "id", "artistId")
         if not artist_id:
             raise InvalidDataError("Artist object missing id")
         name = str(artist_obj.get("name") or "Unknown Artist").strip()
@@ -721,7 +733,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_album(self, album_obj: dict[str, Any]) -> Album:
         """Parse album object."""
-        album_id = str(album_obj.get("id") or album_obj.get("albumId") or "").strip()
+        album_id = _extract_item_id(album_obj, "id", "albumId")
         if not album_id:
             raise InvalidDataError("Album object missing id")
         name = str(album_obj.get("name") or "Unknown Album").strip()
@@ -766,7 +778,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_track(self, song_obj: dict[str, Any]) -> Track:
         """Parse song object."""
-        track_id = str(song_obj.get("id") or song_obj.get("songId") or "").strip()
+        track_id = _extract_item_id(song_obj, "id", "songId")
         if not track_id:
             raise InvalidDataError("Track object missing id")
         name = str(song_obj.get("name") or "Unknown Track").strip()
@@ -825,7 +837,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse playlist object."""
-        playlist_id = str(playlist_obj.get("id") or playlist_obj.get("playlistId") or "").strip()
+        playlist_id = _extract_item_id(playlist_obj, "id", "playlistId")
         if not playlist_id:
             raise InvalidDataError("Playlist object missing id")
         name = str(playlist_obj.get("name") or "Unknown Playlist").strip()

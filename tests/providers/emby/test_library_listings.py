@@ -75,7 +75,7 @@ async def test_empty_item_list_is_a_valid_empty_library(provider: EmbyProvider) 
         ("get_library_playlists", MediaType.PLAYLIST),
     ],
 )
-@pytest.mark.parametrize("entry", [None, {}])
+@pytest.mark.parametrize("entry", [None, {}, {ITEM_KEY_ID: {}}])
 async def test_non_object_entry_is_reported(
     provider: EmbyProvider,
     method_name: str,

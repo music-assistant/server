@@ -279,7 +279,8 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby artist listing contains a non-object entry"),
                         )
                         continue
-                    if not str(artist.get(ITEM_KEY_ID) or "").strip():
+                    item_id = artist.get(ITEM_KEY_ID)
+                    if not isinstance(item_id, str) or not item_id.strip():
                         self.report_skipped_sync_item(
                             MediaType.ARTIST,
                             None,
@@ -316,7 +317,8 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby album listing contains a non-object entry"),
                         )
                         continue
-                    if not str(album.get(ITEM_KEY_ID) or "").strip():
+                    item_id = album.get(ITEM_KEY_ID)
+                    if not isinstance(item_id, str) or not item_id.strip():
                         self.report_skipped_sync_item(
                             MediaType.ALBUM,
                             None,
@@ -353,7 +355,8 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby track listing contains a non-object entry"),
                         )
                         continue
-                    if not str(track.get(ITEM_KEY_ID) or "").strip():
+                    item_id = track.get(ITEM_KEY_ID)
+                    if not isinstance(item_id, str) or not item_id.strip():
                         self.report_skipped_sync_item(
                             MediaType.TRACK,
                             None,
@@ -362,10 +365,9 @@ class EmbyProvider(MusicProvider):
                         continue
                     media_streams = track.get(ITEM_KEY_MEDIA_STREAMS)
                     if not isinstance(media_streams, list) or not media_streams:
-                        item_id = track.get(ITEM_KEY_ID)
                         self.report_skipped_sync_item(
                             MediaType.TRACK,
-                            str(item_id) if item_id is not None else None,
+                            item_id,
                             InvalidDataError("Emby track has no media streams"),
                         )
                         continue
@@ -398,7 +400,8 @@ class EmbyProvider(MusicProvider):
                             InvalidDataError("Emby playlist listing contains a non-object entry"),
                         )
                         continue
-                    if not str(playlist.get(ITEM_KEY_ID) or "").strip():
+                    item_id = playlist.get(ITEM_KEY_ID)
+                    if not isinstance(item_id, str) or not item_id.strip():
                         self.report_skipped_sync_item(
                             MediaType.PLAYLIST,
                             None,
@@ -573,14 +576,6 @@ class EmbyProvider(MusicProvider):
                     result.append(library)
         return result
 
-    @staticmethod
-    def _get_response_items(response: dict[str, Any], item_type: str) -> list[Any]:
-        """Return the required item list from an Emby listing response."""
-        items = response.get(ITEMS)
-        if not isinstance(items, list):
-            raise InvalidDataError(f"Emby {item_type} response contains no item list")
-        return items
-
     async def on_played(
         self,
         media_type: MediaType,
@@ -602,3 +597,11 @@ class EmbyProvider(MusicProvider):
             )
         if not fully_played and position == 0:
             await self._post(f"/Users/{self._user_id}/PlayedItems/{prov_item_id}/Delete")
+
+    @staticmethod
+    def _get_response_items(response: dict[str, Any], item_type: str) -> list[Any]:
+        """Return the required item list from an Emby listing response."""
+        items = response.get(ITEMS)
+        if not isinstance(items, list):
+            raise InvalidDataError(f"Emby {item_type} response contains no item list")
+        return items
