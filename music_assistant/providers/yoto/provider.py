@@ -10,7 +10,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
-from aiohttp import web
+from aiohttp import ClientError, web
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.models.music_provider import MusicProvider
 
 from .catalogue import Catalogue, CatalogueCard
@@ -60,6 +61,10 @@ SYNC_REFRESH_WINDOW = 30
 MIN_PLAYBACK_SESSION_TTL = 15 * 60
 PLAYBACK_SESSION_BUFFER = 15 * 60
 MAX_PLAYBACK_SESSIONS = 64
+PROXY_CHUNK_SIZE = 64 * 1024
+PROXY_MAX_BYTES_PER_SECOND = 64 * 1024
+PROXY_INITIAL_BURST_BYTES = PROXY_MAX_BYTES_PER_SECOND * 5
+PROXY_RESPONSE_HEADERS = ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges")
 
 
 @dataclass(slots=True)
@@ -98,6 +103,7 @@ class YotoProvider(MusicProvider):
             token_callback=self._persist_refresh_token,
         )
         self.catalogue = await self.adapter.refresh_catalogue()
+        self._last_sync_refresh = monotonic()
         self._on_unload_callbacks = [
             self.mass.streams.register_dynamic_route(
                 f"/{self.instance_id}_yoto_part", self._handle_audiobook_part_request
@@ -291,10 +297,7 @@ class YotoProvider(MusicProvider):
             or card.is_audiobook
         ):
             raise MediaNotFoundError("Yoto track is unavailable")
-        try:
-            resolved = await self.adapter.resolve_stream(item_id)
-        except ProviderUnavailableError as err:
-            raise MediaNotFoundError(str(err)) from err
+        resolved = await self.adapter.resolve_stream(item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -318,6 +321,8 @@ class YotoProvider(MusicProvider):
             raise MediaNotFoundError("Yoto audiobook is unavailable")
         if not has_compatible_formats(card):
             raise MediaNotFoundError("Yoto audiobook has incompatible audio properties")
+        if not all(source.duration > 0 for source in card.tracks):
+            raise MediaNotFoundError("Yoto audiobook has invalid part durations")
         now = monotonic()
         sessions = self._get_audiobook_sessions()
         self._prune_audiobook_sessions(now)
@@ -353,8 +358,8 @@ class YotoProvider(MusicProvider):
             can_seek=True,
         )
 
-    async def _handle_audiobook_part_request(self, request: web.Request) -> web.Response:
-        """Resolve one authorized audiobook part to a fresh signed Yoto URL."""
+    async def _handle_audiobook_part_request(self, request: web.Request) -> web.StreamResponse:
+        """Resolve and proxy one authorized audiobook part without exposing its signed URL."""
         session_id = request.query.get("session_id")
         part_value = request.query.get("part")
         if not session_id or part_value is None:
@@ -384,8 +389,50 @@ class YotoProvider(MusicProvider):
         try:
             resolved = await self.adapter.resolve_stream(item_id)
         except ProviderUnavailableError as err:
-            raise web.HTTPNotFound(text="Yoto audiobook part is unavailable") from err
-        raise web.HTTPFound(location=resolved.path)
+            raise web.HTTPServiceUnavailable(text="Yoto audiobook part is unavailable") from err
+        return await self._proxy_audiobook_part(request, resolved.path)
+
+    async def _proxy_audiobook_part(
+        self, request: web.Request, signed_url: str
+    ) -> web.StreamResponse:
+        """Stream an upstream Yoto media response through the local capability route."""
+        request_headers: dict[str, str] = {}
+        if range_header := request.headers.get("Range"):
+            request_headers["Range"] = range_header
+        try:
+            async with self.mass.http_session.get(
+                encoded_request_url(signed_url), headers=request_headers
+            ) as upstream_response:
+                if upstream_response.status not in (200, 206):
+                    raise web.HTTPServiceUnavailable(text="Yoto audiobook stream is unavailable")
+                response_headers = {
+                    name: upstream_response.headers[name]
+                    for name in PROXY_RESPONSE_HEADERS
+                    if name in upstream_response.headers
+                }
+                response_headers["Cache-Control"] = "no-store"
+                response = web.StreamResponse(
+                    status=upstream_response.status,
+                    headers=response_headers,
+                )
+                await response.prepare(request)
+                started_at = monotonic()
+                bytes_written = 0
+                async for chunk in upstream_response.content.iter_chunked(PROXY_CHUNK_SIZE):
+                    await response.write(chunk)
+                    bytes_written += len(chunk)
+                    if bytes_written > PROXY_INITIAL_BURST_BYTES:
+                        target_elapsed = (
+                            bytes_written - PROXY_INITIAL_BURST_BYTES
+                        ) / PROXY_MAX_BYTES_PER_SECOND
+                        if (delay := target_elapsed - (monotonic() - started_at)) > 0:
+                            await asyncio.sleep(delay)
+                await response.write_eof()
+                return response
+        except web.HTTPException:
+            raise
+        except ClientError, TimeoutError:
+            raise web.HTTPServiceUnavailable(text="Yoto audiobook stream is unavailable") from None
 
     def _get_audiobook_sessions(self) -> dict[str, _AudiobookPlaybackSession]:
         if not hasattr(self, "_audiobook_sessions"):

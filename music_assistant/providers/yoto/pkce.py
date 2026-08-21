@@ -8,6 +8,7 @@ import secrets
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from aiohttp import ClientError
 from music_assistant_models.errors import LoginFailed
 
 if TYPE_CHECKING:
@@ -80,11 +81,9 @@ async def exchange_code(
             body: Any = await response.json(content_type=None)
             if not response.ok:
                 raise LoginFailed("Yoto rejected the authorization code")
-    except LoginFailed:
-        raise
-    except Exception as err:
+    except (ClientError, TimeoutError, ValueError) as err:
         raise LoginFailed("Yoto token exchange failed") from err
-    try:
-        return str(body["refresh_token"])
-    except (KeyError, TypeError) as err:
-        raise LoginFailed("Yoto token response was malformed") from err
+    refresh_token = body.get("refresh_token") if isinstance(body, dict) else None
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise LoginFailed("Yoto token response was malformed")
+    return refresh_token

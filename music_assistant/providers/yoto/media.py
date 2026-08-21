@@ -48,7 +48,11 @@ def map_audiobook(card: CatalogueCard, instance_id: str) -> Audiobook:
     :return: Mapped audiobook.
     """
     duration = sum(max(track.duration, 0) for track in card.tracks)
-    is_playable = bool(card.tracks) and duration > 0 and has_compatible_formats(card)
+    is_playable = (
+        bool(card.tracks)
+        and all(track.duration > 0 for track in card.tracks)
+        and has_compatible_formats(card)
+    )
     audiobook = Audiobook(
         item_id=card.item_id,
         provider=instance_id,
@@ -132,22 +136,6 @@ def map_artist(name: str | None, instance_id: str) -> Artist:
     )
 
 
-def _mapping(
-    item_id: str,
-    instance_id: str,
-    content_format: str | None = None,
-    *,
-    available: bool = True,
-) -> ProviderMapping:
-    return ProviderMapping(
-        item_id=item_id,
-        provider_domain="yoto",
-        provider_instance=instance_id,
-        available=available,
-        audio_format=AudioFormat(content_type=content_type(content_format)),
-    )
-
-
 def content_type(content_format: str | None) -> ContentType:
     """Map a Yoto stream format to a Music Assistant content type."""
     return {
@@ -185,6 +173,22 @@ def has_compatible_formats(card: CatalogueCard) -> bool:
         and len(set(formats)) == 1
         and all(value in {"mono", "stereo"} for value in channels)
         and len(set(channels)) == 1
+    )
+
+
+def _mapping(
+    item_id: str,
+    instance_id: str,
+    content_format: str | None = None,
+    *,
+    available: bool = True,
+) -> ProviderMapping:
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain="yoto",
+        provider_instance=instance_id,
+        available=available,
+        audio_format=AudioFormat(content_type=content_type(content_format)),
     )
 
 

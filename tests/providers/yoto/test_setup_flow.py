@@ -8,16 +8,27 @@ from typing import Any, Self
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
+from music_assistant_models.errors import LoginFailed
 
 from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.yoto import setup_flow
+from music_assistant.providers.yoto.pkce import exchange_code
 
 
 class _TokenResponse:
     """Minimal async context manager for a successful OAuth token response."""
 
     ok = True
+
+    def __init__(self, body: Any | None = None) -> None:
+        self.body = body or {
+            "access_token": "fixture-access-token",
+            "refresh_token": "fixture-refresh-token",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
 
     async def __aenter__(self) -> Self:
         return self
@@ -26,12 +37,7 @@ class _TokenResponse:
         return None
 
     async def json(self, *, content_type: None = None) -> dict[str, Any]:
-        return {
-            "access_token": "fixture-access-token",
-            "refresh_token": "fixture-refresh-token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-        }
+        return self.body
 
 
 async def _wait_for_form(session: SetupSession, step_id: str) -> Any:
@@ -96,3 +102,34 @@ async def test_setup_exchanges_pkce_callback_and_persists_only_credentials() -> 
     assert post_data["code_verifier"] not in repr(session)
     assert post_data["code_verifier"] not in repr(client_form)
     assert post_data["code_verifier"] not in repr(callback_form)
+
+
+@pytest.mark.parametrize("refresh_token", [None, "", "   ", 123])
+async def test_exchange_rejects_malformed_refresh_tokens(refresh_token: object) -> None:
+    """Only a non-empty string is accepted as a persisted refresh token."""
+    session = MagicMock()
+    session.post.return_value = _TokenResponse({"refresh_token": refresh_token})
+
+    with pytest.raises(LoginFailed, match="malformed"):
+        await exchange_code(
+            session,
+            "client",
+            "http://localhost:8095/callback",
+            "verifier",
+            "http://localhost:8095/callback?code=fixture",
+        )
+
+
+async def test_exchange_does_not_mask_unexpected_programming_errors() -> None:
+    """Unexpected defects are allowed to surface instead of being called login failures."""
+    session = MagicMock()
+    session.post.side_effect = RuntimeError("programming defect")
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        await exchange_code(
+            session,
+            "client",
+            "http://localhost:8095/callback",
+            "verifier",
+            "http://localhost:8095/callback?code=fixture",
+        )

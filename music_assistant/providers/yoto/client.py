@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from time import monotonic
 from typing import Any, Protocol
 
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
-from yoto_api import YotoClient
+from yoto_api import YotoClient, YotoError
 
 from .catalogue import Catalogue, decode_track_id
 
 TokenCallback = Callable[[str], None | Awaitable[None]]
+CARD_DETAIL_REQUEST_DELAY = 0.05
+CARD_DETAIL_REFRESH_INTERVAL = 6 * 60 * 60
 
 
 class YotoClientProtocol(Protocol):
@@ -81,6 +84,8 @@ class YotoAdapter:
         self._token_callback = token_callback
         self._refresh_token = refresh_token
         self._lock = asyncio.Lock()
+        self._catalogue = Catalogue()
+        self._last_detail_refresh = 0.0
         if refresh_token:
             self._api.set_refresh_token(refresh_token)
 
@@ -118,7 +123,7 @@ class YotoAdapter:
                 )
             except ProviderUnavailableError:
                 raise
-            except Exception as err:
+            except (KeyError, YotoError) as err:
                 msg = "Yoto stream is unavailable"
                 raise ProviderUnavailableError(msg) from err
 
@@ -129,11 +134,34 @@ class YotoAdapter:
             try:
                 self._api.library.clear()
                 await self._api.update_library()
-                for card_id in tuple(self._api.library):
+                card_ids = tuple(self._api.library)
+                now = monotonic()
+                refresh_all_details = (
+                    not self._catalogue.cards
+                    or now - self._last_detail_refresh >= CARD_DETAIL_REFRESH_INTERVAL
+                )
+                detail_ids = (
+                    card_ids
+                    if refresh_all_details
+                    else tuple(
+                        card_id for card_id in card_ids if card_id not in self._catalogue.cards
+                    )
+                )
+                for index, card_id in enumerate(detail_ids):
                     await self._api.update_card_detail(card_id)
+                    if index < len(detail_ids) - 1:
+                        await asyncio.sleep(CARD_DETAIL_REQUEST_DELAY)
                 await self._api.update_groups()
-                return Catalogue.from_yoto_models(self._api.library, self._api.groups)
-            except Exception as err:
+                catalogue = Catalogue.from_yoto_models(self._api.library, self._api.groups)
+                if not refresh_all_details:
+                    for card_id, card in catalogue.cards.items():
+                        if previous := self._catalogue.cards.get(card_id):
+                            catalogue.cards[card_id] = replace(card, tracks=previous.tracks)
+                self._catalogue = catalogue
+                if refresh_all_details:
+                    self._last_detail_refresh = monotonic()
+                return catalogue
+            except YotoError as err:
                 msg = "Unable to refresh the Yoto library"
                 raise ProviderUnavailableError(msg) from err
 
@@ -143,14 +171,12 @@ class YotoAdapter:
             raise LoginFailed(msg)
         try:
             token = await self._api.check_and_refresh_token()
-            refresh_token = getattr(token, "refresh_token", None)
-            if isinstance(refresh_token, str) and refresh_token != self._refresh_token:
-                await self._persist_token(refresh_token)
-        except LoginFailed:
-            raise
-        except Exception as err:
+        except YotoError as err:
             msg = "Yoto authentication failed"
             raise LoginFailed(msg) from err
+        refresh_token = getattr(token, "refresh_token", None)
+        if isinstance(refresh_token, str) and refresh_token != self._refresh_token:
+            await self._persist_token(refresh_token)
 
     async def _persist_token(self, refresh_token: str) -> None:
         if self._token_callback is not None:

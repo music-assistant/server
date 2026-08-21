@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
+from yoto_api import YotoAPIError
 
+import music_assistant.providers.yoto.client as client_module
 from music_assistant.providers.yoto.catalogue import Catalogue, encode_track_id
 from music_assistant.providers.yoto.client import YotoAdapter
 
@@ -131,11 +134,31 @@ async def test_failed_token_persistence_is_retried_before_accepting_rotation() -
         token_callback=persist,
     )
 
-    with pytest.raises(Exception, match="authentication failed"):
+    with pytest.raises(RuntimeError, match="storage failure"):
         await adapter.ensure_authenticated()
     await adapter.ensure_authenticated()
 
     assert attempts == 2
+
+
+async def test_unexpected_authentication_and_persistence_errors_are_not_masked() -> None:
+    """Only expected yoto-api failures are translated at the adapter boundary."""
+    api = _API()
+
+    async def unexpected_auth_failure() -> _Token:
+        raise RuntimeError("programming defect")
+
+    api.check_and_refresh_token = unexpected_auth_failure  # type: ignore[method-assign]
+    adapter = YotoAdapter("client-id", "old-refresh-token", api=api)
+    with pytest.raises(RuntimeError, match="programming defect"):
+        await adapter.ensure_authenticated()
+
+    async def expected_auth_failure() -> _Token:
+        raise YotoAPIError("network unavailable")
+
+    api.check_and_refresh_token = expected_auth_failure  # type: ignore[method-assign]
+    with pytest.raises(Exception, match="authentication failed"):
+        await adapter.ensure_authenticated()
 
 
 async def test_stream_resolution_clears_stale_url_and_refetches_just_in_time() -> None:
@@ -180,6 +203,20 @@ async def test_stream_resolution_accepts_only_https_and_hides_url_from_repr() ->
         await adapter.resolve_stream(item_id)
 
 
+async def test_stream_resolution_does_not_mask_unexpected_model_errors() -> None:
+    """Programming defects must not be downgraded to temporary stream failures."""
+    api = _API()
+
+    async def unexpected_failure(_card_id: str) -> None:
+        raise RuntimeError("unexpected model shape")
+
+    cast("Any", api).update_card_detail = unexpected_failure
+    adapter = YotoAdapter("client-id", "old-refresh-token", api=api)
+
+    with pytest.raises(RuntimeError, match="unexpected model shape"):
+        await adapter.resolve_stream(encode_track_id("card", "chapter", "track"))
+
+
 async def test_catalogue_refresh_returns_url_free_snapshot_and_serializes_client_mutation() -> None:
     """Catalogue creation strips URLs and mutable yoto-api calls never overlap."""
     api = _API()
@@ -211,3 +248,29 @@ async def test_catalogue_refresh_drops_cards_removed_from_the_remote_library() -
     catalogue = await adapter.refresh_catalogue()
 
     assert list(catalogue.cards) == ["card"]
+
+
+async def test_catalogue_detail_requests_are_explicitly_throttled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unavoidable per-card detail endpoint is paced between library cards."""
+    api = _API()
+
+    async def update_library() -> None:
+        api.calls.append("library")
+        api.library["card"] = _Card()
+        api.library["second"] = _Card(title="Second")
+
+    api.update_library = update_library  # type: ignore[method-assign]
+    sleep = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.yoto.client.asyncio.sleep", sleep)
+    adapter = YotoAdapter("client-id", "old-refresh-token", api=api)
+
+    await adapter.refresh_catalogue()
+    await adapter.refresh_catalogue()
+
+    assert [call for call in api.calls if call.startswith("detail:")] == [
+        "detail:card",
+        "detail:second",
+    ]
+    sleep.assert_any_await(client_module.CARD_DETAIL_REQUEST_DELAY)

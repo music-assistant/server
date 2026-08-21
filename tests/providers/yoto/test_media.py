@@ -89,7 +89,12 @@ def test_audiobook_playability_requires_known_matching_stream_properties() -> No
     unknown = replace(
         compatible, tracks=tuple(replace(t, format="banana") for t in compatible.tracks)
     )
+    unknown_duration = replace(
+        compatible,
+        tracks=(replace(compatible.tracks[0], duration=0), *compatible.tracks[1:]),
+    )
     assert map_audiobook(compatible, "instance").is_playable is True
     assert map_audiobook(missing, "instance").is_playable is False
     assert map_audiobook(mixed, "instance").is_playable is False
     assert map_audiobook(unknown, "instance").is_playable is False
+    assert map_audiobook(unknown_duration, "instance").is_playable is False

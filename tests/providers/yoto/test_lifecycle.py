@@ -48,6 +48,7 @@ async def test_init_reads_setup_credentials_and_rotated_token_stays_in_setup_dat
     adapter.refresh_catalogue = AsyncMock(return_value=Catalogue())
     adapter_class = MagicMock(return_value=adapter)
     monkeypatch.setattr(provider_module, "YotoAdapter", adapter_class)
+    monkeypatch.setattr(provider_module, "monotonic", lambda: 123.0)
 
     await provider.handle_async_init()
     await provider._persist_refresh_token("rotated")
@@ -59,6 +60,7 @@ async def test_init_reads_setup_credentials_and_rotated_token_stays_in_setup_dat
         token_callback=provider._persist_refresh_token,
     )
     update_setup_data.assert_called_once_with("refresh_token", "rotated", immediate=True)
+    assert provider._last_sync_refresh == 123.0
 
 
 @pytest.mark.asyncio

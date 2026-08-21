@@ -6,13 +6,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Self, cast
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from aiohttp import web
+from aiohttp import ClientError, web
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.providers.yoto.catalogue import (
@@ -85,7 +86,7 @@ class FakeStreamAPI:
         for track in self.library[card_id].chapters["chapter-a"].tracks.values():
             track.trackUrl = (
                 f"https://secure-media.example/{track.key}.m4a?"
-                f"signature=fixture-{self.detail_calls}"
+                f"signature=fixture-{self.detail_calls}&key=path%2Fpart"
             )
 
     async def update_library(self) -> None:
@@ -93,6 +94,63 @@ class FakeStreamAPI:
 
     async def update_groups(self) -> None:
         pass
+
+
+class FakeUpstreamContent:
+    async def iter_chunked(self, _size: int) -> Any:
+        """Yield fixture media without exposing its source URL."""
+        yield b"audio"
+
+
+class FakeUpstreamResponse:
+    def __init__(self) -> None:
+        self.status = 206
+        self.headers = {
+            "Content-Type": "audio/aac",
+            "Content-Length": "5",
+            "Content-Range": "bytes 0-4/5",
+            "Accept-Ranges": "bytes",
+            "Location": "https://must-not-leak.example/signed",
+        }
+        self.content = FakeUpstreamContent()
+
+    async def __aenter__(self) -> Self:
+        """Open the fake upstream response."""
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        """Close the fake upstream response."""
+        return
+
+
+class FakeHTTPSession:
+    def __init__(self) -> None:
+        self.url: str | None = None
+        self.urls: list[str] = []
+        self.headers: dict[str, str] | None = None
+
+    def get(self, url: Any, *, headers: dict[str, str]) -> FakeUpstreamResponse:
+        self.url = str(url)
+        self.urls.append(str(url))
+        self.headers = headers
+        return FakeUpstreamResponse()
+
+
+class FakeDownstreamResponse:
+    def __init__(self, *, status: int, headers: dict[str, str]) -> None:
+        self.status = status
+        self.headers = headers
+        self.body = bytearray()
+        self.prepared = False
+
+    async def prepare(self, _request: web.Request) -> None:
+        self.prepared = True
+
+    async def write(self, chunk: bytes) -> None:
+        self.body.extend(chunk)
+
+    async def write_eof(self) -> None:
+        return None
 
 
 def _provider(adapter: YotoAdapter, item_id: str, *, category: str | None = None) -> YotoProvider:
@@ -180,13 +238,16 @@ async def test_signed_stream_is_not_added_to_catalogue_metadata_or_logs(
 
 
 @pytest.mark.asyncio
-async def test_audiobook_stream_uses_fresh_per_part_redirects_with_seekable_combined_timeline() -> (
-    None
-):
+async def test_audiobook_stream_uses_fresh_per_part_proxy_with_seekable_combined_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     api = FakeStreamAPI()
     adapter = YotoAdapter("fixture-client", "fixture-refresh", api=api)
     item_id = encode_track_id("card-alpha", "chapter-a", "track-a")
     provider = _provider(adapter, item_id, category="stories")
+    http_session = FakeHTTPSession()
+    cast("Any", provider.mass).http_session = http_session
+    monkeypatch.setattr(web, "StreamResponse", FakeDownstreamResponse)
 
     details = await provider.get_stream_details("card-alpha", MediaType.AUDIOBOOK)
 
@@ -207,15 +268,112 @@ async def test_audiobook_stream_uses_fresh_per_part_redirects_with_seekable_comb
     assert [query["part"] for query in part_queries] == [["0"], ["1"]]
     assert all("item_id" not in query for query in part_queries)
 
-    request = cast("web.Request", SimpleNamespace(query={"session_id": session_id, "part": "0"}))
-    with pytest.raises(web.HTTPFound) as first_redirect:
-        await provider._handle_audiobook_part_request(request)
-    with pytest.raises(web.HTTPFound) as second_redirect:
-        await provider._handle_audiobook_part_request(request)
+    request = cast(
+        "web.Request",
+        SimpleNamespace(query={"session_id": session_id, "part": "0"}, headers={}),
+    )
+    await provider._handle_audiobook_part_request(request)
+    await provider._handle_audiobook_part_request(request)
 
     assert api.detail_calls == 2
-    assert "signature=fixture-1" in str(first_redirect.value.location)
-    assert "signature=fixture-2" in str(second_redirect.value.location)
+    assert "signature=fixture-1" in http_session.urls[0]
+    assert "signature=fixture-2" in http_session.urls[1]
+
+
+@pytest.mark.asyncio
+async def test_audiobook_part_is_proxied_without_disclosing_signed_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local part capability proxies bytes and forwards safe range metadata only."""
+    api = FakeStreamAPI()
+    adapter = YotoAdapter("fixture-client", "fixture-refresh", api=api)
+    item_id = encode_track_id("card-alpha", "chapter-a", "track-a")
+    provider = _provider(adapter, item_id, category="stories")
+    http_session = FakeHTTPSession()
+    cast("Any", provider.mass).http_session = http_session
+    monkeypatch.setattr(web, "StreamResponse", FakeDownstreamResponse)
+    sleep = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.yoto.provider.asyncio.sleep", sleep)
+    monkeypatch.setattr("music_assistant.providers.yoto.provider.PROXY_INITIAL_BURST_BYTES", 0)
+    monkeypatch.setattr("music_assistant.providers.yoto.provider.PROXY_MAX_BYTES_PER_SECOND", 1)
+    monkeypatch.setattr("music_assistant.providers.yoto.provider.monotonic", lambda: 0.0)
+    details = await provider.get_stream_details("card-alpha", MediaType.AUDIOBOOK)
+    assert isinstance(details.path, list)
+    query = parse_qs(urlsplit(details.path[0].path).query)
+    request = cast(
+        "web.Request",
+        SimpleNamespace(
+            query={"session_id": query["session_id"][0], "part": "0"},
+            headers={"Range": "bytes=0-4"},
+        ),
+    )
+
+    response = await provider._handle_audiobook_part_request(request)
+
+    fake_response = cast("FakeDownstreamResponse", cast("Any", response))
+    assert fake_response.status == 206
+    assert fake_response.body == b"audio"
+    assert fake_response.headers == {
+        "Content-Type": "audio/aac",
+        "Content-Length": "5",
+        "Content-Range": "bytes 0-4/5",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+    }
+    assert http_session.headers == {"Range": "bytes=0-4"}
+    assert http_session.url is not None
+    assert "signature=fixture-1" in http_session.url
+    assert "key=path%2Fpart" in http_session.url
+    assert "must-not-leak" not in repr(fake_response.headers)
+    sleep.assert_awaited_once_with(5.0)
+
+
+@pytest.mark.asyncio
+async def test_audiobook_part_maps_temporary_provider_failure_to_503() -> None:
+    """Temporary Yoto failures are not reported as permanently missing media."""
+    api = FakeStreamAPI()
+    adapter = YotoAdapter("fixture-client", "fixture-refresh", api=api)
+    item_id = encode_track_id("card-alpha", "chapter-a", "track-a")
+    provider = _provider(adapter, item_id, category="stories")
+    cast("Any", provider.adapter).resolve_stream = AsyncMock(
+        side_effect=ProviderUnavailableError("temporary failure")
+    )
+    details = await provider.get_stream_details("card-alpha", MediaType.AUDIOBOOK)
+    assert isinstance(details.path, list)
+    query = parse_qs(urlsplit(details.path[0].path).query)
+
+    with pytest.raises(web.HTTPServiceUnavailable):
+        await provider._handle_audiobook_part_request(
+            cast(
+                "web.Request",
+                SimpleNamespace(query={"session_id": query["session_id"][0], "part": "0"}),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_proxy_transport_failure_does_not_leak_signed_url() -> None:
+    """Sensitive upstream URLs are excluded from downstream transport errors."""
+    api = FakeStreamAPI()
+    adapter = YotoAdapter("fixture-client", "fixture-refresh", api=api)
+    item_id = encode_track_id("card-alpha", "chapter-a", "track-a")
+    provider = _provider(adapter, item_id, category="stories")
+
+    class FailingHTTPSession:
+        def get(self, url: str, *, headers: dict[str, str]) -> FakeUpstreamResponse:
+            raise ClientError(f"failed to fetch {url}")
+
+    cast("Any", provider.mass).http_session = FailingHTTPSession()
+    request = cast("web.Request", SimpleNamespace(headers={}))
+
+    with pytest.raises(web.HTTPServiceUnavailable) as raised:
+        await provider._proxy_audiobook_part(
+            request,
+            "https://secure-media.example/audio?signature=must-not-leak",
+        )
+
+    assert "must-not-leak" not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.asyncio
@@ -250,8 +408,21 @@ async def test_stream_resolution_rejects_wrong_type_missing_track_and_missing_ur
 
     cast("Any", api).update_card_detail = no_url
     api.library["card-alpha"].chapters["chapter-a"].tracks["track-a"].trackUrl = None
-    with pytest.raises(MediaNotFoundError, match="stream is unavailable"):
+    with pytest.raises(ProviderUnavailableError, match="stream is unavailable"):
         await provider.get_stream_details(item_id, MediaType.TRACK)
+
+
+@pytest.mark.asyncio
+async def test_audiobook_stream_rejects_unknown_part_duration() -> None:
+    """Multipart seek boundaries require every source part to have a positive duration."""
+    api = FakeStreamAPI()
+    adapter = YotoAdapter("fixture-client", "fixture-refresh", api=api)
+    item_id = encode_track_id("card-alpha", "chapter-a", "track-a")
+    provider = _provider(adapter, item_id, category="stories")
+    object.__setattr__(provider.catalogue.cards["card-alpha"].tracks[1], "duration", 0)
+
+    with pytest.raises(MediaNotFoundError, match="invalid part durations"):
+        await provider.get_stream_details("card-alpha", MediaType.AUDIOBOOK)
 
 
 @pytest.mark.asyncio
@@ -274,7 +445,7 @@ async def test_audiobook_redirect_never_reuses_a_stale_signed_url() -> None:
     request = SimpleNamespace(
         query={"session_id": query["session_id"][0], "part": query["part"][0]}
     )
-    with pytest.raises(web.HTTPNotFound):
+    with pytest.raises(web.HTTPServiceUnavailable):
         await provider._handle_audiobook_part_request(cast("web.Request", request))
 
     assert api.detail_calls == 1
