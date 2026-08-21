@@ -3279,7 +3279,7 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                if not player.private:
+                if player.type != PlayerType.UNKNOWN:
                     result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -3289,7 +3289,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if not player.private:
+                    if player.type != PlayerType.UNKNOWN:
                         result.add(player)
         return result
 
