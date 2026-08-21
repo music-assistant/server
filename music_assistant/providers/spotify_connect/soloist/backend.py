@@ -706,10 +706,11 @@ class SoloistBackend(SpotifyConnectBackend):
                         await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
                 finally:
                     # a reader locked out by a close() from another supervisor
-                    # never ends on its own. Deliberately not awaited: a reader
-                    # that failed would re-raise here and mask whatever is
-                    # already propagating (a cancellation, most importantly).
+                    # never ends on its own; joining it consumes its outcome the
+                    # way the other process readers in the codebase do
                     log_task.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await log_task
             except asyncio.CancelledError:
                 raise
             except Exception as err:
