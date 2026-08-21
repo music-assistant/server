@@ -270,6 +270,92 @@ async def test_library_listing_reports_missing_resource(
 
 
 @pytest.mark.parametrize(
+    ("method_name", "fixture_name", "media_type", "expected_count"), _LIBRARY_READ_CASES[:3]
+)
+async def test_library_listing_holds_cleanup_for_invalid_resource_id(
+    method_name: str,
+    fixture_name: str,
+    media_type: MediaType,
+    expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test an invalid resource ID holds cleanup when its identity is unknown."""
+    raw = _load_raw(fixture_name)
+    raw["data"][0]["id"] = ["invalid"]
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == media_type
+    assert skipped_id is None
+    assert isinstance(err, (TypeError, ValueError))
+
+
+async def test_library_playlists_hold_cleanup_for_invalid_resource_id(
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test an invalid resolved playlist ID holds cleanup."""
+    raw = _load_raw("lib_playlists.json")
+    original_id = raw["data"][0]["id"]
+    raw["data"][0]["id"] = 123
+    next(resource for resource in raw["included"] if resource["id"] == original_id)["id"] = 123
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in library_manager.get_playlists()]
+
+    assert len(items) == 19
+    skipped_media_type, skipped_id, err = next(
+        call.args
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+        if isinstance(call.args[2], TypeError)
+    )
+    assert skipped_media_type == MediaType.PLAYLIST
+    assert skipped_id is None
+    assert isinstance(err, TypeError)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
+)
+async def test_library_listing_ignores_invalid_date_added(
+    method_name: str,
+    fixture_name: str,
+    _media_type: MediaType,
+    _expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test invalid optional date metadata does not abort a library listing."""
+    raw = _load_raw(fixture_name)
+    raw["data"][0]["meta"]["addedAt"] = ["invalid"]
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == 20
+    assert items[0].date_added is None
+
+
+@pytest.mark.parametrize(
     ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
 )
 async def test_library_listing_fetch_failure_propagates(

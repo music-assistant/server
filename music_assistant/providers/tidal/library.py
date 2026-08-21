@@ -248,8 +248,8 @@ class TidalLibraryManager:
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
     """Set date_added from a userCollection linkage item's addedAt meta."""
-    if added := (item.get("meta") or {}).get("addedAt"):
-        with suppress(ValueError):
+    with suppress(AttributeError, TypeError, ValueError):
+        if added := (item.get("meta") or {}).get("addedAt"):
             # the DB only persists whole-second precision, so truncate here to avoid
             # every sync seeing a (sub-second) mismatch and flagging the item as changed
             media_item.date_added = datetime.fromisoformat(added).replace(microsecond=0)
@@ -257,7 +257,8 @@ def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
 
 def _playlist_item_id(resource: dict[str, Any]) -> str:
     """Return the provider item ID used for a Tidal playlist resource."""
-    item_id = str(resource["id"])
+    if not isinstance(item_id := resource["id"], str):
+        raise TypeError("Tidal playlist resource ID is not a string")
     if resource.get("attributes", {}).get("playlistType") == "MIX":
         return f"mix_{item_id}"
     return item_id
@@ -274,7 +275,7 @@ def _track_item_id(item: dict[str, Any]) -> str | None:
 def _resource_id(resource: dict[str, Any]) -> str | None:
     """Return a JSON:API resource identifier as text."""
     item_id = resource.get("id")
-    return str(item_id) if item_id is not None else None
+    return item_id if isinstance(item_id, str) else None
 
 
 def _resolve_resource(doc: JsonApiDocument, item: dict[str, Any]) -> dict[str, Any]:
