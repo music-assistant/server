@@ -176,6 +176,24 @@ async def test_overwrite_update_keeps_artists_when_none_are_given(
     assert "Ignoring request to clear all artists" in caplog.text
 
 
+async def test_overwrite_update_warns_when_no_provider_mappings_are_given(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An overwrite update carrying no provider mappings must emit a warning."""
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+
+    update = create_track("spotify_1", "track1")
+    update.provider_mappings = set()
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.tracks.get_library_item(db_track.item_id)
+    assert refreshed.provider_mappings == db_track.provider_mappings
+    assert (
+        f"Ignoring request to clear all provider mappings of track item id {db_track.item_id}"
+        in caplog.text
+    )
+
+
 async def test_overwrite_update_replaces_artists(mass: MusicAssistant) -> None:
     """An overwrite update carrying artists still replaces the stored ones."""
     db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))

@@ -15,6 +15,8 @@ from music_assistant_models.media_items import (
 from .helpers import create_track
 
 if TYPE_CHECKING:
+    import pytest
+
     from music_assistant.mass import MusicAssistant
 
 ARTIST_MBID = "aa1b2c3d-1c99-4c1b-b0f1-9f2c1b2a3d44"
@@ -47,6 +49,24 @@ def _detailed_artist() -> Artist:
         [MediaItemImage(type=ImageType.THUMB, path=ARTIST_IMAGE, provider="spotify_1")]
     )
     return artist
+
+
+async def test_overwrite_update_warns_when_no_provider_mappings_are_given(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An overwrite update carrying no provider mappings must emit a warning."""
+    db_artist = await mass.music.artists.add_item_to_library(_artist_stub())
+
+    update = _artist_stub()
+    update.provider_mappings = set()
+    await mass.music.artists.update_item_in_library(db_artist.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(db_artist.item_id)
+    assert refreshed.provider_mappings == db_artist.provider_mappings
+    assert (
+        f"Ignoring request to clear all provider mappings of artist item id {db_artist.item_id}"
+        in caplog.text
+    )
 
 
 async def test_track_overwrite_keeps_artist_details(mass: MusicAssistant) -> None:

@@ -776,6 +776,12 @@ class TracksController(MediaControllerBase[Track]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
+        if overwrite and cur_item.provider_mappings and not update.provider_mappings:
+            self.logger.warning(
+                "Ignoring request to clear all provider mappings of %s item id %s",
+                self.media_type.value,
+                db_id,
+            )
         provider_mappings = provider_mappings_for_update(
             cur_item.provider_mappings, update.provider_mappings, overwrite
         )
