@@ -141,7 +141,11 @@ async def test_library_listing_skips_unparsable_item(
     assert len(items) == expected_count
     assert all(item.item_id != broken_id for item in items)
     provider_mock.logger.warning.assert_not_called()
-    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    skipped_media_type, skipped_id, err = next(
+        call.args
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+        if call.args[1] == broken_id
+    )
     assert skipped_media_type == media_type
     assert skipped_id == broken_id
     assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
@@ -224,6 +228,48 @@ async def test_library_tracks_hold_cleanup_for_unparsable_replacement(
 
 
 @pytest.mark.parametrize(
+    ("method_name", "fixture_name", "media_type", "expected_count", "protect_exact_id"),
+    [
+        ("get_artists", "lib_artists.json", MediaType.ARTIST, 19, True),
+        ("get_albums", "lib_albums.json", MediaType.ALBUM, 19, True),
+        ("get_tracks", "lib_tracks.json", MediaType.TRACK, 19, True),
+        ("get_playlists", "lib_playlists.json", MediaType.PLAYLIST, 19, False),
+    ],
+)
+async def test_library_listing_reports_missing_resource(
+    method_name: str,
+    fixture_name: str,
+    media_type: MediaType,
+    expected_count: int,
+    protect_exact_id: bool,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test a missing included resource does not look like a library deletion."""
+    raw = _load_raw(fixture_name)
+    broken_id = raw["data"][0]["id"]
+    raw["included"] = [
+        resource
+        for resource in raw["included"]
+        if not (resource["type"] == raw["data"][0]["type"] and resource["id"] == broken_id)
+    ]
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == media_type
+    assert skipped_id == (broken_id if protect_exact_id else None)
+    assert isinstance(err, ValueError)
+
+
+@pytest.mark.parametrize(
     ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
 )
 async def test_library_listing_fetch_failure_propagates(
@@ -244,7 +290,10 @@ async def test_library_listing_fetch_failure_propagates(
 
     with pytest.raises(ClientError):
         [item async for item in getattr(library_manager, method_name)()]
-    provider_mock.report_skipped_sync_item.assert_not_called()
+    assert all(
+        not isinstance(call.args[2], ClientError)
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+    )
 
 
 _COLLECTION_CASES = [

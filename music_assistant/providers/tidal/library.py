@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         Track,
     )
 
+    from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
 
@@ -69,20 +70,26 @@ class TidalLibraryManager:
             "userCollectionArtists/me/relationships/items", include=["items.profileArt"]
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    if (
-                        artist := _parse_or_skip(
-                            parse_artist_v2,
-                            self.provider,
-                            doc,
-                            resource,
-                            MediaType.ARTIST,
-                            resource.get("id"),
-                        )
-                    ) is None:
-                        continue
-                    _set_date_added(artist, item)
-                    yield artist
+                sync_item_id: str | None = None
+                try:
+                    sync_item_id = _resource_id(item)
+                    resource = _resolve_resource(doc, item)
+                except SKIPPABLE_ITEM_ERRORS as err:
+                    self.provider.report_skipped_sync_item(MediaType.ARTIST, sync_item_id, err)
+                    continue
+                if (
+                    artist := _parse_or_skip(
+                        parse_artist_v2,
+                        self.provider,
+                        doc,
+                        resource,
+                        MediaType.ARTIST,
+                        sync_item_id,
+                    )
+                ) is None:
+                    continue
+                _set_date_added(artist, item)
+                yield artist
 
     async def get_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums."""
@@ -92,20 +99,26 @@ class TidalLibraryManager:
             replace_media="items",
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    if (
-                        album := _parse_or_skip(
-                            parse_album_v2,
-                            self.provider,
-                            doc,
-                            resource,
-                            MediaType.ALBUM,
-                            resource.get("id"),
-                        )
-                    ) is None:
-                        continue
-                    _set_date_added(album, item)
-                    yield album
+                sync_item_id = None
+                try:
+                    sync_item_id = _resource_id(item)
+                    resource = _resolve_resource(doc, item)
+                except SKIPPABLE_ITEM_ERRORS as err:
+                    self.provider.report_skipped_sync_item(MediaType.ALBUM, sync_item_id, err)
+                    continue
+                if (
+                    album := _parse_or_skip(
+                        parse_album_v2,
+                        self.provider,
+                        doc,
+                        resource,
+                        MediaType.ALBUM,
+                        sync_item_id,
+                    )
+                ) is None:
+                    continue
+                _set_date_added(album, item)
+                yield album
 
     async def get_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks."""
@@ -115,26 +128,27 @@ class TidalLibraryManager:
             replace_media="items",
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    try:
-                        sync_item_id = _track_item_id(item, resource)
-                    except SKIPPABLE_ITEM_ERRORS as err:
-                        self.provider.report_skipped_sync_item(MediaType.TRACK, None, err)
-                        continue
-                    if (
-                        track := _parse_or_skip(
-                            parse_track_v2,
-                            self.provider,
-                            doc,
-                            resource,
-                            MediaType.TRACK,
-                            sync_item_id,
-                        )
-                    ) is None:
-                        continue
-                    _set_date_added(track, item)
-                    self.provider.note_replaced_track(item)
-                    yield track
+                sync_item_id = None
+                try:
+                    sync_item_id = _track_item_id(item)
+                    resource = _resolve_resource(doc, item)
+                except SKIPPABLE_ITEM_ERRORS as err:
+                    self.provider.report_skipped_sync_item(MediaType.TRACK, sync_item_id, err)
+                    continue
+                if (
+                    track := _parse_or_skip(
+                        parse_track_v2,
+                        self.provider,
+                        doc,
+                        resource,
+                        MediaType.TRACK,
+                        sync_item_id,
+                    )
+                ) is None:
+                    continue
+                _set_date_added(track, item)
+                self.provider.note_replaced_track(item)
+                yield track
 
     async def get_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists."""
@@ -145,25 +159,26 @@ class TidalLibraryManager:
             include=["items.coverArt", "items.owners"],
         ):
             for item in doc.data_list:
-                if resource := doc.resolve(item):
-                    try:
-                        sync_item_id = _playlist_item_id(resource)
-                    except SKIPPABLE_ITEM_ERRORS as err:
-                        self.provider.report_skipped_sync_item(MediaType.PLAYLIST, None, err)
-                        continue
-                    if (
-                        playlist := _parse_or_skip(
-                            parse_playlist_v2,
-                            self.provider,
-                            doc,
-                            resource,
-                            MediaType.PLAYLIST,
-                            sync_item_id,
-                        )
-                    ) is None:
-                        continue
-                    _set_date_added(playlist, item)
-                    yield playlist
+                sync_item_id = None
+                try:
+                    resource = _resolve_resource(doc, item)
+                    sync_item_id = _playlist_item_id(resource)
+                except SKIPPABLE_ITEM_ERRORS as err:
+                    self.provider.report_skipped_sync_item(MediaType.PLAYLIST, sync_item_id, err)
+                    continue
+                if (
+                    playlist := _parse_or_skip(
+                        parse_playlist_v2,
+                        self.provider,
+                        doc,
+                        resource,
+                        MediaType.PLAYLIST,
+                        sync_item_id,
+                    )
+                ) is None:
+                    continue
+                _set_date_added(playlist, item)
+                yield playlist
 
         # The virtual "favorite tracks" playlist is a Music Assistant construct.
         yield parse_favorite_tracks_playlist(self.provider)
@@ -248,10 +263,22 @@ def _playlist_item_id(resource: dict[str, Any]) -> str:
     return item_id
 
 
-def _track_item_id(item: dict[str, Any], resource: dict[str, Any]) -> str | None:
+def _track_item_id(item: dict[str, Any]) -> str | None:
     """Return the provider item ID that can be protected during track sync."""
     replacement = (item.get("meta") or {}).get("replacement") or {}
     if replacement.get("status") == "REPLACED":
         return None
+    return _resource_id(item)
+
+
+def _resource_id(resource: dict[str, Any]) -> str | None:
+    """Return a JSON:API resource identifier as text."""
     item_id = resource.get("id")
     return str(item_id) if item_id is not None else None
+
+
+def _resolve_resource(doc: JsonApiDocument, item: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a library linkage item to its included resource."""
+    if resource := doc.resolve(item):
+        return resource
+    raise ValueError(f"Tidal library item {_resource_id(item) or '[no id]'} has no resource")
