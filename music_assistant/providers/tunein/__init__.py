@@ -237,14 +237,19 @@ class TuneInProvider(MusicProvider):
                 elif "children" in item:
                     # stations are in sublevel (old style ?)
                     children = item["children"]
-                    if not isinstance(children, list):
+                    item_text = item.get("text")
+                    if (
+                        not isinstance(children, list)
+                        or not isinstance(item_text, str)
+                        or not item_text
+                    ):
                         self.report_skipped_sync_item(
                             MediaType.RADIO,
                             None,
-                            InvalidDataError("TuneIn preset folder contains no item list"),
+                            InvalidDataError("TuneIn preset folder contains no item list or name"),
                         )
                         continue
-                    async for subitem in parse_items(children, item["text"]):
+                    async for subitem in parse_items(children, item_text):
                         yield subitem
 
         data = await self.__get_data("Browse.ashx", c="presets")

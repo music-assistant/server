@@ -64,10 +64,20 @@ async def test_audio_preset_without_id_is_reported(provider: TuneInProvider) -> 
     assert isinstance(args[2], InvalidDataError)
 
 
-async def test_old_style_folder_without_item_list_is_reported(provider: TuneInProvider) -> None:
-    """An old-style folder without an item list must hold back radio deletions."""
+@pytest.mark.parametrize(
+    "folder",
+    [
+        {"children": None, "text": "Folder"},
+        {"children": [], "text": None},
+        {"children": []},
+    ],
+)
+async def test_malformed_old_style_folder_is_reported(
+    provider: TuneInProvider, folder: dict[str, Any]
+) -> None:
+    """A malformed old-style folder must hold back radio deletions."""
     provider._TuneInProvider__get_data = AsyncMock(  # type: ignore[attr-defined]
-        return_value={"body": [{"children": None}]}
+        return_value={"body": [folder]}
     )
     provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
 
