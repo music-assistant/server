@@ -315,7 +315,7 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             f"Clear all items from queue {queue_id!r}? This cannot be undone.",
             enabled=require_confirmation,
         )
-        await mass.player_queues.clear(queue_id)
+        mass.player_queues.clear(queue_id)
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYBACK},

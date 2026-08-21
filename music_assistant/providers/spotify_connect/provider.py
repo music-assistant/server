@@ -32,7 +32,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
     from .base import SpotifyConnectBackend
-    from .models import BackendEvent, BackendTrackMetadata
+    from .models import BackendEvent, BackendPlaybackOptions, BackendTrackMetadata
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
@@ -169,6 +169,11 @@ class SpotifyConnectProvider(PluginProvider):
         # the active device away in the Spotify app and then presses play in MA.
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
+        # Latest playback options reported by the backend. Cached on every
+        # OPTIONS_CHANGED — an externally triggered session reports them before
+        # the queue claim exists — and pushed to the queue once claimed in
+        # on_source_selected. Cleared when the session ends.
+        self._last_playback_options: BackendPlaybackOptions | None = None
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -369,6 +374,17 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_player_id = active_player_id
         self.logger.debug("Active player set to: %s", active_player_id)
 
+        # Push the options the session reported before this claim existed, so the
+        # queue mirrors the session's shuffle/repeat state from the start.
+        if self._last_playback_options is not None:
+            self.mass.streams.update_source_queue_options(
+                queue_id,
+                AUDIO_SOURCE_ID,
+                self.instance_id,
+                shuffle_enabled=self._last_playback_options.shuffle,
+                repeat_mode=self._last_playback_options.repeat,
+            )
+
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
             self._save_last_player_id(active_player_id)
@@ -435,7 +451,7 @@ class SpotifyConnectProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | bool | RepeatMode | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Proxy playback control commands to the backend."""
         if source_id != AUDIO_SOURCE_ID:
@@ -451,10 +467,18 @@ class SpotifyConnectProvider(PluginProvider):
                 await self._backend.next()
             elif action == SourceControl.PREVIOUS:
                 await self._backend.previous()
-            elif action == SourceControl.SEEK and isinstance(value, int):
-                await self._backend.seek(value * 1000)
-            elif action == SourceControl.SHUFFLE:
-                await self._backend.set_shuffle(bool(value))
+            elif (
+                action == SourceControl.SEEK
+                # tolerate float positions from internal callers; bool is an int
+                # subclass, so a misrouted toggle must not become a 1-second seek
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                await self._backend.seek(int(value) * 1000)
+            elif action == SourceControl.SHUFFLE and isinstance(value, bool):
+                # strict bool: None or a misrouted enum (bool(RepeatMode.OFF) is
+                # True) must not silently toggle shuffle
+                await self._backend.set_shuffle(value)
             elif action == SourceControl.REPEAT and isinstance(value, RepeatMode):
                 await self._backend.set_repeat(value)
         except Exception as err:
@@ -547,18 +571,13 @@ class SpotifyConnectProvider(PluginProvider):
         """
         queue_capabilities: SourceQueueCapabilities | None = None
         if self._backend.supports_queue_control:
+            # only what is consumed today is declared; the remaining declarations
+            # (queue view, enqueue/play media types, native_* flags) arrive with
+            # the queue-view mirror and the play-redirect
             queue_capabilities = SourceQueueCapabilities(
                 provider_domain="spotify",
-                # playable_media_types stays empty until the play-redirect lands
-                enqueueable_media_types=[MediaType.TRACK],
                 can_shuffle=True,
                 can_repeat=True,
-                provides_queue_view=True,
-                # provided by the Spotify engine itself: MA's own equivalents
-                # are inert while this source owns the queue
-                native_autoplay=True,
-                native_crossfade=True,
-                native_volume_normalization=True,
             )
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
@@ -755,16 +774,14 @@ class SpotifyConnectProvider(PluginProvider):
             self._handle_auth_required()
             return
 
-        # Remember the latest context/track so we can take playback back if the
-        # user moves the active device away in the Spotify app (see on_source_selected).
-        if event.context_uri:
-            self._last_context_uri = event.context_uri
-        if event.track_uri:
-            self._last_track_uri = event.track_uri
+        self._remember_context_uris(event)
 
-        if event.type in (BackendEventType.OPTIONS_CHANGED, BackendEventType.QUEUE_CHANGED):
-            # neither is a reason to re-push the (unchanged) stream metadata below
-            self._handle_queue_session_event(event)
+        if event.type is BackendEventType.QUEUE_CHANGED:
+            # queue snapshots are not consumed yet (full queue-item mirroring comes later)
+            return
+        if event.type is BackendEventType.OPTIONS_CHANGED:
+            # an options report is no reason to re-push the (unchanged) stream metadata below
+            self._handle_options_changed(event)
             return
 
         if event.type is BackendEventType.SESSION_ACTIVE:
@@ -785,6 +802,8 @@ class SpotifyConnectProvider(PluginProvider):
         elif event.type is BackendEventType.SESSION_INACTIVE:
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
+            # stale options must not outlive the session they belong to
+            self._last_playback_options = None
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
@@ -850,6 +869,21 @@ class SpotifyConnectProvider(PluginProvider):
                 self._stream_metadata,
             )
 
+    def _remember_context_uris(self, event: BackendEvent) -> None:
+        """
+        Memoize the latest context/track URIs seen on the event stream.
+
+        Used to take playback back (make MA the active Spotify device) when the user
+        switched the active device away in the Spotify app and then presses play in MA
+        (see ``on_source_selected``).
+
+        :param event: The backend event to read the URIs from.
+        """
+        if event.context_uri:
+            self._last_context_uri = event.context_uri
+        if event.track_uri:
+            self._last_track_uri = event.track_uri
+
     def _handle_auth_required(self) -> None:
         """Handle a lost Spotify login: reset session state and unload with an auth error."""
         # the backend lost its Spotify login mid-session: stop treating the
@@ -866,21 +900,24 @@ class SpotifyConnectProvider(PluginProvider):
             )
         )
 
-    def _handle_queue_session_event(self, event: BackendEvent) -> None:
+    def _handle_options_changed(self, event: BackendEvent) -> None:
         """
-        Handle a queue-session event: mirror playback options onto the consuming queue.
+        Cache the session's playback options and mirror them onto the consuming queue.
 
-        :param event: The OPTIONS_CHANGED or QUEUE_CHANGED event to handle.
+        :param event: The OPTIONS_CHANGED event to handle.
         """
-        if event.type is not BackendEventType.OPTIONS_CHANGED:
-            # queue snapshots are not consumed yet (full queue-item mirroring comes later)
+        if event.options is None:
             return
-        if not self._in_use_by_queue or event.options is None:
+        # cache regardless of claim state: an externally triggered session reports its
+        # options before the queue claim exists; on_source_selected pushes the cached
+        # value once claimed
+        self._last_playback_options = event.options
+        if not self._in_use_by_queue:
             return
         self.mass.streams.update_source_queue_options(
             self._in_use_by_queue,
             AUDIO_SOURCE_ID,
-            self,
+            self.instance_id,
             shuffle_enabled=event.options.shuffle,
             repeat_mode=event.options.repeat,
         )

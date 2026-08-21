@@ -80,7 +80,7 @@ class PlaybackMixin:
         self._updating_from_plex = True
         try:
             if self._ma_player_id:
-                await self.provider.mass.player_queues.clear(self._ma_player_id)
+                self.provider.mass.player_queues.clear(self._ma_player_id)
                 self.play_queue_id = None
                 self.play_queue_item_ids = {}
             await self._broadcast_timeline()

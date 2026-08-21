@@ -128,7 +128,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
-    from music_assistant_models.streamdetails import StreamMetadata
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -580,49 +580,20 @@ class StreamsController(CoreController):
         via ``_update_radio_stream_metadata`` but goes through a separate path.
 
         The update is rejected silently unless the queue's current item is an
-        AudioSource owned by ``provider`` with ``item_id == source_id``. This
-        guard prevents a late callback (e.g. the provider firing one more
-        metadata update after MA has already moved the queue on to a track or
-        a different AudioSource) from stamping unrelated metadata over the
-        wrong item.
+        AudioSource owned by ``provider`` with ``item_id == source_id``
+        (see ``_resolve_live_source_streamdetails``).
 
         :param queue_id: The queue whose active item should receive the update.
         :param source_id: The AudioSource.item_id emitting this metadata.
         :param provider: The provider instance id emitting this metadata.
         :param stream_metadata: The new stream metadata to attach.
         """
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
+        resolved = self._resolve_live_source_streamdetails(
+            queue_id, source_id, provider, "metadata"
+        )
+        if resolved is None:
             return
-        current_item = queue.current_item
-        if current_item is None or current_item.streamdetails is None:
-            return
-        sd = current_item.streamdetails
-        if (
-            sd.media_type != MediaType.AUDIO_SOURCE
-            or sd.provider != provider
-            or sd.item_id != source_id
-        ):
-            # Log at debug so misbehaving providers firing constantly are
-            # diagnosable (count alone is the signal) without spamming higher
-            # log levels for the legitimate transition cases.
-            self.logger.debug(
-                "Rejected metadata update for queue %s from provider %s source %s "
-                "(current item: %s)",
-                queue_id,
-                provider,
-                source_id,
-                sd.uri if sd else "none",
-            )
-            return
-        # Re-check identity *after* preparing the write so a queue advance that
-        # races with this callback can't slip in between the guard above and
-        # the mutation below. Plugins fire these from arbitrary executor /
-        # event-loop threads (AirPlay metadata reader, Spotify webservice
-        # handler, AriaCast WebSocket reader); the GIL keeps each attribute
-        # write atomic but not the read-then-write sequence.
-        if queue.current_item is not current_item or current_item.streamdetails is not sd:
-            return
+        _queue, sd = resolved
         sd.stream_metadata = stream_metadata
         sd.stream_metadata_last_updated = time.time()
         self.mass.player_queues.signal_update(queue_id)
@@ -631,7 +602,7 @@ class StreamsController(CoreController):
         self,
         queue_id: str,
         source_id: str,
-        provider: PluginProvider,
+        provider: str,
         *,
         shuffle_enabled: bool | None,
         repeat_mode: RepeatMode | None,
@@ -645,42 +616,21 @@ class StreamsController(CoreController):
         that option untouched.
 
         The update is rejected silently unless the queue's current item is an
-        AudioSource owned by ``provider`` with ``item_id == source_id`` — the
-        same guard as ``update_stream_metadata``, preventing a late callback
-        from stamping session state over an unrelated item.
+        AudioSource owned by ``provider`` with ``item_id == source_id``
+        (see ``_resolve_live_source_streamdetails``).
 
         :param queue_id: The queue whose options should receive the update.
         :param source_id: The AudioSource.item_id emitting this update.
-        :param provider: The plugin provider emitting this update.
+        :param provider: The provider instance id emitting this update.
         :param shuffle_enabled: The session's shuffle state, or None to skip.
         :param repeat_mode: The session's repeat mode, or None to skip.
         """
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
+        resolved = self._resolve_live_source_streamdetails(
+            queue_id, source_id, provider, "queue options"
+        )
+        if resolved is None:
             return
-        current_item = queue.current_item
-        if current_item is None or current_item.streamdetails is None:
-            return
-        sd = current_item.streamdetails
-        if (
-            sd.media_type != MediaType.AUDIO_SOURCE
-            or sd.provider != provider.instance_id
-            or sd.item_id != source_id
-        ):
-            self.logger.debug(
-                "Rejected queue options update for queue %s from provider %s source %s "
-                "(current item: %s)",
-                queue_id,
-                provider.instance_id,
-                source_id,
-                sd.uri if sd else "none",
-            )
-            return
-        # Re-check identity *after* preparing the write so a queue advance that
-        # races with this callback can't slip in between the guard above and
-        # the mutation below (plugins fire these from arbitrary tasks).
-        if queue.current_item is not current_item or current_item.streamdetails is not sd:
-            return
+        queue, _sd = resolved
         if repeat_mode == RepeatMode.UNKNOWN:
             # an unknown mode is not a report
             repeat_mode = None
@@ -1836,6 +1786,50 @@ class StreamsController(CoreController):
         # the single address players are handed, taken from the top of the ranked list
         self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+
+    def _resolve_live_source_streamdetails(
+        self, queue_id: str, source_id: str, provider_instance_id: str, log_noun: str
+    ) -> tuple[PlayerQueue, StreamDetails] | None:
+        """
+        Resolve the queue and streamdetails a live-source push from a plugin applies to.
+
+        Shared guard for the provider push endpoints (stream metadata and queue options):
+        the push only applies when the queue's current item is an AudioSource owned by
+        ``provider_instance_id`` with ``item_id == source_id``. Returns None otherwise,
+        so a late callback (e.g. the provider firing once more after MA already moved the
+        queue on to a track or a different AudioSource) never stamps data over an
+        unrelated item.
+
+        :param queue_id: The queue receiving the push.
+        :param source_id: The AudioSource.item_id emitting the push.
+        :param provider_instance_id: The provider instance id emitting the push.
+        :param log_noun: What is being pushed, used in the rejection debug log.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return None
+        current_item = queue.current_item
+        if current_item is None or current_item.streamdetails is None:
+            return None
+        sd = current_item.streamdetails
+        if (
+            sd.media_type != MediaType.AUDIO_SOURCE
+            or sd.provider != provider_instance_id
+            or sd.item_id != source_id
+        ):
+            # Log at debug so misbehaving providers firing constantly are
+            # diagnosable (count alone is the signal) without spamming higher
+            # log levels for the legitimate transition cases.
+            self.logger.debug(
+                "Rejected %s update for queue %s from provider %s source %s (current item: %s)",
+                log_noun,
+                queue_id,
+                provider_instance_id,
+                source_id,
+                sd.uri,
+            )
+            return None
+        return queue, sd
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

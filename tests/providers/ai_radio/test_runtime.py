@@ -1460,7 +1460,7 @@ def _show_mass_stub(**handlers: Any) -> SimpleNamespace:
             cb_func(event)
 
     player_queues = SimpleNamespace(
-        clear=handlers.get("clear", _noop_async),
+        clear=handlers.get("clear", _noop_sync),
         get=handlers.get("get", lambda _queue_id: None),
         get_active_queue=handlers.get("get_active_queue", _noop_get_active_queue),
         set_shuffle=handlers.get("set_shuffle", _noop_async),
@@ -1597,15 +1597,12 @@ async def test_run_show_loads_the_whole_show_then_plays_index_zero() -> None:
     async def _play_index(_queue_id: str, index: int) -> None:
         call_order.append(f"play_index:{index}")
 
-    async def _clear(_queue_id: str) -> None:
-        call_order.append("clear")
-
     _set_runtime_mass(
         runtime,
         _show_mass_stub(
             load=_load,
             play_index=_play_index,
-            clear=_clear,
+            clear=lambda _queue_id: call_order.append("clear"),
             set_shuffle=_recording_set_shuffle(call_order),
         ),
     )
@@ -1637,14 +1634,11 @@ async def test_run_show_targets_active_group_queue() -> None:
     async def _play_index(queue_id: str, _index: int) -> None:
         play_index_queue_ids.append(queue_id)
 
-    async def _clear(queue_id: str) -> None:
-        clear_calls.append(queue_id)
-
     _set_runtime_mass(
         runtime,
         _show_mass_stub(
             get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1"),
-            clear=_clear,
+            clear=clear_calls.append,
             load=_load,
             play_index=_play_index,
         ),

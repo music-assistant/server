@@ -207,6 +207,7 @@ def _make_provider(
     provider._last_volume_sent = last_volume_sent
     provider._last_context_uri = last_context_uri
     provider._last_track_uri = last_track_uri
+    provider._last_playback_options = None
     return provider, mass
 
 
@@ -565,6 +566,30 @@ async def test_shuffle_and_repeat_controls_dispatch_to_backend() -> None:
         ("set_shuffle", False),
         ("set_repeat", RepeatMode.ALL),
     ]
+    # the shuffle payload is passed through strictly typed, never coerced
+    assert all(type(value) is bool for name, value in backend.calls if name == "set_shuffle")
+
+
+async def test_shuffle_control_ignores_non_bool_payloads() -> None:
+    """A None (or misrouted enum) payload never silently toggles shuffle."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, None)
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, RepeatMode.OFF)
+
+    assert backend.calls == []
+
+
+async def test_seek_control_accepts_floats_but_not_bools() -> None:
+    """A float seek position still works; a bool must not become a 1-second seek."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SEEK, 42.7)  # type: ignore[arg-type]
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SEEK, True)
+
+    assert backend.calls == [("seek", 42000)]
 
 
 async def test_shuffle_control_refused_without_active_session() -> None:
@@ -593,7 +618,7 @@ async def test_options_changed_pushes_queue_options_to_the_claiming_queue() -> N
     mass.streams.update_source_queue_options.assert_called_once_with(
         "queue1",
         AUDIO_SOURCE_ID,
-        provider,
+        _INSTANCE_ID,
         shuffle_enabled=True,
         repeat_mode=RepeatMode.ALL,
     )
@@ -614,6 +639,53 @@ async def test_options_changed_without_claiming_queue_pushes_nothing() -> None:
     )
 
     mass.streams.update_source_queue_options.assert_not_called()
+    # the options are cached for the push that follows once a queue claims the source
+    assert provider._last_playback_options == BackendPlaybackOptions(
+        shuffle=True, repeat=RepeatMode.ALL
+    )
+
+
+async def test_options_cached_before_claim_are_pushed_on_claim() -> None:
+    """Options reported before the queue claim exists are pushed once the claim is set."""
+    backend = QueueControlFakeBackend()
+    provider, mass = _make_provider(backend, playing=True, session_active=True)
+    _player_with_volume(mass, 25)
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+    mass.streams.update_source_queue_options.assert_not_called()
+
+    await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
+
+    mass.streams.update_source_queue_options.assert_called_once_with(
+        "queue1",
+        AUDIO_SOURCE_ID,
+        _INSTANCE_ID,
+        shuffle_enabled=True,
+        repeat_mode=RepeatMode.ALL,
+    )
+
+
+async def test_session_inactive_clears_cached_options() -> None:
+    """Cached options do not outlive the session they were reported by."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend, session_active=True)
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+    assert provider._last_playback_options is not None
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_INACTIVE))
+
+    assert provider._last_playback_options is None
 
 
 async def test_queue_changed_event_is_ignored_for_now() -> None:
@@ -646,15 +718,16 @@ def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
     caps = source.queue_capabilities
     assert caps is not None
     assert caps.provider_domain == "spotify"
-    assert caps.enqueueable_media_types == [MediaType.TRACK]
-    # the play/enqueue redirect is not built yet
-    assert caps.playable_media_types == []
     assert caps.can_shuffle is True
     assert caps.can_repeat is True
-    assert caps.provides_queue_view is True
-    assert caps.native_autoplay is True
-    assert caps.native_crossfade is True
-    assert caps.native_volume_normalization is True
+    # the queue-view mirror and the play/enqueue redirect are not built yet,
+    # so those capabilities are not declared
+    assert caps.provides_queue_view is False
+    assert caps.playable_media_types == []
+    assert caps.enqueueable_media_types == []
+    assert caps.native_autoplay is False
+    assert caps.native_crossfade is False
+    assert caps.native_volume_normalization is False
     # account verification arrives with the play redirect
     assert source.account_id is None
 

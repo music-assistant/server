@@ -95,6 +95,7 @@ if TYPE_CHECKING:
         ConfigValueOption,
         CoreConfig,
     )
+    from music_assistant_models.media_items import SourceQueueCapabilities
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
@@ -249,14 +250,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/shuffle", required_scope=Scope.QUEUES_CONTROL)
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-        """Configure shuffle setting on the the queue."""
+        """
+        Configure shuffle setting on the the queue.
+
+        On a session-owned queue the command is forwarded to the external session
+        and may raise InvalidCommand when the session does not support shuffle.
+        """
         queue = self._queue_data[queue_id].queue
         if (delegated := self._get_delegated_source(queue_id)) is not None:
-            # the external session owns the queue: forward the command to the plugin
-            # and let the mirrored options event update the queue state
-            audio_source, provider = delegated
-            caps = audio_source.queue_capabilities
-            if caps is None or not caps.can_shuffle:
+            audio_source, caps, provider = delegated
+            if queue.shuffle_enabled == shuffle_enabled:
+                return  # no change (also damps mirror echo loops)
+            if not caps.can_shuffle:
                 raise InvalidCommand(
                     "Cannot change shuffle: the external session does not support it"
                 )
@@ -334,14 +339,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
     async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
-        """Configure repeat setting on the the queue."""
+        """
+        Configure repeat setting on the the queue.
+
+        On a session-owned queue the command is forwarded to the external session
+        and may raise InvalidCommand when the session does not support repeat.
+        """
         queue = self._queue_data[queue_id].queue
         if (delegated := self._get_delegated_source(queue_id)) is not None:
-            # the external session owns the queue: forward the command to the plugin
-            # and let the mirrored options event update the queue state
-            audio_source, provider = delegated
-            caps = audio_source.queue_capabilities
-            if caps is None or not caps.can_repeat:
+            audio_source, caps, provider = delegated
+            if queue.repeat_mode == repeat_mode:
+                return  # no change (also damps mirror echo loops)
+            if repeat_mode == RepeatMode.UNKNOWN:
+                raise InvalidCommand("Cannot set an unknown repeat mode")
+            if not caps.can_repeat:
                 raise InvalidCommand(
                     "Cannot change repeat: the external session does not support it"
                 )
@@ -546,10 +557,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - pos_shift: move item x positions up if negative value
         - pos_shift:  move item to top of queue as next item if 0.
         """
-        if self._get_delegated_source(queue_id) is not None:
-            raise InvalidCommand(
-                "Cannot move queue items while the queue is managed by the external session"
-            )
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
@@ -581,10 +588,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_id: id of the queue to process this request.
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         """
-        if self._get_delegated_source(queue_id) is not None:
-            raise InvalidCommand(
-                "Cannot move queue items while the queue is managed by the external session"
-            )
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
@@ -607,10 +610,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/delete_item", required_scope=Scope.QUEUES_CONTROL)
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
-        if self._get_delegated_source(queue_id) is not None:
-            raise InvalidCommand(
-                "Cannot delete queue items while the queue is managed by the external session"
-            )
         if isinstance(item_id_or_index, str):
             item_index = self.index_by_id(queue_id, item_id_or_index)
             if item_index is None:
@@ -628,13 +627,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.update_items(queue_id, queue_items)
 
     @api_command("player_queues/clear", required_scope=Scope.QUEUES_CONTROL)
-    async def clear(self, queue_id: str, skip_stop: bool = False) -> None:
+    def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
-        if not skip_stop and self._get_delegated_source(queue_id) is not None:
-            # a delegated queue plays a live external session: stop first so the stream
-            # teardown releases the session (on_source_unselected) before the queue is wiped
-            await self.stop(queue_id)
-            skip_stop = True
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
         # the discarded content must not carry over into whatever is played next
@@ -806,12 +800,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         if (delegated := self._get_delegated_source(queue_id)) is not None:
-            # the external session owns the queue: skip within the session
-            # instead of walking the MA queue index
-            audio_source, provider = delegated
-            if audio_source.can_next_previous:
-                await provider.on_source_control(audio_source.item_id, SourceControl.NEXT)
-                return
+            audio_source, _caps, provider = delegated
+            if not audio_source.can_next_previous:
+                raise InvalidCommand("Cannot skip: the external session does not support skipping")
+            await provider.on_source_control(audio_source.item_id, SourceControl.NEXT)
+            return
         self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
         if idx is None:
@@ -853,12 +846,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         if (delegated := self._get_delegated_source(queue_id)) is not None:
-            # the external session owns the queue: skip within the session
-            # instead of walking the MA queue index
-            audio_source, provider = delegated
-            if audio_source.can_next_previous:
-                await provider.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
-                return
+            audio_source, _caps, provider = delegated
+            if not audio_source.can_next_previous:
+                raise InvalidCommand("Cannot skip: the external session does not support skipping")
+            await provider.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
+            return
         self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
         if current_index is None:
@@ -910,14 +902,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         if (delegated := self._get_delegated_source(queue_id)) is not None:
-            # the external session owns playback: seek within the session, which does
-            # not depend on MA knowing the current item's duration
-            audio_source, provider = delegated
-            if audio_source.can_seek:
-                await provider.on_source_control(
-                    audio_source.item_id, SourceControl.SEEK, max(0, int(position))
-                )
-                return
+            audio_source, _caps, provider = delegated
+            if not audio_source.can_seek:
+                raise InvalidCommand("Cannot seek: the external session does not support seeking")
+            position = max(0, int(position))
+            await provider.on_source_control(audio_source.item_id, SourceControl.SEEK, position)
+            # publish the seek target so the progress bar does not snap back to the
+            # last position report (mirrors the non-delegated path below)
+            queue.elapsed_time = position
+            queue.elapsed_time_last_updated = time.time()
+            self.signal_update(queue_id)
+            return
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1635,10 +1630,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
         queue = queue_data.queue
-        # tell clients who owns the queue's ordering: the AudioSource uri while the
-        # current item delegates queue commands to its owning plugin, None when MA owns it
+        # tell clients who owns the queue's ordering: the AudioSource uri while
+        # delegated (see _get_delegated_source), None when MA owns it
         delegated = self._get_delegated_source(queue_id)
-        queue.queue_owner = str(delegated[0].uri) if delegated is not None else None
+        queue.queue_owner = delegated[0].uri if delegated is not None else None
+        # a mirrored shuffle write (streams controller) changes what smart shuffle
+        # resolves to, so refresh the derived flag with every signaled update
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
@@ -1945,7 +1943,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # so set_shuffle would forward to that session; record the state directly
             # (there is no shuffled tail to restore: the session is the only item)
             queue.shuffle_enabled = shuffle
-            queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
             self.signal_update(queue_id)
             return
         # routed through set_shuffle so switching shuffle off also restores the order of
@@ -1953,30 +1950,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # order behind a queue that now reads unshuffled would contradict its own flag
         await self.set_shuffle(queue_id, shuffle)
 
-    def _get_delegated_source(self, queue_id: str) -> tuple[AudioSource, PluginProvider] | None:
+    def _get_delegated_source(
+        self, queue_id: str
+    ) -> tuple[AudioSource, SourceQueueCapabilities, PluginProvider] | None:
         """
-        Return the AudioSource the queue's commands are delegated to, with its owning plugin.
+        Return the AudioSource owning the queue's commands, its capabilities and owning plugin.
 
-        Returns None when the queue's current item is not a queue-capable AudioSource
-        (one declaring ``queue_capabilities``) or when the owning plugin provider is
-        no longer available; queue commands then apply to the MA queue as usual.
+        While the queue's current item is a live (playing/paused) AudioSource declaring
+        ``queue_capabilities``, the external session owns the queue: commands are forwarded
+        to the owning plugin and the mirrored options event updates the queue state
+        afterwards. Returns None — queue commands then apply to the MA queue as usual —
+        when the current item is not such an AudioSource (a transport-only source keeps
+        queue commands with MA), when the owning plugin provider is no longer available,
+        or when the queue is IDLE: a stopped or cache-restored queue is not delegated.
 
         :param queue_id: The queue to inspect.
         """
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return None
+        # an IDLE queue holds no live session (stopped, or restored from cache after a
+        # restart), so nothing is delegated even while the session item is still current
+        if queue_data.queue.state == PlaybackState.IDLE:
+            return None
         current_item = queue_data.queue.current_item
         if current_item is None or current_item.media_item is None:
             return None
         media_item = current_item.media_item
-        # isinstance check defends against a non-AudioSource subclass that
-        # somehow has media_type=AUDIO_SOURCE set (mutated or constructed wrong)
-        # — the media_type guard alone would let it through and crash later.
         if not isinstance(media_item, AudioSource):
             return None
-        if media_item.queue_capabilities is None:
-            # transport-only source: the player layer proxies play/pause/next/seek,
-            # but queue commands stay with the MA queue
+        caps = media_item.queue_capabilities
+        if caps is None:
             return None
         provider = self.mass.get_provider(media_item.provider)
         if not isinstance(provider, PluginProvider):
@@ -1987,4 +1990,4 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # change) would leave on_source_control raising NotImplementedError.
         if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
             return None
-        return media_item, provider
+        return media_item, caps, provider

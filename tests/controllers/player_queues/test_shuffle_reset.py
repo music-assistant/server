@@ -560,14 +560,14 @@ async def test_an_explicit_shuffle_is_ignored_by_the_staging_options(option: Que
     assert _queue(ctrl).shuffle_enabled is False
 
 
-async def test_clear_command_resets_shuffle() -> None:
+def test_clear_command_resets_shuffle() -> None:
     """Clearing the queue is an explicit "start over", so the shuffle goes with the content."""
     ctrl = _controller(shuffle_enabled=True, smart_shuffle_active=True)
     ctrl._queue_data["q1"].items = [
         QueueItem.from_media_item("q1", _track(item_id)) for item_id in ALBUM_TRACKS
     ]
 
-    await ctrl.clear("q1")
+    ctrl.clear("q1")
 
     assert _queue(ctrl).shuffle_enabled is False
     assert _queue(ctrl).smart_shuffle_active is False

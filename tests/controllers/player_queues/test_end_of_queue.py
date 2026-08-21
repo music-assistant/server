@@ -105,11 +105,11 @@ def test_mark_ended_on_an_itemless_queue_clears_it() -> None:
     assert queue.current_index is None
 
 
-async def test_clear_still_empties_the_queue() -> None:
+def test_clear_still_empties_the_queue() -> None:
     """An explicit clear keeps emptying the queue, and an emptied queue is not "ended"."""
     ctrl, queue = _controller()
 
-    await ctrl.clear(QUEUE_ID)
+    ctrl.clear(QUEUE_ID)
 
     assert queue.items == 0
     assert ctrl._queue_data[QUEUE_ID].items == []

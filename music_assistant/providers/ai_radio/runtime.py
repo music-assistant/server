@@ -223,7 +223,7 @@ class AIRadioRuntimeMixin:
         # a queue runs one host at a time; the show is now that host, so any sticky
         # DJ assignment on the queue is cleared before the show takes it over
         await self.set_queue_dj(queue_id, None)
-        await self.mass.player_queues.clear(queue_id)
+        self.mass.player_queues.clear(queue_id)
         session.queue_id = queue_id
 
         # a shuffled queue reorders each batch, scattering sections away from their tracks

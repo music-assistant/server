@@ -30,6 +30,11 @@ if TYPE_CHECKING:
 # occurs in neither MA instance_ids nor Home Assistant entity_ids
 ENGINE_UID_SEPARATOR = "/"
 
+# payload accepted by ``on_source_control``: seek position (seconds) or volume level
+# for SEEK/VOLUME, the enabled state for SHUFFLE, the RepeatMode for REPEAT,
+# None for plain transport actions
+type SourceControlValue = int | bool | RepeatMode | None
+
 
 @dataclass(kw_only=True)
 class PluginEngine:
@@ -161,7 +166,7 @@ class PluginProvider(Provider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | bool | RepeatMode | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """
         Handle a playback control command for an active AudioSource.
