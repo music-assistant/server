@@ -197,6 +197,32 @@ async def test_library_playlists_hold_cleanup_when_item_type_is_unreadable(
     assert isinstance(err, AttributeError)
 
 
+async def test_library_tracks_hold_cleanup_for_unparsable_replacement(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test an unusable replacement track holds cleanup when its stored ID is ambiguous."""
+    raw = _load_raw("lib_tracks.json")
+    broken_id = raw["data"][0]["id"]
+    raw["data"][0]["meta"]["replacement"] = {
+        "status": "REPLACED",
+        "original": {"type": "tracks", "id": "stale_track_id"},
+    }
+    doc = JsonApiDocument(_break_resource(raw, broken_id))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = [item async for item in library_manager.get_tracks()]
+
+    assert len(tracks) == 19
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.TRACK
+    assert skipped_id is None
+    assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
+
+
 @pytest.mark.parametrize(
     ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
 )

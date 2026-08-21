@@ -345,7 +345,7 @@ def _parse_or_skip[ItemT](
         if sync_media_type is not None:
             provider.report_skipped_sync_item(
                 sync_media_type,
-                sync_item_id if sync_item_id is not None else resource.get("id"),
+                sync_item_id,
                 err,
             )
         else:

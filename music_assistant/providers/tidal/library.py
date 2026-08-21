@@ -10,6 +10,7 @@ from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
+from .constants import SKIPPABLE_ITEM_ERRORS
 from .parsers import parse_favorite_tracks_playlist
 from .parsers_v2 import (
     _parse_or_skip,
@@ -76,6 +77,7 @@ class TidalLibraryManager:
                             doc,
                             resource,
                             MediaType.ARTIST,
+                            resource.get("id"),
                         )
                     ) is None:
                         continue
@@ -98,6 +100,7 @@ class TidalLibraryManager:
                             doc,
                             resource,
                             MediaType.ALBUM,
+                            resource.get("id"),
                         )
                     ) is None:
                         continue
@@ -113,6 +116,11 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
+                    try:
+                        sync_item_id = _track_item_id(item, resource)
+                    except SKIPPABLE_ITEM_ERRORS as err:
+                        self.provider.report_skipped_sync_item(MediaType.TRACK, None, err)
+                        continue
                     if (
                         track := _parse_or_skip(
                             parse_track_v2,
@@ -120,6 +128,7 @@ class TidalLibraryManager:
                             doc,
                             resource,
                             MediaType.TRACK,
+                            sync_item_id,
                         )
                     ) is None:
                         continue
@@ -139,7 +148,7 @@ class TidalLibraryManager:
                 if resource := doc.resolve(item):
                     try:
                         sync_item_id = _playlist_item_id(resource)
-                    except (AttributeError, KeyError, TypeError, ValueError) as err:
+                    except SKIPPABLE_ITEM_ERRORS as err:
                         self.provider.report_skipped_sync_item(MediaType.PLAYLIST, None, err)
                         continue
                     if (
@@ -237,3 +246,12 @@ def _playlist_item_id(resource: dict[str, Any]) -> str:
     if resource.get("attributes", {}).get("playlistType") == "MIX":
         return f"mix_{item_id}"
     return item_id
+
+
+def _track_item_id(item: dict[str, Any], resource: dict[str, Any]) -> str | None:
+    """Return the provider item ID that can be protected during track sync."""
+    replacement = (item.get("meta") or {}).get("replacement") or {}
+    if replacement.get("status") == "REPLACED":
+        return None
+    item_id = resource.get("id")
+    return str(item_id) if item_id is not None else None
