@@ -6,16 +6,21 @@ import asyncio
 import logging
 import stat
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, RepeatMode, StreamType
 from music_assistant_models.errors import AudioError
 
-from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
+from music_assistant.providers.spotify_connect.models import (
+    BackendEvent,
+    BackendEventType,
+    QueueEntrySource,
+)
 from music_assistant.providers.spotify_connect.soloist import backend as soloist_backend
 from music_assistant.providers.spotify_connect.soloist.backend import (
     CACHE_SIZE_MB,
@@ -38,6 +43,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPosition,
     SoloistPositionSync,
     SoloistQueueChanged,
+    SoloistQueueEntry,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -462,10 +468,10 @@ async def test_five_daemon_failures_report_fatal_error(
         ),
         pytest.param(
             SoloistOptionsChanged(options=SoloistPlaybackOptions()),
-            BackendEventType.OTHER,
+            BackendEventType.OPTIONS_CHANGED,
             id="options_changed",
         ),
-        pytest.param(SoloistQueueChanged(), BackendEventType.OTHER, id="queue_changed"),
+        pytest.param(SoloistQueueChanged(), BackendEventType.QUEUE_CHANGED, id="queue_changed"),
         pytest.param(
             SoloistCommandResult(command="pause"), BackendEventType.OTHER, id="command_result"
         ),
@@ -616,6 +622,130 @@ async def test_position_sync_maps_to_seconds() -> None:
 
     assert events[0].type is BackendEventType.POSITION
     assert events[0].position == 45
+
+
+async def test_queue_changed_maps_entries() -> None:
+    """A queue_changed event maps its entries to normalized uid/uri/source/name entries."""
+    backend, events = _make_backend()
+    previous = [
+        SoloistQueueEntry(
+            uid="p1",
+            source="context",
+            item=SoloistEntity(
+                uri="spotify:track:t0",
+                entity_type="track",
+                decorations={"identity": {"name": "Played Song"}},
+            ),
+        ),
+    ]
+    upcoming = [
+        SoloistQueueEntry(
+            uid="u1",
+            source="queue",
+            item=SoloistEntity(
+                uri="spotify:track:t1",
+                entity_type="track",
+                decorations={"identity": {"name": "Queued Song"}},
+            ),
+        ),
+        # a name-less entry is tolerated (decorations is an extensible bag)
+        SoloistQueueEntry(
+            uid="u2",
+            source="autoplay",
+            item=SoloistEntity(uri="spotify:track:t2", entity_type="track"),
+        ),
+        # the title fallback used for track metadata applies to queue entries too
+        SoloistQueueEntry(
+            uid="u3",
+            source="new_source_kind",
+            item=SoloistEntity(
+                uri="spotify:track:t3",
+                entity_type="track",
+                decorations={"identity": {"title": "Titled Song"}},
+            ),
+        ),
+        # entries without a resolvable uri are skipped
+        SoloistQueueEntry(uid="u4", source="autoplay", item=None),
+        SoloistQueueEntry(
+            uid="u5", source="autoplay", item=SoloistEntity(uri="", entity_type="track")
+        ),
+    ]
+
+    await backend._handle_event(
+        _event("queue_changed", SoloistQueueChanged(previous=previous, upcoming=upcoming))
+    )
+
+    event = events[0]
+    assert event.type is BackendEventType.QUEUE_CHANGED
+    queue = event.queue
+    assert queue is not None
+    assert [(e.uid, e.uri, e.source, e.name) for e in queue.previous] == [
+        ("p1", "spotify:track:t0", QueueEntrySource.CONTEXT, "Played Song"),
+    ]
+    assert [(e.uid, e.uri, e.source, e.name) for e in queue.upcoming] == [
+        ("u1", "spotify:track:t1", QueueEntrySource.QUEUE, "Queued Song"),
+        ("u2", "spotify:track:t2", QueueEntrySource.AUTOPLAY, None),
+        # an unrecognized source value degrades to UNKNOWN instead of raising
+        ("u3", "spotify:track:t3", QueueEntrySource.UNKNOWN, "Titled Song"),
+    ]
+
+
+async def test_options_changed_maps_shuffle_and_repeat() -> None:
+    """An options_changed event carries the session's shuffle and repeat state."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "options_changed",
+            SoloistOptionsChanged(options=SoloistPlaybackOptions(shuffle=True, repeat="context")),
+        )
+    )
+
+    event = events[0]
+    assert event.type is BackendEventType.OPTIONS_CHANGED
+    assert event.options is not None
+    assert event.options.shuffle is True
+    assert event.options.repeat is RepeatMode.ALL
+
+
+async def test_playback_state_options_emit_options_changed_precursor() -> None:
+    """A playback_state carrying options emits OPTIONS_CHANGED before the state event."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "playback_state",
+            SoloistPlaybackState(
+                status="playing", options=SoloistPlaybackOptions(shuffle=True, repeat="track")
+            ),
+        )
+    )
+
+    assert [e.type for e in events] == [
+        BackendEventType.OPTIONS_CHANGED,
+        BackendEventType.PLAYING,
+    ]
+    options = events[0].options
+    assert options is not None
+    assert options.shuffle is True
+    assert options.repeat is RepeatMode.ONE
+    # the state event itself carries no options; OPTIONS_CHANGED is the one channel
+    assert events[1].options is None
+
+
+async def test_unknown_repeat_vocabulary_degrades_to_unknown() -> None:
+    """An unrecognized repeat value from the wire maps to RepeatMode.UNKNOWN."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "options_changed",
+            SoloistOptionsChanged(options=SoloistPlaybackOptions(repeat="context_repeat")),
+        )
+    )
+
+    assert events[0].options is not None
+    assert events[0].options.repeat is RepeatMode.UNKNOWN
 
 
 async def test_uri_cache_feeds_all_events() -> None:
@@ -1117,6 +1247,83 @@ async def test_transport_commands_map_to_client() -> None:
     client.deactivate.assert_awaited_once_with()
     call_names = [name for name, _args, _kwargs in client.mock_calls]
     assert call_names.index("pause") < call_names.index("deactivate")
+
+
+async def test_queue_commands_map_to_client() -> None:
+    """The queue-session verbs pass through to the SoloistClient."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    assert backend.supports_queue_control is True
+
+    await backend.add_to_queue("spotify:track:t1")
+    client.add_to_queue.assert_awaited_once_with("spotify:track:t1")
+
+    await backend.set_shuffle(True)
+    client.set_shuffle.assert_awaited_once_with(True)
+
+    # the queue snapshot arrives as a queue_changed event, no ack is awaited
+    await backend.request_queue(limit=25)
+    client.get_queue.assert_awaited_once_with(25)
+
+
+@pytest.mark.parametrize(
+    ("repeat", "expected_calls"),
+    [
+        (RepeatMode.OFF, [("set_repeat_track", False), ("set_repeat_context", False)]),
+        (RepeatMode.ALL, [("set_repeat_track", False), ("set_repeat_context", True)]),
+        (RepeatMode.ONE, [("set_repeat_context", False), ("set_repeat_track", True)]),
+    ],
+)
+async def test_set_repeat_sequences_the_two_flags(
+    repeat: RepeatMode, expected_calls: list[tuple[str, bool]]
+) -> None:
+    """set_repeat disables one repeat flag before enabling the other, awaiting each ack."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    await backend.set_repeat(repeat)
+
+    assert [(name, args[0]) for name, args, _kwargs in client.mock_calls] == expected_calls
+    # each command waits for its ack so the pair cannot race
+    assert all(kwargs == {"await_result": True} for _name, _args, kwargs in client.mock_calls)
+
+
+async def test_set_repeat_rejects_unknown() -> None:
+    """set_repeat refuses RepeatMode.UNKNOWN instead of silently disabling repeat."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    with pytest.raises(ValueError, match="unknown repeat mode"):
+        await backend.set_repeat(RepeatMode.UNKNOWN)
+    assert client.mock_calls == []
+
+
+async def test_set_repeat_serializes_concurrent_calls() -> None:
+    """Concurrent set_repeat calls cannot interleave their two-command sequences."""
+    backend, _events = _make_backend()
+    call_order: list[tuple[str, bool]] = []
+
+    async def record(name: str, enabled: bool, **_kwargs: Any) -> None:
+        call_order.append((name, enabled))
+        await asyncio.sleep(0)  # yield so an unserialized second call could interleave
+
+    client = AsyncMock()
+    client.set_repeat_track.side_effect = partial(record, "set_repeat_track")
+    client.set_repeat_context.side_effect = partial(record, "set_repeat_context")
+    backend._client = client
+
+    await asyncio.gather(backend.set_repeat(RepeatMode.ALL), backend.set_repeat(RepeatMode.ONE))
+
+    assert call_order == [
+        ("set_repeat_track", False),
+        ("set_repeat_context", True),
+        ("set_repeat_context", False),
+        ("set_repeat_track", True),
+    ]
 
 
 async def test_player_only_pins_spotify_volume_and_suppresses_events() -> None:
