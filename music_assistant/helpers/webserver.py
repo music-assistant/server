@@ -163,13 +163,18 @@ class Webserver:
             )
             await self._ingress_tcp_site.start()
 
-    async def close(self) -> None:
-        """Cleanup on exit."""
-        # stop/clean webserver
+    async def stop_accepting_connections(self) -> None:
+        """Stop accepting new connections."""
         if self._tcp_site:
             await self._tcp_site.stop()
+            self._tcp_site = None
         if self._ingress_tcp_site:
             await self._ingress_tcp_site.stop()
+            self._ingress_tcp_site = None
+
+    async def close(self) -> None:
+        """Cleanup on exit."""
+        await self.stop_accepting_connections()
         if self._apprunner:
             await self._apprunner.cleanup()
         if self._webapp:

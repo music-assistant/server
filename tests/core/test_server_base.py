@@ -3,9 +3,11 @@
 import asyncio
 import logging
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import EventType
+from music_assistant_models.enums import CoreState, EventType
 
+import music_assistant.mass as mass_module
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.mass import MusicAssistant
 
@@ -30,6 +32,56 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
         )
     )
     assert domains.issuperset(core_providers)
+
+
+async def test_stop_bounds_provider_unload_after_stopping_webserver(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stuck provider cannot keep the server listening or block shutdown."""
+    mass = object.__new__(MusicAssistant)
+    mass._state = CoreState.RUNNING
+    mass._tracked_tasks = {}
+    mass._http_session = None
+    mass._http_session_no_ssl = None
+
+    provider = MagicMock()
+    provider.name = "Stuck provider"
+    mass._providers = {"stuck--instance": provider}
+
+    order: list[str] = []
+    webserver = MagicMock()
+    webserver.stop_accepting_connections = AsyncMock(
+        side_effect=lambda: order.append("listeners_stopped")
+    )
+    webserver.close = AsyncMock(side_effect=lambda: order.append("webserver_closed"))
+    mass.webserver = webserver
+
+    def set_state(state: CoreState) -> None:
+        mass._state = state
+
+    async def unload_provider(_instance_id: str) -> None:
+        order.append("provider_unload_started")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            order.append("provider_unload_cancelled")
+
+    monkeypatch.setattr(mass, "_set_state", set_state)
+    monkeypatch.setattr(mass, "unload_provider", unload_provider)
+    monkeypatch.setattr(mass_module, "PROVIDER_SHUTDOWN_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.WARNING, logger=MASS_LOGGER_NAME):
+        await asyncio.wait_for(mass.stop(), timeout=1)
+
+    assert order == [
+        "listeners_stopped",
+        "provider_unload_started",
+        "provider_unload_cancelled",
+        "webserver_closed",
+    ]
+    assert mass.state == CoreState.STOPPED
+    assert "Stuck provider (stuck--instance) did not unload" in caplog.text
 
 
 async def test_events(mass: MusicAssistant) -> None:

@@ -399,6 +399,10 @@ class WebserverController(CoreController):
         # Setup remote access after webserver is running
         await self.remote_access.setup()
 
+    async def stop_accepting_connections(self) -> None:
+        """Stop accepting new webserver connections."""
+        await self._server.stop_accepting_connections()
+
     async def close(self) -> None:
         """Cleanup on exit."""
         await self.remote_access.close()

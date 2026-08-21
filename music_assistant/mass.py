@@ -117,6 +117,9 @@ PROVIDER_SETUP_TIMEOUT = 120
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
 PROVIDER_LOAD_CONCURRENCY = 8
+# Provider teardown may involve third-party network clients or subprocesses. Keep shutdown
+# bounded without changing the timeout behavior of normal provider reloads and removals.
+PROVIDER_SHUTDOWN_TIMEOUT = 30
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -333,12 +336,36 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
+        # stop accepting new API/frontend connections before provider teardown starts
+        if webserver := getattr(self, "webserver", None):
+            try:
+                await webserver.stop_accepting_connections()
+            except Exception:
+                LOGGER.exception("Error while stopping the webserver listeners")
         # cancel all running tasks
         for task in list(self._tracked_tasks.values()):
             task.cancel()
-        # cleanup all providers
+
+        async def unload_provider_bounded(instance_id: str) -> None:
+            provider = self._providers.get(instance_id)
+            provider_name = provider.name if provider else instance_id
+            timeout: asyncio.Timeout | None = None
+            try:
+                async with asyncio.timeout(PROVIDER_SHUTDOWN_TIMEOUT) as timeout:
+                    await self.unload_provider(instance_id)
+            except TimeoutError:
+                if timeout is None or not timeout.expired():
+                    raise
+                LOGGER.warning(
+                    "Provider %s (%s) did not unload within %s seconds; continuing shutdown",
+                    provider_name,
+                    instance_id,
+                    PROVIDER_SHUTDOWN_TIMEOUT,
+                )
+
+        # cleanup all providers concurrently, without allowing one to block shutdown
         await asyncio.gather(
-            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+            *[unload_provider_bounded(prov_id) for prov_id in list(self._providers.keys())],
             return_exceptions=True,
         )
         # stop core controllers, cache and config last because the others rely on them.

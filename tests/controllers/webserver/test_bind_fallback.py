@@ -96,6 +96,27 @@ async def test_wildcard_bind_ip_is_reported_as_all_interfaces(server: Webserver)
     assert server.bind_ip is None
 
 
+async def test_stop_accepting_connections_releases_listener(server: Webserver) -> None:
+    """Stopping listeners refuses new connections while allowing later cleanup."""
+    await server.setup(bind_ip="127.0.0.1", bind_port=0)
+    port = server.port
+    assert port is not None
+
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(f"http://127.0.0.1:{port}/info") as response,
+    ):
+        assert response.status == 404
+
+    await server.stop_accepting_connections()
+    await server.stop_accepting_connections()
+
+    timeout = aiohttp.ClientTimeout(total=1)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        with pytest.raises(aiohttp.ClientConnectorError):
+            await session.get(f"http://127.0.0.1:{port}/info")
+
+
 def test_fallback_publishes_only_dialable_addresses(controller: WebserverController) -> None:
     """After a fallback, the un-bindable address is neither advertised nor dialed."""
     # what setup() resolves from the configured address, before the bind is attempted
