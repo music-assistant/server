@@ -241,7 +241,10 @@ class AsyncProcess:
 
     async def read_stdout(self) -> bytes:
         """Read line from stdout."""
-        if self.returncode is not None:
+        # keyed on the close flag rather than the returncode (like read() and
+        # readexactly()): a process that already exited still has its last
+        # lines sitting in the stream buffer, and those must still be readable
+        if self._close_called:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stdout is not None  # for type checking

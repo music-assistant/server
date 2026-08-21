@@ -1128,6 +1128,42 @@ async def test_daemon_runner_does_not_wait_for_the_log_reader(
     assert proc.closed == 1
 
 
+async def test_daemon_runner_drains_buffered_log_after_exit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Output still buffered when the daemon exits is logged, not dropped.
+
+    A daemon that fails at startup writes its reason and exits within
+    milliseconds, so dropping the reader the moment the process ends throws
+    away exactly the output that explains the failure.
+    """
+
+    class _BufferedProc(_FakeProc):
+        """A daemon that has already exited with its output still queued."""
+
+        async def wait(self) -> int:
+            return self._exit_code
+
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            for line in self._stdout_lines:
+                await asyncio.sleep(0)  # the reader cannot drain it all in one step
+                yield line
+
+    backend, _events = _runner_backend()
+    proc = _BufferedProc(
+        stdout_lines=[f"buffered line {index}" for index in range(20)],
+        on_close=lambda: setattr(backend, "_stop_called", True),
+    )
+    _patch_spawn(monkeypatch, [proc])
+
+    with caplog.at_level(logging.DEBUG):
+        await backend._daemon_runner()
+
+    logged = [record.getMessage() for record in caplog.records]
+    assert sum("buffered line" in message for message in logged) == 20
+
+
 async def test_intentional_respawn_skips_failure_accounting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

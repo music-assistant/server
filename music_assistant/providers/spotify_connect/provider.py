@@ -82,6 +82,7 @@ AUDIO_QUALITY_OPTIONS: Final = [
     ConfigValueOption(AUDIO_QUALITY_VERY_HIGH),
     ConfigValueOption(AUDIO_QUALITY_LOSSLESS),
 ]
+AUDIO_QUALITY_VALUES: Final = {option.value for option in AUDIO_QUALITY_OPTIONS}
 
 # The selectable volume modes (labels resolve from strings.json), shared
 # between the runtime option and the setup flow.
@@ -607,8 +608,8 @@ class SpotifyConnectProvider(PluginProvider):
     def _resolve_audio_quality(self) -> str:
         """Return the configured streaming quality tier."""
         value = self.config.get_value(CONF_AUDIO_QUALITY)
-        if value in (AUDIO_QUALITY_NORMAL, AUDIO_QUALITY_HIGH, AUDIO_QUALITY_VERY_HIGH):
-            return value
+        if value in AUDIO_QUALITY_VALUES:
+            return cast("str", value)
         return AUDIO_QUALITY_LOSSLESS
 
     def _not_active_error(self) -> AudioError:

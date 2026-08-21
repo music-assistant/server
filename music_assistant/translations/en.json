@@ -2321,7 +2321,7 @@
   "provider.spotify_connect.config_entries.audio_quality.description": "The highest quality Spotify is asked to stream. This is a ceiling, not a promise: Spotify still picks something lower when the connection is slow, when a track has no file at this quality, or when your account does not include it. Lossless needs a Spotify plan that offers it, and is only available on the Spotify Soloist engine - go-librespot streams 320 kbps at most.",
   "provider.spotify_connect.config_entries.audio_quality.label": "Streaming quality",
   "provider.spotify_connect.config_entries.audio_quality.options.high": "High (about 160 kbps)",
-  "provider.spotify_connect.config_entries.audio_quality.options.lossless": "Lossless (default)",
+  "provider.spotify_connect.config_entries.audio_quality.options.lossless": "Lossless (Spotify Soloist engine only)",
   "provider.spotify_connect.config_entries.audio_quality.options.normal": "Normal (about 96 kbps)",
   "provider.spotify_connect.config_entries.audio_quality.options.very_high": "Very high (about 320 kbps)",
   "provider.spotify_connect.config_entries.backend.label": "Playback engine",

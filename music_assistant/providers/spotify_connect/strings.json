@@ -50,7 +50,7 @@
         "normal": "Normal (about 96 kbps)",
         "high": "High (about 160 kbps)",
         "very_high": "Very high (about 320 kbps)",
-        "lossless": "Lossless (default)"
+        "lossless": "Lossless (Spotify Soloist engine only)"
       }
     }
   },

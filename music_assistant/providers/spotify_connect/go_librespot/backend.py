@@ -69,7 +69,7 @@ API_PORT_RANGE_END = 38900
 # Quality tier -> go-librespot's `bitrate` setting, which only accepts these
 # three values. go-librespot cannot do lossless, so that tier gets the 320 kbps
 # ceiling rather than nothing.
-_MAX_BITRATE = 320
+_MAX_BITRATE: Final = 320
 _BITRATES: Final[dict[str, int]] = {
     AUDIO_QUALITY_NORMAL: 96,
     AUDIO_QUALITY_HIGH: 160,

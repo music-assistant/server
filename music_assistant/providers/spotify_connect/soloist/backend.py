@@ -90,6 +90,10 @@ CACHE_SIZE_MB: Final = 512
 MAX_RESTART_ATTEMPTS: Final = 5
 RESTART_DELAY_S: Final = 2
 
+# How long the daemon's log reader may keep draining buffered output after the
+# process itself exited.
+DAEMON_LOG_DRAIN_TIMEOUT_S: Final = 5
+
 # Proactive binary refresh interval: soloist builds expire 90 days after their
 # build date, so a daily check swaps in a fresh build long before a long-lived
 # instance would hit the expiry.
@@ -696,6 +700,11 @@ class SoloistBackend(SpotifyConnectBackend):
                 try:
                     await proc.wait()
                 finally:
+                    # an exited daemon still has its last (often most telling)
+                    # lines in the stream buffer, so give the reader a moment
+                    # to drain them before dropping it
+                    with suppress(TimeoutError, asyncio.CancelledError):
+                        await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
                     log_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await log_task
@@ -746,11 +755,21 @@ class SoloistBackend(SpotifyConnectBackend):
 
         :param proc: The running daemon process.
         """
-        async for line in proc.iter_stdout():
-            # the third-party binary's own output may echo argv (which carries
-            # the api key), so redact it before logging
-            text = line.replace(self._api_key, "<redacted>") if self._api_key else line
-            self.logger.debug("[%s] %s", self.name, text)
+        try:
+            async for line in proc.iter_stdout():
+                # the third-party binary's own output may echo argv (which carries
+                # the api key), so redact it before logging
+                text = line.replace(self._api_key, "<redacted>") if self._api_key else line
+                self.logger.debug("[%s] %s", self.name, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The daemon writes into a pipe that only this reader drains, and a
+            # full pipe blocks it forever. Close it so the supervisor respawns
+            # rather than waiting on a daemon that can no longer make progress.
+            self.logger.exception("Error while reading the soloist daemon log [%s]", self.name)
+            with suppress(Exception):
+                await proc.close()
 
     async def _reset_volume_state(self, sink: PipeSink) -> None:
         """
