@@ -182,8 +182,8 @@ class MyDemoPluginprovider(PluginProvider):
         # "Live Inputs" browse node and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
-        # surfaces and which commands the player controller proxies through
-        # to on_source_control.
+        # surfaces and which commands the server proxies through to
+        # on_source_control.
         #
         # Most plugins expose a single source; for those, build it once in
         # __init__ and return the cached instance here. Plugins that expose

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -536,6 +537,68 @@ class TestGetActiveAudioSource:
         # Don't dispatch on_source_control / on_volume_change to a provider
         # that didn't opt in to the feature.
         assert controller._get_active_audio_source(player) is None
+
+
+# ------------------------------------------------------------ transport redirect
+
+
+class TestTransportCommandsRedirectToQueue:
+    """
+    players/cmd next/previous/seek always hand off to the queue controller.
+
+    The queue controller owns AudioSource transport delegation (gated on the
+    per-action capability flags), so the player layer carries no proxy of its
+    own — the redirect below is what routes an active AudioSource to its plugin.
+    """
+
+    def _wire_active_queue(self, mock_mass: MagicMock) -> None:
+        """Point the mocked queue registry at the player's own (active) queue."""
+        mock_mass.player_queues.get = MagicMock(return_value=SimpleNamespace(queue_id="player_1"))
+
+    @pytest.mark.asyncio
+    async def test_cmd_next_redirects_to_the_queue_controller(
+        self,
+        controller: PlayerController,
+        player: MockPlayer,
+        mock_mass: MagicMock,
+    ) -> None:
+        """players/cmd/next reaches player_queues.next for the active queue."""
+        self._wire_active_queue(mock_mass)
+        mock_mass.player_queues.next = AsyncMock()
+
+        await controller.cmd_next_track("player_1")
+
+        mock_mass.player_queues.next.assert_awaited_once_with("player_1")
+
+    @pytest.mark.asyncio
+    async def test_cmd_previous_redirects_to_the_queue_controller(
+        self,
+        controller: PlayerController,
+        player: MockPlayer,
+        mock_mass: MagicMock,
+    ) -> None:
+        """players/cmd/previous reaches player_queues.previous for the active queue."""
+        self._wire_active_queue(mock_mass)
+        mock_mass.player_queues.previous = AsyncMock()
+
+        await controller.cmd_previous_track("player_1")
+
+        mock_mass.player_queues.previous.assert_awaited_once_with("player_1")
+
+    @pytest.mark.asyncio
+    async def test_cmd_seek_redirects_to_the_queue_controller(
+        self,
+        controller: PlayerController,
+        player: MockPlayer,
+        mock_mass: MagicMock,
+    ) -> None:
+        """players/cmd/seek reaches player_queues.seek for the active queue."""
+        self._wire_active_queue(mock_mass)
+        mock_mass.player_queues.seek = AsyncMock()
+
+        await controller.cmd_seek("player_1", 42)
+
+        mock_mass.player_queues.seek.assert_awaited_once_with("player_1", 42)
 
 
 # ------------------------------------------------------------- update_stream_metadata
