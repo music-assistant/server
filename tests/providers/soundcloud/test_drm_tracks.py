@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.models.music_provider import SyncRunState
 from music_assistant.providers.soundcloud import (
@@ -75,7 +75,7 @@ async def test_parse_track_rejects_drm_track(provider: SoundcloudMusicProvider) 
     """Parsing a DRM protected track raises an error the listing paths already skip."""
     with pytest.raises(DrmProtectedTrackError):
         await provider._parse_track(_track_obj(1, "Danceteria", DRM_TRANSCODINGS))
-    assert issubclass(DrmProtectedTrackError, InvalidDataError)
+    assert issubclass(DrmProtectedTrackError, MediaNotFoundError)
 
 
 async def test_parse_track_accepts_plain_track(provider: SoundcloudMusicProvider) -> None:
