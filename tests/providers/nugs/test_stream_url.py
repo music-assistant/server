@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import ProviderPermissionDenied
+from music_assistant_models.errors import AudioError
 
 from music_assistant.providers.nugs import NugsProvider
 
@@ -68,8 +68,8 @@ async def test_stream_url_falls_back_to_promo_plan(provider: NugsProvider) -> No
 
 @pytest.mark.asyncio
 async def test_stream_url_without_any_plan_raises(provider: NugsProvider) -> None:
-    """Without a regular or promo plan a clear permission error is raised."""
+    """Without a regular or promo plan a clear audio error is raised."""
     _stub_get_data(provider, {**SUBSCRIPTION_BASE, "plan": None, "promo": None})
 
-    with pytest.raises(ProviderPermissionDenied):
+    with pytest.raises(AudioError):
         await provider._get_stream_url("123")

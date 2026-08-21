@@ -16,10 +16,10 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    ProviderPermissionDenied,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -430,7 +430,7 @@ class NugsProvider(MusicProvider):
         plan = subscription_info.get("plan") or (subscription_info.get("promo") or {}).get("plan")
         if not plan:
             msg = "No active nugs.net subscription found for this account"
-            raise ProviderPermissionDenied(msg)
+            raise AudioError(msg)
         dt_start = datetime.strptime(subscription_info["startedAt"], "%m/%d/%Y %H:%M:%S").replace(
             tzinfo=UTC
         )
