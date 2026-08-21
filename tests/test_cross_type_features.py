@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    MediaType,
+    ProviderFeature,
+    ProviderSearchStatus,
+    ProviderType,
+)
 from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
 
 from music_assistant.controllers.music import MusicController
@@ -231,7 +236,9 @@ async def test_global_search_includes_plugin_providers_with_search() -> None:
     controller.domain = "music"
     controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
-    controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SearchResults(), ProviderSearchStatus.COMPLETE)
+    )
 
     with patch(
         "music_assistant.controllers.music.controller.sort_search_result",

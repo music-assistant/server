@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     ProviderFeature,
+    ProviderSearchStatus,
     ProviderType,
     TaskStatus,
 )
@@ -503,66 +504,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         results_per_provider: list[SearchResults] = []
         if include_library:
             results_per_provider.append(library_results)
-        all_results_complete = True
+        provider_search_statuses: dict[str, ProviderSearchStatus] = {}
+        if include_library:
+            provider_search_statuses["library"] = ProviderSearchStatus.COMPLETE
         if search_providers:
-            # create a set of all provider item ids already in library
-            # this way we can avoid returning duplicates in the search results
-            all_prov_item_ids = {
-                (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
-                for items in (
-                    library_results.artists,
-                    library_results.albums,
-                    library_results.tracks,
-                    library_results.playlists,
-                    library_results.audiobooks,
-                    library_results.podcasts,
-                )
-                for item in items
-                for prov_mapping in cast("MediaItemType", item).provider_mappings
-            }
-            # only apply the exact match shortcut on a regular global search;
-            # an explicit providers selection must always search those providers
-            covered_media_types = (
-                self._get_covered_media_types(library_results, search_query)
-                if providers is None
-                else set()
+            # include results from all (unique) music providers; one failing or
+            # timed out provider must not break the entire search, its status is
+            # tracked instead so the caller can see which providers contributed
+            provider_results, search_statuses = await self._search_providers(
+                search_query, search_providers, media_types, limit, library_results, providers
             )
-            provider_searches: list[Coroutine[Any, Any, SearchResults | None]] = []
-            for provider_instance in search_providers:
-                if not (prov := self.mass.get_provider(provider_instance)):
-                    continue
-                # skip media types for which the library already holds a (near)
-                # exact match that is mapped to this provider: searching the
-                # provider again for that media type will not add anything new
-                prov_media_types = [
-                    mt
-                    for mt in media_types
-                    if (mt, prov.domain) not in covered_media_types
-                    and (mt, prov.instance_id) not in covered_media_types
-                ]
-                if not prov_media_types:
-                    continue
-                provider_searches.append(
-                    self._search_provider(
-                        search_query,
-                        provider_instance,
-                        prov_media_types,
-                        limit=limit,
-                        skip_item_ids=all_prov_item_ids,
-                    )
-                )
-            # include results from all (unique) music providers
-            # one failing provider must not break the entire search,
-            # so exceptions are logged and excluded from the results
-            gather_results = await asyncio.gather(*provider_searches, return_exceptions=True)
-            for res in gather_results:
-                if isinstance(res, SearchResults):
-                    results_per_provider.append(res)
-                    continue
-                # a provider that failed or timed out contributes no results
-                all_results_complete = False
-                if isinstance(res, BaseException):
-                    self.logger.error("Search on provider failed", exc_info=res)
+            results_per_provider.extend(provider_results)
+            provider_search_statuses.update(search_statuses)
+        # a combined result is only ever cached below when every searched
+        # provider completed, so cached combined payloads never carry a
+        # non-COMPLETE status
+        all_results_complete = all(
+            status is ProviderSearchStatus.COMPLETE for status in provider_search_statuses.values()
+        )
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         result = SearchResults(
@@ -620,6 +579,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for item in sublist
                 if item is not None
             ][:limit],
+            provider_search_statuses=provider_search_statuses,
         )
 
         # the search results should already be sorted by relevance
@@ -2403,6 +2363,100 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
         ]
 
+    async def _search_providers(
+        self,
+        search_query: str,
+        search_providers: list[str],
+        media_types: list[MediaType],
+        limit: int,
+        library_results: SearchResults,
+        providers: list[str] | None,
+    ) -> tuple[list[SearchResults], dict[str, ProviderSearchStatus]]:
+        """
+        Search all given providers concurrently and collect their results and status.
+
+        :param search_query: Search query.
+        :param search_providers: instance_ids of the providers to search.
+        :param media_types: A list of media_types to include.
+        :param limit: number of items to return in the search (per type).
+        :param library_results: Library search results, used to deduplicate provider
+                                results and to apply the covered-media-types shortcut.
+        :param providers: The original ``providers`` argument passed to ``search()``,
+                          used to decide whether the covered-media-types shortcut applies.
+        :return: A tuple of the results contributed by the searched providers and a
+                 dict with the search status per provider instance_id.
+        """
+        # create a set of all provider item ids already in library
+        # this way we can avoid returning duplicates in the search results
+        all_prov_item_ids = {
+            (item.media_type, prov_mapping.provider_domain, prov_mapping.item_id)
+            for items in (
+                library_results.artists,
+                library_results.albums,
+                library_results.tracks,
+                library_results.playlists,
+                library_results.audiobooks,
+                library_results.podcasts,
+            )
+            for item in items
+            for prov_mapping in cast("MediaItemType", item).provider_mappings
+        }
+        # only apply the exact match shortcut on a regular global search;
+        # an explicit providers selection must always search those providers
+        covered_media_types = (
+            self._get_covered_media_types(library_results, search_query)
+            if providers is None
+            else set()
+        )
+        provider_searches: list[
+            Coroutine[Any, Any, tuple[SearchResults | None, ProviderSearchStatus]]
+        ] = []
+        provider_search_instance_ids: list[str] = []
+        provider_search_statuses: dict[str, ProviderSearchStatus] = {}
+        for provider_instance in search_providers:
+            if not (prov := self.mass.get_provider(provider_instance)):
+                continue
+            # skip media types for which the library already holds a (near)
+            # exact match that is mapped to this provider: searching the
+            # provider again for that media type will not add anything new
+            prov_media_types = [
+                mt
+                for mt in media_types
+                if (mt, prov.domain) not in covered_media_types
+                and (mt, prov.instance_id) not in covered_media_types
+            ]
+            if not prov_media_types:
+                # entirely covered by the library exact-match shortcut,
+                # so this provider is deliberately not searched
+                provider_search_statuses[provider_instance] = ProviderSearchStatus.COMPLETE
+                continue
+            provider_searches.append(
+                self._search_provider(
+                    search_query,
+                    provider_instance,
+                    prov_media_types,
+                    limit=limit,
+                    skip_item_ids=all_prov_item_ids,
+                )
+            )
+            provider_search_instance_ids.append(provider_instance)
+        # a failing or timed out provider must not break the entire search,
+        # so exceptions are logged and excluded from the results
+        gather_results = await asyncio.gather(*provider_searches, return_exceptions=True)
+        results: list[SearchResults] = []
+        for provider_instance, res in zip(
+            provider_search_instance_ids, gather_results, strict=True
+        ):
+            if isinstance(res, BaseException):
+                self.logger.error("Search on provider failed", exc_info=res)
+                provider_search_statuses[provider_instance] = ProviderSearchStatus.FAILED
+                continue
+            prov_results, status = res
+            provider_search_statuses[provider_instance] = status
+            if prov_results is not None:
+                results.append(prov_results)
+        return results, provider_search_statuses
+
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
         Handle a search query that is a streaming provider public shareable URL.
@@ -2450,9 +2504,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
-    ) -> SearchResults | None:
+    ) -> tuple[SearchResults | None, ProviderSearchStatus]:
         """
-        Perform search on given provider, returns None if the search failed or timed out.
+        Perform search on given provider.
 
         :param search_query: Search query
         :param provider_instance_id_or_domain: instance_id or domain of the provider
@@ -2461,12 +2515,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param limit: number of items to return in the search (per type).
         :param skip_item_ids: Optional set of (media_type, provider_domain, item_id)
                               tuples to filter out of the results.
+        :return: A tuple of the search results (None if the search failed or timed
+                 out) and the status of the provider's contribution to the search.
         """
         prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
         if not prov:
-            return SearchResults()
+            return SearchResults(), ProviderSearchStatus.COMPLETE
         if ProviderFeature.SEARCH not in prov.supported_features:
-            return SearchResults()
+            return SearchResults(), ProviderSearchStatus.COMPLETE
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
@@ -2481,7 +2537,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 base_class=SearchResults,
             )
         ) is not None:
-            return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
+            filtered = filter_search_results(
+                cast("SearchResults", cache), prov.domain, skip_item_ids
+            )
+            return filtered, ProviderSearchStatus.COMPLETE
         # run the provider search as a separate task (deduplicated by task_id so
         # identical concurrent searches share a single provider call) and wait for
         # it a limited amount of time only: a slow provider then contributes no
@@ -2500,10 +2559,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "the search continues in the background",
                 prov.name,
             )
-            return None
+            return None, ProviderSearchStatus.TIMEOUT
         if prov_search_results is None:
-            return None
-        return filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+            return None, ProviderSearchStatus.FAILED
+        filtered = filter_search_results(prov_search_results, prov.domain, skip_item_ids)
+        return filtered, ProviderSearchStatus.COMPLETE
 
     async def _execute_provider_search(
         self,
