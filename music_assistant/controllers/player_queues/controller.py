@@ -501,10 +501,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        # what is playing now may not survive what is being started; remembered here so the
+        # owning plugin can be told once we know whether it did
+        outgoing_item = self._queue_data[queue_id].queue.current_item
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning, shuffle
         )
+        self._notify_audio_source_replaced(queue_id, outgoing_item)
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -1847,6 +1851,30 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
         if (owner := self._audio_source_plugin(queue_data.queue.current_item)) is None:
+            return
+        prov, source_id = owner
+        self.mass.create_task(prov.on_source_removed(source_id, queue_id))
+
+    def _notify_audio_source_replaced(self, queue_id: str, outgoing_item: QueueItem | None) -> None:
+        """
+        Tell the owning plugin when the media just started pushed its AudioSource out of the queue.
+
+        Starting the very same source again (a replace re-selects it) and options that keep the
+        source among the queue's items both leave it in place, and neither releases it.
+
+        :param queue_id: The queue the media was started on.
+        :param outgoing_item: The queue's current item from before the media was started.
+        """
+        if outgoing_item is None or (media_item := outgoing_item.media_item) is None:
+            return
+        if (owner := self._audio_source_plugin(outgoing_item)) is None:
+            return
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            return
+        if any(
+            item.media_item is not None and item.media_item.uri == media_item.uri
+            for item in queue_data.items
+        ):
             return
         prov, source_id = owner
         self.mass.create_task(prov.on_source_removed(source_id, queue_id))

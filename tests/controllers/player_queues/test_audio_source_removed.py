@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, QueueOption
 from music_assistant_models.media_items import AudioSource, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -192,3 +192,59 @@ async def test_a_plugin_raising_does_not_break_the_transfer() -> None:
     # reaching this at all means the raise was contained; the queue still changed hands
     provider.on_source_transferred.assert_awaited_once()
     assert ctrl._queue_data["q2"].queue.current_item is not None
+
+
+def _play_media_replacing_with(ctrl: Any, *items: QueueItem) -> None:
+    """Stand in for the resolve/enqueue path, leaving the queue holding the given items."""
+    ctrl._check_player_permission = Mock()
+
+    async def _handle(*_args: Any, **_kwargs: Any) -> None:
+        ctrl._queue_data["q1"].items = list(items)
+
+    ctrl._handle_play_media = _handle
+
+
+async def test_starting_other_media_releases_the_source_it_replaced() -> None:
+    """
+    Media that pushes a live source out of the queue releases it.
+
+    Album, artist and playlist all default to "replace", so this - not the clear button - is how
+    a paused live source usually leaves the queue.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+    _play_media_replacing_with(ctrl, QueueItem.from_media_item("q1", _track()))
+
+    await ctrl.play_media("q1", "test://album/al1", QueueOption.REPLACE)
+
+    provider.on_source_removed.assert_called_once_with("main", "q1")
+
+
+async def test_starting_the_same_source_again_keeps_it() -> None:
+    """
+    Playing the paused source again must not release it.
+
+    A replace drops the queue's items before loading the new ones, so the source briefly leaves
+    the queue on its way back in. Releasing it there would end the upstream session and restart
+    playback from the top instead of resuming where the user paused.
+    """
+    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    provider = _plugin_provider(ctrl)
+    # the source comes back as a freshly built queue item, so identity is by media, not item id
+    _play_media_replacing_with(ctrl, QueueItem.from_media_item("q1", _audio_source()))
+
+    await ctrl.play_media("q1", "spotify_connect--test://audio_source/main", QueueOption.REPLACE)
+
+    provider.on_source_removed.assert_not_called()
+
+
+async def test_media_played_alongside_the_source_keeps_it() -> None:
+    """An option that leaves the source in the queue is not the user done with it."""
+    source_item = QueueItem.from_media_item("q1", _audio_source())
+    ctrl = _controller(source_item)
+    provider = _plugin_provider(ctrl)
+    _play_media_replacing_with(ctrl, source_item, QueueItem.from_media_item("q1", _track()))
+
+    await ctrl.play_media("q1", "test://album/al1", QueueOption.PLAY)
+
+    provider.on_source_removed.assert_not_called()
