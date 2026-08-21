@@ -435,6 +435,11 @@ class SpotifyConnectProvider(PluginProvider):
         # Released whether or not a stream is still winding down: a paused source
         # already ended its stream, so its teardown released nothing and the
         # Spotify app would stay tethered to a device that has no queue left.
+        #
+        # Let the player go first. The backend answers a deactivate with the same
+        # 'inactive' event a deselect in the Spotify app produces, and that stops
+        # the player we were on - which by now is playing whatever took our place.
+        self._active_player_id = None
         try:
             await self._backend.deactivate()
         except Exception as err:

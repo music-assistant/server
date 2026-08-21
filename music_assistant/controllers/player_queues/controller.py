@@ -1875,8 +1875,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         Tell the owning plugin when whatever took over the queue pushed its AudioSource out.
 
-        The same source coming back (a replace re-selects it) and media that leaves the source
-        among the queue's items both leave it in place, and neither releases it.
+        The same source coming back and contents that leave the source among the queue's items
+        both leave it in place, and neither releases it.
 
         :param queue_id: The queue whose contents were taken over.
         :param outgoing_item: The queue's current item from before the takeover.

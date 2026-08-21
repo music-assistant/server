@@ -156,7 +156,7 @@ def _ready_for_transfer(ctrl: Any, target_current_item: QueueItem | None = None)
     def _apply_items(queue_id: str, items: list[QueueItem]) -> None:
         ctrl._queue_data[queue_id].items = items
 
-    # the real thing, minus the signalling: the queues have to end up holding what they were
+    # only the assignment the real one does: the queues have to end up holding what they were
     # handed, or a check on what survived the transfer reads the items it was supposed to replace
     ctrl.update_items = Mock(side_effect=_apply_items)
     ctrl._queue_data["q1"].queue.state = PlaybackState.PAUSED
