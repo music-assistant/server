@@ -70,7 +70,13 @@ class TidalLibraryManager:
             for item in doc.data_list:
                 if resource := doc.resolve(item):
                     if (
-                        artist := _parse_or_skip(parse_artist_v2, self.provider, doc, resource)
+                        artist := _parse_or_skip(
+                            parse_artist_v2,
+                            self.provider,
+                            doc,
+                            resource,
+                            MediaType.ARTIST,
+                        )
                     ) is None:
                         continue
                     _set_date_added(artist, item)
@@ -86,7 +92,13 @@ class TidalLibraryManager:
             for item in doc.data_list:
                 if resource := doc.resolve(item):
                     if (
-                        album := _parse_or_skip(parse_album_v2, self.provider, doc, resource)
+                        album := _parse_or_skip(
+                            parse_album_v2,
+                            self.provider,
+                            doc,
+                            resource,
+                            MediaType.ALBUM,
+                        )
                     ) is None:
                         continue
                     _set_date_added(album, item)
@@ -102,7 +114,13 @@ class TidalLibraryManager:
             for item in doc.data_list:
                 if resource := doc.resolve(item):
                     if (
-                        track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)
+                        track := _parse_or_skip(
+                            parse_track_v2,
+                            self.provider,
+                            doc,
+                            resource,
+                            MediaType.TRACK,
+                        )
                     ) is None:
                         continue
                     _set_date_added(track, item)
@@ -119,8 +137,20 @@ class TidalLibraryManager:
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
+                    try:
+                        sync_item_id = _playlist_item_id(resource)
+                    except (AttributeError, KeyError, TypeError, ValueError) as err:
+                        self.provider.report_skipped_sync_item(MediaType.PLAYLIST, None, err)
+                        continue
                     if (
-                        playlist := _parse_or_skip(parse_playlist_v2, self.provider, doc, resource)
+                        playlist := _parse_or_skip(
+                            parse_playlist_v2,
+                            self.provider,
+                            doc,
+                            resource,
+                            MediaType.PLAYLIST,
+                            sync_item_id,
+                        )
                     ) is None:
                         continue
                     _set_date_added(playlist, item)
@@ -199,3 +229,11 @@ def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
             # the DB only persists whole-second precision, so truncate here to avoid
             # every sync seeing a (sub-second) mismatch and flagging the item as changed
             media_item.date_added = datetime.fromisoformat(added).replace(microsecond=0)
+
+
+def _playlist_item_id(resource: dict[str, Any]) -> str:
+    """Return the provider item ID used for a Tidal playlist resource."""
+    item_id = str(resource["id"])
+    if resource.get("attributes", {}).get("playlistType") == "MIX":
+        return f"mix_{item_id}"
+    return item_id

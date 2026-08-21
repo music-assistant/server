@@ -326,6 +326,8 @@ def _parse_or_skip[ItemT](
     provider: TidalProvider,
     doc: JsonApiDocument,
     resource: dict[str, Any],
+    sync_media_type: MediaType | None = None,
+    sync_item_id: str | None = None,
 ) -> ItemT | None:
     """
     Parse a resource into a media item, or return None if it cannot be parsed.
@@ -334,17 +336,26 @@ def _parse_or_skip[ItemT](
     :param provider: The Tidal provider instance.
     :param doc: The JSON:API document holding the resource.
     :param resource: The resource object to parse.
+    :param sync_media_type: The library media type to protect from sync cleanup.
+    :param sync_item_id: The provider item ID to protect from sync cleanup.
     """
     try:
         return parser(provider, doc, resource)
     except SKIPPABLE_ITEM_ERRORS as err:
-        provider.logger.warning(
-            "Skipping Tidal %s %s: %s",
-            resource.get("type", "item"),
-            resource.get("id", "[no id]"),
-            err,
-            exc_info=err if provider.logger.isEnabledFor(logging.DEBUG) else None,
-        )
+        if sync_media_type is not None:
+            provider.report_skipped_sync_item(
+                sync_media_type,
+                sync_item_id if sync_item_id is not None else resource.get("id"),
+                err,
+            )
+        else:
+            provider.logger.warning(
+                "Skipping Tidal %s %s: %s",
+                resource.get("type", "item"),
+                resource.get("id", "[no id]"),
+                err,
+                exc_info=err if provider.logger.isEnabledFor(logging.DEBUG) else None,
+            )
         return None
 
 
