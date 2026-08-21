@@ -1871,15 +1871,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         to be released when it eventually goes.
 
         :param queue_id: The queue to look through.
+        :return: The owning plugin and the source id it exposes, per AudioSource media uri.
         """
         owners: dict[str, tuple[PluginProvider, str]] = {}
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return owners
         for item in queue_data.items:
-            if (media_item := item.media_item) is None or media_item.uri in owners:
+            media_item = item.media_item
+            if media_item is None or media_item.media_type != MediaType.AUDIO_SOURCE:
+                continue
+            if (uri := media_item.uri) is None or uri in owners:
                 continue
             if (owner := self._audio_source_plugin(item)) is not None:
-                owners[str(media_item.uri)] = owner
+                owners[uri] = owner
         return owners
 
     def _notify_audio_source_removed(self, queue_id: str) -> None:
