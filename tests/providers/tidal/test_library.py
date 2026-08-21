@@ -282,7 +282,9 @@ async def test_library_listing_holds_cleanup_for_invalid_resource_id(
 ) -> None:
     """Test an invalid resource ID holds cleanup when its identity is unknown."""
     raw = _load_raw(fixture_name)
-    raw["data"][0]["id"] = ["invalid"]
+    original_id = raw["data"][0]["id"]
+    raw["data"][0]["id"] = 123
+    next(resource for resource in raw["included"] if resource["id"] == original_id)["id"] = 123
     doc = JsonApiDocument(raw)
 
     async def _pages(*_a: Any, **_k: Any) -> Any:

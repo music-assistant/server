@@ -275,7 +275,9 @@ def _track_item_id(item: dict[str, Any]) -> str | None:
 def _resource_id(resource: dict[str, Any]) -> str | None:
     """Return a JSON:API resource identifier as text."""
     item_id = resource.get("id")
-    return item_id if isinstance(item_id, str) else None
+    if item_id is not None and not isinstance(item_id, str):
+        raise TypeError("Tidal resource ID is not a string")
+    return item_id
 
 
 def _resolve_resource(doc: JsonApiDocument, item: dict[str, Any]) -> dict[str, Any]:
