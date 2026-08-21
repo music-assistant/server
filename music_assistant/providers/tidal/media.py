@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import SearchResults
 
-from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS
+from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
 from .parsers import (
     parse_favorite_tracks_playlist,
     parse_playlist,
@@ -352,7 +352,7 @@ class TidalMediaManager:
         """
         try:
             return parser(self.provider, doc, resource)
-        except (AttributeError, KeyError, TypeError, ValueError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             # Tidal sending one item in a shape its parser can not read must not discard
             # the rest of the collection. Log the traceback (on debug) as well, so a
             # parser bug caught here is still traceable to its origin.
@@ -372,7 +372,14 @@ class TidalMediaManager:
                 track = parse_track(self.provider, item)
                 track.position = offset + idx
                 result.append(track)
-            except KeyError, TypeError:
+            except SKIPPABLE_ITEM_ERRORS as err:
+                track_data = item.get("item", item) if isinstance(item, dict) else item
+                self.logger.warning(
+                    "Skipping Tidal track %s: %s",
+                    track_data.get("id", "[no id]") if isinstance(track_data, dict) else "[no id]",
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
                 continue
         return result
 

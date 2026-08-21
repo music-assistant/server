@@ -14,6 +14,14 @@ SESSIONS_URL = f"{BASE_URL}/sessions"
 # Official API (JSON:API)
 JSONAPI_CONTENT_TYPE = "application/vnd.api+json"
 
+# Item payload errors that make one resource unusable without invalidating its collection.
+SKIPPABLE_ITEM_ERRORS: Final[tuple[type[Exception], ...]] = (
+    AttributeError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
 # Authentication
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
 # OAuth scopes requested for the device flow (read, write, subscription).
