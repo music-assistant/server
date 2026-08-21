@@ -42,6 +42,16 @@
     "loudness_normalization": {
       "label": "Loudness normalization",
       "description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio without Spotify's loudness adjustment."
+    },
+    "audio_quality": {
+      "label": "Streaming quality",
+      "description": "The highest quality Spotify is asked to stream. This is a ceiling, not a promise: Spotify still picks something lower when the connection is slow, when a track has no file at this quality, or when your account does not include it. Lossless needs a Spotify plan that offers it, and is only available on the Spotify Soloist engine - go-librespot streams 320 kbps at most.",
+      "options": {
+        "normal": "Normal (about 96 kbps)",
+        "high": "High (about 160 kbps)",
+        "very_high": "Very high (about 320 kbps)",
+        "lossless": "Lossless (default)"
+      }
     }
   },
   "setup_flow": {

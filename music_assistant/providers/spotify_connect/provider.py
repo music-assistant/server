@@ -34,6 +34,12 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
+from .base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_NORMAL,
+    AUDIO_QUALITY_VERY_HIGH,
+)
 from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
 from .soloist import VOLUME_MODE_PLAYER_ONLY, VOLUME_MODE_SYNC_SPOTIFY, SoloistBackend
@@ -66,6 +72,16 @@ CONF_VOLUME_MODE = "volume_mode"
 # Playback behavior applied by the Spotify engine itself (both backends).
 CONF_LOUDNESS_NORMALIZATION = "loudness_normalization"
 MAX_CROSSFADE_DURATION = 12  # seconds, matching the Spotify apps' slider
+CONF_AUDIO_QUALITY = "audio_quality"
+
+# The selectable streaming quality tiers, named after the Spotify apps'
+# own vocabulary for the same bitrates.
+AUDIO_QUALITY_OPTIONS: Final = [
+    ConfigValueOption(AUDIO_QUALITY_NORMAL),
+    ConfigValueOption(AUDIO_QUALITY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_VERY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_LOSSLESS),
+]
 
 # The selectable volume modes (labels resolve from strings.json), shared
 # between the runtime option and the setup flow.
@@ -228,6 +244,13 @@ class SpotifyConnectProvider(PluginProvider):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 required=False,
+            ),
+            ConfigEntry(
+                key=CONF_AUDIO_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=AUDIO_QUALITY_LOSSLESS,
+                required=False,
+                options=AUDIO_QUALITY_OPTIONS,
             ),
         )
 
@@ -550,6 +573,7 @@ class SpotifyConnectProvider(PluginProvider):
                 volume_mode=self._resolve_volume_mode(),
                 crossfade_ms=self._resolve_crossfade_ms(),
                 loudness_normalization=self._resolve_loudness_normalization(),
+                audio_quality=self._resolve_audio_quality(),
             )
         return GoLibrespotBackend(
             self.mass,
@@ -560,6 +584,7 @@ class SpotifyConnectProvider(PluginProvider):
             event_callback=self._handle_backend_event,
             crossfade_ms=self._resolve_crossfade_ms(),
             loudness_normalization=self._resolve_loudness_normalization(),
+            audio_quality=self._resolve_audio_quality(),
         )
 
     def _resolve_volume_mode(self) -> str:
@@ -578,6 +603,13 @@ class SpotifyConnectProvider(PluginProvider):
         """Return whether Spotify's loudness normalization should be enabled."""
         value = self.config.get_value(CONF_LOUDNESS_NORMALIZATION)
         return True if value is None else bool(value)
+
+    def _resolve_audio_quality(self) -> str:
+        """Return the configured streaming quality tier."""
+        value = self.config.get_value(CONF_AUDIO_QUALITY)
+        if value in (AUDIO_QUALITY_NORMAL, AUDIO_QUALITY_HIGH, AUDIO_QUALITY_VERY_HIGH):
+            return value
+        return AUDIO_QUALITY_LOSSLESS
 
     def _not_active_error(self) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming this device."""

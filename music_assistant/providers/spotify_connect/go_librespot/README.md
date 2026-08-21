@@ -85,6 +85,10 @@ generated config: `normalisation_disabled` (normalization targets -14 LUFS when 
 `crossfade_duration` (milliseconds, 0 = off). The crossfade key needs go-librespot
 >= 0.8.0 — older daemons ignore unknown config keys, so it is written unconditionally.
 
+The streaming quality setting maps onto `bitrate`, which only accepts 96, 160 and 320.
+go-librespot has no lossless support, so the lossless tier is capped at 320 rather than
+dropped — the setting is a ceiling, and this engine's ceiling is lower.
+
 ## Known limitations
 
 1. **Cold start**: starting from MA resumes the last known Spotify context; without any

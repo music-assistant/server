@@ -18,6 +18,10 @@ from music_assistant.providers.spotify_connect import (
     CONF_VOLUME_MODE,
     SpotifyConnectProvider,
 )
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+)
 from music_assistant.providers.spotify_connect.go_librespot.backend import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
@@ -412,9 +416,30 @@ def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     backend.cache_dir = str(tmp_path)
     backend._crossfade_ms = 8000
     backend._loudness_normalization = False
+    backend._audio_quality = AUDIO_QUALITY_HIGH
 
     backend._write_config(None)
 
     config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
     assert config["crossfade_duration"] == 8000
     assert config["normalisation_disabled"] is True
+    assert config["bitrate"] == 160
+
+
+def test_write_config_caps_lossless_at_the_engine_maximum(tmp_path: Path) -> None:
+    """go-librespot cannot do lossless, so that tier lands on its 320 kbps ceiling."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend._publish_name = "Test Speaker"
+    backend._instance_id = "spotify_connect--test"
+    backend._api_port = 38800
+    backend.cache_dir = str(tmp_path)
+    backend._crossfade_ms = 0
+    backend._loudness_normalization = True
+    backend._audio_quality = AUDIO_QUALITY_LOSSLESS
+
+    backend._write_config(None)
+
+    config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert config["bitrate"] == 320

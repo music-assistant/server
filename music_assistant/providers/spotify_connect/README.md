@@ -79,9 +79,12 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 
 The setup flow defaults new instances to go-librespot and offers Soloist (with its terms
 and API-key steps) where the platform supports it; existing pre-backend-split configs
-migrate to go-librespot. Audio quality is governed by Spotify itself; loudness
-normalization and crossfade are provider settings, applied by the engines themselves
-(see the per-engine READMEs for the mechanics).
+migrate to go-librespot. Loudness normalization, crossfade and streaming quality are
+provider settings, applied by the engines themselves (see the per-engine READMEs for the
+mechanics). Streaming quality is a ceiling, not a guarantee: Spotify still downshifts on a
+slow connection and falls back when a track or the account has no file at that tier, and
+what it actually delivered is not observable — so the reported source format stays the
+capture PCM rather than a guess.
 
 ## Multi-instance support
 
