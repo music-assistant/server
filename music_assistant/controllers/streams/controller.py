@@ -616,8 +616,7 @@ class StreamsController(CoreController):
         that option untouched.
 
         The update is rejected silently unless the queue's current item is an
-        AudioSource owned by ``provider`` with ``item_id == source_id``
-        (see ``_resolve_live_source_streamdetails``).
+        AudioSource owned by ``provider`` with ``item_id == source_id``.
 
         :param queue_id: The queue whose options should receive the update.
         :param source_id: The AudioSource.item_id emitting this update.
@@ -625,12 +624,27 @@ class StreamsController(CoreController):
         :param shuffle_enabled: The session's shuffle state, or None to skip.
         :param repeat_mode: The session's repeat mode, or None to skip.
         """
-        resolved = self._resolve_live_source_streamdetails(
-            queue_id, source_id, provider, "queue options"
-        )
-        if resolved is None:
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
             return
-        queue, _sd = resolved
+        media_item = queue.current_item.media_item if queue.current_item else None
+        # options are queue-scoped, so the identity anchor is the queue item's media
+        # item — unlike stream metadata this must also accept the source-selection
+        # window where the item's streamdetails do not exist yet (the provider replays
+        # the session's cached options right when it claims the queue)
+        if (
+            media_item is None
+            or media_item.media_type != MediaType.AUDIO_SOURCE
+            or media_item.provider != provider
+            or media_item.item_id != source_id
+        ):
+            self.logger.debug(
+                "Rejected queue options update for queue %s from provider %s source %s",
+                queue_id,
+                provider,
+                source_id,
+            )
+            return
         if repeat_mode == RepeatMode.UNKNOWN:
             # an unknown mode is not a report
             repeat_mode = None
