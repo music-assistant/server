@@ -20,6 +20,8 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from .constants import DASHBOARD_NAMESPACE, MASS_APP_ID
 
 if TYPE_CHECKING:
+    from logging import Logger
+
     from pychromecast import Chromecast
     from pychromecast.controllers.media import MediaStatus, MediaStatusListener
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
@@ -46,6 +48,23 @@ def disconnect_no_wait(chromecast: Chromecast) -> None:
     # to report.
     with contextlib.suppress(TimeoutError):
         chromecast.disconnect(0)
+
+
+def disconnect_and_wait(chromecast: Chromecast, logger: Logger, timeout: float) -> None:
+    """
+    Close the socket connection to a Cast device and wait for its thread to exit.
+
+    :param chromecast: Cast connection to close.
+    :param logger: Logger to report a socket thread that outlives the wait.
+    :param timeout: Seconds to wait for the socket thread to exit.
+    """
+    try:
+        chromecast.disconnect(timeout)
+    except TimeoutError:
+        # a lingering daemon thread blocks nothing, so this must not fail the teardown
+        logger.warning(
+            "Socket thread for %s did not exit within %s seconds", chromecast.name, timeout
+        )
 
 
 def send_show_dashboard(

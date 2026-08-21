@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -12,10 +13,16 @@ from music_assistant_models.dashboard import DashboardDevice
 from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
+from pychromecast.error import RequestTimeout
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
 
 from .constants import MASS_APP_ID
-from .helpers import disconnect_no_wait, send_hide_dashboard, send_show_dashboard
+from .helpers import (
+    disconnect_and_wait,
+    disconnect_no_wait,
+    send_hide_dashboard,
+    send_show_dashboard,
+)
 from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
@@ -113,7 +120,9 @@ class ChromecastDashboards:
             if self.mass.closing:
                 disconnect_no_wait(chromecast)
             else:
-                await self.mass.loop.run_in_executor(None, chromecast.disconnect, 10)
+                await self.mass.loop.run_in_executor(
+                    None, disconnect_and_wait, chromecast, self.logger, 10
+                )
 
     def _register_device(self, device_id: str, cast_info: CastInfo) -> None:
         """Build a DashboardDevice for device_id and (re-)register it with the controller."""
@@ -198,7 +207,9 @@ class ChromecastDashboards:
         # only tear down a connection we opened on-demand; never an active player's own cc
         on_demand = self._dashboard_connections.pop(device_id, None)
         if on_demand is not None:
-            await self.mass.loop.run_in_executor(None, on_demand.disconnect, 10)
+            await self.mass.loop.run_in_executor(
+                None, disconnect_and_wait, on_demand, self.logger, 10
+            )
 
     async def _get_or_create_chromecast(self, device_id: str) -> pychromecast.Chromecast:
         """Resolve a device_id to a connected Chromecast, reusing an existing connection."""
@@ -223,7 +234,8 @@ class ChromecastDashboards:
             chromecast = pychromecast.get_chromecast_from_cast_info(
                 disc_info, self.mass.discovery.aiozc.zeroconf
             )
-            chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
+            with contextlib.suppress(RequestTimeout):
+                chromecast.wait(timeout=DASHBOARD_CONNECT_TIMEOUT)
             if not chromecast.socket_client.is_connected:
                 disconnect_no_wait(chromecast)
                 msg = f"Timed out connecting to Cast device: {disc_info.friendly_name}"

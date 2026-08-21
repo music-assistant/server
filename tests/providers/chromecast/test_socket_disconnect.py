@@ -18,12 +18,7 @@ from .conftest import FakeChromecast
 
 
 def _fake_player(chromecast: Any, *, closing: bool) -> Any:
-    """
-    Build a Cast player on mocked collaborators, so it disconnects a real Cast connection.
-
-    :param chromecast: Cast connection the player's on_unload should disconnect.
-    :param closing: Whether Music Assistant is shutting down.
-    """
+    """Build a Cast player on mocked collaborators, so it disconnects a real Cast connection."""
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
@@ -42,7 +37,7 @@ def _fake_player(chromecast: Any, *, closing: bool) -> Any:
 
 
 async def test_unload_while_closing_closes_socket_without_waiting(
-    live_chromecast_factory: Callable[[], FakeChromecast],
+    live_chromecast_factory: Callable[..., FakeChromecast],
 ) -> None:
     """A shutdown closes the socket but does not wait for the daemon thread to exit."""
     chromecast = live_chromecast_factory()
@@ -62,3 +57,16 @@ async def test_unload_while_running_waits_for_the_socket_thread() -> None:
     await player.on_unload()
 
     chromecast.disconnect.assert_called_once_with(10)
+
+
+async def test_unload_survives_a_disconnect_that_times_out() -> None:
+    """A disconnect that times out waiting for the socket thread must not fail the unload."""
+    # a MagicMock keeps this fast: what is under test is that MA swallows the timeout,
+    # not the real 10s join a live thread would need to reproduce it.
+    chromecast = MagicMock()
+    chromecast.disconnect.side_effect = TimeoutError("join", 10)
+    player = _fake_player(chromecast, closing=False)
+
+    await player.on_unload()
+
+    player.logger.warning.assert_called_once()

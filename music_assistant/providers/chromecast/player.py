@@ -45,7 +45,7 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, disconnect_no_wait
+from .helpers import CastStatusListener, ChromecastInfo, disconnect_and_wait, disconnect_no_wait
 
 if TYPE_CHECKING:
     from pychromecast import Chromecast
@@ -294,7 +294,7 @@ class ChromecastPlayer(Player):
             # Blocking disconnect can stall shutdown if threads are slow to exit.
             disconnect_no_wait(self.cc)
         else:
-            await asyncio.to_thread(self.cc.disconnect, 10)
+            await asyncio.to_thread(disconnect_and_wait, self.cc, self.logger, 10)
 
     ### Callbacks from Chromecast Statuslistener
 

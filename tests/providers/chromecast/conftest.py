@@ -31,28 +31,35 @@ class FakeSocketClient(threading.Thread):
 class FakeChromecast:
     """Cast connection running pychromecast's real disconnect/join over a live socket thread."""
 
+    # borrowed from the real class on purpose: the tests pin pychromecast's actual
+    # disconnect/join behaviour, not a stand-in for it.
     disconnect = pychromecast.Chromecast.disconnect
     join = pychromecast.Chromecast.join
 
-    def __init__(self, socket_client: FakeSocketClient) -> None:
+    def __init__(
+        self, socket_client: FakeSocketClient, wait_error: Exception | None = None
+    ) -> None:
         """Initialize with the socket client this connection runs on."""
         self.socket_client = socket_client
+        self._wait_error = wait_error
 
     def wait(self, timeout: float | None = None) -> None:
-        """Stand in for the blocking wait on the device's first status."""
+        """Stand in for the blocking wait on the device's first status, or raise wait_error."""
+        if self._wait_error is not None:
+            raise self._wait_error
 
 
 @pytest.fixture(name="live_chromecast_factory")
-def live_chromecast_factory_fixture() -> Iterator[Callable[[], FakeChromecast]]:
+def live_chromecast_factory_fixture() -> Iterator[Callable[..., FakeChromecast]]:
     """Yield a factory for Cast connections whose socket thread is running."""
     released = threading.Event()
     socket_clients: list[FakeSocketClient] = []
 
-    def _create() -> FakeChromecast:
+    def _create(wait_error: Exception | None = None) -> FakeChromecast:
         socket_client = FakeSocketClient(released)
         socket_client.start()
         socket_clients.append(socket_client)
-        return FakeChromecast(socket_client)
+        return FakeChromecast(socket_client, wait_error=wait_error)
 
     try:
         yield _create
