@@ -53,11 +53,6 @@ class PlayerQueueData:
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
-    # monotonic stamp of when the user last switched shuffle on for this queue. Deliberately not
-    # persisted (a monotonic value would not survive a restart anyway): a shuffle restored from
-    # cache belongs to an earlier listening session and must not be read as intent for whatever
-    # the user plays next (see PlayerQueuesController._apply_shuffle_intent).
-    shuffle_set_at: float | None = None
     transitioning: bool = False
     play_action_refcount: int = 0
     last_counted_play: str | None = None
@@ -96,6 +91,7 @@ class PlayerQueueData:
             "index_in_buffer",
             "smart_fades_active",
             "smart_shuffle_active",
+            "queue_owner",
         ):
             queue.pop(key, None)
         return {

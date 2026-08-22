@@ -31,6 +31,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     CONF_STREAMING_MODE,
+    STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AUTO,
     STREAMING_MODE_RAOP,
@@ -530,6 +531,8 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
         (ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
         # the RAOP mode cannot do 24-bit: falls back to the 16-bit base
         (ALAC_44100_24, STREAMING_MODE_RAOP, True, [(44100, 16)]),
+        # the compatibility mode streams through the 16-bit RAOP flow
+        (ALAC_44100_24, STREAMING_MODE_AP2_COMPAT, True, [(44100, 16)]),
         # a receiver that streams RAOP never gets 24-bit, whatever it advertises
         (ALAC_44100_24, STREAMING_MODE_AUTO, False, [(44100, 16)]),
         # only 16-bit advertised: the 16-bit default
@@ -555,6 +558,23 @@ def test_hires_supported_sample_rates(
     airplay_player.advertised_audio_formats = advertised_audio_formats
     _configure_player(airplay_player, {CONF_STREAMING_MODE: streaming_mode})
     assert airplay_player.supported_sample_rates == expected
+
+
+def test_hires_disabled_in_compatibility_mode(airplay_player: AirPlayPlayer) -> None:
+    """A hi-res device pinned to compatibility mode drops back to the 16-bit base."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_24
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AP2_COMPAT})
+
+    # the compat lanes keep reporting AirPlay 2, so the protocol alone cannot gate hi-res
+    assert airplay_player.protocol == StreamingProtocol.AIRPLAY2
+    assert airplay_player.hires_playback_enabled is False
+    assert airplay_player.supported_sample_rates == [(44100, 16)]
+
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
+    )
+    assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:

@@ -207,7 +207,7 @@ class UniversalGroupPlayer(Player):
                 options=[
                     ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
-                    if x.type != PlayerType.GROUP
+                    if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN)
                 ],
             ),
             ConfigEntry(

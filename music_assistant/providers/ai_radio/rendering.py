@@ -458,8 +458,10 @@ class AIRadioRenderMixin:
                 # the engine reports no reason of its own (Home Assistant answers a failed
                 # render with an empty 500), so the probe's message is the only clue there is
                 raise MusicAssistantError(
-                    f"{err}. Does your TTS provider have enough credit? "
-                    "Check the logs of your TTS provider for the reason."
+                    f"{err}. The TTS engine failed to generate the audio it handed out. "
+                    "Check the logs of the TTS engine for the reason (for a Home Assistant "
+                    "engine that is the Home Assistant core log). A cloud engine may be "
+                    "out of credit or having an outage."
                 ) from err
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None

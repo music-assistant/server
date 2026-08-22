@@ -38,6 +38,7 @@ def helper(mass_mock: AsyncMock, audible_client_mock: AsyncMock) -> AudibleHelpe
         client=audible_client_mock,
         provider_domain="audible",
         provider_instance="audible_test",
+        provider=MagicMock(),
     )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,6 +44,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     fake.resume = AsyncMock()
     fake.clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.players.cmd_ungroup = AsyncMock()
     fake.mass.players.wait_for_player_update = MagicMock(return_value=_DummyACM())
@@ -87,19 +87,17 @@ async def test_transfer_queue_group_member_ungroups_group() -> None:
 
 def _shuffle_controller(
     source_shuffle_enabled: bool,
-    source_shuffle_set_at: float | None,
-    target_shuffle_set_at: float | None,
+    target_shuffle_enabled: bool = False,
     source_is_dynamic: bool = False,
 ) -> MagicMock:
     """
     Build a controller stand-in whose two queues carry real state records.
 
-    Both the shuffle flag and the shuffle intent behind it live on separate per-queue objects, so
-    unlike the ungroup tests above these need real queues rather than one shared mock.
+    The shuffle flag lives on the per-queue state record, so unlike the ungroup tests above these
+    need real queues rather than one shared mock.
 
     :param source_shuffle_enabled: Whether shuffle is on for the queue being handed over.
-    :param source_shuffle_set_at: When the user last switched shuffle on for the source queue.
-    :param target_shuffle_set_at: When the user last switched shuffle on for the target queue.
+    :param target_shuffle_enabled: Whether shuffle is on for the queue being handed to.
     :param source_is_dynamic: Whether the source queue is managed by a dynamic source.
     """
     source_queue = PlayerQueue(
@@ -113,20 +111,26 @@ def _shuffle_controller(
         is_dynamic=source_is_dynamic,
     )
     target_queue = PlayerQueue(
-        queue_id="tgt", active=True, display_name="Tgt", available=True, items=0
+        queue_id="tgt",
+        active=True,
+        display_name="Tgt",
+        available=True,
+        items=0,
+        shuffle_enabled=target_shuffle_enabled,
     )
 
     fake = MagicMock()
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
     fake._queue_data = {
-        "src": PlayerQueueData(queue=source_queue, shuffle_set_at=source_shuffle_set_at),
-        "tgt": PlayerQueueData(queue=target_queue, shuffle_set_at=target_shuffle_set_at),
+        "src": PlayerQueueData(queue=source_queue),
+        "tgt": PlayerQueueData(queue=target_queue),
     }
     fake.stop = AsyncMock()
     fake.load = AsyncMock()
     fake.resume = AsyncMock()
     fake._clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
     target_player = MagicMock()
     target_player.state.synced_to = None
@@ -136,55 +140,31 @@ def _shuffle_controller(
     return fake
 
 
-async def test_transfer_queue_drops_a_stale_shuffle_intent_on_the_target() -> None:
-    """
-    A shuffle the user switched on for the target earlier does not shuffle the queue moved onto it.
-
-    The transfer brings its own (off) shuffle state; leaving the target's own stamp behind would
-    make the media started next read it as a "shuffle this" gesture the user never made for it.
-    """
-    fake = _shuffle_controller(
-        source_shuffle_enabled=False,
-        source_shuffle_set_at=None,
-        target_shuffle_set_at=time.monotonic(),
-    )
+async def test_transfer_queue_overwrites_the_targets_own_shuffle() -> None:
+    """The queue brings its own shuffle state, so the target's previous one does not survive."""
+    fake = _shuffle_controller(source_shuffle_enabled=False, target_shuffle_enabled=True)
 
     await PlayerQueuesController.transfer_queue(
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
     )
 
     assert fake.get("tgt").shuffle_enabled is False
-    assert fake._queue_data["tgt"].shuffle_set_at is None
 
 
-async def test_transfer_queue_carries_the_source_shuffle_intent() -> None:
-    """A shuffle switched on moments before the transfer still counts for the media started next."""
-    switched_on_at = time.monotonic()
-    fake = _shuffle_controller(
-        source_shuffle_enabled=True,
-        source_shuffle_set_at=switched_on_at,
-        target_shuffle_set_at=None,
-    )
+async def test_transfer_queue_carries_the_source_shuffle() -> None:
+    """A shuffled queue handed to another player stays shuffled there."""
+    fake = _shuffle_controller(source_shuffle_enabled=True)
 
     await PlayerQueuesController.transfer_queue(
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
     )
 
     assert fake.get("tgt").shuffle_enabled is True
-    assert fake._queue_data["tgt"].shuffle_set_at == switched_on_at
-    # the gesture is good for one play and it followed the queue, so it must not be left behind
-    # to shuffle whatever gets started on the player it was moved off
-    assert fake._queue_data["src"].shuffle_set_at is None
 
 
 async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     """The shuffle imposed by a dynamic source follows it to the target queue."""
-    fake = _shuffle_controller(
-        source_shuffle_enabled=True,
-        source_shuffle_set_at=None,
-        target_shuffle_set_at=None,
-        source_is_dynamic=True,
-    )
+    fake = _shuffle_controller(source_shuffle_enabled=True, source_is_dynamic=True)
     fake._clear.side_effect = lambda queue_id, skip_stop=False: PlayerQueuesController._clear(
         cast("PlayerQueuesController", fake), queue_id, skip_stop
     )

@@ -1482,7 +1482,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
         seconds_played: int | None = None,
         is_playing: bool = False,
@@ -1519,10 +1519,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
+        reference = media_item
+        media_item = await self._resolve_playlog_item(media_item)
 
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
@@ -1650,7 +1653,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         userid: str | None = None,
     ) -> None:
         """
@@ -1660,9 +1663,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         """
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
+        reference = media_item
+        media_item = await self._resolve_playlog_item(media_item)
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
         }
         # try to figure out the user that triggered the action
@@ -1682,8 +1688,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        # play_count only ever rose for a completed play, so note whether we remove one
+        counted_play_removed = False
         for user_id in user_ids:
             params["userid"] = user_id
+            if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+                counted_play_removed = counted_play_removed or bool(row["fully_played"])
             await self.database.delete(DB_TABLE_PLAYLOG, params)
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
@@ -1710,9 +1720,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # also update playcount in library table
         ctrl = self.get_controller(media_item.media_type)
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if db_item:
+        if db_item and counted_play_removed:
             await self.database.execute(
-                f"UPDATE {ctrl.db_table} SET play_count = play_count - 1, "
+                f"UPDATE {ctrl.db_table} SET play_count = MAX(play_count - 1, 0), "
                 f"last_played = 0 WHERE item_id = {db_item.item_id}"
             )
             await self.database.commit()
@@ -2970,6 +2980,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 elif mapping_or_instance_id.provider_instance in user.provider_filter:
                     return user
         return None
+
+    async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
+        """
+        Return the full media item for a (possibly minimized) media item reference.
+
+        :param media_item: The media item to resolve, either full or an ItemMapping.
+        """
+        if not isinstance(media_item, ItemMapping):
+            return media_item
+        resolved = await self.get_item(
+            media_item.media_type,
+            media_item.item_id,
+            media_item.provider,
+            allow_update_metadata=False,
+        )
+        if isinstance(resolved, BrowseFolder):
+            msg = f"{media_item.uri} does not resolve to a media item"
+            raise MediaNotFoundError(msg)
+        return resolved
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """

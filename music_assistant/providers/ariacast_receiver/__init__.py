@@ -32,7 +32,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -326,7 +326,7 @@ class AriaCastReceiver(PluginProvider):
             self._in_use_by_queue = None
 
     async def on_source_control(
-        self, source_id: str, action: SourceControl, value: int | None = None
+        self, source_id: str, action: SourceControl, value: SourceControlValue = None
     ) -> None:
         """Handle playback control actions forwarded from the queue."""
         if source_id != AUDIO_SOURCE_ID:
@@ -457,6 +457,12 @@ class AriaCastReceiver(PluginProvider):
         key = "command" if "command" in payload else "action" if "action" in payload else None
         if key is None:
             return
+        # A payload carrying "success" is a reply/ack (the shape this server
+        # sends itself), not a command — dispatching it would relay a client's
+        # ack of a broadcast action as a fresh command (and loop on a client
+        # that acks our own ack).
+        if "success" in payload:
+            return
         command = str(payload.get(key) or "").lower()
         if not command:
             return
@@ -478,14 +484,15 @@ class AriaCastReceiver(PluginProvider):
                 await self._cmd_play()
         elif command == "stop":
             await self._cmd_pause()
-        elif command == "next":
+        elif command in ("next", "previous"):
+            # Relay to the other control clients so the streaming sender skips
+            # within its own playlist (the MA queue holds no track boundaries for
+            # a live cast stream). Never routed through player_queues.next: the
+            # queue delegates transport commands for an active AudioSource back
+            # to this plugin, which would echo the command to its originator
+            # (and loop forever on a client that echoes actions back).
             if self._in_use_by_queue:
-                with suppress(Exception):
-                    await self.mass.player_queues.next(self._in_use_by_queue)
-        elif command == "previous":
-            if self._in_use_by_queue:
-                with suppress(Exception):
-                    await self.mass.player_queues.previous(self._in_use_by_queue)
+                await self._forward_action(command, exclude=ws)
         elif command == "seek":
             # The live AriaCast source has no seekable timeline on the MA side
             # (audio_source.can_seek is False); accept and ack per spec, no-op.
@@ -818,11 +825,20 @@ class AriaCastReceiver(PluginProvider):
         await self._forward_action("pause")
         await self._broadcast_meta()
 
-    async def _forward_action(self, action: str) -> None:
-        """Send an action to all connected /control WebSocket senders."""
+    async def _forward_action(
+        self, action: str, exclude: web.WebSocketResponse | None = None
+    ) -> None:
+        """
+        Send an action to all connected /control WebSocket senders.
+
+        :param action: The action to broadcast.
+        :param exclude: Optional sender to skip (the originator of a relayed command).
+        """
         msg = {"action": action}
         dead: set[web.WebSocketResponse] = set()
         for ws in list(self._control_senders):
+            if ws is exclude:
+                continue
             try:
                 await ws.send_json(msg)
             except Exception:

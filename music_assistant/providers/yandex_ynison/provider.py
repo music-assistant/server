@@ -38,7 +38,7 @@ from ya_passport_auth.ma import BorrowedCredentialSource
 from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .auth import refresh_music_token
 from .constants import (
@@ -436,7 +436,7 @@ class YandexYnisonProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Proxy playback control commands to Yandex via the linked Yandex Music provider."""
         if source_id != AUDIO_SOURCE_ID:
@@ -449,8 +449,14 @@ class YandexYnisonProvider(PluginProvider):
             await self._on_next()
         elif action == SourceControl.PREVIOUS:
             await self._on_previous()
-        elif action == SourceControl.SEEK and value is not None:
-            await self._on_seek(value)
+        elif (
+            action == SourceControl.SEEK
+            # tolerate float positions from internal callers; bool is an int
+            # subclass, so a misrouted toggle must not become a 1-second seek
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            await self._on_seek(int(value))
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0

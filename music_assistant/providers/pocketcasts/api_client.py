@@ -81,9 +81,9 @@ class PocketCastsClient:
         podcast: dict[str, Any] = data.get("podcast", {})
         return podcast
 
-    async def get_podcast_episodes(self, podcast_uuid: str) -> list[dict[str, Any]]:
+    async def get_podcast_episodes(self, podcast_uuid: str) -> tuple[str, list[dict[str, Any]]]:
         """
-        Return all episodes for a podcast.
+        Return a podcast's title and all of its episodes.
 
         :param podcast_uuid: The podcast UUID.
         """
@@ -94,7 +94,39 @@ class PocketCastsClient:
         # episode number, show notes or artwork.
         episodes: list[dict[str, Any]] = podcast.get("episodes", [])
         self.logger.debug("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
-        return episodes
+        return str(podcast.get("title", "")), episodes
+
+    async def get_show_notes(self, podcast_uuid: str) -> dict[str, dict[str, Any]]:
+        """
+        Return the show notes and artwork, keyed by episode UUID, for a podcast.
+
+        Episodes carrying neither are left out.
+
+        :param podcast_uuid: The podcast UUID.
+        """
+        data = await self._request(
+            "GET",
+            f"{PODCAST_API_URL}/mobile/show_notes/full/{podcast_uuid}",
+            auth=False,
+            allow_redirects=True,
+        )
+        # one call covers every episode, and no other endpoint carries these two fields. The
+        # rest of the response is dropped here to keep the cached entry small.
+        show_notes: dict[str, dict[str, Any]] = {}
+        for episode in data.get("podcast", {}).get("episodes", []):
+            if not (uuid := episode.get("uuid")):
+                continue
+            details: dict[str, Any] = {}
+            if description := episode.get("show_notes"):
+                details["description"] = description
+            if image := episode.get("image"):
+                details["image"] = image
+            if details:
+                show_notes[uuid] = details
+        self.logger.debug(
+            "Retrieved show notes for %d episodes of podcast %s", len(show_notes), podcast_uuid
+        )
+        return show_notes
 
     async def get_in_progress_episodes(self) -> list[dict[str, Any]]:
         """Return episodes currently in progress."""

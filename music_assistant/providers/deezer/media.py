@@ -276,7 +276,8 @@ class DeezerMediaManager:
             for raw in result.favorites.raw_audiobooks:
                 try:
                     item = await self.get_audiobook(raw.id)
-                except MediaNotFoundError:
+                except MediaNotFoundError as err:
+                    self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, raw.id, err)
                     continue
                 seen_ids.add(raw.id)
                 if raw.favorited_at:
@@ -289,7 +290,8 @@ class DeezerMediaManager:
                 continue
             try:
                 yield await self.get_audiobook(ab_id)
-            except MediaNotFoundError:
+            except MediaNotFoundError as err:
+                self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, ab_id, err)
                 continue
 
     # -- Search --

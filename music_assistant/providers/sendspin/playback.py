@@ -55,12 +55,13 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
 # grow after playback begins, so their send-ahead stays at the min_buffer_ms floor.
 # Buffered types (tracks, podcasts, etc.) race ahead and fill the queue naturally, so
 # their send-ahead may extend to a larger required_lead_time_ms without lasting cost.
+# A queue flow carries those same buffered items - radio and live sources always play
+# as a single item, never in flow mode - so it belongs with the buffered types.
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
         MediaType.AUDIO_SOURCE,
         MediaType.PLUGIN_SOURCE,
-        MediaType.FLOW_STREAM,
     }
 )
 
