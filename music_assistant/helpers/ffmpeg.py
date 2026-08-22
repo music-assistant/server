@@ -703,7 +703,7 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
 
 
 async def check_ffmpeg_version() -> None:
-    """Check if ffmpeg is present (with libsoxr support)."""
+    """Check that ffmpeg is present and usable, and cache the capabilities it reports."""
     # check for FFmpeg presence
     try:
         returncode, output = await check_output("ffmpeg", "-version")
