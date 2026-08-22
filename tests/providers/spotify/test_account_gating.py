@@ -153,3 +153,12 @@ async def test_a_different_account_is_accepted() -> None:
     _stub_me(session, payload={"id": "u2", "product": "premium"})
 
     assert await spotify_flow._verify_account(session, "at-test") == "u2"
+
+
+@pytest.mark.parametrize("payload", [None, [], "nope"])
+async def test_a_malformed_account_response_does_not_block_the_setup(payload: Any) -> None:
+    """A 200 whose body is not an object must fail open like any other bad lookup."""
+    session = _make_session()
+    _stub_me(session, payload=payload)
+
+    assert await spotify_flow._verify_account(session, "at-test") is None

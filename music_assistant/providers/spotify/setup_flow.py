@@ -201,6 +201,8 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
             userinfo = await response.json()
     except ClientError, TimeoutError, ValueError:
         return None
+    if not isinstance(userinfo, dict):
+        return None
     product = str(userinfo.get("product") or "")
     if product and product != "premium":
         raise AbortFlow("premium_required")
