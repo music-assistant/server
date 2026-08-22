@@ -1615,12 +1615,17 @@ async def test_audible_flow_login_link_and_redirect_form(
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.FORM
         assert step.step_id == "user"
+        assert [entry.key for entry in step.entries] == [CONF_LOCALE]
 
         auth_step = await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_LOCALE: "us"})
         assert auth_step.type == FlowStepType.FORM
         assert auth_step.step_id == "authenticate"
-        assert auth_step.translation_params == [login_url]
-        assert [entry.key for entry in auth_step.entries] == [audible_flow.CONF_POST_LOGIN_URL]
+        assert auth_step.translation_params is None
+        assert [entry.key for entry in auth_step.entries] == [
+            "auth_link",
+            audible_flow.CONF_POST_LOGIN_URL,
+        ]
+        assert auth_step.entries[0].translation_params == [login_url]
 
         redirect_url = "https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=code"
         finish_step = await flow_mass.config.submit_setup_flow(

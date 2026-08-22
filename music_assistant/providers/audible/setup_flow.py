@@ -45,7 +45,6 @@ async def run_setup(session: SetupSession) -> None:
     locale_default = str(session.context.setup_data.get(CONF_LOCALE) or "us")
     values = await session.form(
         [
-            ConfigEntry(key="intro", type=ConfigEntryType.LABEL),
             ConfigEntry(
                 key=CONF_LOCALE,
                 type=ConfigEntryType.STRING,
@@ -67,6 +66,11 @@ async def run_setup(session: SetupSession) -> None:
         values = await session.form(
             [
                 ConfigEntry(
+                    key="auth_link",
+                    type=ConfigEntryType.LABEL,
+                    translation_params=[login_url],
+                ),
+                ConfigEntry(
                     key=CONF_POST_LOGIN_URL,
                     type=ConfigEntryType.STRING,
                     required=True,
@@ -75,7 +79,6 @@ async def run_setup(session: SetupSession) -> None:
             step_id="authenticate",
             last_step=True,
             errors=errors,
-            translation_params=[login_url],
         )
         post_login_url = str(values[CONF_POST_LOGIN_URL])
         try:
