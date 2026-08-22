@@ -426,7 +426,9 @@ class Audibleprovider(MusicProvider):
         is_removed will be set to True when the provider is removed from the configuration.
         """
         if is_removed:
-            await self.helper.deregister()
-            evict_cached_authenticator(self.auth_file)
-            with suppress(OSError):
-                await remove_file(self.auth_file)
+            try:
+                await self.helper.deregister()
+            finally:
+                evict_cached_authenticator(self.auth_file)
+                with suppress(OSError):
+                    await remove_file(self.auth_file)
