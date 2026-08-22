@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shutil
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
@@ -23,13 +25,26 @@ from music_assistant.helpers.oauth import (
     hosted_bounce_redirect,
 )
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
+from music_assistant.providers.spotify_connect.soloist import (
+    SoloistError,
+    UnsupportedPlatformError,
+    pair_soloist_session,
+    soloist_session_present,
+    verify_platform_supported,
+)
 
 from .constants import (
+    BACKEND_LIBRESPOT,
+    BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
+    CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
+    CONF_SOLOIST_API_KEY,
+    CONF_SOLOIST_CONSENT,
+    CONF_SOLOIST_SESSION_DIR,
     KEYMASTER_CLIENT_ID,
     LIBRESPOT_REDIRECT_PATH,
     LIBRESPOT_REDIRECT_PORT,
@@ -39,6 +54,8 @@ from .constants import (
     PAIRING_DEVICE_NAME,
     PAIRING_TIMEOUT,
     SCOPE,
+    SOLOIST_DATA_DIR_NAME,
+    SOLOIST_PAIRING_DIR,
 )
 from .helpers import (
     await_loopback_authorization,
@@ -85,6 +102,13 @@ CONF_ENTRY_PLAYBACK_AUTH_METHOD = ConfigEntry(
     options=[ConfigValueOption(PLAYBACK_AUTH_APP), ConfigValueOption(PLAYBACK_AUTH_BROWSER)],
 )
 
+CONF_SOLOIST_REPAIR = "soloist_repair"
+
+# Minimum plausible length of a pasted Soloist API key: anything shorter is a
+# partial paste. No further format rules are applied locally — Spotify rejects
+# an invalid key when soloist authenticates.
+MIN_API_KEY_LENGTH = 16
+
 CONF_PLAYBACK_CALLBACK_URL = "playback_callback_url"
 CONF_ENTRY_PLAYBACK_CALLBACK_URL = ConfigEntry(
     key=CONF_PLAYBACK_CALLBACK_URL,
@@ -103,43 +127,50 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     setup_data = dict(session.context.setup_data)
-    # the global session always (re)authenticates: a refresh token cannot be reused across a
-    # re-auth and secure values are never prefilled back into the flow
-    token_result = await _pkce_authenticate(
-        session, app_var("spotify_client_id"), step_id="authenticate"
-    )
-    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
-    # an account that cannot work is turned away before the playback authorization
-    account_id = await _verify_account(session, str(token_result["access_token"]))
-    setup_data[CONF_ACCOUNT_ID] = account_id
-    # playback needs its own credential, minted with Spotify's keymaster client id
-    setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session, account_id)
-    # everything needed is collected by now; the developer key is a purely optional extra,
-    # so it is offered as an opt-in rather than a field the user has to reason about
-    client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
-    errors: dict[str, str] | None = None
-    while True:
-        optin_values = await session.form(
-            [replace(CONF_ENTRY_USE_DEV_KEY, value=bool(client_id_default))],
-            step_id="developer_optin",
-            errors=errors,
-            last_step=True,
+    try:
+        # the global session always (re)authenticates: a refresh token cannot be reused across a
+        # re-auth and secure values are never prefilled back into the flow
+        token_result = await _pkce_authenticate(
+            session, app_var("spotify_client_id"), step_id="authenticate"
         )
-        if not optin_values.get(CONF_USE_DEV_KEY):
-            # opted out: clear any previously stored developer session
-            setup_data[CONF_CLIENT_ID] = None
-            setup_data[CONF_REFRESH_TOKEN_DEV] = None
-            try:
-                await session.finish(setup_data)
+        setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
+        # an account that cannot work is turned away before the playback authorization
+        account_id = await _verify_account(session, str(token_result["access_token"]))
+        setup_data[CONF_ACCOUNT_ID] = account_id
+        # playback authorization is separate from the Web API tokens and depends on
+        # the explicitly chosen playback backend
+        await _setup_playback(session, setup_data, account_id)
+        # everything needed is collected by now; the developer key is a purely optional extra,
+        # so it is offered as an opt-in rather than a field the user has to reason about
+        client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
+        errors: dict[str, str] | None = None
+        while True:
+            optin_values = await session.form(
+                [replace(CONF_ENTRY_USE_DEV_KEY, value=bool(client_id_default))],
+                step_id="developer_optin",
+                errors=errors,
+                last_step=True,
+            )
+            if not optin_values.get(CONF_USE_DEV_KEY):
+                # opted out: clear any previously stored developer session
+                setup_data[CONF_CLIENT_ID] = None
+                setup_data[CONF_REFRESH_TOKEN_DEV] = None
+                try:
+                    await session.finish(setup_data)
+                    return
+                except SetupFlowError as err:
+                    errors = {"base": err.translation_key or str(err)}
+                    continue
+            client_id_default, errors = await _authorize_developer_key(
+                session, setup_data, client_id_default
+            )
+            if errors is None:
                 return
-            except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
-                continue
-        client_id_default, errors = await _authorize_developer_key(
-            session, setup_data, client_id_default
-        )
-        if errors is None:
-            return
+    finally:
+        # a soloist session paired by this flow holds reusable login material;
+        # adoption copies it into the instance's own storage during finish, so
+        # the flow-private copy is always discarded once the flow is over
+        await _discard_pairing_dir(session)
 
 
 async def _authorize_developer_key(
@@ -247,6 +278,247 @@ async def _account_in_use(session: SetupSession, account_id: str) -> bool:
         if isinstance(provider, SpotifyProvider) and provider.account_id == account_id:
             return True
     return False
+
+
+async def _setup_playback(
+    session: SetupSession, setup_data: dict[str, Any], account_id: str | None
+) -> None:
+    """
+    Choose the playback backend and run its authorization branch.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    :param account_id: The signed-in Spotify user id, when known.
+    """
+    stored_backend = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "")
+    if stored_backend:
+        preselect = stored_backend
+    elif session.context.instance_id:
+        # an instance predating the backend choice runs librespot; a routine
+        # reconfigure must not nudge it onto another playback path
+        preselect = BACKEND_LIBRESPOT
+    else:
+        preselect = _default_backend()
+    errors: dict[str, str] | None = None
+    while True:
+        selected = await _choose_playback_backend(session, preselect, errors)
+        errors = None
+        if selected == BACKEND_SOLOIST:
+            if not await _authorize_soloist(session, setup_data):
+                # consent refused: back to the backend choice with a clear error
+                preselect = BACKEND_SOLOIST
+                errors = {"base": "soloist_consent_required"}
+                continue
+            # the librespot credential is of no further use
+            setup_data[CONF_LIBRESPOT_CREDENTIALS] = None
+        else:
+            setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session, account_id)
+            # switching away from soloist: overwrite the soloist secrets; they
+            # only reach the stored setup_data when finish() succeeds, so an
+            # aborted or failed switch keeps them intact
+            setup_data[CONF_SOLOIST_API_KEY] = None
+            setup_data[CONF_SOLOIST_CONSENT] = False
+            setup_data[CONF_SOLOIST_SESSION_DIR] = None
+        setup_data[CONF_PLAYBACK_BACKEND] = selected
+        return
+
+
+def _default_backend() -> str:
+    """Return the backend to preselect for a fresh setup."""
+    try:
+        verify_platform_supported()
+    except UnsupportedPlatformError:
+        return BACKEND_LIBRESPOT
+    # Spotify's official client: the only option for accounts librespot cannot
+    # serve (created since late 2024), hence the recommended default
+    return BACKEND_SOLOIST
+
+
+async def _choose_playback_backend(
+    session: SetupSession, preselect: str, errors: dict[str, str] | None
+) -> str:
+    """
+    Show the playback backend choice step until a usable backend is selected.
+
+    :param session: The setup session driving the flow.
+    :param preselect: Backend to preselect (the stored or previously chosen one).
+    :param errors: Optional errors to display on the first render.
+    """
+    while True:
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_PLAYBACK_BACKEND,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    default_value=BACKEND_LIBRESPOT,
+                    value=preselect,
+                    options=[
+                        ConfigValueOption(BACKEND_SOLOIST),
+                        ConfigValueOption(BACKEND_LIBRESPOT),
+                    ],
+                ),
+            ],
+            step_id="playback_backend",
+            errors=errors,
+        )
+        selected = str(values[CONF_PLAYBACK_BACKEND])
+        if selected == BACKEND_SOLOIST:
+            try:
+                verify_platform_supported()
+            except UnsupportedPlatformError:
+                errors = {"base": "soloist_unsupported_platform"}
+                preselect = BACKEND_LIBRESPOT
+                continue
+        return selected
+
+
+async def _authorize_soloist(session: SetupSession, setup_data: dict[str, Any]) -> bool:
+    """
+    Run the soloist branch: consent, API key and account pairing.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    :return: True when the branch completed, False when consent was refused.
+    """
+    if not await _ask_soloist_consent(session, bool(setup_data.get(CONF_SOLOIST_CONSENT))):
+        return False
+    setup_data[CONF_SOLOIST_CONSENT] = True
+    # an existing paired session can be kept on reconfigure; the API key can
+    # still be updated either way
+    keep_session = await _has_existing_soloist_session(session) and not await _ask_soloist_repair(
+        session
+    )
+    errors: dict[str, str] | None = None
+    while True:
+        await _ask_soloist_api_key(session, setup_data, errors)
+        if keep_session:
+            setup_data[CONF_SOLOIST_SESSION_DIR] = None
+            return True
+        try:
+            await _pair_soloist(session, setup_data)
+            return True
+        except StepExpiredError:
+            errors = {"base": "soloist_pairing_not_completed"}
+        except SoloistError as err:
+            # download/refresh problems carry their own translation keys
+            errors = {"base": err.translation_key or "soloist_pairing_failed"}
+        except LoginFailed:
+            # a rejected key is the most likely cause; re-show the key step
+            errors = {"base": "soloist_pairing_failed"}
+
+
+async def _ask_soloist_consent(session: SetupSession, prefill: bool) -> bool:
+    """
+    Show the soloist warning/consent step and return whether consent was given.
+
+    :param session: The setup session driving the flow.
+    :param prefill: Whether consent was already given on an earlier run.
+    """
+    values = await session.form(
+        [
+            ConfigEntry(
+                key=CONF_SOLOIST_CONSENT,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                value=prefill,
+            ),
+        ],
+        step_id="soloist_terms",
+    )
+    return bool(values.get(CONF_SOLOIST_CONSENT))
+
+
+async def _ask_soloist_api_key(
+    session: SetupSession, setup_data: dict[str, Any], errors: dict[str, str] | None = None
+) -> None:
+    """
+    Collect the Soloist API key.
+
+    An already stored key (reconfigure) is kept when the field is left empty;
+    it is never shown back to the user.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    :param errors: Optional errors to display on the first render.
+    """
+    has_stored_key = bool(setup_data.get(CONF_SOLOIST_API_KEY))
+    while True:
+        entries = [
+            ConfigEntry(
+                key=CONF_SOLOIST_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=not has_stored_key,
+            ),
+        ]
+        if has_stored_key:
+            entries.insert(0, ConfigEntry(key="soloist_api_key_hint", type=ConfigEntryType.LABEL))
+        values = await session.form(entries, step_id="soloist_api_key", errors=errors)
+        api_key = str(values.get(CONF_SOLOIST_API_KEY) or "").strip()
+        if api_key or not has_stored_key:
+            if len(api_key) < MIN_API_KEY_LENGTH:
+                errors = {CONF_SOLOIST_API_KEY: "soloist_api_key_invalid"}
+                continue
+            setup_data[CONF_SOLOIST_API_KEY] = api_key
+        return
+
+
+async def _has_existing_soloist_session(session: SetupSession) -> bool:
+    """Return whether the instance being reconfigured already has a paired session."""
+    if not session.context.instance_id:
+        return False
+    data_dir = (
+        Path(session.mass.storage_path)
+        / "spotify"
+        / session.context.instance_id
+        / SOLOIST_DATA_DIR_NAME
+    )
+    return await asyncio.to_thread(soloist_session_present, data_dir)
+
+
+async def _ask_soloist_repair(session: SetupSession) -> bool:
+    """Ask whether the existing paired session should be replaced by a new pairing."""
+    values = await session.form(
+        [
+            ConfigEntry(
+                key=CONF_SOLOIST_REPAIR,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+            ),
+        ],
+        step_id="soloist_repair",
+    )
+    return bool(values.get(CONF_SOLOIST_REPAIR))
+
+
+async def _pair_soloist(session: SetupSession, setup_data: dict[str, Any]) -> None:
+    """
+    Pair the Spotify account through the Spotify app and record the session dir.
+
+    The session is paired into a flow-private directory (this flow may be setting
+    up a brand new instance that has no instance id yet); the provider adopts it
+    into its per-instance data dir on the next load.
+
+    :param session: The setup session driving the flow.
+    :param setup_data: The setup data collected so far, updated in place.
+    """
+    pairing_dir = f"{SOLOIST_PAIRING_DIR}/{session.flow_id}"
+    api_key = str(setup_data.get(CONF_SOLOIST_API_KEY) or "")
+    await session.progress_until(
+        pair_soloist_session(session.mass, api_key, Path(session.mass.storage_path) / pairing_dir),
+        step_id="soloist_pairing",
+        text="soloist_pairing_instructions",
+        expires_in=PAIRING_TIMEOUT,
+    )
+    setup_data[CONF_SOLOIST_SESSION_DIR] = pairing_dir
+
+
+async def _discard_pairing_dir(session: SetupSession) -> None:
+    """Remove this flow's private pairing directory, if it created one."""
+    pairing_dir = Path(session.mass.storage_path) / SOLOIST_PAIRING_DIR / session.flow_id
+    await asyncio.to_thread(shutil.rmtree, pairing_dir, ignore_errors=True)
 
 
 async def _authorize_playback(session: SetupSession, account_id: str | None) -> str:

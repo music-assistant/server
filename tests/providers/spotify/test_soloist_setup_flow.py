@@ -1,0 +1,319 @@
+"""
+Tests for the Spotify setup flow's Soloist playback branch.
+
+The soloist branch collects download consent, the user's personal API key and a
+paired session, and must recover gracefully from refusals, unsupported
+platforms, partial key pastes and pairing timeouts — every failure loops back
+to a form instead of aborting the already-authorized flow. The pairing helper
+itself is covered as well.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.errors import LoginFailed
+
+from music_assistant.models.setup_flow import StepExpiredError
+from music_assistant.providers.spotify import helpers as spotify_helpers
+from music_assistant.providers.spotify import setup_flow
+from music_assistant.providers.spotify.constants import (
+    BACKEND_LIBRESPOT,
+    BACKEND_SOLOIST,
+    CONF_LIBRESPOT_CREDENTIALS,
+    CONF_PLAYBACK_BACKEND,
+    CONF_SOLOIST_API_KEY,
+    CONF_SOLOIST_CONSENT,
+    CONF_SOLOIST_SESSION_DIR,
+    SOLOIST_DATA_DIR_NAME,
+)
+from music_assistant.providers.spotify.helpers import pair_soloist_session
+from music_assistant.providers.spotify_connect.soloist import UnsupportedPlatformError
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
+
+async def test_soloist_branch_collects_consent_key_and_pairing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The soloist branch stores consent, API key and the flow-private session dir."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    paired_dirs = _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data)
+    assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_SOLOIST
+    assert setup_data[CONF_SOLOIST_CONSENT] is True
+    assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
+    # a leftover librespot credential is of no further use
+    assert setup_data[CONF_LIBRESPOT_CREDENTIALS] is None
+    assert paired_dirs == [tmp_path / "spotify" / "pairing" / "flow1"]
+    assert _step_ids(session) == ["playback_backend", "soloist_terms", "soloist_api_key"]
+
+
+async def test_consent_refusal_returns_to_the_backend_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refusing the soloist terms re-offers the backend choice with a clear error."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: False},
+            {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data)
+    retry_call = session.form.await_args_list[2]
+    assert retry_call.kwargs["step_id"] == "playback_backend"
+    assert retry_call.kwargs["errors"] == {"base": "soloist_consent_required"}
+    assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_LIBRESPOT
+    assert setup_data[CONF_LIBRESPOT_CREDENTIALS] == "creds"
+    # switching away from soloist wipes its secrets
+    assert setup_data[CONF_SOLOIST_API_KEY] is None
+    assert setup_data[CONF_SOLOIST_CONSENT] is False
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] is None
+
+
+async def test_unsupported_platform_falls_back_to_librespot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Picking soloist on an unsupported platform re-shows the choice with an error."""
+    monkeypatch.setattr(
+        setup_flow,
+        "verify_platform_supported",
+        MagicMock(side_effect=UnsupportedPlatformError("x")),
+    )
+    monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data)
+    retry_call = session.form.await_args_list[1]
+    assert retry_call.kwargs["step_id"] == "playback_backend"
+    assert retry_call.kwargs["errors"] == {"base": "soloist_unsupported_platform"}
+    assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_LIBRESPOT
+
+
+async def test_short_api_key_is_rejected_and_reasked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial API key paste re-shows the key form until a plausible key is entered."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "short"},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data)
+    api_key_calls = [
+        call for call in session.form.await_args_list if call.kwargs["step_id"] == "soloist_api_key"
+    ]
+    assert len(api_key_calls) == 2
+    assert api_key_calls[0].kwargs["errors"] is None
+    assert api_key_calls[1].kwargs["errors"] == {CONF_SOLOIST_API_KEY: "soloist_api_key_invalid"}
+    assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
+
+
+async def test_pairing_timeout_reshows_the_key_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pairing step that expires re-shows the key form; a retry can then complete."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    paired_dirs = _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            # the stored key is kept on the retry by leaving the field empty
+            {},
+        ],
+    )
+    attempts = {"count": 0}
+
+    async def _expire_first(awaitable: Any, **_kwargs: Any) -> Any:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            # never awaited: drop the pairing coroutine without a warning
+            awaitable.close()
+            raise StepExpiredError
+        return await awaitable
+
+    session.progress_until = AsyncMock(side_effect=_expire_first)
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data)
+    api_key_calls = [
+        call for call in session.form.await_args_list if call.kwargs["step_id"] == "soloist_api_key"
+    ]
+    assert len(api_key_calls) == 2
+    assert api_key_calls[1].kwargs["errors"] == {"base": "soloist_pairing_not_completed"}
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
+    # only the successful retry ran the pairing
+    assert len(paired_dirs) == 1
+
+
+async def test_reconfigure_keeps_the_existing_paired_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declining a re-pair keeps the existing session and skips the pairing step."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    paired_dirs = _record_pairing(monkeypatch)
+    canonical = tmp_path / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME
+    canonical.mkdir(parents=True)
+    (canonical / "session.bin").write_bytes(b"session")
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {setup_flow.CONF_SOLOIST_REPAIR: False},
+            # keep the stored API key
+            {},
+        ],
+    )
+    session.context.instance_id = "spotify--test"
+    setup_data: dict[str, Any] = {
+        CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST,
+        CONF_SOLOIST_CONSENT: True,
+        CONF_SOLOIST_API_KEY: "k" * 20,
+    }
+    await setup_flow._setup_playback(session, setup_data)
+    assert _step_ids(session) == [
+        "playback_backend",
+        "soloist_terms",
+        "soloist_repair",
+        "soloist_api_key",
+    ]
+    assert paired_dirs == []
+    # the kept session stays where it is; no freshly paired dir is left to adopt
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] is None
+    assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
+
+
+async def test_pairing_failure_exit_code_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nonzero pairing exit code surfaces as a login failure."""
+    _install_fake_soloist(monkeypatch, returncode=1)
+    with pytest.raises(LoginFailed, match="exit code 1"):
+        await pair_soloist_session(MagicMock(), "k" * 20, tmp_path / "pairdir")
+
+
+async def test_pairing_without_a_stored_session_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit code 0 without a stored session still fails: pairing never completed."""
+    _install_fake_soloist(monkeypatch, returncode=0)
+    with pytest.raises(LoginFailed, match="did not store"):
+        await pair_soloist_session(MagicMock(), "k" * 20, tmp_path / "pairdir")
+
+
+async def test_pairing_success_stores_a_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pairing run that stores a session completes without error."""
+    data_dir = tmp_path / "pairdir"
+    _install_fake_soloist(
+        monkeypatch, returncode=0, on_wait=lambda: (data_dir / "session.bin").write_bytes(b"x")
+    )
+    await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
+    assert (data_dir / "session.bin").is_file()
+
+
+async def _run_awaitable(awaitable: Any, **_kwargs: Any) -> Any:
+    """Stand in for session.progress_until, which awaits the work it displays progress for."""
+    return await awaitable
+
+
+def _make_session(tmp_path: Path, form_answers: list[dict[str, Any]]) -> MagicMock:
+    """Return a setup-session mock answering its forms from the given sequence."""
+    session = MagicMock()
+    session.form = AsyncMock(side_effect=form_answers)
+    session.progress_until = AsyncMock(side_effect=_run_awaitable)
+    session.mass.storage_path = str(tmp_path)
+    session.context.instance_id = None
+    session.flow_id = "flow1"
+    return session
+
+
+def _step_ids(session: MagicMock) -> list[str]:
+    """Return the step ids of every form shown, in order."""
+    return [call.kwargs["step_id"] for call in session.form.await_args_list]
+
+
+def _record_pairing(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Replace pair_soloist_session with a recording no-op, returning the recorded dirs."""
+    paired_dirs: list[Path] = []
+
+    async def _fake_pair(_mass: Any, _api_key: str, data_dir: Path) -> None:
+        paired_dirs.append(data_dir)
+
+    monkeypatch.setattr(setup_flow, "pair_soloist_session", _fake_pair)
+    return paired_dirs
+
+
+def _install_fake_soloist(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, on_wait: Callable[[], object] | None = None
+) -> None:
+    """Replace the binary manager and pairing process in helpers with canned fakes."""
+    manager = MagicMock()
+    manager.ensure_fresh = AsyncMock(return_value=Path("/fake/soloist"))
+    monkeypatch.setattr(spotify_helpers, "SoloistBinaryManager", MagicMock(return_value=manager))
+
+    class _FakePairProcess:
+        """AsyncProcess stand-in for the soloist --pair run."""
+
+        def __init__(self, _args: list[str], **_kwargs: Any) -> None:
+            self._stderr_task: asyncio.Task[None] | None = None
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            # consume the attached stderr reader so no pending task leaks a warning
+            if self._stderr_task is not None:
+                await self._stderr_task
+
+        def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
+            self._stderr_task = task
+
+        async def iter_stderr(self) -> AsyncGenerator[str]:
+            lines: tuple[str, ...] = ()
+            for line in lines:
+                yield line
+
+        async def wait(self) -> int:
+            if on_wait is not None:
+                on_wait()
+            return returncode
+
+    monkeypatch.setattr(spotify_helpers, "AsyncProcess", _FakePairProcess)
