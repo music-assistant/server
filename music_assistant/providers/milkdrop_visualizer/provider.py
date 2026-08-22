@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class MilkdropVisualizerProvider(PluginProvider):
-    """Streams waveform frames from playing Sendspin groups to the web frontend."""
+    """Streams waveform frames from what a player is playing to the web frontend."""
 
     def __init__(
         self,

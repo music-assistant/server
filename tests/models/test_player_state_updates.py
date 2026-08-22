@@ -121,6 +121,65 @@ class TestUpdateStateChangeDetection:
 
         state_cls.assert_called_once()
 
+    def test_position_appearing_signals_a_jump(
+        self, player: MockPlayer, mock_mass: MagicMock
+    ) -> None:
+        """
+        The first elapsed write after an anchor reset is signalled as a position jump.
+
+        A playback session restart (seek) resets the anchor to None; the session's
+        first elapsed write is its only propagation opportunity, so swallowing it
+        strands wrapper players on the stale None anchor (a frozen queue position).
+        """
+        player._attr_elapsed_time = None
+        player._attr_elapsed_time_last_updated = None
+        player.update_state(signal_event=False)
+        assert player.state.elapsed_time is None
+
+        player._attr_elapsed_time = 0.5
+        player._attr_elapsed_time_last_updated = time.time()
+        player.update_state()
+
+        mock_mass.players.on_player_position_jumped.assert_called_once_with(player)
+        assert player.state.elapsed_time == 0.5
+
+
+class TestReconcilePositionAnchor:
+    """The anchor reconcile helper's handling of incomplete anchors."""
+
+    def test_incomplete_to_complete_reports_a_jump(self) -> None:
+        """A position appearing on a None anchor is a discontinuity, not a quiet adopt."""
+        position, _, jumped = player_module._reconcile_position_anchor(
+            None, None, 0.5, time.time(), prev_playing=True, new_playing=True
+        )
+        assert position == 0.5
+        assert jumped
+
+    def test_complete_to_incomplete_adopts_silently(self) -> None:
+        """A position disappearing (stop/reset) is adopted without a jump signal."""
+        position, _, jumped = player_module._reconcile_position_anchor(
+            10.0, time.time(), None, None, prev_playing=True, new_playing=False
+        )
+        assert position is None
+        assert not jumped
+
+    def test_incomplete_to_incomplete_stays_silent(self) -> None:
+        """No position on either side has nothing to signal."""
+        _, _, jumped = player_module._reconcile_position_anchor(
+            None, None, None, None, prev_playing=False, new_playing=False
+        )
+        assert not jumped
+
+    def test_steady_playback_still_keeps_the_previous_anchor(self) -> None:
+        """A tick extrapolating to the same corrected position keeps the anchor unchanged."""
+        now = time.time()
+        position, timestamp, jumped = player_module._reconcile_position_anchor(
+            10.0, now - 5, 15.2, now, prev_playing=True, new_playing=True
+        )
+        assert position == 10.0
+        assert timestamp == now - 5
+        assert not jumped
+
 
 class TestNativeCurrentMediaPosition:
     """The published position of native current_media and the timestamp it is paired with."""

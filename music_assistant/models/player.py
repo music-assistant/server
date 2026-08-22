@@ -188,7 +188,8 @@ def _reconcile_position_anchor(
     :param force_adopt: Always adopt the candidate anchor (still reports jumps).
 
     Returns a (position, timestamp, jumped) tuple where jumped indicates a
-    corrected-position discontinuity larger than the threshold.
+    corrected-position discontinuity larger than the threshold, or an
+    incomplete anchor becoming complete.
     """
     if (
         not isinstance(prev_position, int | float)
@@ -196,8 +197,10 @@ def _reconcile_position_anchor(
         or not isinstance(new_position, int | float)
         or not isinstance(new_timestamp, int | float)
     ):
-        # incomplete (or non-numeric) anchor data: adopt the candidate as-is
-        return new_position, new_timestamp, False
+        # incomplete (or non-numeric) anchor data: adopt the candidate as-is;
+        # a candidate that just became complete is a jump (the position appeared)
+        jumped = isinstance(new_position, int | float) and isinstance(new_timestamp, int | float)
+        return new_position, new_timestamp, jumped
     now = time.time()
     # a position anchor only advances (extrapolates) while playing
     prev_corrected = prev_position + (now - prev_timestamp) if prev_playing else prev_position
@@ -3279,7 +3282,8 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                result.add(player)
+                if player.type != PlayerType.UNKNOWN:
+                    result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
             if provider := self.mass.get_provider(member_id):
@@ -3288,7 +3292,8 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    result.add(player)
+                    if player.type != PlayerType.UNKNOWN:
+                        result.add(player)
         return result
 
     # The id of the (last) active mass source.

@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -34,6 +34,8 @@ from music_assistant.providers.spotify_connect.go_librespot.backend import (
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendPlaybackOptions,
+    BackendQueueState,
     BackendStreamSource,
     BackendTrackMetadata,
 )
@@ -134,6 +136,31 @@ class FakeBackend(SpotifyConnectBackend):
         self.calls.append(("set_volume", volume))
 
 
+class QueueControlFakeBackend(FakeBackend):
+    """Fake backend that additionally implements the queue-session verbs."""
+
+    @property
+    def supports_queue_control(self) -> bool:
+        """The queue verbs below are implemented."""
+        return True
+
+    async def add_to_queue(self, uri: str) -> None:
+        """Record an add_to_queue command."""
+        self.calls.append(("add_to_queue", uri))
+
+    async def set_shuffle(self, enabled: bool) -> None:
+        """Record a set_shuffle command."""
+        self.calls.append(("set_shuffle", enabled))
+
+    async def set_repeat(self, repeat: RepeatMode) -> None:
+        """Record a set_repeat command."""
+        self.calls.append(("set_repeat", repeat))
+
+    async def request_queue(self, limit: int = 10) -> None:
+        """Record a request_queue command."""
+        self.calls.append(("request_queue", limit))
+
+
 def _create_task(coro_or_result: Any) -> Any:
     """Run coroutines as real tasks; pass anything else through as a mock."""
     if asyncio.iscoroutine(coro_or_result):
@@ -180,6 +207,7 @@ def _make_provider(
     provider._last_volume_sent = last_volume_sent
     provider._last_context_uri = last_context_uri
     provider._last_track_uri = last_track_uri
+    provider._last_playback_options = None
     return provider, mass
 
 
@@ -522,6 +550,197 @@ async def test_queue_control_contract_defaults() -> None:
         await backend.set_repeat(RepeatMode.OFF)
     with pytest.raises(NotImplementedError):
         await backend.request_queue()
+
+
+async def test_shuffle_and_repeat_controls_dispatch_to_backend() -> None:
+    """SHUFFLE and REPEAT source controls map onto the backend's queue-session verbs."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, True)
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, False)
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.REPEAT, RepeatMode.ALL)
+
+    assert backend.calls == [
+        ("set_shuffle", True),
+        ("set_shuffle", False),
+        ("set_repeat", RepeatMode.ALL),
+    ]
+    # the shuffle payload is passed through strictly typed, never coerced
+    assert all(type(value) is bool for name, value in backend.calls if name == "set_shuffle")
+
+
+async def test_shuffle_control_ignores_non_bool_payloads() -> None:
+    """A None (or misrouted enum) payload never silently toggles shuffle."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, None)
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, RepeatMode.OFF)
+
+    assert backend.calls == []
+
+
+async def test_seek_control_accepts_floats_but_not_bools() -> None:
+    """A float seek position still works; a bool must not become a 1-second seek."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend, playing=True)
+
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SEEK, 42.7)  # type: ignore[arg-type]
+    await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SEEK, True)
+
+    assert backend.calls == [("seek", 42000)]
+
+
+async def test_shuffle_control_refused_without_active_session() -> None:
+    """The existing not-active gate also covers the new queue controls."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend)
+
+    with pytest.raises(AudioError, match="not the active Spotify playback device"):
+        await provider.on_source_control(AUDIO_SOURCE_ID, SourceControl.SHUFFLE, True)
+
+    assert backend.calls == []
+
+
+async def test_options_changed_pushes_queue_options_to_the_claiming_queue() -> None:
+    """An OPTIONS_CHANGED event mirrors the session's shuffle/repeat to the active queue."""
+    backend = QueueControlFakeBackend()
+    provider, mass = _make_provider(backend, in_use_by_queue="queue1")
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+
+    mass.streams.update_source_queue_options.assert_called_once_with(
+        "queue1",
+        AUDIO_SOURCE_ID,
+        _INSTANCE_ID,
+        shuffle_enabled=True,
+        repeat_mode=RepeatMode.ALL,
+    )
+    # an options report is no reason to re-push the (unchanged) stream metadata
+    mass.streams.update_stream_metadata.assert_not_called()
+
+
+async def test_options_changed_without_claiming_queue_pushes_nothing() -> None:
+    """Session options are only mirrored while a queue is streaming the source."""
+    backend = QueueControlFakeBackend()
+    provider, mass = _make_provider(backend)
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+
+    mass.streams.update_source_queue_options.assert_not_called()
+    # the options are cached for the push that follows once a queue claims the source
+    assert provider._last_playback_options == BackendPlaybackOptions(
+        shuffle=True, repeat=RepeatMode.ALL
+    )
+
+
+async def test_options_cached_before_claim_are_pushed_on_claim() -> None:
+    """Options reported before the queue claim exists are pushed once the claim is set."""
+    backend = QueueControlFakeBackend()
+    provider, mass = _make_provider(backend, playing=True, session_active=True)
+    _player_with_volume(mass, 25)
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+    mass.streams.update_source_queue_options.assert_not_called()
+
+    await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
+
+    mass.streams.update_source_queue_options.assert_called_once_with(
+        "queue1",
+        AUDIO_SOURCE_ID,
+        _INSTANCE_ID,
+        shuffle_enabled=True,
+        repeat_mode=RepeatMode.ALL,
+    )
+
+
+async def test_session_inactive_clears_cached_options() -> None:
+    """Cached options do not outlive the session they were reported by."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend, session_active=True)
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.OPTIONS_CHANGED,
+            options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
+        )
+    )
+    assert provider._last_playback_options is not None
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_INACTIVE))
+
+    assert provider._last_playback_options is None
+
+
+async def test_queue_changed_event_is_ignored_for_now() -> None:
+    """QUEUE_CHANGED snapshots are not consumed yet and skip the metadata push tail."""
+    backend = QueueControlFakeBackend()
+    provider, mass = _make_provider(backend, in_use_by_queue="queue1")
+
+    await provider._handle_backend_event(
+        BackendEvent(
+            BackendEventType.QUEUE_CHANGED,
+            queue=BackendQueueState(),
+            context_uri="spotify:playlist:ctx",
+        )
+    )
+
+    mass.streams.update_stream_metadata.assert_not_called()
+    mass.streams.update_source_queue_options.assert_not_called()
+    # the context memo still applies: it piggybacks on every event type
+    assert provider._last_context_uri == "spotify:playlist:ctx"
+
+
+def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
+    """A queue-control backend makes the AudioSource declare its queue capabilities."""
+    backend = QueueControlFakeBackend()
+    provider, _mass = _make_provider(backend)
+    provider.config.name = "Spotify Connect Test"
+
+    source = provider._build_audio_source()
+
+    caps = source.queue_capabilities
+    assert caps is not None
+    assert caps.provider_domain == "spotify"
+    assert caps.can_shuffle is True
+    assert caps.can_repeat is True
+    # the queue-view mirror and the play/enqueue redirect are not built yet,
+    # so those capabilities are not declared
+    assert caps.provides_queue_view is False
+    assert caps.playable_media_types == []
+    assert caps.enqueueable_media_types == []
+    assert caps.native_autoplay is False
+    assert caps.native_crossfade is False
+    assert caps.native_volume_normalization is False
+    # account verification arrives with the play redirect
+    assert source.account_id is None
+
+
+def test_audio_source_stays_transport_only_without_queue_control() -> None:
+    """A transport-only backend leaves the AudioSource without queue capabilities."""
+    backend = FakeBackend()
+    provider, _mass = _make_provider(backend)
+    provider.config.name = "Spotify Connect Test"
+
+    source = provider._build_audio_source()
+
+    assert source.queue_capabilities is None
 
 
 async def test_source_selected_takes_playback_back_via_backend() -> None:

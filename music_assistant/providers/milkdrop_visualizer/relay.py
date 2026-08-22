@@ -15,7 +15,6 @@ Wire format to the browser:
 from __future__ import annotations
 
 import asyncio
-import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -27,25 +26,17 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
 )
-from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
-from .tap import CONF_COLOR_TINT, TapManager, ViewerQueue, get_sendspin_provider
+from .tap import CONF_COLOR_TINT, TapManager, ViewerQueue, server_now_us
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from music_assistant.models.player import Player
+
     from .provider import MilkdropVisualizerProvider
 
 RELAY_ROUTE = "/milkdrop_visualizer"
-# Shortest normalized id tail accepted when matching a wrapper player id
-# against the Sendspin player it embeds.
-MIN_SUFFIX_MATCH_CHARS = 8
-SENDSPIN_DOMAIN = "sendspin"
-
-
-def _normalize_player_id(value: str) -> str:
-    """Lowercase and strip separators so id spellings compare across providers."""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
 class MilkdropRelay:
@@ -84,7 +75,7 @@ class MilkdropRelay:
         await self.taps.close()
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """Serve one browser connection: tap the target group and stream frames."""
+        """Serve one browser connection: tap the target player's audio and stream frames."""
         ws = web.WebSocketResponse(heartbeat=25)
         await ws.prepare(request)
 
@@ -94,12 +85,12 @@ class MilkdropRelay:
         query = request.query.get("player")
         target = self._resolve_target(query)
         if target is None:
-            self.logger.warning("No Sendspin group to visualize for %s", query or "any player")
+            self.logger.warning("No player to visualize for %s", query or "any player")
             await ws.send_str(
                 dumps(
                     {
                         "type": "error",
-                        "message": "this player is not backed by a sendspin group",
+                        "message": "no such player",
                     }
                 ).decode()
             )
@@ -125,7 +116,15 @@ class MilkdropRelay:
                     }
                 ).decode()
             )
-            replayed_waves = list(tap.ring)
+            if tap.has_only_future_frames():
+                # Production is pinned at the buffer's eviction edge, ahead of
+                # what is audible; nothing buffered is drawable yet. Ask the tap
+                # to re-anchor at the playhead instead of replaying frames the
+                # viewer could only sit on.
+                tap.realign_requested = True
+                replayed_waves = []
+            else:
+                replayed_waves = list(tap.ring)
             replayed_beats = self.taps.pending_beat_frames(tap)
             for frame in replayed_waves + replayed_beats:
                 await ws.send_bytes(frame)
@@ -191,10 +190,6 @@ class MilkdropRelay:
 
     async def _serve_session(self, ws: web.WebSocketResponse, queue: ViewerQueue) -> None:
         """Pump binary frames to the browser and answer its time-sync pings."""
-        sendspin = get_sendspin_provider(self.mass)
-        if sendspin is None:
-            return
-        clock = sendspin.server_api.clock
 
         async def pump() -> None:
             while True:
@@ -213,7 +208,7 @@ class MilkdropRelay:
                 # as a server crash: log it and keep the session alive.
                 try:
                     data = loads(msg.data)
-                    await self._handle_client_message(ws, clock, data)
+                    await self._handle_client_message(ws, data)
                 except ValueError, KeyError, TypeError:
                     self.logger.debug("Ignoring malformed viewer message", exc_info=True)
                     continue
@@ -226,12 +221,10 @@ class MilkdropRelay:
             with suppress(asyncio.CancelledError, ConnectionError, RuntimeError):
                 await pump_task
 
-    async def _handle_client_message(
-        self, ws: web.WebSocketResponse, clock: Any, data: dict[str, Any]
-    ) -> None:
+    async def _handle_client_message(self, ws: web.WebSocketResponse, data: dict[str, Any]) -> None:
         """Answer a single text frame from a viewer."""
         if data.get("type") == "client/time":
-            now_us = clock.now_us()
+            now_us = server_now_us()
             await ws.send_str(
                 dumps(
                     {
@@ -249,53 +242,19 @@ class MilkdropRelay:
             # that cannot start would otherwise fail in silence.
             self.logger.warning("Viewer reported a problem: %s", data.get("message", "unknown"))
 
-    def _resolve_target(self, query: str | None) -> SendspinBasePlayer | None:
+    def _resolve_target(self, query: str | None) -> Player | None:
         """
-        Pick the Sendspin player whose group to visualize.
+        Pick the player whose audio to visualize.
 
-        :param query: MA player id of the viewed player. A player that resolves to
-            no Sendspin group returns None (the viewer is told so) rather than
-            falling back: guessing once attached a viewer to a silent dummy output,
-            which looks exactly like a broken visualizer. Auto-pick applies only
-            when no player was named at all.
+        :param query: MA player id of the viewed player. A player that is idle,
+            or playing a source Music Assistant does not decode itself, is still
+            a valid target: the tap produces frames as soon as there are any.
+            Auto-pick applies only when no player was named at all.
         """
-        candidates = [
-            player
-            for player in self.mass.players
-            if isinstance(player, SendspinBasePlayer) and player.api is not None
-        ]
         if query:
-            # A player that reaches Sendspin through a linked output shares no
-            # id with it at all (a Sonos "RINCON_..." whose bridge rides on its
-            # AirPlay side is "spb_<mac>"), so ask the player for its Sendspin
-            # output first. This is exact; the id matching below only has to
-            # cover queries that name no MA player of their own.
-            if (queried := self.mass.players.get_player(query)) is not None:
-                output = queried.get_output_protocol_by_domain(SENDSPIN_DOMAIN)
-                if output is not None:
-                    linked = self.mass.players.get_player(output.output_protocol_id)
-                    if isinstance(linked, SendspinBasePlayer) and linked.api is not None:
-                        return linked
-            # The query may also be the Sendspin player itself, a player a
-            # Sendspin bridge rides on (underlying_player_id), or a wrapper id
-            # spelling the same device differently (universal "up20f83b..." vs
-            # Sendspin "20:F8:3B:..."), hence the normalized suffix match.
-            normalized_query = _normalize_player_id(query)
-            for player in candidates:
-                for candidate_id in (player.player_id, player.underlying_player_id or ""):
-                    normalized_id = _normalize_player_id(candidate_id)
-                    if not normalized_id:
-                        continue
-                    if normalized_query == normalized_id:
-                        return player
-                    shortest = min(len(normalized_query), len(normalized_id))
-                    if shortest >= MIN_SUFFIX_MATCH_CHARS and (
-                        normalized_query.endswith(normalized_id)
-                        or normalized_id.endswith(normalized_query)
-                    ):
-                        return player
-            self.logger.debug("Player %r is not backed by a Sendspin group", query)
-            return None
-        playing = [p for p in candidates if p.playback_state == PlaybackState.PLAYING]
-        chosen = (playing or candidates)[:1]
-        return chosen[0] if chosen else None
+            return self.mass.players.get_player(query)
+        for player in self.mass.players:
+            queue = self.mass.player_queues.get_active_queue(player.player_id)
+            if queue is not None and queue.state == PlaybackState.PLAYING:
+                return player
+        return None
