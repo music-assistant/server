@@ -2,7 +2,7 @@
 Tests for the Spotify setup flow's account checks.
 
 Right after the sign-in the flow refuses accounts that cannot work: one without
-Spotify Premium (no backend can play audio from a free account) and one that is
+Spotify Premium (librespot refuses to stream for a free account) and one that is
 already set up on another provider instance.
 """
 
@@ -12,6 +12,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from aiohttp import ClientError
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.spotify import setup_flow as spotify_flow
@@ -65,22 +66,39 @@ async def test_non_premium_accounts_are_turned_away(product: str | None, aborts:
 
 
 async def test_a_failing_lookup_does_not_block_the_setup() -> None:
-    """A lookup Spotify does not answer must not stop the user from setting up."""
+    """A lookup Spotify answers with an error must not stop the user from setting up."""
     session = _make_session()
     _stub_me(session, status=503)
 
     await spotify_flow._verify_account(session, "at-test")
 
 
+async def test_an_unreachable_lookup_does_not_block_the_setup() -> None:
+    """A lookup that never completes (transport error/timeout) must not stop the setup."""
+    session = _make_session()
+    session.mass.http_session.get = mock.MagicMock(  # type: ignore[method-assign]
+        side_effect=ClientError("boom")
+    )
+
+    await spotify_flow._verify_account(session, "at-test")
+
+
 @pytest.mark.parametrize(
-    ("other_instance_id", "aborts"),
-    [("spotify--other", True), ("spotify--test", False)],
+    ("setup_instance_id", "other_instance_id", "aborts"),
+    [
+        # a fresh setup adding an account another instance already serves
+        (None, "spotify--other", True),
+        # a reconfigure of a different instance
+        ("spotify--test", "spotify--other", True),
+        # a reconfigure of the very instance that owns the account
+        ("spotify--test", "spotify--test", False),
+    ],
 )
 async def test_an_already_configured_account_is_refused(
-    other_instance_id: str, aborts: bool
+    setup_instance_id: str | None, other_instance_id: str, aborts: bool
 ) -> None:
     """An account another instance already serves is refused; a reconfigure keeps its own."""
-    session = _make_session(instance_id="spotify--test")
+    session = _make_session(instance_id=setup_instance_id)
     existing = mock.MagicMock(spec=SpotifyProvider)
     existing.instance_id = other_instance_id
     existing.account_id = "u1"

@@ -149,8 +149,14 @@ def _abort_events(events: list[MassEvent]) -> list[SetupFlowStep]:
     return [event.data for event in events if event.data.type == FlowStepType.ABORT]
 
 
-def _fake_json_session(payload: dict[str, Any]) -> Any:
-    """Return a stub http_session whose .post() yields a 200 JSON response (token exchange)."""
+def _fake_json_session(payload: dict[str, Any], get_payload: dict[str, Any] | None = None) -> Any:
+    """
+    Return a stub http_session yielding 200 JSON responses.
+
+    :param payload: Body for .post() (the token exchange).
+    :param get_payload: Body for .get() (e.g. the Spotify account lookup); when omitted
+        .get() is left unstubbed.
+    """
     response = SimpleNamespace(
         status=200,
         json=AsyncMock(return_value=payload),
@@ -161,6 +167,16 @@ def _fake_json_session(payload: dict[str, Any]) -> Any:
     post_cm.__aexit__ = AsyncMock(return_value=False)
     session = MagicMock()
     session.post = MagicMock(return_value=post_cm)
+    if get_payload is not None:
+        get_response = SimpleNamespace(
+            status=200,
+            json=AsyncMock(return_value=get_payload),
+            text=AsyncMock(return_value=""),
+        )
+        get_cm = MagicMock()
+        get_cm.__aenter__ = AsyncMock(return_value=get_response)
+        get_cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=get_cm)
     return session
 
 
@@ -1596,7 +1612,12 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
     monkeypatch.setattr(
         flow_mass,
         "_http_session",
-        _fake_json_session({"refresh_token": "rt_global", "access_token": "at_keymaster"}),
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            # the account lookup must answer, so the flow really traverses the
+            # premium/duplicate gate instead of skipping it on an unstubbed call
+            get_payload={"id": "u1", "product": "premium"},
+        ),
     )
     # the playback steps shell out to librespot; stub the binary lookup and the exchange
     monkeypatch.setattr(
@@ -2030,3 +2051,40 @@ async def test_tidal_flow_device_login_remints_on_expiry(
         await _wait_for(lambda: session.finished)
     # the first (expired) attempt is followed by a re-minted second that succeeds
     assert polls["n"] == 2
+
+
+async def test_spotify_flow_aborts_on_a_non_premium_account(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Spotify flow stops right after the sign-in when the account has no Premium."""
+    from music_assistant.providers.spotify.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
+    )
+    monkeypatch.setattr(
+        flow_mass,
+        "_http_session",
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            get_payload={"id": "u1", "product": "free"},
+        ),
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        aborted = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.type == FlowStepType.ABORT
+                else None
+            )
+        )
+        # the flow never reaches the playback authorization, and nothing is persisted
+        assert aborted.reason == "premium_required"
+        assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None

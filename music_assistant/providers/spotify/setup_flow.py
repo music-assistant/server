@@ -6,9 +6,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
-import aiohttp
 import pkce
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
@@ -48,6 +47,9 @@ from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
+
+# seconds to wait for the account lookup that gates the setup
+ACCOUNT_LOOKUP_TIMEOUT = 30
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -175,10 +177,10 @@ async def _verify_account(session: SetupSession, access_token: str) -> None:
     """
     Check the just-authenticated Spotify account before the setup continues.
 
-    Turns the user away when the account has no Spotify Premium (Music Assistant
-    cannot play audio from a free account) or when it is already set up on another
-    provider instance. A lookup Spotify does not answer is not held against the
-    user: the setup simply continues.
+    Turns the user away when the account has no Spotify Premium (librespot, which
+    streams this provider's audio, refuses to play for a free account) or when it is
+    already set up on another provider instance. A lookup Spotify does not answer is
+    not held against the user: the setup simply continues.
 
     :param session: The setup session driving the flow.
     :param access_token: The access token from the just-completed sign-in. Reusing
@@ -190,12 +192,12 @@ async def _verify_account(session: SetupSession, access_token: str) -> None:
         async with session.mass.http_session.get(
             "https://api.spotify.com/v1/me",
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=ClientTimeout(total=ACCOUNT_LOOKUP_TIMEOUT),
         ) as response:
             if response.status != 200:
                 return
             userinfo = await response.json()
-    except aiohttp.ClientError, TimeoutError:
+    except ClientError, TimeoutError:
         return
     product = str(userinfo.get("product") or "")
     if product and product != "premium":
