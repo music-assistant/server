@@ -20,7 +20,7 @@
       "label": "Redirect URL"
     },
     "intro": {
-      "label": "Pick your Audible marketplace and continue. You will be sent to Amazon to sign in; after signing in you land on a 'page not found' page (that is expected) whose URL you paste back here on the next step."
+      "label": "Pick your Audible marketplace and continue. On the next step, open Amazon to sign in; afterwards you land on a 'page not found' page (that is expected) whose URL you paste back into Music Assistant."
     }
   },
   "setup_flow": {
@@ -29,7 +29,7 @@
     },
     "authenticate": {
       "title": "Sign in to Audible",
-      "description": "Open the sign-in page, log in, then paste the resulting redirect URL."
+      "description": "Open the [Audible sign-in page]({0}) and log in. Afterwards you land on a 'page not found' page — that is expected. Copy the full address from your browser, paste it below, and select Finish."
     }
   },
   "media": {
