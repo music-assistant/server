@@ -1066,3 +1066,31 @@ async def test_handoff_kick_cannot_release_the_session() -> None:
     assert provider._active_session_id == "sess_new"
     assert provider._active_player_id == "queue_new"
     mass.players.cmd_stop.assert_awaited_once_with("queue_old")
+
+
+async def test_same_player_replace_cannot_release_the_redirected_session() -> None:
+    """The outgoing stream's teardown must not release the session a redirect just started."""
+    backend = FakeBackend()
+    provider, mass = _make_provider(
+        backend,
+        session_active=True,
+        active_player_id="queue1",
+        in_use_by_queue="queue1",
+        active_session_id="sess_old",
+    )
+    _player_with_volume(mass, 25)
+    # a real clock: the grace window is deadline-based
+    mass.loop.time = lambda: 1000.0
+
+    # a redirect commands new content on the session and it starts playing...
+    await provider.prepare_redirect("queue1")
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+    # ...then the outgoing stream tears down, before the new stream claims the source
+    await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess_old")
+
+    assert ("deactivate", None) not in backend.calls
+
+    # the new stream's claim closes the grace window again
+    await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess_new")
+    assert provider._active_session_id == "sess_new"
+    assert not provider._redirect_pending

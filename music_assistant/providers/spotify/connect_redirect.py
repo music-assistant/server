@@ -330,10 +330,11 @@ class SpotifyConnectRedirect:
 
     def _delegate_item_uri(self, item: MediaItem) -> str | None:
         """Return the Spotify uri for a single resolved playable item, if it has one."""
+        # only item-level types: an audiobook is a container of chapters and is
+        # rejected by the play request as an item (it plays as a context instead)
         uri_types = {
             MediaType.TRACK: "track",
             MediaType.PODCAST_EPISODE: "episode",
-            MediaType.AUDIOBOOK: "audiobook",
         }
         if (uri_type := uri_types.get(item.media_type)) is None:
             return None
@@ -363,6 +364,7 @@ class SpotifyConnectRedirect:
             MediaType.PLAYLIST: "playlist",
             MediaType.ARTIST: "artist",
             MediaType.PODCAST: "show",
+            MediaType.AUDIOBOOK: "audiobook",
         }
         if context is None or (uri_type := context_types.get(context.media_type)) is None:
             return None, None
@@ -399,6 +401,10 @@ class SpotifyConnectRedirect:
             # show contexts have no reliable start offset; the expanded episode list
             # (which media resolution already starts at the chosen episode) plays instead
             return None, None
+        if uri_type == "audiobook":
+            # an audiobook only plays as a context (its chapters are not item uris);
+            # Spotify resumes it at the account's own position
+            return f"spotify:{uri_type}:{item_id}", None
         return f"spotify:{uri_type}:{item_id}", start_uri
 
     def _item_id_for_this_provider(self, item: MediaItem) -> str | None:

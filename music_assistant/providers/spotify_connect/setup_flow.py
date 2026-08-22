@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.config_entries import create_player_selector
 from music_assistant.models.setup_flow import SetupFlowError
 
@@ -91,7 +90,6 @@ async def _choose_backend(
     while True:
         values = await session.form(
             [
-                CONF_ENTRY_WARN_PREVIEW,
                 ConfigEntry(
                     key=CONF_BACKEND,
                     type=ConfigEntryType.STRING,

@@ -36,7 +36,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .base import (
@@ -232,7 +232,6 @@ class SpotifyConnectProvider(PluginProvider):
         # visible runtime option for soloist configs.
         is_soloist = self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
         return (
-            CONF_ENTRY_WARN_PREVIEW,
             ConfigEntry(
                 key=CONF_BACKEND,
                 type=ConfigEntryType.STRING,
@@ -420,6 +419,7 @@ class SpotifyConnectProvider(PluginProvider):
         prev_player_id = (
             self._active_player_id if self._active_player_id != active_player_id else None
         )
+        redirect_pending = self._redirect_pending
 
         # Claim ownership for this queue BEFORE kicking the previous player: the
         # awaited stop below can complete the old stream's teardown, and only an
@@ -430,6 +430,10 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_session_id = stream_session_id
         self._active_player_id = active_player_id
         self.logger.debug("Active player set to: %s", active_player_id)
+        # a pending redirect has landed on this stream: its claim now protects the
+        # session, so the grace window has done its job
+        self._redirect_deadline = 0.0
+        self._redirect_pre_targeted = False
 
         # If a different player was consuming the source, kick it out (the source
         # is exclusive).
@@ -462,7 +466,6 @@ class SpotifyConnectProvider(PluginProvider):
         # Externally triggered: the backend is already playing → nothing to do.
         # Otherwise acquire playback, then confirm it actually started.
         if not self._playing:
-            redirect_pending = self._redirect_pending
             try:
                 if redirect_pending:
                     # an MA-initiated redirect already commanded the content on the
@@ -1119,11 +1122,12 @@ class SpotifyConnectProvider(PluginProvider):
     def _handle_playing_event(self) -> None:
         """Apply a 'playing' report: confirm a pending start and kick external playback."""
         self._playing = True
-        # the playback start a pending redirect was waiting for has arrived; the
-        # redirect issues its own play_media, so it must not also fire the
-        # external-trigger kick below
+        # A redirect's own play_media is on its way, so this start must not also
+        # fire the external-trigger kick below. The grace window stays open until
+        # that stream claims the source (on_source_selected): the outgoing stream's
+        # teardown lands between this event and the claim, and only the open window
+        # keeps it from releasing the session the redirect just started.
         redirect_start = self._redirect_pending
-        self._redirect_deadline = 0.0
         # A resume can arrive while the pause-stop is still in flight on a
         # slow player; cancel it so it doesn't kill the restarted stream.
         # (a stop that already completed is fine: play_media below restarts)

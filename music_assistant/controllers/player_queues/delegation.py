@@ -38,6 +38,7 @@ _DELEGATE_CONTEXT_TYPES = (
     MediaType.PLAYLIST,
     MediaType.ARTIST,
     MediaType.PODCAST,
+    MediaType.AUDIOBOOK,
 )
 
 
