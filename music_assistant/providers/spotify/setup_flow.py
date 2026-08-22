@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 import pkce
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.oauth import (
     HOSTED_CALLBACK_URL,
     OAUTH_STEP_TIMEOUT,
@@ -20,9 +22,10 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
-from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 
 from .constants import (
+    CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
@@ -43,9 +46,15 @@ from .helpers import (
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
 )
+from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
+
+LOGGER = logging.getLogger(__name__)
+
+# seconds to wait for the account lookup that gates the setup
+ACCOUNT_LOOKUP_TIMEOUT = 30
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -96,11 +105,15 @@ async def run_setup(session: SetupSession) -> None:
     setup_data = dict(session.context.setup_data)
     # the global session always (re)authenticates: a refresh token cannot be reused across a
     # re-auth and secure values are never prefilled back into the flow
-    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = await _pkce_authenticate(
+    token_result = await _pkce_authenticate(
         session, app_var("spotify_client_id"), step_id="authenticate"
     )
+    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
+    # an account that cannot work is turned away before the playback authorization
+    account_id = await _verify_account(session, str(token_result["access_token"]))
+    setup_data[CONF_ACCOUNT_ID] = account_id
     # playback needs its own credential, minted with Spotify's keymaster client id
-    setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session)
+    setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session, account_id)
     # everything needed is collected by now; the developer key is a purely optional extra,
     # so it is offered as an opt-in rather than a field the user has to reason about
     client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
@@ -152,9 +165,10 @@ async def _authorize_developer_key(
     try:
         if client_id:
             setup_data[CONF_CLIENT_ID] = client_id
-            setup_data[CONF_REFRESH_TOKEN_DEV] = await _pkce_authenticate(
+            dev_token_result = await _pkce_authenticate(
                 session, client_id, step_id="authenticate_dev"
             )
+            setup_data[CONF_REFRESH_TOKEN_DEV] = str(dev_token_result["refresh_token"])
         else:
             # opted in but left the field empty: keep using the shared key
             setup_data[CONF_CLIENT_ID] = None
@@ -165,14 +179,89 @@ async def _authorize_developer_key(
     return client_id, None
 
 
-async def _authorize_playback(session: SetupSession) -> str:
+async def _verify_account(session: SetupSession, access_token: str) -> str | None:
+    """
+    Check the just-authenticated Spotify account and return its id.
+
+    Turns the user away when the account has no Spotify Premium (librespot, which
+    streams this provider's audio, refuses to play for a free account) or when it is
+    already set up on another provider instance. A lookup Spotify does not answer is
+    not held against the user: the setup simply continues and None is returned.
+
+    :param session: The setup session driving the flow.
+    :param access_token: The access token from the just-completed sign-in. Reusing
+        it is deliberate — minting a fresh one rotates the refresh token, which
+        revokes the one just stored as setup data.
+    :raises AbortFlow: When the account is non-Premium or already configured.
+    """
+    try:
+        async with session.mass.http_session.get(
+            "https://api.spotify.com/v1/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=ClientTimeout(total=ACCOUNT_LOOKUP_TIMEOUT),
+        ) as response:
+            if response.status != 200:
+                LOGGER.warning("Account check skipped: Spotify replied HTTP %s", response.status)
+                return None
+            # a malformed body raises ValueError, which is not a ClientError
+            userinfo = await response.json()
+    except (ClientError, TimeoutError, ValueError) as err:
+        # a bare TimeoutError stringifies to nothing, so log the type too
+        LOGGER.warning("Account check skipped: %s %s", type(err).__name__, err)
+        return None
+    if not isinstance(userinfo, dict):
+        LOGGER.warning("Account check skipped: Spotify returned an unexpected profile")
+        return None
+    product = str(userinfo.get("product") or "")
+    if product and product != "premium":
+        raise AbortFlow("premium_required")
+    if not (account_id := str(userinfo.get("id") or "")):
+        return None
+    if await _account_in_use(session, account_id):
+        raise AbortFlow("account_already_configured")
+    return account_id
+
+
+async def _account_in_use(session: SetupSession, account_id: str) -> bool:
+    """
+    Return whether another Spotify provider instance is already set up for this account.
+
+    Compares the account id stored with each instance's configuration, so an instance
+    that is disabled or failed to load still holds its account. Configurations
+    predating that stored value fall back to the running instance, which fills the
+    value in on its next successful load. The instance being reconfigured is of
+    course allowed to keep its own account.
+
+    :param session: The setup session driving the flow.
+    :param account_id: The Spotify user id that just signed in.
+    """
+    mass = session.mass
+    for config in await mass.config.get_provider_configs(provider_domain="spotify"):
+        if config.instance_id == session.context.instance_id:
+            continue
+        if stored := mass.config.get_provider_setup_value(config.instance_id, CONF_ACCOUNT_ID):
+            if str(stored) == account_id:
+                return True
+            continue
+        provider = mass.get_provider(config.instance_id, return_unavailable=True)
+        if isinstance(provider, SpotifyProvider) and provider.account_id == account_id:
+            return True
+    return False
+
+
+async def _authorize_playback(session: SetupSession, account_id: str | None) -> str:
     """
     Obtain librespot's playback credential and return it as stored-credential JSON.
 
     Offers pairing through the Spotify app first and falls back to a browser sign-in for
-    setups where the Spotify app cannot discover Music Assistant.
+    setups where the Spotify app cannot discover Music Assistant. The credential has to
+    belong to the account that signed in: authorizing playback from a Spotify app that
+    is logged in as someone else would leave the library and the audio on different
+    accounts.
 
     :param session: The setup session driving the flow.
+    :param account_id: The signed-in Spotify user id to match the credential against;
+        the check is skipped when it (or the credential's own account) is unknown.
     """
     try:
         librespot_bin = await get_librespot_binary()
@@ -190,13 +279,18 @@ async def _authorize_playback(session: SetupSession) -> str:
         # aborting the flow would throw that away over a retryable mistake
         try:
             if method == PLAYBACK_AUTH_APP:
-                return await session.progress_until(
+                credentials = await session.progress_until(
                     librespot_credentials_via_pairing(librespot_bin, PAIRING_DEVICE_NAME),
                     step_id="playback_pairing",
                     text="pairing_instructions",
                     expires_in=PAIRING_TIMEOUT,
                 )
-            return await _authorize_playback_via_browser(session, librespot_bin)
+            else:
+                credentials = await _authorize_playback_via_browser(session, librespot_bin)
+            if _credential_account_differs(credentials, account_id):
+                errors = {"base": "playback_account_mismatch"}
+                continue
+            return credentials
         except StepExpiredError:
             errors = {
                 "base": "pairing_not_completed"
@@ -209,6 +303,32 @@ async def _authorize_playback(session: SetupSession) -> str:
             # librespot refusing the token, a transport failure, or a token response without a
             # token; LoginFailed's own default key is too generic to show here
             errors = {"base": "playback_auth_failed"}
+
+
+def _credential_account_differs(credentials: str, account_id: str | None) -> bool:
+    """
+    Return whether a playback credential belongs to a different account than the sign-in.
+
+    Answers False whenever either side is unknown, so an unreadable credential never
+    blocks a setup that is otherwise fine.
+
+    :param credentials: librespot's stored-credential JSON.
+    :param account_id: The signed-in Spotify user id, when known.
+    """
+    if not account_id:
+        return False
+    try:
+        stored = json_loads(credentials)
+    except ValueError:
+        return False
+    if not isinstance(stored, dict):
+        return False
+    # librespot stores Spotify's canonical username, which is the signed-in id lowercased
+    username = str(stored.get("username") or "")
+    if not username or username.casefold() == account_id.casefold():
+        return False
+    LOGGER.warning("Playback was authorized for %s instead of %s", username, account_id)
+    return True
 
 
 async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: str) -> str:
@@ -266,9 +386,9 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
     return await librespot_credentials_via_token(librespot_bin, token_result["access_token"])
 
 
-async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str) -> str:
+async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str) -> dict[str, Any]:
     """
-    Run the Spotify PKCE auth flow via the setup session and return a refresh token.
+    Run the Spotify PKCE auth flow and return the token result (refresh + access token).
 
     :param session: The setup session driving the flow.
     :param client_id: The Spotify client id to authenticate with.
@@ -299,7 +419,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
     async with session.mass.http_session.post(TOKEN_URL, data=token_params) as response:
         if response.status != 200:
             raise SetupFlowError(f"Failed to get access token: {await response.text()}")
-        token_result = await response.json()
-    if not (refresh_token := token_result.get("refresh_token")):
+        token_result: dict[str, Any] = await response.json()
+    if not token_result.get("refresh_token"):
         raise SetupFlowError("No refresh token in the token response")
-    return str(refresh_token)
+    return token_result
