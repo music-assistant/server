@@ -4116,10 +4116,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         input, or its own Spotify Connect) has no such session, so this reports that
         it did not take the action and the caller goes on to the player itself.
 
-        The per-action capability flags gate what the source advertises it can do, so
-        a client is refused rather than left waiting. Ordering is not gated: only the
-        session knows whether its content can be reordered, and it refuses in its own
-        words.
+        The per-action transport flags gate what the source advertises it can do, so
+        a client is refused rather than left waiting. Ordering is not gated here: the
+        session decides what reordering means for its own content. Most sources do not
+        implement it at all, though, so a client should ask the source whether it can
+        before offering the control - handing it one that quietly does nothing is
+        worse than not offering it.
 
         :param player: The player the action was issued to.
         :param action: The control action to hand over.
@@ -4142,7 +4144,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 f"{player.display_name} does not support this action"
             )
             raise PlayerCommandFailed(msg)
-        await provider.on_source_control(audio_source.item_id, action, value)
+        try:
+            await provider.on_source_control(audio_source.item_id, action, value)
+        except NotImplementedError as err:
+            # a source with no control surface at all (vban_receiver) reaches the base
+            # implementation; a caller deserves a refusal rather than a server error
+            msg = (
+                f"The active source ({audio_source.name}) on player "
+                f"{player.display_name} can not be controlled"
+            )
+            raise PlayerCommandFailed(msg) from err
         return True
 
     async def _release_audio_source(self, player_id: str) -> None:

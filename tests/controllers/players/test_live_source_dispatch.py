@@ -221,3 +221,20 @@ async def test_repeat_reaches_the_live_source_before_the_queue() -> None:
         "main", SourceControl.REPEAT, RepeatMode.ALL
     )
     controller.mass.player_queues.set_repeat.assert_not_awaited()
+
+
+async def test_a_source_with_no_control_surface_refuses_cleanly() -> None:
+    """
+    A source that implements no controls at all is a refusal, not a server error.
+
+    vban_receiver has no on_source_control, so the call reaches the base
+    implementation and raises NotImplementedError. Ordering is not gated here, so
+    that path is reachable and a caller should get a refusal it can render.
+    """
+    controller, provider = _controller(_source())
+    provider.on_source_control = AsyncMock(side_effect=NotImplementedError)
+
+    with pytest.raises(PlayerCommandFailed, match="can not be controlled"):
+        await controller._forward_to_external_source(
+            controller.get_player(PLAYER_ID), SourceControl.SHUFFLE, True
+        )
