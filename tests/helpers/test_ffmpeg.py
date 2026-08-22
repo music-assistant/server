@@ -1277,3 +1277,14 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_fails(
     await check_ffmpeg_version()
 
     assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Output that reads as blocking is worthless once the probe itself reported failure."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF, hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False

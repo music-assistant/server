@@ -734,8 +734,10 @@ async def check_ffmpeg_version() -> None:
     # which builds from git report as e.g. "N-121037-g1234567". A probe that fails reads as
     # "not blocked", so the check stays in place. Drop this once every supported build
     # whitelists CMAF.
-    _, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
-    cmaf_blocked = b"extension_picky" in hls_options and b"cmfa" not in hls_options
+    returncode, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
+    cmaf_blocked = (
+        returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
+    )
     # use globals as in-memory cache
     await set_global_cache_values(
         {
