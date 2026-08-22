@@ -736,11 +736,12 @@ class TestUpdateStreamMetadata:
 # ----------------------------------------------- elapsed_time override
 
 
-def _make_audio_source_queue(
+def _make_audio_source_session(
     elapsed_time: int | None,
     elapsed_time_last_updated: float | None = None,
+    player_id: str = "player_1",
 ) -> MagicMock:
-    """Build a queue mock whose current item carries AudioSource streamdetails."""
+    """Build a session mock whose live source reports the given position."""
     sd = StreamDetails(
         provider="fake_plugin",
         item_id="main",
@@ -748,27 +749,25 @@ def _make_audio_source_queue(
         media_type=MediaType.AUDIO_SOURCE,
         stream_type=StreamType.CUSTOM,
     )
-    sd.stream_metadata = StreamMetadata(title="Live Track")
-    sd.stream_metadata.elapsed_time = elapsed_time
-    sd.stream_metadata.elapsed_time_last_updated = elapsed_time_last_updated
-    current_item = MagicMock()
-    current_item.streamdetails = sd
-    queue = MagicMock()
-    queue.current_item = current_item
-    return queue
+    session = MagicMock()
+    session.player_id = player_id
+    session.streamdetails = sd
+    session.source_uri = "fake_plugin://audio_source/main"
+    session.source.image = None
+    session.stream_metadata = StreamMetadata(title="Live Track")
+    session.stream_metadata.elapsed_time = elapsed_time
+    session.stream_metadata.elapsed_time_last_updated = elapsed_time_last_updated
+    return session
 
 
 class TestAudioSourceElapsedTimeOverride:
     """
-    Verify PlayerState.elapsed_time prefers AudioSource stream_metadata.
+    Verify PlayerState.elapsed_time prefers what the live source reports.
 
-    This pins the behavior of the old PluginSource elapsed_time override
-    (test_plugin_source_elapsed_time.py, deleted in the refactor) against
-    the new model: streamdetails.stream_metadata on the active queue item.
     The override is load-bearing — player.state.corrected_elapsed_time is
     consumed by the queue controller's resume logic and several player
     providers; without it those flows would run against the byte-consumed
-    clock and lose upstream seeks / pause-resume on AudioSources.
+    clock and lose upstream seeks / pause-resume on a live source.
     """
 
     def test_audio_source_elapsed_time_preferred_over_player(
@@ -786,8 +785,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=42)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         player.update_state(signal_event=False)
 
@@ -809,8 +808,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=None)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         player.update_state(signal_event=False)
 
@@ -840,8 +839,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player, "airplay_1": protocol_player}
 
-        queue = _make_audio_source_queue(elapsed_time=42)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         protocol_player.update_state(signal_event=False)
         # refresh: the mocked queue/protocol player are cross-source state and the
@@ -867,8 +866,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=42, elapsed_time_last_updated=None)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42, elapsed_time_last_updated=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         before = time.time()
         player.update_state(signal_event=False)
