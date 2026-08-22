@@ -24,7 +24,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
-from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.spotify_connect import (
     BACKEND_SOLOIST as CONNECT_BACKEND_SOLOIST,
 )
@@ -136,11 +136,15 @@ async def run_setup(session: SetupSession) -> None:
         session, app_var("spotify_client_id"), step_id="authenticate"
     )
     setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
+    # the exchange's access token is reused throughout the flow: minting a fresh one
+    # would rotate — and thereby revoke — the refresh token just stored above
+    access_token = str(token_result["access_token"])
+    # every playback path below needs Premium, so a non-Premium account is turned
+    # away here rather than after a pairing ceremony that could never work
+    await _verify_premium_account(session, access_token)
     # playback authorization is separate from the Web API tokens and depends on the
-    # explicitly chosen playback mode; the exchange's access token is reused for the
-    # Connect account confirmation (minting a fresh one would rotate — and thereby
-    # revoke — the refresh token just stored above)
-    await _setup_playback(session, setup_data, str(token_result["access_token"]))
+    # explicitly chosen playback mode
+    await _setup_playback(session, setup_data, access_token)
     # everything needed is collected by now; the developer key is a purely optional extra,
     # so it is offered as an opt-in rather than a field the user has to reason about
     client_id_default = str(session.context.setup_data.get(CONF_CLIENT_ID) or "")
@@ -204,6 +208,35 @@ async def _authorize_developer_key(
     except SetupFlowError as err:
         return client_id, {"base": err.translation_key or str(err)}
     return client_id, None
+
+
+async def _verify_premium_account(session: SetupSession, access_token: str) -> None:
+    """
+    Abort the flow when the just-authenticated account has no Spotify Premium.
+
+    Both playback modes need it (librespot only streams for Premium accounts, and
+    the Soloist engine's API key can only be created with one), so this runs right
+    after the sign-in. A lookup that fails to answer is not held against the user:
+    the playback steps surface their own error later.
+
+    :param session: The setup session driving the flow.
+    :param access_token: The access token from the just-completed sign-in.
+    :raises AbortFlow: When Spotify reports the account as non-Premium.
+    """
+    try:
+        async with session.mass.http_session.get(
+            "https://api.spotify.com/v1/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status != 200:
+                return
+            userinfo = await response.json()
+    except aiohttp.ClientError, TimeoutError:
+        return
+    product = str(userinfo.get("product") or "")
+    if product and product != "premium":
+        raise AbortFlow("premium_required")
 
 
 async def _setup_playback(

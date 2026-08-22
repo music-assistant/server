@@ -84,6 +84,9 @@
       "title": "Authorize your Spotify app",
       "description": "A browser window will open to authorize Music Assistant against your own Spotify app."
     },
+    "abort": {
+      "premium_required": "This Spotify account does not have Spotify Premium. Music Assistant can only play audio from a Premium account — both playback options need it. Sign in with a Premium account, or upgrade this one, and try again."
+    },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
       "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community-driven Spotify client)** — Music Assistant streams the audio itself, with all Music Assistant features available. Use this if you primarily use Music Assistant to manage your music and your account was created before December 2024.\n\n**Spotify Connect (powered by Spotify Soloist)** — playback is handed to a Spotify Connect session, so the music plays just like it does in the Spotify apps. Recommended if your account was created after December 2024, and/or you also like to control playback from the Spotify app.\n\nThe next step explains your choice in more detail."

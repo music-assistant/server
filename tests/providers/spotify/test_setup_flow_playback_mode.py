@@ -249,3 +249,46 @@ async def test_fresh_setup_preselects_connect_only_with_a_running_plugin(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.parametrize(
+    ("product", "aborts"),
+    [("premium", False), ("free", True), ("open", True), ("", False), (None, False)],
+)
+async def test_premium_check_turns_away_non_premium_accounts(
+    product: str | None, aborts: bool
+) -> None:
+    """A non-Premium account is turned away right after the sign-in."""
+    from music_assistant.models.setup_flow import AbortFlow  # noqa: PLC0415
+
+    session = _make_session()
+    response = mock.MagicMock()
+    response.status = 200
+    response.json = mock.AsyncMock(
+        return_value={"id": "u1"} if product is None else {"id": "u1", "product": product}
+    )
+    session.mass.http_session.get = mock.MagicMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock(
+            __aenter__=mock.AsyncMock(return_value=response), __aexit__=mock.AsyncMock()
+        )
+    )
+
+    if aborts:
+        with pytest.raises(AbortFlow, match="premium_required"):
+            await spotify_flow._verify_premium_account(session, "at-test")
+    else:
+        await spotify_flow._verify_premium_account(session, "at-test")
+
+
+async def test_premium_check_tolerates_a_failing_lookup() -> None:
+    """A lookup Spotify does not answer must not block the setup."""
+    session = _make_session()
+    response = mock.MagicMock()
+    response.status = 503
+    session.mass.http_session.get = mock.MagicMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock(
+            __aenter__=mock.AsyncMock(return_value=response), __aexit__=mock.AsyncMock()
+        )
+    )
+
+    await spotify_flow._verify_premium_account(session, "at-test")
