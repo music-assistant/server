@@ -12,7 +12,7 @@ from music_assistant.providers.ariacast_receiver import AriaCastReceiver
 def _receiver(in_use_by_queue: str | None = "queue_1") -> SimpleNamespace:
     """Build a bare receiver namespace for driving _handle_inbound_control."""
     return SimpleNamespace(
-        _in_use_by_queue=in_use_by_queue,
+        _in_use_by_player=in_use_by_queue,
         _forward_action=AsyncMock(),
         _cmd_play=AsyncMock(),
         _cmd_pause=AsyncMock(),

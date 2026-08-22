@@ -123,10 +123,10 @@ class MyDemoPluginprovider(PluginProvider):
     # tracks which queue currently owns the exclusive AudioSource. Set in
     # on_source_selected (NOT in get_stream_details — that path also runs from
     # queue preload, where claiming would block a later cross-queue handoff).
-    _in_use_by_queue: str | None = None
+    _in_use_by_player: str | None = None
     # tracks the active stream_session_id for the current stream request.
-    # Paired with _in_use_by_queue: same-queue reconnects refresh this token
-    # without changing _in_use_by_queue, so stream loops and generator
+    # Paired with _in_use_by_player: same-queue reconnects refresh this token
+    # without changing _in_use_by_player, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
 
@@ -232,7 +232,7 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.streams.update_stream_metadata(queue_id, ...) — same mechanism
+        # mass.players.update_source_metadata(player_id, ...) — same mechanism
         # ICY radio metadata uses.
         #
         # Silence-during-pause contract:
@@ -278,7 +278,7 @@ class MyDemoPluginprovider(PluginProvider):
         # on_source_selected fires again with a fresh stream_session_id (but
         # the same queue id), and the prior generator's teardown would
         # otherwise clear the lock that now belongs to the new session.
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         captured_session_id = self._active_session_id
         # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
         # declared in get_stream_details. Replace with your actual byte source.
@@ -288,10 +288,10 @@ class MyDemoPluginprovider(PluginProvider):
                 yield pcm_chunk
         finally:
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
 
     async def on_source_control(
         self,
@@ -335,7 +335,7 @@ class MyDemoPluginprovider(PluginProvider):
         #
         #     if self._active_player_id and self._active_player_id != player_id:
         #         await self.mass.players.cmd_stop(self._active_player_id)
-        #     self._in_use_by_queue = queue_id  # claim (overwrites prior queue's)
+        #     self._in_use_by_player = queue_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
         #
@@ -361,8 +361,8 @@ class MyDemoPluginprovider(PluginProvider):
         #     if self._active_session_id != stream_session_id:
         #         return
         #     self._active_session_id = None
-        #     if self._in_use_by_queue == queue_id:
-        #         self._in_use_by_queue = None
+        #     if self._in_use_by_player == queue_id:
+        #         self._in_use_by_player = None
 
     async def search(
         self,

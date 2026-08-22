@@ -42,6 +42,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    RepeatMode,
     SourceControl,
 )
 from music_assistant_models.errors import (
@@ -104,7 +105,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
-from music_assistant.helpers.player import get_queue_audio_source
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
@@ -114,7 +114,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
@@ -709,8 +709,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
+        if await self._forward_to_live_source(player, SourceControl.SEEK, position):
+            return
         # Redirect to queue controller if it is active
-        # (it delegates an active seekable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
@@ -728,14 +729,57 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # handle command on player directly
         await player.seek(position)
 
+    @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command
+    async def cmd_shuffle(self, player_id: str, shuffle_enabled: bool) -> None:
+        """
+        Handle SHUFFLE command for given player.
+
+        Applies to whatever the player is playing: a live external source orders its
+        own session, and Music Assistant's queue orders its own items.
+
+        :param player_id: player_id of the player to handle the command.
+        :param shuffle_enabled: Whether to play the current content shuffled.
+        """
+        player = self._get_player_with_redirect(player_id)
+        if await self._forward_to_live_source(player, SourceControl.SHUFFLE, shuffle_enabled):
+            return
+        if active_queue := self.get_active_queue(player):
+            await self.mass.player_queues.set_shuffle(active_queue.queue_id, shuffle_enabled)
+            return
+        msg = f"There is nothing playing on {player.state.name} to shuffle."
+        raise PlayerCommandFailed(msg)
+
+    @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command
+    async def cmd_repeat(self, player_id: str, repeat_mode: RepeatMode) -> None:
+        """
+        Handle REPEAT command for given player.
+
+        Applies to whatever the player is playing: a live external source repeats
+        within its own session, and Music Assistant's queue repeats its own items.
+
+        :param player_id: player_id of the player to handle the command.
+        :param repeat_mode: The repeat mode to apply.
+        """
+        player = self._get_player_with_redirect(player_id)
+        if await self._forward_to_live_source(player, SourceControl.REPEAT, repeat_mode):
+            return
+        if active_queue := self.get_active_queue(player):
+            await self.mass.player_queues.set_repeat(active_queue.queue_id, repeat_mode)
+            return
+        msg = f"There is nothing playing on {player.state.name} to repeat."
+        raise PlayerCommandFailed(msg)
+
     @api_command("players/cmd/next", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
+        if await self._forward_to_live_source(player, SourceControl.NEXT):
+            return
         # Redirect to queue controller if it is active
-        # (it delegates an active skippable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.next(active_queue.queue_id)
             return
@@ -759,8 +803,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
+        if await self._forward_to_live_source(player, SourceControl.PREVIOUS):
+            return
         # Redirect to queue controller if it is active
-        # (it delegates an active skippable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.previous(active_queue.queue_id)
             return
@@ -1123,6 +1168,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self.get_player(player_id, raise_unavailable=False)
         if not player:
             return
+        await self._release_audio_source(player_id)
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
@@ -2825,14 +2871,35 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
         """
-        Return the active AudioSource and its owning PluginProvider for a player.
+        Return the live AudioSource a player is playing, and its owning PluginProvider.
 
-        Returns None when the player's active queue item is not a MediaType.AUDIO_SOURCE
-        or when the owning plugin provider is no longer available.
+        A player hearing its group's or sync leader's audio is playing that player's
+        source, so the owner is resolved the same way its active queue is. Returns
+        None when no source is playing on it, or when the owning plugin is gone.
 
-        :param player: The player whose active queue to inspect.
+        :param player: The player whose source to resolve.
         """
-        return get_queue_audio_source(self.mass, self.get_active_queue(player))
+        return self.get_player_audio_source(self._audio_source_owner(player).player_id)
+
+    def _audio_source_owner(self, player: Player) -> Player:
+        """
+        Return the player whose source the given player is hearing.
+
+        Mirrors ``get_active_queue``: a sync child hears its leader, a group member
+        hears its group, and a protocol player hears its parent.
+
+        :param player: The player to resolve the owner for.
+        """
+        if player.state.synced_to and player.state.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.state.synced_to):
+                return self._audio_source_owner(sync_leader)
+        if player.state.active_group and player.state.active_group != player.player_id:
+            if group_player := self.get_player(player.state.active_group):
+                return self._audio_source_owner(group_player)
+        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
+            if parent_player := self.get_player(player.protocol_parent_id):
+                return self._audio_source_owner(parent_player)
+        return player
 
     def _get_player_groups(self, player: Player) -> Iterator[Player]:
         """
@@ -4017,6 +4084,71 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         await player.enqueue_next_media(media)
 
+    async def _forward_to_live_source(
+        self,
+        player: Player,
+        action: SourceControl,
+        value: SourceControlValue = None,
+    ) -> bool:
+        """
+        Hand a control action to the live source playing on a player.
+
+        The per-action capability flags gate what the source advertises it can do,
+        so a client is refused rather than left waiting. Ordering is not gated: the
+        source's session is the only thing that knows whether it can be reordered,
+        and it refuses in its own words.
+
+        :param player: The player the action was issued to.
+        :param action: The control action to hand over.
+        :param value: The action's argument, where it takes one.
+        :return: True when a live source took the action, False when none is playing.
+        """
+        if (active := self._get_active_audio_source(player)) is None:
+            return False
+        audio_source, provider = active
+        supported = {
+            SourceControl.PLAY: audio_source.can_play_pause,
+            SourceControl.PAUSE: audio_source.can_play_pause,
+            SourceControl.SEEK: audio_source.can_seek,
+            SourceControl.NEXT: audio_source.can_next_previous,
+            SourceControl.PREVIOUS: audio_source.can_next_previous,
+        }.get(action, True)
+        if not supported:
+            msg = (
+                f"The active source ({audio_source.name}) on player "
+                f"{player.display_name} does not support this action"
+            )
+            raise PlayerCommandFailed(msg)
+        await provider.on_source_control(audio_source.item_id, action, value)
+        return True
+
+    async def _release_audio_source(self, player_id: str) -> None:
+        """
+        Let go of the live source a player was playing, if it had one.
+
+        Tells the owning plugin so an upstream session still pointing at Music
+        Assistant is released. A plugin that raises must not stop the player from
+        moving on, so failures are logged rather than propagated.
+
+        :param player_id: The player that is done with its source.
+        """
+        if (session := self._end_audio_source_session(player_id)) is None:
+            return
+        self.trigger_player_update(player_id)
+        provider = self.mass.get_provider(session.provider_instance_id)
+        if not isinstance(provider, PluginProvider):
+            return
+        try:
+            await provider.on_source_released(session.source_id, player_id)
+        except Exception:
+            self.logger.warning(
+                "on_source_released raised for provider %s source %s player %s",
+                provider.instance_id,
+                session.source_id,
+                player_id,
+                exc_info=True,
+            )
+
     async def _resolve_audio_source_uri(
         self, source: str
     ) -> tuple[AudioSource, PluginProvider] | None:
@@ -4096,6 +4228,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if (resolved := await self._resolve_audio_source_uri(source)) is not None:
             await self._start_audio_source(player, *resolved)
             return
+        # anything else takes the player away from a live source it was playing
+        await self._release_audio_source(player_id)
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
         if self.mass.player_queues.get(source):

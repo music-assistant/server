@@ -168,12 +168,12 @@ class AirPlayReceiverProvider(PluginProvider):
             # passive: only flows when an external AirPlay client is connected
             can_initiate=False,
         )
-        # _in_use_by_queue: the queue currently streaming us. Claimed in
+        # _in_use_by_player: the queue currently streaming us. Claimed in
         # on_source_selected (NOT in get_stream_details — that path also runs
         # from queue preload, where claiming would block a later cross-queue
         # handoff). Released in on_source_unselected when the session id
         # matches, or in _clear_active_player on external session disconnect.
-        self._in_use_by_queue: str | None = None
+        self._in_use_by_player: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
@@ -299,7 +299,7 @@ class AirPlayReceiverProvider(PluginProvider):
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
         # stream request.
-        self._in_use_by_queue = queue_id
+        self._in_use_by_player = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
@@ -327,8 +327,8 @@ class AirPlayReceiverProvider(PluginProvider):
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
+        if self._in_use_by_player == queue_id:
+            self._in_use_by_player = None
 
     async def resolve_image(self, path: str) -> bytes:
         """
@@ -424,7 +424,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         prev_player_id = self._active_player_id
         self._active_player_id = None
-        self._in_use_by_queue = None
+        self._in_use_by_player = None
         self._active_session_id = None
 
         if prev_player_id:
@@ -650,7 +650,7 @@ class AirPlayReceiverProvider(PluginProvider):
             return
 
         # Handle volume changes from AirPlay client
-        if "volume" in metadata and self._in_use_by_queue:
+        if "volume" in metadata and self._in_use_by_player:
             self._handle_volume_change(metadata["volume"])
 
         # Update source metadata fields
@@ -660,9 +660,9 @@ class AirPlayReceiverProvider(PluginProvider):
         self._update_cover_art(metadata)
 
         # Push the metadata update through to the active queue item's streamdetails
-        if self._in_use_by_queue:
-            self.mass.streams.update_stream_metadata(
-                self._in_use_by_queue,
+        if self._in_use_by_player:
+            self.mass.players.update_source_metadata(
+                self._in_use_by_player,
                 AUDIO_SOURCE_ID,
                 self.instance_id,
                 self._stream_metadata,
@@ -678,7 +678,7 @@ class AirPlayReceiverProvider(PluginProvider):
             # Reset volume event flag for new playback session
             self._first_volume_event_received = False
             # Initiate playback via the standard play_media flow on the target player
-            if not self._in_use_by_queue:
+            if not self._in_use_by_player:
                 target_player_id = self._get_target_player_id()
                 if target_player_id:
                     self.logger.info("Starting AirPlay playback on player %s", target_player_id)
@@ -694,8 +694,8 @@ class AirPlayReceiverProvider(PluginProvider):
             # Reset volume event flag for next session
             self._first_volume_event_received = False
             # Get the current player before clearing
-            current_player_id = self._in_use_by_queue
-            # Clear active player state (also clears _in_use_by_queue)
+            current_player_id = self._in_use_by_player
+            # Clear active player state (also clears _in_use_by_player)
             self._clear_active_player()
             # Write silence to the pipe so ffmpeg can produce a chunk and notice the
             # stream has stopped; the stop command below closes the generator path.
@@ -744,7 +744,7 @@ class AirPlayReceiverProvider(PluginProvider):
             return
 
         # Type check: ensure we have a valid player ID; queue_id == player_id by convention
-        player_id = self._in_use_by_queue
+        player_id = self._in_use_by_player
         if not player_id:
             return
 

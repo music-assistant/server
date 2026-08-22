@@ -356,12 +356,12 @@ class TestClearActivePlayer:
         provider = _make_provider()
 
         provider._active_player_id = "some-player"
-        provider._in_use_by_queue = "some-player"
+        provider._in_use_by_player = "some-player"
 
         provider._clear_active_player()
 
         assert provider._active_player_id is None
-        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
+        assert provider._in_use_by_player is None  # type: ignore[unreachable]
         provider.mass.players.trigger_player_update.assert_called_with("some-player")
 
 
@@ -440,13 +440,13 @@ class TestYnisonStateHandling:
         provider = _make_provider()
 
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         state = YnisonState(active_device_id="other-device-id")
         await provider._handle_ynison_state(state)
 
         assert provider._active_player_id is None
-        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
+        assert provider._in_use_by_player is None  # type: ignore[unreachable]
 
     async def test_seek_detected_from_ynison(self) -> None:
         """Detects seek from Yandex app via progress drift."""
@@ -597,7 +597,7 @@ class TestYnisonStateHandling:
         # queue id — bridge players (`spb_*`) wrap the bare ALSA UUID and the
         # MA UI's state machine lives on the bridge.
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         mock_ynison = MagicMock()
         mock_ynison.update_playing_status = AsyncMock()
         mock_ynison.state.is_paused = False
@@ -1035,7 +1035,7 @@ class TestPCMNormalization:
     async def test_stream_track_always_uses_ffmpeg(self) -> None:
         """_stream_track always normalizes through ffmpeg, even without seek."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -1133,7 +1133,7 @@ class TestPCMNormalization:
     async def test_stream_track_seek_adds_ss_arg(self) -> None:
         """With seek > 0, _stream_track adds -ss to ffmpeg args."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -1185,7 +1185,7 @@ class TestPCMNormalization:
         to tell rate passthrough from a resample.
         """
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._normalized_params = dict(PCM_LOSSLESS_PARAMS)
 
         mock_yandex = MagicMock()
@@ -1313,7 +1313,7 @@ class TestPCMNormalization:
     async def test_audio_format_not_modified_by_stream(self) -> None:
         """AudioSource audio_format stays fixed (not updated from stream)."""
         provider = _make_provider()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -2122,7 +2122,7 @@ class TestPausePlayback:
         """External pause sets the stop event and calls cmd_stop on the queue id."""
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         await provider._pause_playback()
 
@@ -2141,7 +2141,7 @@ class TestPausePlayback:
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
 
         # capture _active_player_id at the moment cmd_stop is invoked —
         # must still be the bridge id (rewrite is post-success).
@@ -2173,7 +2173,7 @@ class TestPausePlayback:
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("boom"))
 
         await provider._pause_playback()
@@ -2191,7 +2191,7 @@ class TestPausePlayback:
         """Pause with no active queue does not call cmd_stop or set the stop event."""
         provider = _make_provider()
         provider._active_player_id = None
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         await provider._pause_playback()
 
@@ -2221,7 +2221,7 @@ class TestEchoSuppression:
         self._player(provider)
         provider._current_streaming_track_id = "track1"
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._streaming_progress_ms = 1000
         provider._seek_grace_until = 0.0  # grace expired
 
@@ -2643,7 +2643,7 @@ class TestActivatePlayback:
 
         Simulates the post-`_pause_playback` state: `_stream_stop_event`
         set, `_active_player_id` already demoted to the queue id (the
-        pause path's post-cmd_stop rewrite), `_in_use_by_queue` cleared
+        pause path's post-cmd_stop rewrite), `_in_use_by_player` cleared
         by `on_source_unselected`. `_activate_playback` should fire
         `play_media(queue_id, audio_source.uri)` and clear the stop
         event so the next session is free to run.
@@ -2653,7 +2653,7 @@ class TestActivatePlayback:
         # the queue id (bare UUID) after cmd_stop succeeded.
         provider._stream_stop_event.set()
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         player = MagicMock()
         player.player_id = "player1"
@@ -2681,7 +2681,7 @@ class TestActivatePlayback:
         provider._stream_stop_event.clear()
         provider._externally_paused = True
         provider._active_player_id = "player1"
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         player = MagicMock()
         player.player_id = "player1"
@@ -2937,23 +2937,23 @@ class TestOnSourceUnselectedStaleRejection:
     async def test_stale_session_id_keeps_claim(self) -> None:
         """A teardown callback from a superseded session must not release the claim."""
         provider = _make_provider()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "queue1"
         provider._active_session_id = "live"
 
         await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "stale")
 
-        assert provider._in_use_by_queue == "queue1"
+        assert provider._in_use_by_player == "queue1"
         assert provider._active_session_id == "live"
 
     async def test_matching_session_id_releases_claim(self) -> None:
         """The live session id matches → lock and session id clear."""
         provider = _make_provider()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "queue1"
         provider._active_session_id = "live"
 
         await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "live")
 
-        assert provider._in_use_by_queue is None
+        assert provider._in_use_by_player is None
         assert provider._active_session_id is None
 
 
@@ -2964,7 +2964,7 @@ class TestUpdateSourceCapabilitiesStamping:
         provider = _make_provider()
         # Linked yandex_music provider available → capabilities ON
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "queue1"
+        provider._in_use_by_player = "queue1"
 
         old_source = provider._audio_source
         queue = MagicMock()
@@ -3004,10 +3004,10 @@ class TestUpdateSourceCapabilitiesStamping:
             "queue1", items_changed=True
         )
 
-    def test_skips_when_in_use_by_queue_is_none(self) -> None:
+    def test_skips_when_in_use_by_player_is_none(self) -> None:
         """When no queue currently consumes our stream, just rebuild and return."""
         provider, _queue, _current_item = self._setup_provider_with_queue()
-        provider._in_use_by_queue = None
+        provider._in_use_by_player = None
 
         provider._update_source_capabilities()
 
@@ -3154,7 +3154,7 @@ class TestAudioStreamPausedReturn:
         """A paused-at-entry session yields zero chunks and the generator ends."""
         provider = _make_provider()
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._active_session_id = "session-1"
 
         ynison = MagicMock()
@@ -3189,7 +3189,7 @@ class TestNaturalEndDifferentiation:
     def _build(self) -> YandexYnisonProvider:
         provider = _make_provider()
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._active_session_id = "session-1"
         ynison = MagicMock()
         ynison.connected = True
@@ -3355,7 +3355,7 @@ class TestLinkedSlotRelease:
     def _build() -> YandexYnisonProvider:
         provider = _make_provider()
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_queue = "player1"
+        provider._in_use_by_player = "player1"
         provider._active_session_id = "session-1"
         ynison = MagicMock()
         ynison.connected = True

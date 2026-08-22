@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ProviderFeature, RepeatMode
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -55,6 +55,9 @@ class AudioSourceSession:
     stream_metadata_last_updated: float | None = None
     # an adopted placeholder stays replaceable by a later one, a report does not
     stream_metadata_reported: bool = False
+    # the ordering the source reports for its own session; None = it has not said
+    shuffle_enabled: bool | None = None
+    repeat_mode: RepeatMode | None = None
     # token of the stream request currently holding the source's claim
     stream_session_id: str | None = None
 
@@ -192,6 +195,52 @@ class AudioSourceMixin:
         session.stream_metadata_last_updated = time.time()
         session.stream_metadata_reported = True
         self.trigger_player_update(player_id)
+
+    def update_source_options(
+        self,
+        player_id: str,
+        source_id: str,
+        provider_instance_id: str,
+        *,
+        shuffle_enabled: bool | None,
+        repeat_mode: RepeatMode | None,
+    ) -> None:
+        """
+        Record the ordering a live source reports for its own session.
+
+        A None value leaves that option as it was, as does ``RepeatMode.UNKNOWN``:
+        neither is the source saying anything. Rejected silently unless the source
+        playing on the player is owned by ``provider_instance_id`` with
+        ``item_id == source_id``.
+
+        :param player_id: The player whose session should receive the update.
+        :param source_id: The AudioSource.item_id emitting this update.
+        :param provider_instance_id: The provider instance id emitting this update.
+        :param shuffle_enabled: The session's shuffle state, or None to leave it.
+        :param repeat_mode: The session's repeat mode, or None to leave it.
+        """
+        session = self._source_sessions.get(player_id)
+        if (
+            session is None
+            or session.source_id != source_id
+            or session.provider_instance_id != provider_instance_id
+        ):
+            self.logger.debug(
+                "Rejected source options for player %s from provider %s source %s",
+                player_id,
+                provider_instance_id,
+                source_id,
+            )
+            return
+        changed = False
+        if shuffle_enabled is not None and session.shuffle_enabled != shuffle_enabled:
+            session.shuffle_enabled = shuffle_enabled
+            changed = True
+        if repeat_mode not in (None, RepeatMode.UNKNOWN) and session.repeat_mode != repeat_mode:
+            session.repeat_mode = repeat_mode
+            changed = True
+        if changed:
+            self.trigger_player_update(player_id)
 
     def _start_audio_source_session(
         self,
