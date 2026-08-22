@@ -74,6 +74,7 @@ from .helpers import (
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
 )
+from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -139,9 +140,9 @@ async def run_setup(session: SetupSession) -> None:
     # the exchange's access token is reused throughout the flow: minting a fresh one
     # would rotate — and thereby revoke — the refresh token just stored above
     access_token = str(token_result["access_token"])
-    # every playback path below needs Premium, so a non-Premium account is turned
-    # away here rather than after a pairing ceremony that could never work
-    await _verify_premium_account(session, access_token)
+    # a non-Premium or already-configured account is turned away here rather than
+    # after a pairing ceremony that could never work
+    await _verify_account(session, access_token)
     # playback authorization is separate from the Web API tokens and depends on the
     # explicitly chosen playback mode
     await _setup_playback(session, setup_data, access_token)
@@ -210,18 +211,19 @@ async def _authorize_developer_key(
     return client_id, None
 
 
-async def _verify_premium_account(session: SetupSession, access_token: str) -> None:
+async def _verify_account(session: SetupSession, access_token: str) -> None:
     """
-    Abort the flow when the just-authenticated account has no Spotify Premium.
+    Check the just-authenticated account before any playback setup happens.
 
-    Both playback modes need it (librespot only streams for Premium accounts, and
-    the Soloist engine's API key can only be created with one), so this runs right
-    after the sign-in. A lookup that fails to answer is not held against the user:
-    the playback steps surface their own error later.
+    Turns the user away when the account has no Spotify Premium (both playback
+    modes need it: librespot only streams for Premium accounts, and the Soloist
+    engine's API key can only be created with one) or when it is already set up
+    on another provider instance. A lookup Spotify does not answer is not held
+    against the user: the playback steps surface their own error later.
 
     :param session: The setup session driving the flow.
     :param access_token: The access token from the just-completed sign-in.
-    :raises AbortFlow: When Spotify reports the account as non-Premium.
+    :raises AbortFlow: When the account is non-Premium or already configured.
     """
     try:
         async with session.mass.http_session.get(
@@ -237,6 +239,28 @@ async def _verify_premium_account(session: SetupSession, access_token: str) -> N
     product = str(userinfo.get("product") or "")
     if product and product != "premium":
         raise AbortFlow("premium_required")
+    account_id = str(userinfo.get("id") or "")
+    if account_id and _account_in_use(session, account_id):
+        raise AbortFlow("account_already_configured")
+
+
+def _account_in_use(session: SetupSession, account_id: str) -> bool:
+    """
+    Return whether another Spotify provider instance already serves this account.
+
+    Only running instances can be compared (the account is not part of the stored
+    config), and the instance being reconfigured is of course allowed to keep its
+    own account.
+
+    :param session: The setup session driving the flow.
+    :param account_id: The Spotify user id that just signed in.
+    """
+    return any(
+        isinstance(prov, SpotifyProvider)
+        and prov.instance_id != session.context.instance_id
+        and prov.account_id == account_id
+        for prov in session.mass.providers
+    )
 
 
 async def _setup_playback(

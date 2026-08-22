@@ -78,7 +78,8 @@ class SpotifyConnectRedirect:
 
         :param target_player_id: The player (queue) the play request targets.
         """
-        assert self.provider._sp_user is not None
+        if (account_id := self.provider.account_id) is None:
+            return None
         candidates = sorted(
             (
                 plugin
@@ -89,7 +90,7 @@ class SpotifyConnectRedirect:
             key=lambda plugin: plugin.configured_player_id is None,
         )
         for plugin in candidates:
-            if await self._verify_connect_account(plugin) == self.provider._sp_user["id"]:
+            if await self._verify_connect_account(plugin) == account_id:
                 return plugin.audio_source
         return None
 
@@ -103,7 +104,8 @@ class SpotifyConnectRedirect:
 
         :param target_player_id: The player (queue) the play request targets.
         """
-        assert self.provider._sp_user is not None
+        if (account_id := self.provider.account_id) is None:
+            return None
         queue = self.provider.mass.player_queues.get(target_player_id)
         if queue is None or queue.current_item is None or queue.current_item.media_item is None:
             return None
@@ -118,7 +120,7 @@ class SpotifyConnectRedirect:
             # since moved to another player: librespot streams normally (redirecting
             # would steal the session from wherever it plays now)
             return None
-        if await self._verify_connect_account(plugin) != self.provider._sp_user["id"]:
+        if await self._verify_connect_account(plugin) != account_id:
             return None
         return plugin.audio_source
 
@@ -215,14 +217,15 @@ class SpotifyConnectRedirect:
         if (account_id := await plugin.get_backend_account_id()) is not None:
             plugin.set_verified_account_id(account_id)
             return account_id
-        assert self.provider._sp_user is not None
+        if (account_id := self.provider.account_id) is None:
+            return None
         try:
             matches = await self._get_connect_devices(plugin.publish_name)
         except Exception as err:
             self.logger.debug("Connect device lookup failed: %s", err)
             return None
         if matches:
-            plugin.set_verified_account_id(str(self.provider._sp_user["id"]))
+            plugin.set_verified_account_id(account_id)
             return plugin.verified_account_id
         return None
 

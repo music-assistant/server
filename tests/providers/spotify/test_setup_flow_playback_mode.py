@@ -40,6 +40,7 @@ def _make_session(
     """Return a real setup session driving the playback-mode steps."""
     mass = mock.Mock()
     mass.get_provider = mock.Mock(return_value=None)
+    mass.providers = []
 
     async def finish(_session: SetupSession, _submitted: dict[str, Any]) -> dict[str, str]:
         return {"instance_id": "spotify--test"}
@@ -255,7 +256,7 @@ async def test_fresh_setup_preselects_connect_only_with_a_running_plugin(
     ("product", "aborts"),
     [("premium", False), ("free", True), ("open", True), ("", False), (None, False)],
 )
-async def test_premium_check_turns_away_non_premium_accounts(
+async def test_account_check_turns_away_non_premium_accounts(
     product: str | None, aborts: bool
 ) -> None:
     """A non-Premium account is turned away right after the sign-in."""
@@ -275,12 +276,12 @@ async def test_premium_check_turns_away_non_premium_accounts(
 
     if aborts:
         with pytest.raises(AbortFlow, match="premium_required"):
-            await spotify_flow._verify_premium_account(session, "at-test")
+            await spotify_flow._verify_account(session, "at-test")
     else:
-        await spotify_flow._verify_premium_account(session, "at-test")
+        await spotify_flow._verify_account(session, "at-test")
 
 
-async def test_premium_check_tolerates_a_failing_lookup() -> None:
+async def test_account_check_tolerates_a_failing_lookup() -> None:
     """A lookup Spotify does not answer must not block the setup."""
     session = _make_session()
     response = mock.MagicMock()
@@ -291,4 +292,37 @@ async def test_premium_check_tolerates_a_failing_lookup() -> None:
         )
     )
 
-    await spotify_flow._verify_premium_account(session, "at-test")
+    await spotify_flow._verify_account(session, "at-test")
+
+
+@pytest.mark.parametrize(
+    ("other_instance_id", "aborts"),
+    [("spotify--other", True), ("spotify--test", False)],
+)
+async def test_account_check_turns_away_an_already_configured_account(
+    other_instance_id: str, aborts: bool
+) -> None:
+    """An account already served by another instance is refused; a reconfigure is not."""
+    from music_assistant.models.setup_flow import AbortFlow  # noqa: PLC0415
+    from music_assistant.providers.spotify.provider import SpotifyProvider  # noqa: PLC0415
+
+    session = _make_session(kind="reconfigure")
+    existing = mock.MagicMock(spec=SpotifyProvider)
+    existing.instance_id = other_instance_id
+    existing.account_id = "u1"
+    session.mass.providers = [existing]  # type: ignore[misc]
+    response = mock.MagicMock()
+    response.status = 200
+    response.json = mock.AsyncMock(return_value={"id": "u1", "product": "premium"})
+    session.mass.http_session.get = mock.MagicMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock(
+            __aenter__=mock.AsyncMock(return_value=response), __aexit__=mock.AsyncMock()
+        )
+    )
+
+    if aborts:
+        with pytest.raises(AbortFlow, match="account_already_configured"):
+            await spotify_flow._verify_account(session, "at-test")
+    else:
+        # the instance being reconfigured keeps its own account
+        await spotify_flow._verify_account(session, "at-test")
