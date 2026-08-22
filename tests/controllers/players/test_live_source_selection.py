@@ -182,3 +182,68 @@ async def test_a_source_whose_provider_dropped_the_feature_is_not_started() -> N
     provider.supported_features = set()
 
     assert await controller._resolve_audio_source_uri(SOURCE_URI) is None
+
+
+async def test_unregistering_a_player_releases_its_source() -> None:
+    """
+    A player going away hands its source back.
+
+    Otherwise the session outlives the player, the plugin is never told, and an
+    upstream session stays pointed at a player that no longer exists.
+    """
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    assert controller.get_audio_source_session(PLAYER_ID) is not None
+
+    await controller.unregister(PLAYER_ID)
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_refreshing_a_rebuilt_source_reaches_the_session() -> None:
+    """A plugin that rebuilds its source has the new capability flags published."""
+    controller, _provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    assert session.source.can_seek is False
+
+    rebuilt = AudioSource(
+        item_id="main",
+        provider=PROVIDER_INSTANCE,
+        name="Spotify Connect",
+        provider_mappings={
+            ProviderMapping(
+                item_id="main",
+                provider_domain="spotify_connect",
+                provider_instance=PROVIDER_INSTANCE,
+            )
+        },
+        can_seek=True,
+    )
+    controller.refresh_source(PLAYER_ID, rebuilt)
+
+    assert session.source is rebuilt
+    assert session.source.can_seek is True
+
+
+async def test_refreshing_with_another_providers_source_is_rejected() -> None:
+    """A provider cannot publish its object onto a session it does not own."""
+    controller, _provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    original = session.source
+
+    controller.refresh_source(
+        PLAYER_ID,
+        AudioSource(
+            item_id="main",
+            provider="airplay_receiver--xyz",
+            name="AirPlay",
+            provider_mappings=set(),
+        ),
+    )
+
+    assert session.source is original

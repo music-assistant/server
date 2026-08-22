@@ -116,29 +116,44 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
 )
 
 
-async def _single_audio_source_uri(
-    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
-) -> str | None:
+async def _is_audio_source(item: MediaItemType | ItemMapping | str) -> bool:
     """
-    Return the uri when a play request names exactly one live audio source.
+    Return whether the given media names a live audio source.
 
-    A live source has no meaning as part of a batch — it is not content to line up
-    behind or alongside anything — so a request naming one among others is left to
-    the ordinary path, where it fails as the unplayable item it is.
-
-    :param media: The media a play request was given.
+    :param item: One entry of a play request.
     """
-    items = media if isinstance(media, list) else [media]
-    if len(items) != 1:
-        return None
-    item = items[0]
     if not isinstance(item, str):
-        return item.uri if item.media_type == MediaType.AUDIO_SOURCE else None
+        return item.media_type == MediaType.AUDIO_SOURCE
     try:
         media_type, _, _ = await parse_uri(item)
     except MusicAssistantError:
+        return False
+    return media_type == MediaType.AUDIO_SOURCE
+
+
+async def _resolve_audio_source_request(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+) -> str | None:
+    """
+    Return the uri of the live audio source a play request names, if it names one.
+
+    A live source is selected on a player rather than queued, so it cannot be lined
+    up behind or alongside other media: naming one among others is a caller error
+    rather than a request to interpret.
+
+    :param media: The media a play request was given.
+    :raises InvalidCommand: When a live source is named among other media.
+    """
+    items = media if isinstance(media, list) else [media]
+    sources = [item for item in items if await _is_audio_source(item)]
+    if not sources:
         return None
-    return item if media_type == MediaType.AUDIO_SOURCE else None
+    if len(items) > 1:
+        raise InvalidCommand(
+            "A live audio source plays on its own: it can not be combined with other media"
+        )
+    item = sources[0]
+    return item if isinstance(item, str) else item.uri
 
 
 class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
@@ -509,7 +524,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # A live source is not queue content: it plays on the player while the queue
         # keeps its own items. Selecting it is the real operation, so a play request
         # naming one is forwarded there rather than enqueued.
-        if (source_uri := await _single_audio_source_uri(media)) is not None:
+        if (source_uri := await _resolve_audio_source_request(media)) is not None:
             await self.mass.players.select_source(queue_id, source_uri)
             return
         # Lock is acquired by the @handle_play_action decorator on the internal handler

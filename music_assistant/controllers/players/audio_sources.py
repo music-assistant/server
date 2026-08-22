@@ -196,6 +196,29 @@ class AudioSourceMixin:
         session.stream_metadata_reported = True
         self.trigger_player_update(player_id)
 
+    def refresh_source(self, player_id: str, source: AudioSource) -> None:
+        """
+        Replace the AudioSource a session is publishing with a rebuilt one.
+
+        A plugin rebuilds its source whenever its capability flags change, and the
+        controls the player publishes come from the object the session holds, so it
+        has to be handed the new one for the change to reach a client. Rejected
+        silently unless it is the same source, from the same provider, as the one
+        playing.
+
+        :param player_id: The player whose session should publish the new object.
+        :param source: The rebuilt AudioSource.
+        """
+        session = self._source_sessions.get(player_id)
+        if (
+            session is None
+            or session.source_id != source.item_id
+            or session.provider_instance_id != source.provider
+        ):
+            return
+        session.source = source
+        self.trigger_player_update(player_id)
+
     def update_source_options(
         self,
         player_id: str,

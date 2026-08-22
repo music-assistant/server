@@ -2957,71 +2957,57 @@ class TestOnSourceUnselectedStaleRejection:
         assert provider._active_session_id is None
 
 
-class TestUpdateSourceCapabilitiesStamping:
-    """`_update_source_capabilities` rebuilds and stamps the live queue item."""
+class TestUpdateSourceCapabilitiesRefresh:
+    """`_update_source_capabilities` rebuilds the source and refreshes the session."""
 
-    def _setup_provider_with_queue(self) -> tuple[YandexYnisonProvider, MagicMock, MagicMock]:
+    def _provider_in_use(self) -> YandexYnisonProvider:
         provider = _make_provider()
         # Linked yandex_music provider available → capabilities ON
         provider._yandex_provider = MagicMock()
-        provider._in_use_by_player = "queue1"
+        provider._in_use_by_player = "player1"
+        provider.mass.players.refresh_source = MagicMock()
+        return provider
 
-        old_source = provider._audio_source
-        queue = MagicMock()
-        current_item = MagicMock()
-        current_item.media_item = old_source
-        queue.current_item = current_item
-        provider.mass.player_queues.get = MagicMock(return_value=queue)
-        provider.mass.player_queues.signal_update = MagicMock()
-        provider.mass.players.trigger_player_update = MagicMock()
-        return provider, queue, current_item
+    def test_a_capability_flip_refreshes_the_session(self) -> None:
+        """
+        The rebuilt source is handed to the session the player publishes from.
 
-    def test_stamps_new_audio_source_with_caps_on(self) -> None:
-        """A capability flip stamps a fresh AudioSource onto the live queue item."""
-        provider, _queue, current_item = self._setup_provider_with_queue()
-        # Mark the old source's media_type explicitly so identity logic accepts it
-        old = provider._audio_source
-        current_item.media_item = AudioSource(
-            item_id=old.item_id,
-            provider=old.provider,
-            name=old.name,
-            provider_mappings=old.provider_mappings,
-            can_play_pause=False,
-            can_seek=False,
-            can_next_previous=False,
-            exclusive=True,
-            allow_external_trigger=True,
-        )
+        The controls a client sees come from the object the session holds, so without
+        this the new flags would not appear until the source was selected again.
+        """
+        provider = self._provider_in_use()
 
         provider._update_source_capabilities()
 
-        new_source = current_item.media_item
-        assert isinstance(new_source, AudioSource)
-        assert new_source.can_play_pause is True
-        assert new_source.can_seek is True
-        assert new_source.can_next_previous is True
-        provider.mass.player_queues.signal_update.assert_called_once_with(
-            "queue1", items_changed=True
-        )
+        provider.mass.players.refresh_source.assert_called_once()
+        player_id, source = provider.mass.players.refresh_source.call_args.args
+        assert player_id == "player1"
+        assert isinstance(source, AudioSource)
+        assert source.can_play_pause is True
+        assert source.can_seek is True
+        assert source.can_next_previous is True
+        # and the provider keeps the same object it published
+        assert provider._audio_source is source
 
-    def test_skips_when_in_use_by_player_is_none(self) -> None:
-        """When no queue currently consumes our stream, just rebuild and return."""
-        provider, _queue, _current_item = self._setup_provider_with_queue()
+    def test_nothing_is_refreshed_when_no_player_is_using_it(self) -> None:
+        """With no player holding the source there is no session to refresh."""
+        provider = self._provider_in_use()
         provider._in_use_by_player = None
 
         provider._update_source_capabilities()
 
-        # No stamp on the queue item.
-        provider.mass.player_queues.signal_update.assert_not_called()
+        provider.mass.players.refresh_source.assert_not_called()
 
-    def test_skips_when_queue_lookup_returns_none(self) -> None:
-        """Defensive: queue gone between claim and capability tick → no stamp."""
-        provider, _queue, _current_item = self._setup_provider_with_queue()
-        provider.mass.player_queues.get = MagicMock(return_value=None)
+    def test_the_source_is_still_rebuilt_when_no_player_is_using_it(self) -> None:
+        """The provider's own copy is updated regardless, ready for the next selection."""
+        provider = self._provider_in_use()
+        provider._in_use_by_player = None
+        before = provider._audio_source
 
         provider._update_source_capabilities()
 
-        provider.mass.player_queues.signal_update.assert_not_called()
+        assert provider._audio_source is not before
+        assert provider._audio_source.can_play_pause is True
 
 
 class TestPrefetchOrdering:

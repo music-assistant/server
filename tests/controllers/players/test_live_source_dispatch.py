@@ -80,7 +80,7 @@ async def test_a_capable_source_takes_the_command() -> None:
     """The source is asked to seek within its own session."""
     controller, provider = _controller(_source(can_seek=True))
 
-    handled = await controller._forward_to_live_source(
+    handled = await controller._forward_to_external_source(
         controller.get_player(PLAYER_ID), SourceControl.SEEK, 42
     )
 
@@ -93,7 +93,7 @@ async def test_a_source_that_cannot_do_it_refuses_rather_than_forwarding() -> No
     controller, provider = _controller(_source(can_seek=False))
 
     with pytest.raises(PlayerCommandFailed, match="does not support this action"):
-        await controller._forward_to_live_source(
+        await controller._forward_to_external_source(
             controller.get_player(PLAYER_ID), SourceControl.SEEK, 42
         )
 
@@ -115,11 +115,11 @@ async def test_each_transport_action_is_gated_on_its_own_flag(
 ) -> None:
     """Every transport action is gated by the capability that describes it."""
     controller, _provider = _controller(_source(**{flag: True}))
-    assert await controller._forward_to_live_source(controller.get_player(PLAYER_ID), action)
+    assert await controller._forward_to_external_source(controller.get_player(PLAYER_ID), action)
 
     controller, _provider = _controller(_source(**{flag: False}))
     with pytest.raises(PlayerCommandFailed):
-        await controller._forward_to_live_source(controller.get_player(PLAYER_ID), action)
+        await controller._forward_to_external_source(controller.get_player(PLAYER_ID), action)
 
 
 @pytest.mark.parametrize("action", [SourceControl.SHUFFLE, SourceControl.REPEAT])
@@ -132,7 +132,9 @@ async def test_ordering_is_not_gated_by_a_capability_flag(action: SourceControl)
     """
     controller, provider = _controller(_source())
 
-    assert await controller._forward_to_live_source(controller.get_player(PLAYER_ID), action, True)
+    assert await controller._forward_to_external_source(
+        controller.get_player(PLAYER_ID), action, True
+    )
 
     provider.on_source_control.assert_awaited_once_with("main", action, True)
 
@@ -141,7 +143,7 @@ async def test_nothing_is_forwarded_when_no_source_is_playing() -> None:
     """With no live source the caller is told to look elsewhere, not refused."""
     controller, provider = _controller(None)
 
-    handled = await controller._forward_to_live_source(
+    handled = await controller._forward_to_external_source(
         controller.get_player(PLAYER_ID), SourceControl.SEEK, 42
     )
 
@@ -155,7 +157,7 @@ async def test_a_gone_provider_is_not_forwarded_to() -> None:
     controller.mass.get_provider.return_value = None
 
     assert (
-        await controller._forward_to_live_source(
+        await controller._forward_to_external_source(
             controller.get_player(PLAYER_ID), SourceControl.SEEK, 42
         )
         is False
@@ -186,7 +188,7 @@ async def test_a_group_member_is_playing_its_groups_source() -> None:
         side_effect=lambda pid, *_a, **_k: {"member_1": member, "group_1": group}.get(pid)
     )
 
-    assert await controller._forward_to_live_source(member, SourceControl.SEEK, 7)
+    assert await controller._forward_to_external_source(member, SourceControl.SEEK, 7)
 
     provider.on_source_control.assert_awaited_once_with("main", SourceControl.SEEK, 7)
 

@@ -159,10 +159,20 @@ def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -
 async def _wav_passthrough_stream(
     audio_input: AsyncGenerator[bytes], output_format: AudioFormat
 ) -> AsyncGenerator[bytes]:
-    """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
-    yield create_streaming_wave_header(output_format)
-    async for chunk in audio_input:
-        yield chunk
+    """
+    Yield a WAV header followed by raw PCM bytes from ``audio_input``.
+
+    Closes ``audio_input`` when this generator is closed, so a provider waiting in
+    its own finally to release a claim is not left until garbage collection - a
+    reconnect would otherwise block on a claim nobody is holding on purpose.
+
+    :param audio_input: The PCM stream to pass through.
+    :param output_format: Format the WAV header should describe.
+    """
+    async with aclosing(audio_input):
+        yield create_streaming_wave_header(output_format)
+        async for chunk in audio_input:
+            yield chunk
 
 
 def _get_publish_addresses(

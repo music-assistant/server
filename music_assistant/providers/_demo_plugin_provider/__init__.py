@@ -232,8 +232,7 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.players.update_source_metadata(player_id, ...) — same mechanism
-        # ICY radio metadata uses.
+        # mass.players.update_source_metadata(player_id, ...).
         #
         # Silence-during-pause contract:
         # - stream_type=CUSTOM: the server wraps your audio generator with a

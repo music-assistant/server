@@ -111,8 +111,7 @@ class PluginProvider(Provider):
         ``stream_type`` selects between a custom async generator and a path
         (e.g. NAMED_PIPE); ``audio_format`` describes the PCM format the source
         emits; ``stream_metadata`` carries the initial live metadata (and can
-        be updated at runtime via ``mass.players.update_source_metadata(player_id, ...)``,
-        the same channel ICY radio metadata uses).
+        be updated at runtime via ``mass.players.update_source_metadata(player_id, ...)``).
 
         Silence-during-pause contract:
         the player consuming the stream needs a continuous byte flow or it will

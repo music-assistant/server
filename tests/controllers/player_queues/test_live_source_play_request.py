@@ -10,7 +10,9 @@ leaving a queue it can no longer be in.
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import QueueOption
+from music_assistant_models.errors import InvalidCommand
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
@@ -108,16 +110,38 @@ async def test_ordinary_media_still_goes_to_the_queue() -> None:
     ctrl._handle_play_media.assert_awaited_once()
 
 
-async def test_a_source_named_among_other_media_is_not_forwarded() -> None:
+async def test_a_source_named_among_other_media_is_refused() -> None:
     """
-    A batch is left to the ordinary path.
+    A live source cannot be combined with other media, so the request is refused.
 
-    A live source has no meaning lined up behind or alongside other media, so it is
-    not quietly turned into a source selection - it fails as the unplayable item it is.
+    It is selected on a player rather than queued, so there is nothing to line it up
+    behind or alongside. Letting the batch through would put it back in the queue,
+    which is the one thing this whole shape exists to stop.
     """
     ctrl = _controller()
 
-    await ctrl.play_media(QUEUE_ID, [SOURCE_URI, "library://track/1"], QueueOption.PLAY)
+    with pytest.raises(InvalidCommand, match="plays on its own"):
+        await ctrl.play_media(QUEUE_ID, [SOURCE_URI, "library://track/1"], QueueOption.PLAY)
 
     ctrl.mass.players.select_source.assert_not_awaited()
-    ctrl._handle_play_media.assert_awaited_once()
+    ctrl._handle_play_media.assert_not_awaited()
+
+
+async def test_a_source_media_item_among_other_media_is_refused_too() -> None:
+    """The same holds when the batch carries the media item rather than its uri."""
+    ctrl = _controller()
+
+    with pytest.raises(InvalidCommand, match="plays on its own"):
+        await ctrl.play_media(QUEUE_ID, [_audio_source(), _track()], QueueOption.PLAY)
+
+    ctrl._handle_play_media.assert_not_awaited()
+
+
+async def test_two_sources_at_once_are_refused() -> None:
+    """A player plays one source at a time, so two in a request is not a choice to make."""
+    ctrl = _controller()
+
+    with pytest.raises(InvalidCommand, match="plays on its own"):
+        await ctrl.play_media(QUEUE_ID, [_audio_source(), _audio_source()], QueueOption.PLAY)
+
+    ctrl.mass.players.select_source.assert_not_awaited()

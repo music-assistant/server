@@ -709,7 +709,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
-        if await self._forward_to_live_source(player, SourceControl.SEEK, position):
+        if await self._forward_to_external_source(player, SourceControl.SEEK, position):
             return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -742,7 +742,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param shuffle_enabled: Whether to play the current content shuffled.
         """
         player = self._get_player_with_redirect(player_id)
-        if await self._forward_to_live_source(player, SourceControl.SHUFFLE, shuffle_enabled):
+        if await self._forward_to_external_source(player, SourceControl.SHUFFLE, shuffle_enabled):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_shuffle(active_queue.queue_id, shuffle_enabled)
@@ -763,7 +763,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param repeat_mode: The repeat mode to apply.
         """
         player = self._get_player_with_redirect(player_id)
-        if await self._forward_to_live_source(player, SourceControl.REPEAT, repeat_mode):
+        if await self._forward_to_external_source(player, SourceControl.REPEAT, repeat_mode):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_repeat(active_queue.queue_id, repeat_mode)
@@ -777,7 +777,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        if await self._forward_to_live_source(player, SourceControl.NEXT):
+        if await self._forward_to_external_source(player, SourceControl.NEXT):
             return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -803,7 +803,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        if await self._forward_to_live_source(player, SourceControl.PREVIOUS):
+        if await self._forward_to_external_source(player, SourceControl.PREVIOUS):
             return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -1648,6 +1648,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player = self._players.get(player_id)
         if player is None:
             return
+        # a player that is going away is done with any live source it was playing,
+        # so let the owning plugin release an upstream session pointing at us
+        await self._release_audio_source(player_id)
         del self._players[player_id]
         # clean up all lock entries for this player
         for prefix in [p.value for p in PlayerLockPurpose]:
@@ -4084,24 +4087,29 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         await player.enqueue_next_media(media)
 
-    async def _forward_to_live_source(
+    async def _forward_to_external_source(
         self,
         player: Player,
         action: SourceControl,
         value: SourceControlValue = None,
     ) -> bool:
         """
-        Hand a control action to the live source playing on a player.
+        Hand a control action to the external source playing on a player.
 
-        The per-action capability flags gate what the source advertises it can do,
-        so a client is refused rather than left waiting. Ordering is not gated: the
-        source's session is the only thing that knows whether it can be reordered,
-        and it refuses in its own words.
+        Covers the external sources Music Assistant provides itself, which own a
+        session it can talk to. A source belonging to the player (its line-in, TV
+        input, or its own Spotify Connect) has no such session, so this reports that
+        it did not take the action and the caller goes on to the player itself.
+
+        The per-action capability flags gate what the source advertises it can do, so
+        a client is refused rather than left waiting. Ordering is not gated: only the
+        session knows whether its content can be reordered, and it refuses in its own
+        words.
 
         :param player: The player the action was issued to.
         :param action: The control action to hand over.
         :param value: The action's argument, where it takes one.
-        :return: True when a live source took the action, False when none is playing.
+        :return: True when an external source took the action.
         """
         if (active := self._get_active_audio_source(player)) is None:
             return False
