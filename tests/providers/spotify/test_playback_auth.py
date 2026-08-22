@@ -107,9 +107,10 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
 
     assert await setup_flow._authorize_playback(session) == STORED_CREDENTIALS
-    # the form was re-shown, carrying the failure reason rather than aborting the flow
-    assert session.form.await_count == 2
-    assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
+    # the method form was re-shown, carrying the failure reason rather than aborting
+    # the flow (the first form call is the librespot explainer page)
+    assert session.form.await_count == 3
+    assert session.form.await_args_list[2].kwargs["errors"] == {"base": "playback_auth_failed"}
     pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME)
 
 
