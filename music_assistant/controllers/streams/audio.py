@@ -17,7 +17,6 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 from weakref import WeakValueDictionary
@@ -3497,21 +3496,6 @@ class StreamsAudio:
             return self.get_multi_file_stream(streamdetails, seek_position), 0, extra_input_args
         # regular single file/url stream
         assert isinstance(streamdetails.path, str)  # for type checking
-        # WORKAROUND: WAV/AIFF containers can embed a non-PCM bitstream
-        # As a result, DTS 5.1 packed into WAV plays back as white noise!
-        # (e.g. DTS, intended for SPDIF/HDMI passthrough) while declaring
-        # PCM in the fmt chunk. With ffmpeg's default probesize/
-        # analyzeduration, the demuxer's content-sniffing heuristic
-        # doesn't have enough data to detect the embedded bitstream and
-        # falls back to trusting the fmt chunk, causing the payload to
-        # be treated as raw PCM downstream. Only applies to WAV/AIFF -
-        # other containers don't have this ambiguity.
-        if Path(streamdetails.path).suffix.lower() in (".wav", ".aiff", ".aif"):
-            # 256 KB probesize is enough to detect embedded DTS-in-WAV while
-            # keeping I/O overhead and latency virtually zero. Note: -analyzeduration
-            # was tested and found to be a noop here — ffmpeg's demuxer exhausts the
-            # probesize byte limit long before the time-based limit could apply.
-            extra_input_args += ["-probesize", "256000"]
         return streamdetails.path, seek_position, extra_input_args
 
     async def _iter_audio_source_pcm(

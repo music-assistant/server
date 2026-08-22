@@ -1545,6 +1545,24 @@ class LocalFileSystemProvider(MusicProvider):
             return f"{relative_path}?cs={checksum}"
         return relative_path
 
+    @staticmethod
+    def _codec_type_from_tags(tags: AudioTags) -> ContentType:
+        """
+        Return the actual audio codec detected by ffprobe, if any.
+
+        WAV/AIFF containers can embed a non-PCM bitstream e.g. DTS 5.1, intended
+        for SPDIF/HDMI passthrough) while declaring PCM in the fmt chunk. Forcing
+        ffmpeg to decode with the real codec, learned from the library scan probe,
+        which uses a much larger read window than the streaming ffmpeg pass, avoids
+        relying on ffmpeg's own content-sniffing heuristic at stream time, which can
+        miss the embedded bitstream if it's located far into a large multi-track file.
+        Falls back to UNKNOWN if the probe didn't report anything usable.
+        """
+        if tags.raw and (streams := tags.raw.get("streams")):
+            if codec_name := streams[0].get("codec_name"):
+                return ContentType.try_parse(codec_name)
+        return ContentType.UNKNOWN
+
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
     ) -> Track:
@@ -1564,6 +1582,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1940,6 +1959,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2039,6 +2059,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2163,6 +2184,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2474,6 +2496,7 @@ class LocalFileSystemProvider(MusicProvider):
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(file_item.ext or tags.format),
+                codec_type=self._codec_type_from_tags(tags),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,
