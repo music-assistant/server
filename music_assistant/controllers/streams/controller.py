@@ -1321,13 +1321,19 @@ class StreamsController(CoreController):
         """
         Get the url for the special command stream, or None if the queue is not playing.
 
-        :param player_or_queue_id: Queue to send the command to.
+        :param player_or_queue_id: Queue (or player) to send the command to.
         :param command: Command the url triggers when fetched.
         """
-        queue_data = self.mass.player_queues.queue_data_or_none(player_or_queue_id)
+        # resolve to the active queue: a protocol player (e.g. the cast child of a
+        # universal player) does not own the active queue, its parent player does
+        if active_queue := self.mass.player_queues.get_active_queue(player_or_queue_id):
+            queue_id = active_queue.queue_id
+        else:
+            queue_id = player_or_queue_id
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
         if queue_data is None or (session_id := queue_data.session_id) is None:
             return None
-        return f"{self.base_url}/command/{session_id}/{player_or_queue_id}/{command}.mp3"
+        return f"{self.base_url}/command/{session_id}/{queue_id}/{command}.mp3"
 
     def get_announcement_url(
         self,
