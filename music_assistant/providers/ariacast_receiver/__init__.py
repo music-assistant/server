@@ -304,17 +304,17 @@ class AriaCastReceiver(PluginProvider):
                 self._in_use_by_player = None
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Handle source selection by a player queue."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        self._in_use_by_player = queue_id
+        self._in_use_by_player = owner_player_id
         self._active_session_id = stream_session_id
-        self._active_player_id = player_id  # player_id for cmd_stop/cmd_power, not queue_id
+        self._active_player_id = player_id  # player_id for cmd_stop/cmd_power, not owner_player_id
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Handle source deselection by a player queue."""
         if source_id != AUDIO_SOURCE_ID:
@@ -322,7 +322,7 @@ class AriaCastReceiver(PluginProvider):
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_player == queue_id:
+        if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
 
     async def on_source_control(
@@ -755,10 +755,10 @@ class AriaCastReceiver(PluginProvider):
                 self.mass.create_task(self._safe_play_media(target))
         elif not is_playing and was_playing and self._in_use_by_player:
             player_id = self._active_player_id
-            # Clear the queue guard before the stop so a fast resume can re-trigger
+            # Clear the guard before the stop so a fast resume can re-trigger
             self._in_use_by_player = None
             if player_id:
-                self.mass.create_task(self.mass.players.cmd_stop(player_id))
+                self.mass.create_task(self.mass.players.deselect_source(player_id))
 
         await self._broadcast_meta()
 

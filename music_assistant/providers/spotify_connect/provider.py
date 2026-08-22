@@ -364,17 +364,17 @@ class SpotifyConnectProvider(PluginProvider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource has been selected/started on a player."""
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Cache the queue_id (== user-facing MA player) rather than the
+        # Cache the owner_player_id (== user-facing MA player) rather than the
         # protocol-level player_id. Some protocol players are ephemeral bridges
         # whose ID is invalid for play_media / queue lookups once torn down.
-        active_player_id = queue_id
+        active_player_id = owner_player_id
         prev_player_id = (
             self._active_player_id if self._active_player_id != active_player_id else None
         )
@@ -384,7 +384,7 @@ class SpotifyConnectProvider(PluginProvider):
         # already-replaced session id lets on_source_unselected's stale-guard
         # reject that teardown — otherwise it releases the Spotify session this
         # handover is about to use.
-        self._in_use_by_player = queue_id
+        self._in_use_by_player = owner_player_id
         self._active_session_id = stream_session_id
         self._active_player_id = active_player_id
         self.logger.debug("Active player set to: %s", active_player_id)
@@ -406,7 +406,7 @@ class SpotifyConnectProvider(PluginProvider):
         # queue mirrors the session's shuffle/repeat state from the start.
         if self._last_playback_options is not None:
             self.mass.players.update_source_options(
-                queue_id,
+                owner_player_id,
                 AUDIO_SOURCE_ID,
                 self.instance_id,
                 shuffle_enabled=self._last_playback_options.shuffle,
@@ -449,19 +449,19 @@ class SpotifyConnectProvider(PluginProvider):
         await self._sync_player_volume_to_spotify(active_player_id)
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects would otherwise let an old request's late callback clear
         # the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_player == queue_id:
+        if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
         if self._playing:
             # MA-side stop/queue-clear: release the Spotify session so the app
@@ -798,7 +798,11 @@ class SpotifyConnectProvider(PluginProvider):
         self._playing = False
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
-            self.mass.players.trigger_player_update(prev_player_id)
+            # the player is not playing us any more, so it should stop saying it is;
+            # the stop itself is scheduled separately by the caller
+            self.mass.create_task(
+                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+            )
 
     def _save_last_player_id(self, player_id: str) -> None:
         """Persist the selected player ID as the new default."""

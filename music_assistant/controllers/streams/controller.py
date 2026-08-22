@@ -1421,6 +1421,16 @@ class StreamsController(CoreController):
                 # no conversion needed
                 return ugp_stream.subscribe_raw()
             return ugp_stream.get_stream(output_format=pcm_format)
+        if (
+            media.media_type == MediaType.AUDIO_SOURCE
+            and not media.queue_item_id
+            and media.source_id
+            and (session := self.mass.players.get_audio_source_session(media.source_id))
+        ):
+            # a live source playing on a player rather than an item in a queue
+            return self._get_audio_source_session_stream(
+                session, pcm_format, player_id or media.source_id
+            )
         if media.source_id and media.queue_item_id:
             # Queue stream request - determine flow_mode based on player capabilities
             # or force it if explicitly requested (e.g., for multi-client streaming)
@@ -1735,7 +1745,78 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             filter_params=filter_params,
+            # keep the encode stage from reading further ahead than it needs to: a live
+            # source's latency is whatever is buffered between it and the player
+            extra_input_args=[
+                "-readrate",
+                SINGLE_ITEM_READRATE,
+                "-readrate_initial_burst",
+                SINGLE_ITEM_READRATE_INITIAL_BURST,
+            ],
         )
+
+    async def _get_audio_source_session_stream(
+        self,
+        session: AudioSourceSession,
+        pcm_format: AudioFormat,
+        consumer_player_id: str,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Stream a live source to a consumer that takes raw PCM rather than the http url.
+
+        AirPlay, Snapcast, squeezelite's multi-client path, universal groups and the
+        MSX bridge all consume PCM directly, so they never reach the http route and
+        need the plugin lifecycle fired here instead — those hooks are what claim and
+        release the source and kick acquisition side effects into life.
+
+        :param session: The live source session playing on its owner.
+        :param pcm_format: The PCM format the consumer wants.
+        :param consumer_player_id: The player consuming this stream, which is not
+            necessarily the one that owns the source.
+        """
+        prov = self.mass.get_provider(session.provider_instance_id)
+        if not isinstance(prov, PluginProvider):
+            raise AudioError(
+                f"AudioSource provider {session.provider_instance_id} is not available"
+            )
+        stream_session_id = uuid4().hex
+        try:
+            try:
+                await prov.on_source_selected(
+                    session.source_id,
+                    consumer_player_id,
+                    session.player_id,
+                    stream_session_id,
+                )
+            except RuntimeError as err:
+                # the plugin refuses this consumer, e.g. it just redirected playback
+                raise AudioError(str(err)) from err
+            session.stream_session_id = stream_session_id
+            if (streamdetails := session.streamdetails) is None:
+                streamdetails = await prov.get_stream_details(
+                    session.source_id, MediaType.AUDIO_SOURCE
+                )
+                session.attach_streamdetails(streamdetails)
+            async for chunk in self.audio.get_audio_source_stream(
+                streamdetails=streamdetails,
+                pcm_format=pcm_format,
+                raise_on_error=False,
+                display_name=session.source.name,
+            ):
+                yield chunk
+        finally:
+            try:
+                await prov.on_source_unselected(
+                    session.source_id, session.player_id, stream_session_id
+                )
+            except Exception:
+                self.logger.warning(
+                    "on_source_unselected raised for provider %s source %s player %s",
+                    prov.instance_id,
+                    session.source_id,
+                    session.player_id,
+                    exc_info=True,
+                )
 
     async def _wrap_with_audio_source_lifecycle(
         self,

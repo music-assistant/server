@@ -267,17 +267,17 @@ class AirPlayReceiverProvider(PluginProvider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource is selected/started on a player."""
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Cache the queue_id (user-facing MA player) rather than the protocol-
+        # Cache the owner_player_id (user-facing MA player) rather than the protocol-
         # level player_id; protocol bridges (e.g. Sendspin's spb_…) can tear
         # down between streams and their ID is then invalid for play_media.
-        active_player_id = queue_id
+        active_player_id = owner_player_id
 
         # If there's already an active player and it's different, kick it out.
         # The lock claim a few lines below replaces the previous queue's claim;
@@ -299,7 +299,7 @@ class AirPlayReceiverProvider(PluginProvider):
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
         # stream request.
-        self._in_use_by_player = queue_id
+        self._in_use_by_player = owner_player_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
@@ -314,20 +314,20 @@ class AirPlayReceiverProvider(PluginProvider):
             self._save_last_player_id(active_player_id)
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects (player drops + reopens the same stream URL before the
         # original request's finally fires) would otherwise let the old
         # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_player == queue_id:
+        if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
 
     async def resolve_image(self, path: str) -> bytes:
@@ -429,8 +429,10 @@ class AirPlayReceiverProvider(PluginProvider):
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
-            # Trigger update for the player that was using this source
-            self.mass.players.trigger_player_update(prev_player_id)
+            # the player is not playing us any more, so it should stop saying it is
+            self.mass.create_task(
+                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+            )
 
     def _save_last_player_id(self, player_id: str) -> None:
         """Persist the selected player ID as the new default."""

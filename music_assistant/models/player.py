@@ -2675,8 +2675,14 @@ class Player(ABC):
         # which tracks bytes consumed — the wrong clock for a live source, losing
         # upstream seeks and pause-resume on corrected_elapsed_time, which the
         # player_queues controller and several player providers consume.
+        # Only for a player playing the source itself: one that is hearing another
+        # player's audio already took that player's position above, and its own
+        # position would contradict the media it is reporting.
         if (
-            (session := self.mass.players.get_audio_source_session(self.player_id)) is not None
+            not self.__final_synced_to
+            and not self.__final_active_group
+            and not (self.type == PlayerType.PROTOCOL and self.protocol_parent_id)
+            and (session := self.mass.players.get_audio_source_session(self.player_id)) is not None
             and session.stream_metadata is not None
             and session.stream_metadata.elapsed_time is not None
         ):

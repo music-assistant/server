@@ -1156,19 +1156,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Delegate to internal handler for actual implementation
         await self._handle_select_source(player_id, source)
 
-    async def deselect_source(self, player_id: str) -> None:
+    async def deselect_source(self, player_id: str, stop_playback: bool = True) -> None:
         """
-        Deselect the current source and stop the player.
+        Give up the source a player was playing, and stop it.
 
-        Use this when an external source (plugin/receiver) disconnects and the player
-        should stop playback rather than switch to another source.
+        Call this from a plugin when its session ends — the player has nothing to play
+        any more, so it goes back to reporting its own queue rather than a source that
+        has gone. Pausing is not this: a paused source keeps the player, so that its
+        session survives being resumed.
 
-        :param player_id: player_id of the player to stop and deselect.
+        :param player_id: player_id of the player to give the source up on.
+        :param stop_playback: Whether to stop the player as well. Pass False when the
+            caller has already stopped it, or is about to.
         """
         player = self.get_player(player_id, raise_unavailable=False)
         if not player:
             return
         await self._release_audio_source(player_id)
+        if not stop_playback:
+            return
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
@@ -2111,11 +2117,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # notify active AudioSource once at the group level to prevent
         # feedback loops from per-child callbacks with different volume values
-        if active := self._get_active_audio_source(group_player):
-            audio_source, plugin_prov = active
-            active_queue = self.get_active_queue(group_player)
-            if active_queue is not None and active_queue.queue_id == group_player.player_id:
-                await plugin_prov.on_volume_change(audio_source.item_id, volume_level)
+        await self._notify_source_volume_change(group_player, volume_level)
 
     def iter_group_members(
         self,
@@ -3822,15 +3824,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
 
-        # Notify the active AudioSource of a volume change.
-        # Only fire if this player is the direct owner of its queue,
-        # not when it merely inherits active_source from a parent group —
-        # group volume changes handle the callback once at the group level.
-        if active := self._get_active_audio_source(player):
-            audio_source, plugin_prov = active
-            active_queue = self.get_active_queue(player)
-            if active_queue is not None and active_queue.queue_id == player.player_id:
-                await plugin_prov.on_volume_change(audio_source.item_id, volume_level)
+        await self._notify_source_volume_change(player, volume_level)
 
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
@@ -4002,6 +3996,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        # media that is not the live source itself takes the player away from it
+        if media.media_type != MediaType.AUDIO_SOURCE:
+            await self._release_audio_source(player_id)
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
@@ -4086,6 +4083,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 f"Player {player.state.name} does not support enqueueing"
             )
         await player.enqueue_next_media(media)
+
+    async def _notify_source_volume_change(self, player: Player, volume_level: int) -> None:
+        """
+        Tell the source playing on a player that its volume changed.
+
+        Only the player the source is actually playing on notifies, never one that
+        merely hears it as a group member — otherwise a group volume change would
+        fire the callback once per child, each with a different value.
+
+        :param player: The player whose volume changed.
+        :param volume_level: The new volume, 0-100.
+        """
+        if (session := self.get_audio_source_session(player.player_id)) is None:
+            return
+        provider = self.mass.get_provider(session.provider_instance_id)
+        if not isinstance(provider, PluginProvider):
+            return
+        await provider.on_volume_change(session.source_id, volume_level)
 
     async def _forward_to_external_source(
         self,

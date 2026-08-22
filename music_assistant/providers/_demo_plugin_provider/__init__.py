@@ -318,7 +318,7 @@ class MyDemoPluginprovider(PluginProvider):
         # at the group level, not per child.
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to an AudioSource being selected for playback on a player."""
         # OPTIONAL — fires only on the actual stream request (not on queue
@@ -334,7 +334,7 @@ class MyDemoPluginprovider(PluginProvider):
         #
         #     if self._active_player_id and self._active_player_id != player_id:
         #         await self.mass.players.cmd_stop(self._active_player_id)
-        #     self._in_use_by_player = queue_id  # claim (overwrites prior queue's)
+        #     self._in_use_by_player = owner_player_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
         #
@@ -344,7 +344,7 @@ class MyDemoPluginprovider(PluginProvider):
         # continue into get_stream_details and stream to the wrong player.
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to MA tearing down this AudioSource's stream from a queue."""
         # OPTIONAL — fires in the queue-item stream handler's finally block, so
@@ -352,7 +352,7 @@ class MyDemoPluginprovider(PluginProvider):
         # disconnect, exception). Lets NAMED_PIPE plugins release ownership
         # without depending on an external session event.
         #
-        # Guard with a stream_session_id match — NOT just a queue_id match —
+        # Guard with a stream_session_id match — NOT just a owner_player_id match —
         # so a stale callback from a superseded same-queue request (player
         # drops + reopens the same URL before the prior finally fires) cannot
         # clear the live claim of the new stream:
@@ -360,7 +360,7 @@ class MyDemoPluginprovider(PluginProvider):
         #     if self._active_session_id != stream_session_id:
         #         return
         #     self._active_session_id = None
-        #     if self._in_use_by_player == queue_id:
+        #     if self._in_use_by_player == owner_player_id:
         #         self._in_use_by_player = None
 
     async def search(

@@ -624,7 +624,7 @@ class YandexYnisonProvider(PluginProvider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource has been selected/started on a player."""
@@ -677,7 +677,7 @@ class YandexYnisonProvider(PluginProvider):
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
         # stream request.
-        self._in_use_by_player = queue_id
+        self._in_use_by_player = owner_player_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
@@ -686,20 +686,20 @@ class YandexYnisonProvider(PluginProvider):
         self.logger.debug("Active player set to: %s", player_id)
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects (player drops + reopens the same stream URL before the
         # original request's finally fires) would otherwise let the old
         # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_player == queue_id:
+        if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
 
     async def _wait_for_track_change(self, old_track_id: str, timeout: float = 30.0) -> bool:

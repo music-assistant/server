@@ -270,7 +270,6 @@ class AudioSourceMixin:
         player_id: str,
         source: AudioSource,
         provider_instance_id: str,
-        stream_session_id: str | None = None,
     ) -> AudioSourceSession:
         """
         Record that an AudioSource is now playing on the given player.
@@ -285,8 +284,6 @@ class AudioSourceMixin:
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
         :param provider_instance_id: Instance id of the plugin exposing it.
-        :param stream_session_id: Token of the stream claiming the source, when one
-            has been requested; pass it so the matching release is recognised.
         """
         session = self._source_sessions.get(player_id)
         if (
@@ -295,38 +292,34 @@ class AudioSourceMixin:
             and session.provider_instance_id == provider_instance_id
         ):
             session.source = source
-            session.stream_session_id = stream_session_id
             return session
+        # a source plays on one player at a time, so it leaves whichever other player
+        # was holding it: two players both reporting it would let a command on the one
+        # that lost it drive the one that has it
+        for other_id, other in list(self._source_sessions.items()):
+            if (
+                other_id != player_id
+                and other.source_id == source.item_id
+                and other.provider_instance_id == provider_instance_id
+            ):
+                del self._source_sessions[other_id]
+                self.trigger_player_update(other_id)
         session = AudioSourceSession(
             player_id=player_id,
             source=source,
             provider_instance_id=provider_instance_id,
-            stream_session_id=stream_session_id,
         )
         self._source_sessions[player_id] = session
         return session
 
-    def _end_audio_source_session(
-        self, player_id: str, stream_session_id: str | None = None
-    ) -> AudioSourceSession | None:
+    def _end_audio_source_session(self, player_id: str) -> AudioSourceSession | None:
         """
         Drop the AudioSource session on the given player and return it.
 
-        Pass the ``stream_session_id`` of the stream being torn down to end only
-        the session that stream owns. A reconnect (the player drops and reopens
-        the stream before the first request's teardown runs) leaves the previous
-        request finishing *after* its replacement has started, and an unguarded
-        end would let that late teardown drop the live session — the same hazard
-        ``PluginProvider.on_source_unselected`` requires plugins to guard against.
-        Omit it to end whatever is playing, for a teardown that is not scoped to
-        one stream (an explicit deselect, or the player going away).
+        Not tied to a stream: a paused source keeps the player while its stream is
+        torn down, so this is only for the player being done with the source.
 
         :param player_id: The player whose session ended.
-        :param stream_session_id: Only end the session holding this stream token.
-        :return: The session that was ended, or None if none matched.
+        :return: The session that was ended, or None if there was none.
         """
-        if stream_session_id is not None:
-            session = self._source_sessions.get(player_id)
-            if session is None or session.stream_session_id != stream_session_id:
-                return None
         return self._source_sessions.pop(player_id, None)

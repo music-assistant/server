@@ -189,7 +189,7 @@ class PluginProvider(Provider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """
@@ -211,7 +211,7 @@ class PluginProvider(Provider):
 
         :param source_id: The AudioSource.item_id that was selected.
         :param player_id: The player that will receive the stream.
-        :param queue_id: The queue that owns this playback session.
+        :param owner_player_id: The queue that owns this playback session.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
@@ -220,7 +220,7 @@ class PluginProvider(Provider):
     async def on_source_unselected(
         self,
         source_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """
@@ -235,14 +235,14 @@ class PluginProvider(Provider):
         event.
 
         Implementations MUST guard on ``stream_session_id`` matching the value
-        last set in ``on_source_selected``. A queue_id-only check is not
+        last set in ``on_source_selected``. A owner_player_id-only check is not
         sufficient: same-queue reconnects (player drops + reopens the same
         stream URL before the original request's finally fires) would
         otherwise let the old request's late callback clear the live claim of
         the new stream, silently dropping metadata and volume sync.
 
         :param source_id: The AudioSource.item_id whose stream ended.
-        :param queue_id: The queue whose stream is being torn down.
+        :param owner_player_id: The queue whose stream is being torn down.
         :param stream_session_id: The token paired with ``on_source_selected``
             for this specific stream request. Ignore the callback if it does
             not match the currently stored active session id.

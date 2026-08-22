@@ -358,7 +358,7 @@ class VBANReceiverProvider(PluginProvider):
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Claim the source for this queue and let any prior stream wind down."""
         if source_id != AUDIO_SOURCE_ID:
@@ -371,27 +371,27 @@ class VBANReceiverProvider(PluginProvider):
         # passive UDP receiver with no concept of an "active player" — the
         # previous queue's get_audio_stream loop notices the queue change on
         # its 1s timeout and exits cleanly on its own.
-        self._in_use_by_player = queue_id
+        self._in_use_by_player = owner_player_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
         self._active_session_id = stream_session_id
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects (player drops + reopens the same stream URL before the
         # original request's finally fires) would otherwise let the old
         # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_player == queue_id:
+        if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
 
     def _cancel_stats_reporter(self, instance_id: str | None = None) -> None:
