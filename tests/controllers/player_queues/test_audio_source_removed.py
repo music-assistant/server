@@ -236,21 +236,27 @@ async def test_starting_other_media_releases_the_source_it_replaced() -> None:
     provider.on_source_removed.assert_called_once_with("main", "q1")
 
 
-async def test_starting_the_same_source_again_keeps_it() -> None:
+async def test_playing_a_source_selects_it_and_leaves_the_queue_alone() -> None:
     """
-    Playing the paused source again must not release it.
+    A play request naming a live source selects it on the player instead of enqueueing it.
 
-    A replace drops the queue's items before loading the new ones, so the source briefly leaves
-    the queue on its way back in. Releasing it there would end the upstream session and restart
-    playback from the top instead of resuming where the user paused.
+    That is the whole point of the source living on the player: the queue keeps the items
+    the user had, so they are still there to resume once the source is done. Re-selecting
+    the same source is what keeps its upstream session alive, and the session itself is
+    what protects that now (see test_audio_source_session.py).
     """
-    ctrl = _controller(QueueItem.from_media_item("q1", _audio_source()))
+    existing = QueueItem.from_media_item("q1", _track())
+    ctrl = _controller(existing)
     provider = _plugin_provider(ctrl)
-    # the source comes back as a freshly built queue item, so identity is by media, not item id
-    _play_media_replacing_with(ctrl, QueueItem.from_media_item("q1", _audio_source()))
+    ctrl.mass.players.select_source = AsyncMock()
 
     await ctrl.play_media("q1", "spotify_connect--test://audio_source/main", QueueOption.REPLACE)
 
+    ctrl.mass.players.select_source.assert_awaited_once_with(
+        "q1", "spotify_connect--test://audio_source/main"
+    )
+    # nothing was enqueued, released or otherwise done to the queue
+    assert ctrl._queue_data["q1"].items == [existing]
     provider.on_source_removed.assert_not_called()
 
 

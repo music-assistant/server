@@ -54,6 +54,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import AudioSource
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
@@ -128,7 +129,6 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
-    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -4017,6 +4017,59 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
         await player.enqueue_next_media(media)
 
+    async def _resolve_audio_source_uri(
+        self, source: str
+    ) -> tuple[AudioSource, PluginProvider] | None:
+        """
+        Resolve a source string to a live AudioSource, if that is what it names.
+
+        :param source: The source string a select names.
+        :return: The source and its owning plugin, or None when the string names
+            something else (a queue, a player-native source).
+        """
+        if "://" not in source:
+            return None
+        try:
+            item = await self.mass.music.get_item_by_uri(source)
+        except MusicAssistantError:
+            return None
+        if not isinstance(item, AudioSource):
+            return None
+        provider = self.mass.get_provider(item.provider)
+        if not isinstance(provider, PluginProvider):
+            return None
+        if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
+            return None
+        return item, provider
+
+    async def _start_audio_source(
+        self, player: Player, audio_source: AudioSource, provider: PluginProvider
+    ) -> None:
+        """
+        Start a live external source on a player.
+
+        The player's queue is left exactly as it is: it simply stops being the
+        active source, so it is still there to resume when the source ends.
+
+        :param player: The player to play the source on.
+        :param audio_source: The source that was selected.
+        :param provider: The plugin exposing that source.
+        """
+        session = self._start_audio_source_session(
+            player.player_id, audio_source, provider.instance_id
+        )
+        await self._handle_play_media(
+            player.player_id,
+            PlayerMedia(
+                uri=audio_source.uri or audio_source.item_id,
+                media_type=MediaType.AUDIO_SOURCE,
+                title=audio_source.name,
+                # the session's owner, which its stream url is keyed on
+                source_id=player.player_id,
+                queue_session_id=session.playback_session_id,
+            ),
+        )
+
     async def _handle_select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle select source command without group redirect.
@@ -4038,6 +4091,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # just try to stop (regardless of state)
                 async with self.wait_for_player_update(player_id, timeout=5):
                     await self._handle_cmd_stop(player_id)
+        # an audio source uri selects the live source itself, which plays on the
+        # player while its queue keeps its own items and goes inactive
+        if (resolved := await self._resolve_audio_source_uri(source)) is not None:
+            await self._start_audio_source(player, *resolved)
+            return
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
         if self.mass.player_queues.get(source):

@@ -35,6 +35,7 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     PlayerUnavailableError,
     QueueEmpty,
 )
@@ -82,6 +83,7 @@ from music_assistant.controllers.player_queues.stream_feeder import StreamFeeder
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.player import get_queue_audio_source
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
@@ -117,6 +119,31 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
         MediaType.AUDIOBOOK,
     }
 )
+
+
+async def _single_audio_source_uri(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+) -> str | None:
+    """
+    Return the uri when a play request names exactly one live audio source.
+
+    A live source has no meaning as part of a batch — it is not content to line up
+    behind or alongside anything — so a request naming one among others is left to
+    the ordinary path, where it fails as the unplayable item it is.
+
+    :param media: The media a play request was given.
+    """
+    items = media if isinstance(media, list) else [media]
+    if len(items) != 1:
+        return None
+    item = items[0]
+    if not isinstance(item, str):
+        return item.uri if item.media_type == MediaType.AUDIO_SOURCE else None
+    try:
+        media_type, _, _ = await parse_uri(item)
+    except MusicAssistantError:
+        return None
+    return item if media_type == MediaType.AUDIO_SOURCE else None
 
 
 class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
@@ -520,6 +547,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        # A live source is not queue content: it plays on the player while the queue
+        # keeps its own items. Selecting it is the real operation, so a play request
+        # naming one is forwarded there rather than enqueued.
+        if (source_uri := await _single_audio_source_uri(media)) is not None:
+            await self.mass.players.select_source(queue_id, source_uri)
+            return
         # the live sources the queue holds may not survive what is being started; remembered
         # here so their plugins can be told once we know which of them did
         outgoing_sources = self._audio_sources_in(queue_id)
