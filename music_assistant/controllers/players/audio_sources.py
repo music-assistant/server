@@ -172,12 +172,29 @@ class AudioSourceMixin:
         self._source_sessions[player_id] = session
         return session
 
-    def _end_audio_source_session(self, player_id: str) -> AudioSourceSession | None:
+    def _end_audio_source_session(
+        self, player_id: str, stream_session_id: str | None = None
+    ) -> AudioSourceSession | None:
         """
         Drop the AudioSource session on the given player and return it.
 
+        Pass the ``stream_session_id`` of the stream being torn down to end only
+        the session that stream owns. A reconnect (the player drops and reopens
+        the stream before the first request's teardown runs) leaves the previous
+        request finishing *after* its replacement has started, and an unguarded
+        end would let that late teardown drop the live session — the same hazard
+        ``PluginProvider.on_source_unselected`` requires plugins to guard against.
+        Omit it to end whatever is playing, for a teardown that is not scoped to
+        one stream (an explicit deselect, or the player going away).
+
         :param player_id: The player whose session ended.
+        :param stream_session_id: Only end the session holding this stream token.
+        :return: The session that was ended, or None if none matched.
         """
+        if stream_session_id is not None:
+            session = self._source_sessions.get(player_id)
+            if session is None or session.stream_session_id != stream_session_id:
+                return None
         return self._source_sessions.pop(player_id, None)
 
     def _log_rejected_source_update(
@@ -195,9 +212,11 @@ class AudioSourceMixin:
         the legitimate transition cases.
         """
         self.logger.debug(
-            "Rejected source update for player %s from provider %s source %s (playing: %s)",
+            "Rejected source update for player %s from provider %s source %s "
+            "(playing: provider %s source %s)",
             player_id,
             provider,
             source_id,
-            f"{session.provider_instance_id}/{session.source_id}" if session else "nothing",
+            session.provider_instance_id if session else None,
+            session.source_id if session else None,
         )
