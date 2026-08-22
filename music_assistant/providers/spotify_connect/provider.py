@@ -418,13 +418,23 @@ class SpotifyConnectProvider(PluginProvider):
         # protocol-level player_id. Some protocol players are ephemeral bridges
         # whose ID is invalid for play_media / queue lookups once torn down.
         active_player_id = queue_id
+        prev_player_id = (
+            self._active_player_id if self._active_player_id != active_player_id else None
+        )
 
-        # If there's already a different active player, kick it out. The claim
-        # below replaces the previous queue's claim; the prior stream's
-        # on_source_unselected may fire later, but its session-id guard keeps it
-        # from clobbering the new claim.
-        if self._active_player_id and self._active_player_id != active_player_id:
-            prev_player_id = self._active_player_id
+        # Claim ownership for this queue BEFORE kicking the previous player: the
+        # awaited stop below can complete the old stream's teardown, and only an
+        # already-replaced session id lets on_source_unselected's stale-guard
+        # reject that teardown — otherwise it would release the very session this
+        # stream is about to use.
+        self._in_use_by_queue = queue_id
+        self._active_session_id = stream_session_id
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
+
+        # If a different player was consuming the source, kick it out (the source
+        # is exclusive).
+        if prev_player_id:
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
                 active_player_id,
@@ -434,12 +444,6 @@ class SpotifyConnectProvider(PluginProvider):
                 await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
-
-        # Claim ownership for this queue.
-        self._in_use_by_queue = queue_id
-        self._active_session_id = stream_session_id
-        self._active_player_id = active_player_id
-        self.logger.debug("Active player set to: %s", active_player_id)
 
         # Push the options the session reported before this claim existed, so the
         # queue mirrors the session's shuffle/repeat state from the start.
@@ -515,13 +519,15 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
-        if self._playing:
+        if self._playing and not self._redirect_pending:
             # MA-side stop/queue-clear: release the Spotify session so the app
             # drops the device as its playback target — the daemon would
             # otherwise keep playing into a pipe nobody consumes and the app
             # would stay tethered to the device. (Teardowns caused by a
             # Spotify-side pause, deselect or a player handoff never reach
-            # here: those cleared _playing or replaced the session id first.)
+            # here: those cleared _playing or replaced the session id first.
+            # During a pending redirect the session just received new content,
+            # so an old stream's late teardown must not release it either.)
             try:
                 await self._backend.deactivate()
             except Exception as err:

@@ -95,7 +95,6 @@ if TYPE_CHECKING:
         ConfigValueOption,
         CoreConfig,
     )
-    from music_assistant_models.media_items import SourceQueueCapabilities
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
@@ -2124,32 +2123,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
-
-    def _get_delegated_source(
-        self, queue_id: str
-    ) -> tuple[AudioSource, SourceQueueCapabilities, PluginProvider] | None:
-        """
-        Return the AudioSource owning the queue's commands, its capabilities and owning plugin.
-
-        While the queue's current item is an AudioSource declaring ``queue_capabilities``,
-        the external session owns the queue: shuffle/repeat are forwarded to the owning
-        plugin and the mirrored options event updates the queue state afterwards. There is
-        no playback-state gate, because a plugin may map a paused session onto a stopped
-        player (Spotify Connect does) — a genuinely dead session is the owning plugin's
-        call, surfaced as its localized not-active error. Returns None — queue commands
-        then apply to the MA queue as usual — when the current item is not such an
-        AudioSource (a transport-only source keeps ownership of the queue with MA) or
-        when the owning plugin provider is no longer available. Transport commands
-        (next/previous/seek) do not use this gate: see ``_get_current_audio_source``.
-
-        :param queue_id: The queue to inspect.
-        """
-        if (resolved := self._get_current_audio_source(queue_id)) is None:
-            return None
-        audio_source, provider = resolved
-        if (caps := audio_source.queue_capabilities) is None:
-            return None
-        return audio_source, caps, provider
 
     def _get_current_audio_source(self, queue_id: str) -> tuple[AudioSource, PluginProvider] | None:
         """

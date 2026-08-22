@@ -1035,3 +1035,32 @@ async def test_paused_replaces_pending_pause_stop() -> None:
     for _ in range(3):
         await asyncio.sleep(0)
     assert provider._pending_pause_stop_task is None
+
+
+async def test_handoff_kick_cannot_release_the_session() -> None:
+    """An old stream's teardown during the handoff kick must not deactivate the session."""
+    backend = FakeBackend()
+    provider, mass = _make_provider(
+        backend,
+        playing=True,
+        session_active=True,
+        active_player_id="queue_old",
+        in_use_by_queue="queue_old",
+        active_session_id="sess_old",
+    )
+    _player_with_volume(mass, 25)
+
+    async def _stop_old_player(_player_id: str) -> None:
+        # a fast player: its stream teardown completes within the awaited stop, so
+        # only the already-replaced session id keeps this from releasing the session
+        await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue_old", "sess_old")
+
+    mass.players.cmd_stop = AsyncMock(side_effect=_stop_old_player)
+
+    await provider.on_source_selected(AUDIO_SOURCE_ID, "proto_new", "queue_new", "sess_new")
+
+    assert ("deactivate", None) not in backend.calls
+    assert provider._in_use_by_queue == "queue_new"
+    assert provider._active_session_id == "sess_new"
+    assert provider._active_player_id == "queue_new"
+    mass.players.cmd_stop.assert_awaited_once_with("queue_old")
