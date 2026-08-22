@@ -74,11 +74,12 @@ class AudioSourceSession:
         Record the stream details resolved for this session's source.
 
         Adopts the metadata they carry unless the source has reported something
-        itself, so the placeholder every plugin sets in ``get_stream_details`` is
-        what the session reports until then — for vban_receiver and
-        sendspin_source it is the only metadata there is. A later placeholder
-        replaces an earlier one, so those two still follow a reconnect that
-        changed what they describe.
+        itself: while a source is still selected on a player, what it reported is
+        what the session reports, however long ago it said it. Until it says
+        anything, the placeholder every plugin sets in ``get_stream_details``
+        stands in — for vban_receiver and sendspin_source that is the only
+        metadata there is, and a later placeholder replaces an earlier one so
+        those two still follow a reconnect that changed what they describe.
 
         :param streamdetails: The stream details resolved for this source.
         """
