@@ -43,18 +43,12 @@ class AudioSourceSession:
 
     player_id: str
     source: AudioSource
-    # instance id of the PluginProvider exposing this source
     provider_instance_id: str
     started_at: float = field(default_factory=time.time)
-    # set once a stream is requested; None during the selection window and again
-    # after a paused source's stream is torn down
     streamdetails: StreamDetails | None = None
-    # what the source is playing, either as the source reported it or as adopted
-    # from the stream details
     stream_metadata: StreamMetadata | None = None
     stream_metadata_last_updated: float | None = None
-    # whether the source reported the metadata itself. An adopted placeholder
-    # stays replaceable by a later one, a report does not.
+    # an adopted placeholder stays replaceable by a later one, a report does not
     stream_metadata_reported: bool = False
     # token of the stream request currently holding the source's claim
     stream_session_id: str | None = None
@@ -143,10 +137,8 @@ class AudioSourceMixin:
         provider = self.mass.get_provider(session.provider_instance_id)
         if not isinstance(provider, PluginProvider):
             return None
-        # A session can only have been started by a provider that declared the
-        # feature, but a flag flipped off at runtime (provider reload, config
-        # change) would leave on_source_control / on_volume_change raising
-        # NotImplementedError. Skip cleanly.
+        # a provider can drop the feature at runtime (reload, config change), which
+        # would leave the control hooks raising NotImplementedError
         if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
             return None
         return session.source, provider
@@ -180,9 +172,6 @@ class AudioSourceMixin:
             or session.source_id != source_id
             or session.provider_instance_id != provider_instance_id
         ):
-            # Debug level so a misbehaving provider firing constantly stays
-            # diagnosable (the count alone is the signal) without spamming higher
-            # log levels for the legitimate transition cases.
             self.logger.debug(
                 "Rejected source update for player %s from provider %s source %s "
                 "(playing: provider %s source %s)",
