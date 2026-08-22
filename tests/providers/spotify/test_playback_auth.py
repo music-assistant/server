@@ -207,9 +207,14 @@ def test_authorization_code_from_url_rejects_unusable(url: str) -> None:
         ('{"username": "u1", "auth_data": "blob"}', "u1", False),
         # a Spotify app logged in as someone else
         ('{"username": "u2", "auth_data": "blob"}', "u1", True),
+        # a near miss is still another account
+        ('{"username": "u10", "auth_data": "blob"}', "u1", True),
+        # the canonical username Spotify hands librespot is the lowercased account id
+        ('{"username": "u1", "auth_data": "blob"}', "U1", False),
         # either side unknown, or an unreadable credential: never block the setup
         ('{"username": "u2", "auth_data": "blob"}', None, False),
         ('{"auth_data": "blob"}', "u1", False),
+        ('{"username": null, "auth_data": "blob"}', "u1", False),
         ('{"username": "", "auth_data": "blob"}', "u1", False),
         ("not json", "u1", False),
         ("[]", "u1", False),

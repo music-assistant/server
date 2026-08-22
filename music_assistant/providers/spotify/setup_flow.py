@@ -206,7 +206,8 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
             # a malformed body raises ValueError, which is not a ClientError
             userinfo = await response.json()
     except (ClientError, TimeoutError, ValueError) as err:
-        LOGGER.warning("Account check skipped: %s", err)
+        # a bare TimeoutError stringifies to nothing, so log the type too
+        LOGGER.warning("Account check skipped: %s %s", type(err).__name__, err)
         return None
     if not isinstance(userinfo, dict):
         LOGGER.warning("Account check skipped: Spotify returned an unexpected profile")
@@ -322,8 +323,12 @@ def _credential_account_differs(credentials: str, account_id: str | None) -> boo
         return False
     if not isinstance(stored, dict):
         return False
+    # librespot stores Spotify's canonical username, which is the signed-in id lowercased
     username = str(stored.get("username") or "")
-    return bool(username) and username != account_id
+    if not username or username.casefold() == account_id.casefold():
+        return False
+    LOGGER.warning("Playback was authorized for %s instead of %s", username, account_id)
+    return True
 
 
 async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: str) -> str:

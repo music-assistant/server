@@ -2151,7 +2151,7 @@ async def test_spotify_flow_rejects_playback_authorized_by_another_account(
             step.flow_id,
             {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
         )
-        # back at the method step, telling the user which account it has to be
+        # back at the method step, carrying the reason it was refused
         retry = await _wait_for(
             lambda: (
                 session.current_step
