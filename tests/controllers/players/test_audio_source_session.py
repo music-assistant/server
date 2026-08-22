@@ -26,7 +26,7 @@ PROVIDER_INSTANCE = "spotify_connect--abc"
 SOURCE_ID = "main"
 
 
-def _audio_source(item_id: str = SOURCE_ID) -> AudioSource:
+def _audio_source(item_id: str = SOURCE_ID, *, can_seek: bool = False) -> AudioSource:
     return AudioSource(
         item_id=item_id,
         provider=PROVIDER_INSTANCE,
@@ -39,6 +39,7 @@ def _audio_source(item_id: str = SOURCE_ID) -> AudioSource:
             )
         },
         can_play_pause=True,
+        can_seek=can_seek,
     )
 
 
@@ -349,3 +350,31 @@ def test_mixin_is_attached_to_the_real_player_controller() -> None:
     assert isinstance(controller, AudioSourceMixin)
     assert controller._source_sessions == {}
     assert controller.get_audio_source_session("no-such-player") is None
+
+
+def test_reselecting_adopts_a_rebuilt_source() -> None:
+    """
+    A plugin that rebuilds its source with new capabilities gets those reported.
+
+    spotify_connect and yandex_ynison rebuild the AudioSource whenever a
+    capability flag changes; ynison's _update_source_capabilities even overwrites
+    the queue item's snapshot so the new flags reach the UI without waiting for
+    the next play. A session that kept the first object would report stale flags.
+    """
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(
+        PLAYER_ID, _audio_source(can_seek=False), PROVIDER_INSTANCE
+    )
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
+    )
+
+    rebuilt = _audio_source(can_seek=True)
+    again = ctrl._start_audio_source_session(PLAYER_ID, rebuilt, PROVIDER_INSTANCE)
+
+    assert again is session
+    assert again.source is rebuilt
+    assert again.source.can_seek is True
+    # the reported track still survives the reselect
+    assert again.stream_metadata is not None
+    assert again.stream_metadata.title == "Take Five"

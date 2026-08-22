@@ -203,8 +203,10 @@ class AudioSourceMixin:
 
         Re-selecting the source already playing keeps its session and re-stamps
         the stream token, so a player that drops and reconnects keeps the metadata
-        and stream details it had. Selecting a different source replaces the
-        session: a player outputs one source at a time.
+        and stream details it had. The source object itself is always taken from
+        this call: a plugin rebuilds it whenever its capability flags change, and
+        the session has to report the current ones. Selecting a different source
+        replaces the session: a player outputs one source at a time.
 
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
@@ -218,6 +220,7 @@ class AudioSourceMixin:
             and session.source_id == source.item_id
             and session.provider_instance_id == provider_instance_id
         ):
+            session.source = source
             session.stream_session_id = stream_session_id
             return session
         session = AudioSourceSession(
