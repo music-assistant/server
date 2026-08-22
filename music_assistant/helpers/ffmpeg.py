@@ -690,11 +690,11 @@ def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
     """
     Return HLS demuxer input arguments that let CMAF segments through, if any are needed.
 
-    The segment extension check this relaxes is hardening against hostile playlists, so it is
-    opt-in per caller: pass these only for a playlist from a source known to serve CMAF, never
-    for a playlist URL that a user supplied. Empty on builds that accept CMAF on their own.
+    Pass these only for a playlist from a source known to serve CMAF, never for a playlist
+    URL that a user supplied.
     """
-    # allowed_extensions cannot narrow this: the demuxer matches a segment URL against that
+    # The check this relaxes is hardening against hostile playlists, hence opt-in per caller.
+    # allowed_extensions cannot narrow it: the demuxer matches a segment URL against that
     # option *and* against a hardcoded per-format extension list that no option reaches, so
     # switching the check off is the only lever over the second one.
     if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
