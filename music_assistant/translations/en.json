@@ -2302,6 +2302,8 @@
   "provider.spotify.media.folder.new_releases.name": "New Releases",
   "provider.spotify.media.playlist.liked_songs.name": "Liked Songs {0}",
   "provider.spotify.media.podcast.unknown_podcast.name": "Unknown Podcast",
+  "provider.spotify.setup_flow.abort.account_already_configured": "This Spotify account is already set up in Music Assistant. Each account can only be added once — sign in with a different account, or reconfigure the existing one instead.",
+  "provider.spotify.setup_flow.abort.premium_required": "A Spotify Premium account is required to use Spotify within Music Assistant. Sign in with a Premium account, or upgrade this one, and try again.",
   "provider.spotify.setup_flow.authenticate.description": "A browser window will open so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done.",
   "provider.spotify.setup_flow.authenticate.title": "Connect your Spotify account",
   "provider.spotify.setup_flow.authenticate_dev.description": "A browser window will open to authorize Music Assistant against your own Spotify app.",

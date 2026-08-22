@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
+import aiohttp
 import pkce
 from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -20,7 +21,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
-from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 
 from .constants import (
     CONF_CLIENT_ID,
@@ -43,6 +44,7 @@ from .helpers import (
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
 )
+from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -96,9 +98,12 @@ async def run_setup(session: SetupSession) -> None:
     setup_data = dict(session.context.setup_data)
     # the global session always (re)authenticates: a refresh token cannot be reused across a
     # re-auth and secure values are never prefilled back into the flow
-    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = await _pkce_authenticate(
+    token_result = await _pkce_authenticate(
         session, app_var("spotify_client_id"), step_id="authenticate"
     )
+    setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
+    # an account that cannot work is turned away before the playback authorization
+    await _verify_account(session, str(token_result["access_token"]))
     # playback needs its own credential, minted with Spotify's keymaster client id
     setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session)
     # everything needed is collected by now; the developer key is a purely optional extra,
@@ -152,9 +157,10 @@ async def _authorize_developer_key(
     try:
         if client_id:
             setup_data[CONF_CLIENT_ID] = client_id
-            setup_data[CONF_REFRESH_TOKEN_DEV] = await _pkce_authenticate(
+            dev_token_result = await _pkce_authenticate(
                 session, client_id, step_id="authenticate_dev"
             )
+            setup_data[CONF_REFRESH_TOKEN_DEV] = str(dev_token_result["refresh_token"])
         else:
             # opted in but left the field empty: keep using the shared key
             setup_data[CONF_CLIENT_ID] = None
@@ -163,6 +169,59 @@ async def _authorize_developer_key(
     except SetupFlowError as err:
         return client_id, {"base": err.translation_key or str(err)}
     return client_id, None
+
+
+async def _verify_account(session: SetupSession, access_token: str) -> None:
+    """
+    Check the just-authenticated Spotify account before the setup continues.
+
+    Turns the user away when the account has no Spotify Premium (Music Assistant
+    cannot play audio from a free account) or when it is already set up on another
+    provider instance. A lookup Spotify does not answer is not held against the
+    user: the setup simply continues.
+
+    :param session: The setup session driving the flow.
+    :param access_token: The access token from the just-completed sign-in. Reusing
+        it is deliberate — minting a fresh one rotates the refresh token, which
+        revokes the one just stored as setup data.
+    :raises AbortFlow: When the account is non-Premium or already configured.
+    """
+    try:
+        async with session.mass.http_session.get(
+            "https://api.spotify.com/v1/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            if response.status != 200:
+                return
+            userinfo = await response.json()
+    except aiohttp.ClientError, TimeoutError:
+        return
+    product = str(userinfo.get("product") or "")
+    if product and product != "premium":
+        raise AbortFlow("premium_required")
+    account_id = str(userinfo.get("id") or "")
+    if account_id and _account_in_use(session, account_id):
+        raise AbortFlow("account_already_configured")
+
+
+def _account_in_use(session: SetupSession, account_id: str) -> bool:
+    """
+    Return whether another Spotify provider instance already serves this account.
+
+    Only running instances can be compared (the account is not part of the stored
+    config), and the instance being reconfigured is of course allowed to keep its
+    own account.
+
+    :param session: The setup session driving the flow.
+    :param account_id: The Spotify user id that just signed in.
+    """
+    return any(
+        isinstance(prov, SpotifyProvider)
+        and prov.instance_id != session.context.instance_id
+        and prov.account_id == account_id
+        for prov in session.mass.providers
+    )
 
 
 async def _authorize_playback(session: SetupSession) -> str:
@@ -266,9 +325,9 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
     return await librespot_credentials_via_token(librespot_bin, token_result["access_token"])
 
 
-async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str) -> str:
+async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str) -> dict[str, Any]:
     """
-    Run the Spotify PKCE auth flow via the setup session and return a refresh token.
+    Run the Spotify PKCE auth flow and return the token result (refresh + access token).
 
     :param session: The setup session driving the flow.
     :param client_id: The Spotify client id to authenticate with.
@@ -299,7 +358,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
     async with session.mass.http_session.post(TOKEN_URL, data=token_params) as response:
         if response.status != 200:
             raise SetupFlowError(f"Failed to get access token: {await response.text()}")
-        token_result = await response.json()
-    if not (refresh_token := token_result.get("refresh_token")):
+        token_result: dict[str, Any] = await response.json()
+    if not token_result.get("refresh_token"):
         raise SetupFlowError("No refresh token in the token response")
-    return str(refresh_token)
+    return token_result

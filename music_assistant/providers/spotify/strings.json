@@ -44,6 +44,10 @@
     }
   },
   "setup_flow": {
+    "abort": {
+      "account_already_configured": "This Spotify account is already set up in Music Assistant. Each account can only be added once — sign in with a different account, or reconfigure the existing one instead.",
+      "premium_required": "A Spotify Premium account is required to use Spotify within Music Assistant. Sign in with a Premium account, or upgrade this one, and try again."
+    },
     "authenticate": {
       "title": "Connect your Spotify account",
       "description": "A browser window will open so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done."

@@ -210,6 +210,11 @@ class SpotifyProvider(MusicProvider):
         return features
 
     @property
+    def account_id(self) -> str | None:
+        """Return the Spotify user id of the logged-in account, if known."""
+        return str(self._sp_user["id"]) if self._sp_user else None
+
+    @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
         if self._sp_user:
