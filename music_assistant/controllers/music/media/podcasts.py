@@ -10,6 +10,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
+    MediaItemTranscriptCue,
     Podcast,
     PodcastEpisode,
     PodcastSummary,
@@ -57,6 +58,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_episode", self.episode, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/podcast_episode_transcript",
+            self.episode_transcript,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/podcast_versions", self.versions, required_scope=Scope.LIBRARY_READ
@@ -178,6 +184,24 @@ class PodcastsController(MediaControllerBase[Podcast]):
         episode = await prov.get_podcast_episode(item_id)
         await self._restore_probed_duration(episode)
         return episode
+
+    async def episode_transcript(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """
+        Return a podcast episode's transcript as (readable text, timed cues).
+
+        Returns (None, None) when no transcript is available for the episode.
+
+        :param item_id: The provider episode id.
+        :param provider_instance_id_or_domain: Provider the episode belongs to.
+        """
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(prov, MusicProvider):
+            raise ProviderUnavailableError("Provider not found")
+        return await prov.get_podcast_episode_transcript(item_id)
 
     async def versions(
         self,

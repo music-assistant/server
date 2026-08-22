@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemTranscriptCue,
     MediaItemType,
     Podcast,
     PodcastEpisode,
@@ -39,6 +40,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import get_episode_transcript
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import PocketCastsClient
@@ -236,12 +238,19 @@ class PocketCastsProvider(MusicProvider):
 
         :param prov_podcast_id: The provider podcast id.
         """
-        # fetch episode metadata, user status and show notes in parallel
-        (podcast_name, episodes), in_progress, history, show_notes = await asyncio.gather(
+        # fetch episode metadata, user status, show notes and transcript availability in parallel
+        (
+            (podcast_name, episodes),
+            in_progress,
+            history,
+            show_notes,
+            transcripts,
+        ) = await asyncio.gather(
             self._client.get_podcast_episodes(prov_podcast_id),
             self._client.get_in_progress_episodes(),
             self._client.get_history(),
             self._get_show_notes(prov_podcast_id),
+            self._get_episode_transcripts(prov_podcast_id),
         )
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
@@ -254,6 +263,7 @@ class PocketCastsProvider(MusicProvider):
                 podcast_name,
             )
             if episode_item:
+                episode_item.metadata.has_transcript = episode_data.get("uuid") in transcripts
                 self._enrich_episode_with_status(
                     episode_item, episode_data, in_progress_map, history_map
                 )
@@ -356,7 +366,26 @@ class PocketCastsProvider(MusicProvider):
         episode_item.fully_played = completed
         episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
 
+        transcripts = await self._get_episode_transcripts(podcast_uuid)
+        episode_item.metadata.has_transcript = episode_uuid in transcripts
+
         return episode_item
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """
+        Get a podcast episode's transcript as (readable text, timed cues).
+
+        :param prov_episode_id: The episode item id (format: podcast_uuid:episode_uuid).
+        """
+        podcast_uuid, episode_uuid = prov_episode_id.split(":", 1)
+        transcripts = await self._get_episode_transcripts(podcast_uuid)
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=transcripts.get(episode_uuid),
+        )
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -508,10 +537,42 @@ class PocketCastsProvider(MusicProvider):
             self.logger.debug("Could not retrieve show notes for %s: %s", prov_podcast_id, err)
             return {}
 
+    async def _get_episode_transcripts(
+        self, prov_podcast_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """
+        Return the available transcripts per episode uuid, empty when they cannot be read.
+
+        :param prov_podcast_id: The provider podcast id.
+        """
+        # transcripts are supplementary, so a failure here must never break episode
+        # resolution. The failure itself is not cached, so the next call tries again.
+        try:
+            return await self._fetch_episode_transcripts(prov_podcast_id)
+        except (
+            LoginFailed,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+        ) as err:
+            self.logger.debug("Could not retrieve transcripts for %s: %s", prov_podcast_id, err)
+            return {}
+
     @use_cache(3600 * 24)
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
         """Return show notes per episode uuid for the given podcast."""
         return await self._client.get_show_notes(prov_podcast_id)
+
+    @use_cache(3600 * 24)
+    async def _fetch_episode_transcripts(
+        self, prov_podcast_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """
+        Return the available transcripts per episode uuid for a podcast.
+
+        :param prov_podcast_id: The provider podcast id.
+        """
+        return await self._client.get_episode_transcripts(prov_podcast_id)
 
     def _convert_episode(
         self,
