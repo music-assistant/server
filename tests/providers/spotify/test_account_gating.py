@@ -23,6 +23,9 @@ def _make_session(*, instance_id: str | None = None) -> SetupSession:
     """Return a setup session for a fresh setup (or a reconfigure of the given instance)."""
     mass = mock.Mock()
     mass.providers = []
+    mass.config.get_provider_configs = mock.AsyncMock(return_value=[])
+    mass.config.get_provider_setup_value = mock.Mock(return_value=None)
+    mass.get_provider = mock.Mock(return_value=None)
 
     async def finish(_session: SetupSession, _submitted: dict[str, Any]) -> dict[str, str]:
         return {"instance_id": "spotify--test"}
@@ -34,6 +37,16 @@ def _make_session(*, instance_id: str | None = None) -> SetupSession:
         instance_id=instance_id,
     )
     return SetupSession(mass, "flow-test", context, finish)
+
+
+def _stub_configs(session: SetupSession, accounts: dict[str, str | None]) -> None:
+    """Point the session at the given configured Spotify instances and their stored accounts."""
+    session.mass.config.get_provider_configs = mock.AsyncMock(  # type: ignore[method-assign]
+        return_value=[mock.Mock(instance_id=instance_id) for instance_id in accounts]
+    )
+    session.mass.config.get_provider_setup_value = mock.Mock(  # type: ignore[method-assign]
+        side_effect=lambda instance_id, _key: accounts.get(instance_id)
+    )
 
 
 def _stub_me(session: SetupSession, *, status: int = 200, payload: Any = None) -> None:
@@ -99,14 +112,44 @@ async def test_an_already_configured_account_is_refused(
 ) -> None:
     """An account another instance already serves is refused; a reconfigure keeps its own."""
     session = _make_session(instance_id=setup_instance_id)
-    existing = mock.MagicMock(spec=SpotifyProvider)
-    existing.instance_id = other_instance_id
-    existing.account_id = "u1"
-    session.mass.providers = [existing]  # type: ignore[misc]
+    _stub_configs(session, {other_instance_id: "u1"})
     _stub_me(session, payload={"id": "u1", "product": "premium"})
 
     if aborts:
         with pytest.raises(AbortFlow, match="account_already_configured"):
             await spotify_flow._verify_account(session, "at-test")
     else:
+        assert await spotify_flow._verify_account(session, "at-test") == "u1"
+
+
+async def test_a_disabled_instance_still_holds_its_account() -> None:
+    """An instance that is not running is still found through its stored account id."""
+    session = _make_session()
+    # configured but absent from mass.providers, as a disabled or failed instance is
+    _stub_configs(session, {"spotify--disabled": "u1"})
+    _stub_me(session, payload={"id": "u1", "product": "premium"})
+
+    with pytest.raises(AbortFlow, match="account_already_configured"):
         await spotify_flow._verify_account(session, "at-test")
+
+
+async def test_a_config_without_a_stored_account_falls_back_to_the_instance() -> None:
+    """A configuration predating the stored account id is compared via its running instance."""
+    session = _make_session()
+    _stub_configs(session, {"spotify--legacy": None})
+    legacy = mock.MagicMock(spec=SpotifyProvider)
+    legacy.account_id = "u1"
+    session.mass.get_provider = mock.Mock(return_value=legacy)  # type: ignore[method-assign]
+    _stub_me(session, payload={"id": "u1", "product": "premium"})
+
+    with pytest.raises(AbortFlow, match="account_already_configured"):
+        await spotify_flow._verify_account(session, "at-test")
+
+
+async def test_a_different_account_is_accepted() -> None:
+    """A second account alongside an existing instance is allowed and returned."""
+    session = _make_session()
+    _stub_configs(session, {"spotify--other": "u1"})
+    _stub_me(session, payload={"id": "u2", "product": "premium"})
+
+    assert await spotify_flow._verify_account(session, "at-test") == "u2"

@@ -23,6 +23,7 @@ from music_assistant.helpers.oauth import (
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 
 from .constants import (
+    CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
@@ -105,7 +106,7 @@ async def run_setup(session: SetupSession) -> None:
     )
     setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
     # an account that cannot work is turned away before the playback authorization
-    await _verify_account(session, str(token_result["access_token"]))
+    setup_data[CONF_ACCOUNT_ID] = await _verify_account(session, str(token_result["access_token"]))
     # playback needs its own credential, minted with Spotify's keymaster client id
     setup_data[CONF_LIBRESPOT_CREDENTIALS] = await _authorize_playback(session)
     # everything needed is collected by now; the developer key is a purely optional extra,
@@ -173,14 +174,14 @@ async def _authorize_developer_key(
     return client_id, None
 
 
-async def _verify_account(session: SetupSession, access_token: str) -> None:
+async def _verify_account(session: SetupSession, access_token: str) -> str | None:
     """
-    Check the just-authenticated Spotify account before the setup continues.
+    Check the just-authenticated Spotify account and return its id.
 
     Turns the user away when the account has no Spotify Premium (librespot, which
     streams this provider's audio, refuses to play for a free account) or when it is
     already set up on another provider instance. A lookup Spotify does not answer is
-    not held against the user: the setup simply continues.
+    not held against the user: the setup simply continues and None is returned.
 
     :param session: The setup session driving the flow.
     :param access_token: The access token from the just-completed sign-in. Reusing
@@ -195,35 +196,46 @@ async def _verify_account(session: SetupSession, access_token: str) -> None:
             timeout=ClientTimeout(total=ACCOUNT_LOOKUP_TIMEOUT),
         ) as response:
             if response.status != 200:
-                return
+                return None
+            # a malformed body raises ValueError, which is not a ClientError
             userinfo = await response.json()
-    except ClientError, TimeoutError:
-        return
+    except ClientError, TimeoutError, ValueError:
+        return None
     product = str(userinfo.get("product") or "")
     if product and product != "premium":
         raise AbortFlow("premium_required")
-    account_id = str(userinfo.get("id") or "")
-    if account_id and _account_in_use(session, account_id):
+    if not (account_id := str(userinfo.get("id") or "")):
+        return None
+    if await _account_in_use(session, account_id):
         raise AbortFlow("account_already_configured")
+    return account_id
 
 
-def _account_in_use(session: SetupSession, account_id: str) -> bool:
+async def _account_in_use(session: SetupSession, account_id: str) -> bool:
     """
-    Return whether another Spotify provider instance already serves this account.
+    Return whether another Spotify provider instance is already set up for this account.
 
-    Only running instances can be compared (the account is not part of the stored
-    config), and the instance being reconfigured is of course allowed to keep its
-    own account.
+    Compares the account id stored with each instance's configuration, so an instance
+    that is disabled or failed to load still holds its account. Configurations
+    predating that stored value fall back to the running instance, which fills the
+    value in on its next successful load. The instance being reconfigured is of
+    course allowed to keep its own account.
 
     :param session: The setup session driving the flow.
     :param account_id: The Spotify user id that just signed in.
     """
-    return any(
-        isinstance(prov, SpotifyProvider)
-        and prov.instance_id != session.context.instance_id
-        and prov.account_id == account_id
-        for prov in session.mass.providers
-    )
+    mass = session.mass
+    for config in await mass.config.get_provider_configs(provider_domain="spotify"):
+        if config.instance_id == session.context.instance_id:
+            continue
+        if stored := mass.config.get_provider_setup_value(config.instance_id, CONF_ACCOUNT_ID):
+            if str(stored) == account_id:
+                return True
+            continue
+        provider = mass.get_provider(config.instance_id, return_unavailable=True)
+        if isinstance(provider, SpotifyProvider) and provider.account_id == account_id:
+            return True
+    return False
 
 
 async def _authorize_playback(session: SetupSession) -> str:
