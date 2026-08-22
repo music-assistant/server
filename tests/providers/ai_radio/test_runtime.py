@@ -412,6 +412,114 @@ def test_weather_strings_hourly_window_starts_at_the_first_upcoming_hour() -> No
     assert "2026-08-19 00:00" not in hourly
 
 
+def test_format_weather_strings_uses_the_requested_unit_suffix() -> None:
+    """The unit suffix passed in replaces the default C in every emitted string."""
+    runtime = DummyRuntime()
+    payload = {
+        "current": {
+            "time": "2026-08-10T09:00",
+            "temperature_2m": 70.0,
+            "apparent_temperature": 68.0,
+        },
+        "hourly": {
+            "time": ["2026-08-10T09:00"],
+            "temperature_2m": [70.0],
+            "precipitation_probability": [10],
+        },
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_min": [60.0],
+            "temperature_2m_max": [75.0],
+            "precipitation_probability_max": [20],
+        },
+    }
+
+    hourly, daily = runtime._format_weather_strings(payload, unit_suffix="F")
+
+    assert hourly == "now 70F (feels 68F); 2026-08-10 09:00: 70F, rain 10%"
+    assert daily == "2026-08-10: 60-75F, rain 20%"
+
+
+def _stub_open_meteo_responses(
+    calls: list[tuple[str, dict[str, Any]]],
+    country_code: str = "US",
+) -> Callable[[str, dict[str, Any], int], Awaitable[dict[str, Any]]]:
+    """Return an ``_open_meteo_get_json`` stand-in recording calls and faking both endpoints."""
+
+    async def _get_json(
+        base_url: str, params: dict[str, Any], _timeout_seconds: int
+    ) -> dict[str, Any]:
+        calls.append((base_url, params))
+        if "geocoding" in base_url:
+            return {
+                "results": [
+                    {
+                        "latitude": 40.71,
+                        "longitude": -74.01,
+                        "timezone": "America/New_York",
+                        "country": "",
+                        "country_code": country_code,
+                    }
+                ]
+            }
+        return {
+            "current": {
+                "time": "2026-08-10T09:00",
+                "temperature_2m": 70.0,
+                "apparent_temperature": 68.0,
+            },
+            "hourly": {
+                "time": ["2026-08-10T09:00"],
+                "temperature_2m": [70.0],
+                "precipitation_probability": [10],
+            },
+            "daily": {
+                "time": ["2026-08-10"],
+                "temperature_2m_min": [60.0],
+                "temperature_2m_max": [75.0],
+                "precipitation_probability_max": [20],
+            },
+        }
+
+    return _get_json
+
+
+async def test_fetch_open_meteo_weather_requests_fahrenheit_for_a_us_location() -> None:
+    """A US-configured location asks Open-Meteo for Fahrenheit and formats with an F suffix."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_responses(  # type: ignore[method-assign, assignment]
+        calls
+    )
+
+    hourly, daily = await runtime._fetch_open_meteo_weather(
+        city="New York", country="US", timeout_seconds=20
+    )
+
+    forecast_params = calls[1][1]
+    assert forecast_params["temperature_unit"] == "fahrenheit"
+    assert "70F" in hourly
+    assert daily.endswith("F, rain 20%")
+
+
+async def test_fetch_open_meteo_weather_omits_temperature_unit_for_a_nl_location() -> None:
+    """A non-Fahrenheit country sends no temperature_unit param and formats with a C suffix."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_responses(  # type: ignore[method-assign, assignment]
+        calls, country_code="NL"
+    )
+
+    hourly, daily = await runtime._fetch_open_meteo_weather(
+        city="Amsterdam", country="NL", timeout_seconds=20
+    )
+
+    forecast_params = calls[1][1]
+    assert "temperature_unit" not in forecast_params
+    assert "70C" in hourly
+    assert daily.endswith("C, rain 20%")
+
+
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
     """Skip weather preparation when the configured location is incomplete."""
     runtime = DummyRuntime()

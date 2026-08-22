@@ -46,9 +46,9 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.6.1"
-  BASE_IMAGE_VERSION_BETA: "1.6.1"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.6.1"
+  BASE_IMAGE_VERSION_STABLE: "1.6.2"
+  BASE_IMAGE_VERSION_BETA: "1.6.2"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.6.2"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -848,7 +848,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Inspect exact image
         id: existing
@@ -1200,7 +1200,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Verify published exact image
         env:
@@ -1246,7 +1246,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Promote exact digest to rolling aliases
         env:

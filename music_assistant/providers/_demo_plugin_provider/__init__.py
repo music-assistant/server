@@ -55,7 +55,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -182,8 +182,8 @@ class MyDemoPluginprovider(PluginProvider):
         # "Live Inputs" browse node and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
-        # surfaces and which commands the player controller proxies through
-        # to on_source_control.
+        # surfaces and which commands the server proxies through to
+        # on_source_control.
         #
         # Most plugins expose a single source; for those, build it once in
         # __init__ and return the cached instance here. Plugins that expose
@@ -297,7 +297,7 @@ class MyDemoPluginprovider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         # OPTIONAL

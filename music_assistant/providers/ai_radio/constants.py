@@ -61,6 +61,11 @@ MERGE_SECTION_PROMPT = (
 )
 DEFAULT_WEATHER_PROVIDER = "open_meteo"
 DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
+
+# countries and US territories that use Fahrenheit for everyday temperatures
+FAHRENHEIT_COUNTRY_CODES = frozenset(
+    {"US", "PR", "GU", "VI", "AS", "MP", "LR", "MM", "BS", "BZ", "KY", "PW"}
+)
 DEFAULT_MAX_CONCURRENT_RUNS = 1
 MAX_FINISHED_SESSIONS = 20
 
