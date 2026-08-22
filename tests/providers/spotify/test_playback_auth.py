@@ -106,7 +106,7 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
 
-    assert await setup_flow._authorize_playback(session) == STORED_CREDENTIALS
+    assert await setup_flow._authorize_playback(session, None) == STORED_CREDENTIALS
     # the form was re-shown, carrying the failure reason rather than aborting the flow
     assert session.form.await_count == 2
     assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
@@ -198,3 +198,63 @@ def test_authorization_code_from_url_rejects_unusable(url: str) -> None:
     """A denied, empty or malformed paste is reported instead of silently proceeding."""
     with pytest.raises(SetupFlowError):
         authorization_code_from_url(url)
+
+
+@pytest.mark.parametrize(
+    ("credentials", "account_id", "differs"),
+    [
+        # the same account: the credential is accepted
+        ('{"username": "u1", "auth_data": "blob"}', "u1", False),
+        # a Spotify app logged in as someone else
+        ('{"username": "u2", "auth_data": "blob"}', "u1", True),
+        # a near miss is still another account
+        ('{"username": "u10", "auth_data": "blob"}', "u1", True),
+        # the canonical username Spotify hands librespot is the lowercased account id
+        ('{"username": "u1", "auth_data": "blob"}', "U1", False),
+        # either side unknown, or an unreadable credential: never block the setup
+        ('{"username": "u2", "auth_data": "blob"}', None, False),
+        ('{"auth_data": "blob"}', "u1", False),
+        ('{"username": null, "auth_data": "blob"}', "u1", False),
+        ('{"username": "", "auth_data": "blob"}', "u1", False),
+        ("not json", "u1", False),
+        ("[]", "u1", False),
+    ],
+)
+def test_credential_account_comparison(
+    credentials: str, account_id: str | None, differs: bool
+) -> None:
+    """A playback credential from another Spotify account is spotted, and only that."""
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        _credential_account_differs,
+    )
+
+    assert _credential_account_differs(credentials, account_id) is differs
+
+
+async def test_playback_authorized_with_another_account_loops_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pairing with the wrong Spotify account re-shows the step instead of storing it."""
+    from music_assistant.providers.spotify import setup_flow  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        setup_flow, "get_librespot_binary", AsyncMock(return_value="/bin/librespot")
+    )
+    # first attempt pairs the wrong account, second one gets it right
+    pairing_mock = MagicMock(
+        side_effect=[
+            _returning('{"username": "someone_else", "auth_data": "blob"}'),
+            _returning('{"username": "u1", "auth_data": "blob"}'),
+        ]
+    )
+    monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    session = MagicMock()
+    session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
+    session.progress_until = AsyncMock(side_effect=_run_awaitable)
+
+    result = await setup_flow._authorize_playback(session, "u1")
+
+    assert result == '{"username": "u1", "auth_data": "blob"}'
+    # the mismatch re-showed the method step carrying the reason
+    assert session.form.await_count == 2
+    assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_account_mismatch"}
