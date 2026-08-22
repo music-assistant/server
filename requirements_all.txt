@@ -53,7 +53,7 @@ modern_colorthief==0.2.1
 music-assistant-frontend==2.17.284
 music-assistant-models==1.1.194
 mutagen==1.48.1
-niconico.py-ma==2.1.0.post2
+niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
 numkong==7.8.0
 numpy==2.3.5

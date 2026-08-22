@@ -6,7 +6,7 @@
   "codeowners": ["@Shi-553"],
   "credits": ["[niconico.py](https://github.com/Shi-553/niconico.py)"],
   "requirements": [
-    "niconico.py-ma==2.1.0.post2"
+    "niconico.py-ma==2.1.0.post3"
   ],
   "multi_instance": true
 }
