@@ -1547,17 +1547,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     @staticmethod
     def _codec_type_from_tags(tags: AudioTags) -> ContentType:
-        """
-        Return the actual audio codec detected by ffprobe, if any.
-
-        WAV/AIFF containers can embed a non-PCM bitstream e.g. DTS 5.1, intended
-        for SPDIF/HDMI passthrough) while declaring PCM in the fmt chunk. Forcing
-        ffmpeg to decode with the real codec, learned from the library scan probe,
-        which uses a much larger read window than the streaming ffmpeg pass, avoids
-        relying on ffmpeg's own content-sniffing heuristic at stream time, which can
-        miss the embedded bitstream if it's located far into a large multi-track file.
-        Falls back to UNKNOWN if the probe didn't report anything usable.
-        """
+        """Return the audio codec detected by ffprobe, if any."""
         if tags.raw and (streams := tags.raw.get("streams")):
             if codec_name := streams[0].get("codec_name"):
                 return ContentType.try_parse(codec_name)
