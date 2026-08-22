@@ -35,6 +35,10 @@ class AudioSourceSession:
 
     Carries what the source is, who owns it, and what it reports about itself,
     so none of it has to be read out of a queue item.
+
+    ``streamdetails`` and ``stream_session_id`` are independent of the session's
+    own existence: a paused external source keeps the player while its stream is
+    torn down, so both fall back to None without the session ending.
     """
 
     player_id: str
@@ -42,9 +46,10 @@ class AudioSourceSession:
     # instance id of the PluginProvider exposing this source
     provider_instance_id: str
     started_at: float = field(default_factory=time.time)
-    # resolved once the stream is requested; absent during the selection window
+    # set once a stream is requested; None during the selection window and again
+    # after a paused source's stream is torn down
     streamdetails: StreamDetails | None = None
-    # what the source reports it is playing, pushed by the owning plugin
+    # what the source reports it is playing
     stream_metadata: StreamMetadata | None = None
     stream_metadata_last_updated: float | None = None
     # token of the stream request currently holding the source's claim
@@ -52,8 +57,35 @@ class AudioSourceSession:
 
     @property
     def source_id(self) -> str:
-        """Return the AudioSource.item_id this session plays."""
+        """
+        Return the AudioSource.item_id this session plays.
+
+        Provider-scoped rather than unique: every shipped plugin names its only
+        source "main". Use ``source_uri`` wherever the identifier has to be
+        unique server-wide, such as a player's active source.
+        """
         return self.source.item_id
+
+    @property
+    def source_uri(self) -> str | None:
+        """Return the server-wide unique uri of the AudioSource this session plays."""
+        return self.source.uri
+
+    def attach_streamdetails(self, streamdetails: StreamDetails) -> None:
+        """
+        Record the stream details resolved for this session's source.
+
+        Adopts the metadata they carry unless the source has already reported
+        something itself, so the placeholder every plugin sets in
+        ``get_stream_details`` is what the session reports until then — for
+        vban_receiver and sendspin_source it is the only metadata there is.
+
+        :param streamdetails: The stream details resolved for this source.
+        """
+        self.streamdetails = streamdetails
+        if streamdetails.stream_metadata is not None and self.stream_metadata is None:
+            self.stream_metadata = streamdetails.stream_metadata
+            self.stream_metadata_last_updated = time.time()
 
 
 class AudioSourceMixin:
@@ -68,6 +100,7 @@ class AudioSourceMixin:
     This mixin expects to be mixed with a class that provides:
     - mass: MusicAssistant instance
     - logger: logging.Logger instance
+    - _source_sessions: dict of live sessions, keyed on player_id
     - trigger_player_update(): method to signal a player state change
     """
 
@@ -75,10 +108,9 @@ class AudioSourceMixin:
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
+        _source_sessions: dict[str, AudioSourceSession]
 
         def trigger_player_update(self, player_id: str) -> None: ...  # noqa: D102
-
-    _source_sessions: dict[str, AudioSourceSession]
 
     def get_audio_source_session(self, player_id: str) -> AudioSourceSession | None:
         """
@@ -92,8 +124,8 @@ class AudioSourceMixin:
         """
         Return the AudioSource playing on the given player and its owning PluginProvider.
 
-        Named to contrast with ``helpers.player.get_queue_audio_source``, which reads
-        the same pair off a queue's current item and is what this replaces.
+        Resolves the given player alone, so a group member playing its group's
+        source has to be asked for by the group's id.
 
         Returns None when no source is playing on the player, or when the owning
         plugin provider is no longer available.
@@ -117,7 +149,7 @@ class AudioSourceMixin:
         self,
         player_id: str,
         source_id: str,
-        provider: str,
+        provider_instance_id: str,
         stream_metadata: StreamMetadata,
     ) -> None:
         """
@@ -125,24 +157,35 @@ class AudioSourceMixin:
 
         Used by plugin providers exposing an AudioSource (e.g. AirPlay receiver,
         Spotify Connect) to surface live track-change info without restarting the
-        stream. Accepted before the stream details exist, so a provider can
-        replay what it already knows the moment it claims the player.
+        stream. Accepted from the moment the source is selected, so a provider can
+        report what it already knows before any stream exists.
 
-        The update is rejected silently unless the source playing on the player
-        is owned by ``provider`` with ``item_id == source_id``.
+        The update is rejected silently unless the source playing on the player is
+        owned by ``provider_instance_id`` with ``item_id == source_id``.
 
         :param player_id: The player whose session should receive the update.
         :param source_id: The AudioSource.item_id emitting this metadata.
-        :param provider: The provider instance id emitting this metadata.
+        :param provider_instance_id: The provider instance id emitting this metadata.
         :param stream_metadata: The new stream metadata to attach.
         """
         session = self._source_sessions.get(player_id)
         if (
             session is None
             or session.source_id != source_id
-            or session.provider_instance_id != provider
+            or session.provider_instance_id != provider_instance_id
         ):
-            self._log_rejected_source_update(player_id, source_id, provider, session)
+            # Debug level so a misbehaving provider firing constantly stays
+            # diagnosable (the count alone is the signal) without spamming higher
+            # log levels for the legitimate transition cases.
+            self.logger.debug(
+                "Rejected source update for player %s from provider %s source %s "
+                "(playing: provider %s source %s)",
+                player_id,
+                provider_instance_id,
+                source_id,
+                session.provider_instance_id if session else None,
+                session.source_id if session else None,
+            )
             return
         session.stream_metadata = stream_metadata
         session.stream_metadata_last_updated = time.time()
@@ -153,21 +196,35 @@ class AudioSourceMixin:
         player_id: str,
         source: AudioSource,
         provider_instance_id: str,
+        stream_session_id: str | None = None,
     ) -> AudioSourceSession:
         """
         Record that an AudioSource is now playing on the given player.
 
-        Replaces any session already on the player: a player outputs one source
-        at a time, and the previous one is released by its own stream teardown.
+        Re-selecting the source already playing keeps its session and re-stamps
+        the stream token, so a player that drops and reconnects keeps the metadata
+        and stream details it had. Selecting a different source replaces the
+        session: a player outputs one source at a time.
 
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
         :param provider_instance_id: Instance id of the plugin exposing it.
+        :param stream_session_id: Token of the stream claiming the source, when one
+            has been requested; pass it so the matching release is recognised.
         """
+        session = self._source_sessions.get(player_id)
+        if (
+            session is not None
+            and session.source_id == source.item_id
+            and session.provider_instance_id == provider_instance_id
+        ):
+            session.stream_session_id = stream_session_id
+            return session
         session = AudioSourceSession(
             player_id=player_id,
             source=source,
             provider_instance_id=provider_instance_id,
+            stream_session_id=stream_session_id,
         )
         self._source_sessions[player_id] = session
         return session
@@ -196,27 +253,3 @@ class AudioSourceMixin:
             if session is None or session.stream_session_id != stream_session_id:
                 return None
         return self._source_sessions.pop(player_id, None)
-
-    def _log_rejected_source_update(
-        self,
-        player_id: str,
-        source_id: str,
-        provider: str,
-        session: AudioSourceSession | None,
-    ) -> None:
-        """
-        Log an update that did not match the player's session.
-
-        Debug level so a misbehaving provider firing constantly stays diagnosable
-        (the count alone is the signal) without spamming higher log levels for
-        the legitimate transition cases.
-        """
-        self.logger.debug(
-            "Rejected source update for player %s from provider %s source %s "
-            "(playing: provider %s source %s)",
-            player_id,
-            provider,
-            source_id,
-            session.provider_instance_id if session else None,
-            session.source_id if session else None,
-        )

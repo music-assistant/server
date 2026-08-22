@@ -8,15 +8,17 @@ these tests drive the mixin directly.
 
 from unittest.mock import MagicMock
 
-from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import AudioSource
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.media_items import AudioFormat, AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import (
     AudioSourceMixin,
     AudioSourceSession,
 )
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
 PLAYER_ID = "player-1"
@@ -55,6 +57,17 @@ class _Controller(AudioSourceMixin):
     def trigger_player_update(self, player_id: str) -> None:
         """Record that a player update was signalled."""
         self.updated_players.append(player_id)
+
+
+def _streamdetails(metadata: StreamMetadata) -> StreamDetails:
+    return StreamDetails(
+        provider=PROVIDER_INSTANCE,
+        item_id=SOURCE_ID,
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        media_type=MediaType.AUDIO_SOURCE,
+        stream_type=StreamType.CUSTOM,
+        stream_metadata=metadata,
+    )
 
 
 def _plugin_provider(*, with_feature: bool = True) -> MagicMock:
@@ -182,8 +195,15 @@ def test_source_unresolvable_when_the_feature_was_turned_off() -> None:
 
 
 def test_source_unresolvable_when_the_provider_is_not_a_plugin() -> None:
-    """A non-PluginProvider behind the instance id is skipped."""
-    ctrl = _Controller(MagicMock())
+    """
+    A non-PluginProvider behind the instance id is skipped.
+
+    It declares the AUDIO_SOURCE feature so the feature guard cannot be what
+    rejects it — only the isinstance check can.
+    """
+    not_a_plugin = MagicMock(spec=MusicProvider)
+    not_a_plugin.supported_features = {ProviderFeature.AUDIO_SOURCE}
+    ctrl = _Controller(not_a_plugin)
     ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
 
     assert ctrl.get_player_audio_source(PLAYER_ID) is None
@@ -242,3 +262,90 @@ def test_metadata_update_rejected_when_nothing_is_playing() -> None:
     assert ctrl.get_audio_source_session(PLAYER_ID) is None
     assert ctrl.updated_players == []
     assert ctrl.log_mock.debug.called
+
+
+def test_reconnecting_the_same_source_keeps_its_metadata() -> None:
+    """
+    A drop and reconnect re-stamps the stream token without losing what was known.
+
+    The queue-borne path reuses the cached streamdetails on a reconnect, so the
+    reported track survives one; a fresh session per stream request would blank it
+    until the plugin happened to push again.
+    """
+    ctrl = _Controller(_plugin_provider())
+    source = _audio_source()
+    first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-a")
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
+    )
+
+    again = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-b")
+
+    assert again is first
+    assert again.stream_session_id == "stream-b"
+    assert again.stream_metadata is not None
+    assert again.stream_metadata.title == "Take Five"
+    assert again.started_at == first.started_at
+
+
+def test_selecting_a_different_source_does_not_keep_the_old_metadata() -> None:
+    """A different source is a new session, so nothing carries over."""
+    ctrl = _Controller(_plugin_provider())
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
+    ctrl.update_source_metadata(
+        PLAYER_ID, "first", PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
+    )
+
+    second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("second"), PROVIDER_INSTANCE)
+
+    assert second.source_id == "second"
+    assert second.stream_metadata is None
+
+
+def test_attaching_streamdetails_adopts_their_metadata() -> None:
+    """The placeholder a plugin sets in get_stream_details is what the session reports."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="VBAN | Studio")))
+
+    assert session.streamdetails is not None
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "VBAN | Studio"
+    assert session.stream_metadata_last_updated is not None
+
+
+def test_attaching_streamdetails_does_not_overwrite_a_reported_track() -> None:
+    """A source that already reported something keeps it: the placeholder is only a fallback."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
+    )
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Spotify Connect | Kitchen")))
+
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "Take Five"
+
+
+def test_source_id_is_provider_scoped_and_uri_is_unique() -> None:
+    """Every shipped plugin names its only source "main", so the uri is the unique handle."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert session.source_id == "main"
+    assert session.source_uri != session.source_id
+    assert session.source_uri is not None
+    assert PROVIDER_INSTANCE in session.source_uri
+
+
+def test_mixin_is_attached_to_the_real_player_controller() -> None:
+    """The carrier is wired into PlayerController and its store is initialised."""
+    mass = MagicMock()
+    mass.config.get_raw_core_config_value.return_value = "INFO"
+    controller = PlayerController(mass)
+
+    assert isinstance(controller, AudioSourceMixin)
+    assert controller._source_sessions == {}
+    assert controller.get_audio_source_session("no-such-player") is None
