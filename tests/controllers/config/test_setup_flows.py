@@ -1624,7 +1624,8 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
         AsyncMock(return_value="/bin/librespot"),
     )
-    credentials_via_token = AsyncMock(return_value='{"username": "u", "auth_data": "d"}')
+    # librespot stores the account it was authorized for, and it is the one that signed in
+    credentials_via_token = AsyncMock(return_value='{"username": "u1", "auth_data": "d"}')
     monkeypatch.setattr(
         "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
         credentials_via_token,
@@ -1697,7 +1698,7 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
     )
     assert (
         flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LIBRESPOT_CREDENTIALS])
-        == '{"username": "u", "auth_data": "d"}'
+        == '{"username": "u1", "auth_data": "d"}'
     )
 
 
@@ -2088,3 +2089,78 @@ async def test_spotify_flow_aborts_on_a_non_premium_account(
         # the flow never reaches the playback authorization, and nothing is persisted
         assert aborted.reason == "premium_required"
         assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None
+
+
+async def test_spotify_flow_rejects_playback_authorized_by_another_account(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Authorizing playback as a different Spotify account re-asks instead of storing it."""
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        CONF_PLAYBACK_AUTH_METHOD,
+        CONF_PLAYBACK_CALLBACK_URL,
+        PLAYBACK_AUTH_BROWSER,
+        run_setup,
+    )
+
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
+    )
+    monkeypatch.setattr(
+        flow_mass,
+        "_http_session",
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            get_payload={"id": "u1", "product": "premium"},
+        ),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    # the browser sign-in lands on a Spotify account other than the one that just signed in
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
+        AsyncMock(return_value='{"username": "someone_else", "auth_data": "d"}'),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.await_loopback_authorization",
+        MagicMock(side_effect=OSError),
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        await _wait_for(
+            lambda: (
+                session.current_step is not None and session.current_step.step_id == "playback_auth"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_AUTH_METHOD: PLAYBACK_AUTH_BROWSER}
+        )
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_browser"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
+        )
+        # back at the method step, telling the user which account it has to be
+        retry = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.step_id == "playback_auth"
+                and session.current_step.errors
+                else None
+            )
+        )
+        assert retry.errors == {"base": "playback_account_mismatch"}
+    # the mismatching credential is never persisted
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None

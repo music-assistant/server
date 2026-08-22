@@ -111,6 +111,7 @@
     "playback_auth_required": "Spotify needs you to approve audio playback again. Open the Spotify provider settings and run through the setup once more to restore playback.",
     "playback_not_completed": "Playback wasn't approved in time. Open the link again and paste the address of the page your browser ends up on.",
     "playback_auth_failed": "Approving playback didn't work. Please try again.",
+    "playback_account_mismatch": "Playback was approved with a different Spotify account than the one you signed in with. Use the same account for both, so your music library and the audio come from the same place.",
     "librespot_unavailable": "Music Assistant has no Spotify playback support for this system, so Spotify audio cannot be played here."
   },
   "manifest": {
