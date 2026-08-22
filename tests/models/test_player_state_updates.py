@@ -406,6 +406,61 @@ class TestStreamMetadataPosition:
         assert player.state.current_media.elapsed_time == 300
         assert player.state.current_media.elapsed_time_last_updated == queue_anchor
 
+    def test_a_radio_station_keeps_its_own_position(self, mock_mass: MagicMock) -> None:
+        """
+        A radio station's position is untouched by the live-source override.
+
+        Radio is a queue item and always was: the override this replaced was gated on
+        the media type being an audio source, so radio never went through it. Pinned
+        here because the override lost that gate, and a station reporting the byte
+        clock instead of its stream position would be a regression with nothing to do
+        with external sources.
+        """
+        metadata_anchor = time.time()
+        player = self._playing_player(
+            mock_mass,
+            metadata_elapsed_time=42,
+            metadata_last_updated=metadata_anchor,
+            queue_elapsed_time=999.0,
+            queue_last_updated=metadata_anchor - 30,
+            media_type=MediaType.RADIO,
+        )
+
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 42
+        assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+
+    def test_a_live_source_elsewhere_does_not_move_this_players_clock(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A source playing on another player has no say in this player's position.
+
+        Asserts the player-level clock, which is what the override writes - the
+        media-level position for a radio item comes from its stream metadata by a
+        different route, so it would not notice a leak.
+        """
+        anchor = time.time()
+        player = self._playing_player(
+            mock_mass,
+            metadata_elapsed_time=None,
+            metadata_last_updated=None,
+            queue_elapsed_time=0.0,
+            queue_last_updated=anchor,
+            media_type=MediaType.RADIO,
+        )
+        player._attr_elapsed_time = 123.0
+        player._attr_elapsed_time_last_updated = anchor
+        other = MagicMock()
+        other.stream_metadata.elapsed_time = 7
+        other.stream_metadata.elapsed_time_last_updated = anchor
+        mock_mass.players.get_audio_source_session = MagicMock(
+            side_effect=lambda pid: other if pid == "other_player" else None
+        )
+        player.update_state(signal_event=False)
+
+        assert player.state.elapsed_time == 123.0
+
 
 class TestLiveSourcePosition:
     """The published position of a live external source playing on a player."""
