@@ -56,7 +56,9 @@ CACHE_CATEGORY_PODCAST_EPISODES = 4
 
 # Content delivery types
 AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
-PODCAST_CONTENT_TYPES = ("PodcastParent",)
+# Podcasts are normally reported as "PodcastParent", but (older) Audible Original
+# series are still reported with the legacy "Periodical" delivery type.
+PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
