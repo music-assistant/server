@@ -1641,6 +1641,14 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         await flow_mass.config.submit_setup_flow(
             step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
         )
+        # the librespot explainer page opens the branch
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "about_librespot"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(step.flow_id, {})
         # playback needs its own authorization; pick the browser fallback
         await _wait_for(
             lambda: (

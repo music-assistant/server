@@ -574,8 +574,9 @@ async def _authorize_playback(session: SetupSession) -> str:
     """
     Obtain librespot's playback credential and return it as stored-credential JSON.
 
-    Offers pairing through the Spotify app first and falls back to a browser sign-in for
-    setups where the Spotify app cannot discover Music Assistant.
+    Opens with the what-you-get/limitations explainer, then offers pairing through
+    the Spotify app first and falls back to a browser sign-in for setups where the
+    Spotify app cannot discover Music Assistant.
 
     :param session: The setup session driving the flow.
     """
@@ -583,6 +584,12 @@ async def _authorize_playback(session: SetupSession) -> str:
         librespot_bin = await get_librespot_binary()
     except RuntimeError as err:
         raise SetupFlowError(str(err), translation_key="librespot_unavailable") from err
+    # the mode choice stays short; this page carries the full librespot story so
+    # the user is well informed before authorizing playback
+    await session.form(
+        [ConfigEntry(key="about_librespot", type=ConfigEntryType.LABEL)],
+        step_id="about_librespot",
+    )
     errors: dict[str, str] | None = None
     while True:
         method_values = await session.form(

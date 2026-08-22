@@ -52,6 +52,9 @@
     "connect_ready": {
       "label": "A Spotify Connect instance is already running and paired to this Spotify account, so playback works right away."
     },
+    "about_librespot": {
+      "label": "Press Next to continue with librespot playback."
+    },
     "connect_pairing_intro": {
       "label": "Have the Spotify app at hand, then press Next to start."
     },
@@ -83,7 +86,11 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community-driven Spotify client)** — Music Assistant streams the audio itself, with all Music Assistant features available. Use this if you primarily want to use Music Assistant to enqueue and control your music. It only works for Spotify accounts created before December 2024.\n\n**Spotify Connect (powered by Spotify Soloist)** — playback is handed to a Spotify Connect session, so the music plays just like it does in the Spotify apps and the Spotify app stays usable as a remote. Recommended if your account was created after December 2024, and/or you also like to control playback from the Spotify app. Some queue features are handled by Spotify instead of Music Assistant."
+      "description": "Music Assistant can play Spotify audio in two ways:\n\n**librespot (community-driven Spotify client)** — Music Assistant streams the audio itself, with all Music Assistant features available. Use this if you primarily use Music Assistant to manage your music and your account was created before December 2024.\n\n**Spotify Connect (powered by Spotify Soloist)** — playback is handed to a Spotify Connect session, so the music plays just like it does in the Spotify apps. Recommended if your account was created after December 2024, and/or you also like to control playback from the Spotify app.\n\nThe next step explains your choice in more detail."
+    },
+    "about_librespot": {
+      "title": "About librespot",
+      "description": "librespot is a community-built, reverse-engineered Spotify client that lets Music Assistant stream the Spotify audio itself.\n\n**What you get:** every Music Assistant feature works — the full queue experience (crossfade, volume normalization, smart shuffle, autoplay), podcasts and audiobooks, and playback on all your players and groups.\n\n**Limitations to know about:**\n\n- It only works reliably for Spotify accounts created before December 2024.\n- Audio quality is capped at high quality (320 kbps Ogg Vorbis) — no lossless.\n- It relies on reverse-engineered Spotify internals, so it may stop working whenever Spotify changes something on their end.\n\nIf that doesn't fit, go back and choose Spotify Connect instead."
     },
     "connect_mode": {
       "title": "Playback through Spotify Connect",
