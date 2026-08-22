@@ -1548,7 +1548,15 @@ class LocalFileSystemProvider(MusicProvider):
         library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
             file_item.relative_path, self.instance_id
         )
-        if library_track is not None:
+        # only trust the library item if its mapping for this file is available: the file
+        # just resolved, so an unavailable mapping is stale (e.g. the file was missing
+        # during the last scan) and would wrongly exclude the track from playback
+        if library_track is not None and any(
+            mapping.provider_instance == self.instance_id
+            and mapping.item_id == file_item.relative_path
+            and mapping.available
+            for mapping in library_track.provider_mappings
+        ):
             # callers expect the provider item identity here (not the library one),
             # e.g. for duplicate detection when editing the playlist
             library_track.item_id = file_item.relative_path
