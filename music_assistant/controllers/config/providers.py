@@ -413,13 +413,7 @@ class ProviderConfigMixin:
         :param provider_domain: Domain of the provider to create an instance of.
         :param setup_data: Setup data to seed the new instance with.
         """
-        for prov in self.mass.get_provider_manifests():
-            if prov.domain == provider_domain:
-                manifest = prov
-                break
-        else:
-            msg = f"Unknown provider domain: {provider_domain}"
-            raise KeyError(msg)
+        manifest = self.mass.get_provider_manifest(provider_domain)
         existing = await self.get_provider_configs(provider_domain=provider_domain)
         if existing and not manifest.multi_instance:
             msg = f"Provider {manifest.name} does not support multiple instances"

@@ -150,14 +150,6 @@ class SpotifyConnectProvider(PluginProvider):
 
     reload_on_streams_network_change = True
 
-    # deadline (loop time) until which an MA-initiated redirect is pending: new
-    # content was commanded on the session and its playback start (plus the
-    # accompanying stream request) is expected any moment.
-    _redirect_deadline: float = 0.0
-    # whether the pending redirect installed the player pre-target itself (and a
-    # rollback must remove it again)
-    _redirect_pre_targeted: bool = False
-
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -220,6 +212,13 @@ class SpotifyConnectProvider(PluginProvider):
         # the queue claim exists — and pushed to the queue once claimed in
         # on_source_selected. Cleared when the session ends.
         self._last_playback_options: BackendPlaybackOptions | None = None
+        # deadline (loop time) until which an MA-initiated redirect is pending: new
+        # content was commanded on the session and its playback start (plus the
+        # accompanying stream request) is expected any moment
+        self._redirect_deadline: float = 0.0
+        # whether the pending redirect installed the player pre-target itself (and
+        # a rollback must remove it again)
+        self._redirect_pre_targeted: bool = False
 
     @property
     def instance_name_postfix(self) -> str | None:

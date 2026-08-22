@@ -117,7 +117,7 @@ async def test_full_delegation_play_swaps_batch_for_the_session() -> None:
     )
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, list(items), QueueOption.PLAY, context, None
+        QUEUE_ID, list(items), QueueOption.PLAY, [context], None
     )
 
     assert result == [delegate]
@@ -134,9 +134,9 @@ async def test_add_family_is_handled_entirely_session_side(option: QueueOption) 
     ctrl = _controller({"spotify--a": provider})
     items = [_track("t1", "spotify--a", "spotify")]
 
-    result = await ctrl._apply_playback_delegation(QUEUE_ID, list(items), option, None, None)
+    result = await ctrl._apply_playback_delegation(QUEUE_ID, list(items), option, [], None)
 
-    assert result == []
+    assert result is None
     provider.play_on_delegate.assert_awaited_once_with(
         delegate, items, option, QUEUE_ID, context=None, start_item=None
     )
@@ -151,9 +151,7 @@ async def test_add_family_gates_on_enqueueable_media_types() -> None:
     ctrl = _controller({"spotify--a": provider})
     items = [_track("t1", "spotify--a", "spotify")]
 
-    result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, list(items), QueueOption.ADD, None, None
-    )
+    result = await ctrl._apply_playback_delegation(QUEUE_ID, list(items), QueueOption.ADD, [], None)
 
     # not delegatable: the batch passes through so the provider's own (actionable)
     # error surfaces at stream time instead of a silent drop here
@@ -171,7 +169,7 @@ async def test_play_gates_on_playable_media_types() -> None:
     items = [_track("t1", "spotify--a", "spotify")]
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, list(items), QueueOption.PLAY, None, None
+        QUEUE_ID, list(items), QueueOption.PLAY, [], None
     )
 
     assert result == items
@@ -187,7 +185,7 @@ async def test_mixed_batch_drops_only_delegate_only_items() -> None:
     tidal_track = _track("t2", "tidal--a", "tidal")
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, [spotify_track, tidal_track], QueueOption.PLAY, None, None
+        QUEUE_ID, [spotify_track, tidal_track], QueueOption.PLAY, [], None
     )
 
     assert result == [tidal_track]
@@ -204,7 +202,7 @@ async def test_mixed_batch_keeps_items_of_a_normally_streaming_provider() -> Non
     tidal_track = _track("t2", "tidal--a", "tidal")
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, [spotify_track, tidal_track], QueueOption.PLAY, None, None
+        QUEUE_ID, [spotify_track, tidal_track], QueueOption.PLAY, [], None
     )
 
     assert result == [spotify_track, tidal_track]
@@ -223,7 +221,7 @@ async def test_conflicting_delegates_keep_the_batch_whole() -> None:
 
     # nothing in the batch plays normally, so it passes through whole: each item then
     # surfaces its provider's own actionable error at stream time
-    result = await ctrl._apply_playback_delegation(QUEUE_ID, items, QueueOption.PLAY, None, None)
+    result = await ctrl._apply_playback_delegation(QUEUE_ID, items, QueueOption.PLAY, [], None)
 
     assert result == items
     provider_a.play_on_delegate.assert_not_awaited()
@@ -242,7 +240,7 @@ async def test_mixed_batch_keeps_items_with_another_streaming_mapping() -> None:
     tidal_track = _track("t2", "tidal--a", "tidal")
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, [dual_mapped, tidal_track], QueueOption.PLAY, None, None
+        QUEUE_ID, [dual_mapped, tidal_track], QueueOption.PLAY, [], None
     )
 
     assert result == [dual_mapped, tidal_track]
@@ -256,7 +254,7 @@ async def test_no_delegates_leaves_the_batch_untouched() -> None:
     items = [_track("t1", "spotify--a", "spotify")]
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, list(items), QueueOption.PLAY, None, None
+        QUEUE_ID, list(items), QueueOption.PLAY, [], None
     )
 
     assert result == items
@@ -270,7 +268,7 @@ async def test_delegate_lookup_error_is_treated_as_no_delegate() -> None:
     items = [_track("t1", "spotify--a", "spotify")]
 
     result = await ctrl._apply_playback_delegation(
-        QUEUE_ID, list(items), QueueOption.PLAY, None, None
+        QUEUE_ID, list(items), QueueOption.PLAY, [], None
     )
 
     assert result == items
@@ -284,6 +282,6 @@ async def test_delegate_answer_is_cached_per_provider() -> None:
     ctrl = _controller({"spotify--a": provider})
     items = [_track(f"t{index}", "spotify--a", "spotify") for index in range(5)]
 
-    await ctrl._apply_playback_delegation(QUEUE_ID, list(items), QueueOption.PLAY, None, None)
+    await ctrl._apply_playback_delegation(QUEUE_ID, list(items), QueueOption.PLAY, [], None)
 
     provider.get_playback_delegate.assert_awaited_once_with(QUEUE_ID)

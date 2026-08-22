@@ -332,7 +332,8 @@ async def _setup_connect_playback(session: SetupSession, access_token: str) -> b
         )
         if stored_engine:
             # a configured instance exists but is not running: start it as-is
-            await _start_connect_instance(session, instance_id)
+            assert instance_id is not None  # a stored engine implies an instance
+            await _load_connect_instance(session, instance_id)
         else:
             # fresh instance: the official Soloist engine is set up, guarded by its
             # at-own-risk warning/consent and the personal API key
@@ -385,15 +386,14 @@ async def _setup_connect_playback(session: SetupSession, access_token: str) -> b
     return True
 
 
-async def _start_connect_instance(session: SetupSession, instance_id: str | None) -> None:
+async def _load_connect_instance(session: SetupSession, instance_id: str) -> None:
     """
-    (Re)start an already-configured Connect instance as-is.
+    (Re)load a configured Connect instance, surfacing a failure as a flow error.
 
     :param session: The setup session driving the flow.
-    :param instance_id: The configured system-wide instance to start.
+    :param instance_id: The Connect instance to (re)load.
     :raises SetupFlowError: When the instance did not start.
     """
-    assert instance_id is not None  # guarded by the caller
     try:
         config = await session.mass.config.get_provider_config(instance_id)
         await session.mass.load_provider_config(config)
@@ -559,14 +559,7 @@ async def _provision_connect_instance(
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/setup_data"
         existing = dict(mass.config.get(conf_key) or {})
         mass.config.set(conf_key, {**existing, **encrypted})
-        try:
-            config = await mass.config.get_provider_config(instance_id)
-            await mass.load_provider_config(config)
-        except Exception as err:
-            raise SetupFlowError(
-                str(err) or err.__class__.__name__,
-                translation_key=getattr(err, "translation_key", None),
-            ) from err
+        await _load_connect_instance(session, instance_id)
     if mass.get_provider(instance_id) is None:
         # the create path records the load failure instead of raising; surface it
         last_error = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}/last_error") or {}

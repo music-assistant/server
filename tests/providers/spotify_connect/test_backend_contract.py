@@ -208,6 +208,8 @@ def _make_provider(
     provider._last_context_uri = last_context_uri
     provider._last_track_uri = last_track_uri
     provider._last_playback_options = None
+    provider._redirect_deadline = 0.0
+    provider._redirect_pre_targeted = False
     return provider, mass
 
 

@@ -694,7 +694,8 @@ class MusicProvider(Provider):
         Return the live external session that should play this provider's items, if any.
 
         Called at enqueue time for playback of this provider's items on the given
-        player. A returned AudioSource (a queue-capable live session, e.g. a Spotify
+        player (see ``controllers/player_queues/delegation.py`` for the consuming
+        seam). A returned AudioSource (a queue-capable live session, e.g. a Spotify
         Connect bridge) redirects the play request into that session via
         ``play_on_delegate``; None plays the items through the normal path.
 

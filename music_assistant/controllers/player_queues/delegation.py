@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import ProviderFeature, QueueOption
+from music_assistant_models.enums import MediaType, ProviderFeature, QueueOption
 from music_assistant_models.media_items import AudioSource, BrowseFolder
 
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
@@ -29,6 +29,16 @@ if TYPE_CHECKING:
         PlayableMediaItemType,
         SourceQueueCapabilities,
     )
+
+
+# container media types that become the session's playback context when a play
+# request expanded from exactly one of them
+_DELEGATE_CONTEXT_TYPES = (
+    MediaType.ALBUM,
+    MediaType.PLAYLIST,
+    MediaType.ARTIST,
+    MediaType.PODCAST,
+)
 
 
 class PlaybackDelegationMixin(_PlayerQueuesBase):
@@ -79,25 +89,33 @@ class PlaybackDelegationMixin(_PlayerQueuesBase):
         queue_id: str,
         media_items: list[MediaItemType],
         option: QueueOption | None,
-        context: MediaItemType | BrowseFolder | None,
+        resolved_parents: list[MediaItemType | BrowseFolder],
         start_item: PlayableMediaItemType | str | None,
-    ) -> list[MediaItemType]:
+    ) -> list[MediaItemType] | None:
         """
         Redirect the play request into an external session when a provider delegates it.
 
         Returns the media items the normal enqueue should continue with: the delegate
-        AudioSource when the whole batch was redirected into one session, an empty list
-        when the request was handled entirely session-side (enqueue onto the already
-        active session), or the (possibly reduced) original items.
+        AudioSource when the whole batch was redirected into one session, None when the
+        request was handled entirely session-side (enqueue onto the already active
+        session), or the (possibly reduced) original items.
 
         :param queue_id: The queue the play request targets.
         :param media_items: The resolved playable items of the play request.
         :param option: The (settled) enqueue option of the play request.
-        :param context: The single original container the request expanded from, if any.
+        :param resolved_parents: The resolved originals of the expansion path; a single
+            container among them becomes the session's playback context.
         :param start_item: Optional item (or uri) within the context to start at.
         """
         if not media_items or option is None:
             return media_items
+        context = (
+            resolved_parents[0]
+            if len(resolved_parents) == 1
+            and not isinstance(resolved_parents[0], BrowseFolder)
+            and resolved_parents[0].media_type in _DELEGATE_CONTEXT_TYPES
+            else None
+        )
         add_family = option in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
         delegate_cache: dict[str, tuple[AudioSource, MusicProvider] | None] = {}
         item_delegates = [
@@ -121,13 +139,13 @@ class PlaybackDelegationMixin(_PlayerQueuesBase):
                 cast("list[PlayableMediaItemType]", media_items),
                 option,
                 queue_id,
-                context=None if isinstance(context, BrowseFolder) else context,
+                context=context,
                 start_item=start_item,
             )
             if add_family:
                 # the items live in the session's own queue; nothing to load into the
                 # MA queue (the session's AudioSource is already its current item)
-                return []
+                return None
             # the session plays the items; the MA queue plays the session
             return [delegate]
         # The batch cannot ride one session. Items with a normal playback path (any

@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
+from music_assistant.providers.spotify.connect_redirect import SpotifyConnectRedirect
 from music_assistant.providers.spotify.constants import (
     BACKEND_CONNECT,
     BACKEND_LIBRESPOT,
@@ -110,6 +111,7 @@ def _provider(
         side_effect=lambda instance, *_args, **_kwargs: plugin_map.get(instance)
     )
     prov.mass = mass
+    prov._connect_redirect = SpotifyConnectRedirect(prov)
     return prov
 
 
@@ -191,7 +193,7 @@ async def test_account_verification_by_device_list_name_match() -> None:
     """A single device-list name match verifies the session for this account."""
     plugin = _plugin(publish_name="Music Assistant")
     prov = _provider(plugins=[plugin])
-    prov._get_player_data = AsyncMock(  # type: ignore[method-assign]
+    prov._connect_redirect._get_player_data = AsyncMock(  # type: ignore[method-assign]
         return_value={"devices": [{"id": "dev1", "name": "Music Assistant"}]}
     )
 
@@ -205,7 +207,7 @@ async def test_account_verification_fails_when_device_absent() -> None:
     """A daemon that is not in this account's device list stays unverified."""
     plugin = _plugin()
     prov = _provider(plugins=[plugin])
-    prov._get_player_data = AsyncMock(return_value={"devices": []})  # type: ignore[method-assign]
+    prov._connect_redirect._get_player_data = AsyncMock(return_value={"devices": []})  # type: ignore[method-assign]
 
     assert await prov.get_playback_delegate(TARGET_PLAYER) is None
     plugin.set_verified_account_id.assert_not_called()
@@ -278,7 +280,7 @@ async def test_play_uses_the_web_api_assist_with_context_and_offset() -> None:
     """A single-container play goes through the Web API with context and start offset."""
     plugin = _plugin(account_id=USER_ID)
     prov = _provider(plugins=[plugin])
-    prov._get_player_data = AsyncMock(  # type: ignore[method-assign]
+    prov._connect_redirect._get_player_data = AsyncMock(  # type: ignore[method-assign]
         return_value={"devices": [{"id": "dev1", "name": "Music Assistant"}]}
     )
     put_calls: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
@@ -310,7 +312,7 @@ async def test_play_falls_back_to_the_session_control_plane() -> None:
     """A rejected Web API play falls back to the session's own play command."""
     plugin = _plugin(account_id=USER_ID)
     prov = _provider(plugins=[plugin])
-    prov._get_player_data = AsyncMock(  # type: ignore[method-assign]
+    prov._connect_redirect._get_player_data = AsyncMock(  # type: ignore[method-assign]
         return_value={"devices": [{"id": "dev1", "name": "Music Assistant"}]}
     )
     prov._put_data = AsyncMock(side_effect=RuntimeError("restricted"))  # type: ignore[method-assign]
@@ -331,7 +333,7 @@ async def test_play_clears_stale_verification_when_the_device_vanished() -> None
     """A device gone from the account's list forces re-verification next time."""
     plugin = _plugin(account_id=USER_ID)
     prov = _provider(plugins=[plugin])
-    prov._get_player_data = AsyncMock(return_value={"devices": []})  # type: ignore[method-assign]
+    prov._connect_redirect._get_player_data = AsyncMock(return_value={"devices": []})  # type: ignore[method-assign]
 
     await prov.play_on_delegate(
         plugin.audio_source, [_track("t1")], QueueOption.PLAY, TARGET_PLAYER
@@ -356,14 +358,16 @@ def test_liked_songs_pseudo_playlist_is_no_spotify_context() -> None:
         },
     )
 
-    assert prov._delegate_context(playlist, None, []) == (None, None)
+    assert prov._connect_redirect._delegate_context(playlist, None, []) == (None, None)
 
 
 def test_delegate_context_parses_a_start_item_uri_string() -> None:
     """A start item passed as MA uri string resolves to a Spotify track uri."""
     prov = _provider()
 
-    context_uri, start_uri = prov._delegate_context(_album("alb1"), f"{INSTANCE_ID}://track/t5", [])
+    context_uri, start_uri = prov._connect_redirect._delegate_context(
+        _album("alb1"), f"{INSTANCE_ID}://track/t5", []
+    )
 
     assert context_uri == "spotify:album:alb1"
     assert start_uri == "spotify:track:t5"
@@ -381,7 +385,7 @@ def test_delegate_context_resolves_a_library_start_item_via_the_batch() -> None:
         },
     )
 
-    context_uri, start_uri = prov._delegate_context(
+    context_uri, start_uri = prov._connect_redirect._delegate_context(
         _album("alb1"), "library://track/12345", [library_track]
     )
 
@@ -393,7 +397,9 @@ def test_delegate_context_ignores_an_unresolvable_start_item_uri() -> None:
     """A foreign start uri matching nothing in the batch yields no start offset."""
     prov = _provider()
 
-    context_uri, start_uri = prov._delegate_context(_album("alb1"), "library://track/12345", [])
+    context_uri, start_uri = prov._connect_redirect._delegate_context(
+        _album("alb1"), "library://track/12345", []
+    )
 
     assert context_uri == "spotify:album:alb1"
     assert start_uri is None
@@ -419,4 +425,4 @@ def test_track_uris_prefer_this_instances_mapping() -> None:
         },
     )
 
-    assert prov._delegate_item_uris([track]) == ["spotify:track:own"]
+    assert prov._connect_redirect._delegate_item_uris([track]) == ["spotify:track:own"]

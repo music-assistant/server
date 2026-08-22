@@ -250,11 +250,12 @@ resume-position lookups → seek/resume.
 player_queues/
 ├── __init__.py     # package entry point; documents purpose + loose coupling; re-exports PlayerQueuesController
 ├── controller.py   # PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
+│                   #   (QueueLoaderMixin itself chains PlaybackDelegationMixin)
 │                   #   the public face — in-memory state, config entries, the API commands and inter-
 │                   #   controller event hooks, the core load/items/signal-update/persistence primitives
 │                   #   and transport commands; the mixins below carry the loading/tracking/feeding
 │                   #   logic, the stateful helper services the rest
-├── base.py         # _PlayerQueuesBase(CoreController): the shared base the three logic mixins extend;
+├── base.py         # _PlayerQueuesBase(CoreController): the shared base the logic mixins extend;
 │                   #   declares the per-queue state, the helper services and the core-op signatures
 │                   #   so each mixin type-checks on its own
 ├── constants.py    # config keys + default values for enqueue options, artist/album selection
@@ -268,6 +269,9 @@ player_queues/
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/
 │                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue, plus
 │                   #   the successor (next episode/book) of an item that finished playing
+├── delegation.py   # PlaybackDelegationMixin: session-owned queues — the command-delegation gate
+│                   #   (_get_delegated_source) and the enqueue-time playback redirect into external
+│                   #   sessions (MusicProvider.get_playback_delegate / play_on_delegate)
 ├── queue_loader.py # QueueLoaderMixin: applies the enqueue option, loads single items, resume-from-
 │                   #   playlog, next-index, and the dynamic/autoplay queue refills
 ├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-

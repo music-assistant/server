@@ -887,21 +887,13 @@ class QueueLoaderMixin(PlaybackDelegationMixin):
 
         # a provider may redirect playback of its items into a live external session it
         # controls (e.g. a Spotify Connect bridge) instead of streaming them itself
-        single_context = (
-            resolved_parents[0]
-            if len(resolved_parents) == 1
-            and not isinstance(resolved_parents[0], BrowseFolder)
-            and resolved_parents[0].media_type
-            in (MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST, MediaType.PODCAST)
-            else None
+        delegated_items = await self._apply_playback_delegation(
+            queue_id, media_items, option, resolved_parents, start_item
         )
-        had_media_items = bool(media_items)
-        media_items = await self._apply_playback_delegation(
-            queue_id, media_items, option, single_context, start_item
-        )
-        if had_media_items and not media_items:
+        if delegated_items is None:
             # fully handled session-side (enqueued onto the delegate's active session)
             return
+        media_items = delegated_items
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
