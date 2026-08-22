@@ -116,6 +116,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 
 from .announcements import AnnouncementsMixin
+from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import PlayerLockPurpose
 from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
@@ -154,7 +155,7 @@ VOLUME_TARGET_EXPIRY = 2.0
 _SENTINEL: Any = object()
 
 
-class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController):
+class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
 
     domain: str = "players"
@@ -182,6 +183,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+        # Live external AudioSource playing on a player, keyed on player_id
+        self._source_sessions: dict[str, AudioSourceSession] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]

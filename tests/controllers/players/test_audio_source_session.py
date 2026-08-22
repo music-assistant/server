@@ -1,0 +1,200 @@
+"""
+Tests for the per-player AudioSource session record.
+
+The session holds what an external source is, who owns it and what it reports,
+without any of it living in a queue item. Nothing produces a session yet, so
+these tests drive the mixin directly.
+"""
+
+from unittest.mock import MagicMock
+
+from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.media_items import AudioSource
+from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.streamdetails import StreamMetadata
+
+from music_assistant.controllers.players.audio_sources import (
+    AudioSourceMixin,
+    AudioSourceSession,
+)
+from music_assistant.models.plugin import PluginProvider
+
+PLAYER_ID = "player-1"
+PROVIDER_INSTANCE = "spotify_connect--abc"
+SOURCE_ID = "main"
+
+
+def _audio_source(item_id: str = SOURCE_ID) -> AudioSource:
+    return AudioSource(
+        item_id=item_id,
+        provider=PROVIDER_INSTANCE,
+        name="Spotify Connect",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="spotify_connect",
+                provider_instance=PROVIDER_INSTANCE,
+            )
+        },
+        can_play_pause=True,
+    )
+
+
+class _Controller(AudioSourceMixin):
+    """Minimal stand-in for the parts of PlayerController the mixin relies on."""
+
+    def __init__(self, provider: object | None) -> None:
+        self._source_sessions: dict[str, AudioSourceSession] = {}
+        self.mass = MagicMock()
+        self.mass.get_provider.return_value = provider
+        # kept under its own name so assertions can read the mock's call record
+        self.log_mock = MagicMock()
+        self.logger = self.log_mock
+        self.updated_players: list[str] = []
+
+    def trigger_player_update(self, player_id: str) -> None:
+        """Record that a player update was signalled."""
+        self.updated_players.append(player_id)
+
+
+def _plugin_provider(*, with_feature: bool = True) -> MagicMock:
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = PROVIDER_INSTANCE
+    provider.supported_features = {ProviderFeature.AUDIO_SOURCE} if with_feature else set()
+    return provider
+
+
+def test_no_session_by_default() -> None:
+    """A player with nothing playing on it has no session and no source."""
+    ctrl = _Controller(_plugin_provider())
+    assert ctrl.get_audio_source_session(PLAYER_ID) is None
+    assert ctrl.get_player_audio_source(PLAYER_ID) is None
+
+
+def test_started_session_resolves_source_and_provider() -> None:
+    """A started session resolves to its AudioSource and owning plugin."""
+    provider = _plugin_provider()
+    ctrl = _Controller(provider)
+    source = _audio_source()
+    session = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
+
+    assert session.player_id == PLAYER_ID
+    assert session.source_id == SOURCE_ID
+    assert session.streamdetails is None
+    assert session.stream_metadata is None
+    assert session.stream_session_id is None
+    assert session.started_at > 0
+
+    assert ctrl.get_audio_source_session(PLAYER_ID) is session
+    assert ctrl.get_player_audio_source(PLAYER_ID) == (source, provider)
+
+
+def test_starting_a_second_session_replaces_the_first() -> None:
+    """A player outputs one source at a time, so a new session replaces the old."""
+    ctrl = _Controller(_plugin_provider())
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
+    second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("second"), PROVIDER_INSTANCE)
+
+    current = ctrl.get_audio_source_session(PLAYER_ID)
+    assert current is second
+    assert current.source_id == "second"
+
+
+def test_ending_a_session_drops_and_returns_it() -> None:
+    """Ending a session removes it from the player and hands it back."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl._end_audio_source_session(PLAYER_ID) is session
+    assert ctrl.get_audio_source_session(PLAYER_ID) is None
+    # ending twice is harmless
+    assert ctrl._end_audio_source_session(PLAYER_ID) is None
+
+
+def test_sessions_are_isolated_per_player() -> None:
+    """A session on one player is invisible to another."""
+    ctrl = _Controller(_plugin_provider())
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl.get_audio_source_session("player-2") is None
+    assert ctrl.get_player_audio_source("player-2") is None
+
+
+def test_source_unresolvable_when_provider_is_gone() -> None:
+    """A session whose plugin has unloaded resolves to nothing."""
+    ctrl = _Controller(None)
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl.get_audio_source_session(PLAYER_ID) is not None
+    assert ctrl.get_player_audio_source(PLAYER_ID) is None
+
+
+def test_source_unresolvable_when_the_feature_was_turned_off() -> None:
+    """A provider that dropped the AUDIO_SOURCE feature at runtime is skipped."""
+    ctrl = _Controller(_plugin_provider(with_feature=False))
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl.get_player_audio_source(PLAYER_ID) is None
+
+
+def test_source_unresolvable_when_the_provider_is_not_a_plugin() -> None:
+    """A non-PluginProvider behind the instance id is skipped."""
+    ctrl = _Controller(MagicMock())
+    ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl.get_player_audio_source(PLAYER_ID) is None
+
+
+def test_metadata_update_is_accepted_before_streamdetails_exist() -> None:
+    """The owning plugin can replay what it knows the moment it claims the player."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    metadata = StreamMetadata(title="Take Five", artist="Dave Brubeck")
+
+    ctrl.update_source_metadata(PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, metadata)
+
+    assert session.streamdetails is None
+    assert session.stream_metadata is metadata
+    assert session.stream_metadata_last_updated is not None
+    assert ctrl.updated_players == [PLAYER_ID]
+
+
+def test_metadata_update_rejected_for_another_source() -> None:
+    """Metadata for a source that is not the one playing is dropped."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    ctrl.update_source_metadata(
+        PLAYER_ID, "some-other-source", PROVIDER_INSTANCE, StreamMetadata(title="Nope")
+    )
+
+    assert session.stream_metadata is None
+    assert ctrl.updated_players == []
+    assert ctrl.log_mock.debug.called
+
+
+def test_metadata_update_rejected_for_another_provider() -> None:
+    """Metadata from a provider that does not own the session is dropped."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, "airplay_receiver--xyz", StreamMetadata(title="Nope")
+    )
+
+    assert session.stream_metadata is None
+    assert ctrl.updated_players == []
+    assert ctrl.log_mock.debug.called
+
+
+def test_metadata_update_rejected_when_nothing_is_playing() -> None:
+    """Metadata for a player with no session is dropped without raising."""
+    ctrl = _Controller(_plugin_provider())
+
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Nope")
+    )
+
+    assert ctrl.get_audio_source_session(PLAYER_ID) is None
+    assert ctrl.updated_players == []
+    assert ctrl.log_mock.debug.called
