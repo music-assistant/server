@@ -378,3 +378,41 @@ def test_reselecting_adopts_a_rebuilt_source() -> None:
     # the reported track still survives the reselect
     assert again.stream_metadata is not None
     assert again.stream_metadata.title == "Take Five"
+
+
+def test_a_fallback_only_source_follows_a_changed_placeholder() -> None:
+    """
+    A source that never reports keeps taking its placeholder from the stream details.
+
+    vban_receiver and sendspin_source never call update_stream_metadata, so the
+    placeholder is all they have. Adopting one must not stop a later one landing:
+    a VBAN reconnect from a different sender describes something else.
+    """
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="VBAN | Studio")))
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "VBAN | Studio"
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="VBAN | Booth")))
+    assert session.stream_metadata.title == "VBAN | Booth"
+    assert session.stream_metadata_reported is False
+
+
+def test_a_reported_track_is_not_replaced_by_a_later_placeholder() -> None:
+    """Once the source has reported, stream details stop overriding it."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Spotify Connect | Kitchen")))
+
+    ctrl.update_source_metadata(
+        PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
+    )
+    assert session.stream_metadata_reported is True
+
+    # a reconnect brings fresh stream details carrying only the placeholder again
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Spotify Connect | Kitchen")))
+
+    assert session.stream_metadata is not None
+    assert session.stream_metadata.title == "Take Five"

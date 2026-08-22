@@ -49,9 +49,13 @@ class AudioSourceSession:
     # set once a stream is requested; None during the selection window and again
     # after a paused source's stream is torn down
     streamdetails: StreamDetails | None = None
-    # what the source reports it is playing
+    # what the source is playing, either as the source reported it or as adopted
+    # from the stream details
     stream_metadata: StreamMetadata | None = None
     stream_metadata_last_updated: float | None = None
+    # whether the source reported the metadata itself. An adopted placeholder
+    # stays replaceable by a later one, a report does not.
+    stream_metadata_reported: bool = False
     # token of the stream request currently holding the source's claim
     stream_session_id: str | None = None
 
@@ -75,15 +79,17 @@ class AudioSourceSession:
         """
         Record the stream details resolved for this session's source.
 
-        Adopts the metadata they carry unless the source has already reported
-        something itself, so the placeholder every plugin sets in
-        ``get_stream_details`` is what the session reports until then — for
-        vban_receiver and sendspin_source it is the only metadata there is.
+        Adopts the metadata they carry unless the source has reported something
+        itself, so the placeholder every plugin sets in ``get_stream_details`` is
+        what the session reports until then — for vban_receiver and
+        sendspin_source it is the only metadata there is. A later placeholder
+        replaces an earlier one, so those two still follow a reconnect that
+        changed what they describe.
 
         :param streamdetails: The stream details resolved for this source.
         """
         self.streamdetails = streamdetails
-        if streamdetails.stream_metadata is not None and self.stream_metadata is None:
+        if streamdetails.stream_metadata is not None and not self.stream_metadata_reported:
             self.stream_metadata = streamdetails.stream_metadata
             self.stream_metadata_last_updated = time.time()
 
@@ -189,6 +195,7 @@ class AudioSourceMixin:
             return
         session.stream_metadata = stream_metadata
         session.stream_metadata_last_updated = time.time()
+        session.stream_metadata_reported = True
         self.trigger_player_update(player_id)
 
     def _start_audio_source_session(
