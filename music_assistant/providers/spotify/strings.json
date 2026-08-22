@@ -86,7 +86,7 @@
     },
     "abort": {
       "account_already_configured": "This Spotify account is already set up in Music Assistant. Each account can only be added once — sign in with a different account, or reconfigure the existing one instead.",
-      "premium_required": "This Spotify account does not have Spotify Premium. Music Assistant can only play audio from a Premium account — both playback options need it. Sign in with a Premium account, or upgrade this one, and try again."
+      "premium_required": "A Spotify Premium account is required to use Spotify within Music Assistant. Sign in with a Premium account, or upgrade this one, and try again."
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
