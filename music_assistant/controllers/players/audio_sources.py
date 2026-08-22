@@ -16,6 +16,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from music_assistant_models.enums import ProviderFeature
 
@@ -38,12 +39,16 @@ class AudioSourceSession:
 
     ``streamdetails`` and ``stream_session_id`` are independent of the session's
     own existence: a paused external source keeps the player while its stream is
-    torn down, so both fall back to None without the session ending.
+    torn down, so both fall back to None without the session ending. The
+    ``playback_session_id`` is the one identifier that lasts as long as the
+    session does, which is why the stream URLs are built from it.
     """
 
     player_id: str
     source: AudioSource
     provider_instance_id: str
+    # identifies this session in its stream URLs, for the whole time it plays
+    playback_session_id: str = field(default_factory=lambda: uuid4().hex)
     started_at: float = field(default_factory=time.time)
     streamdetails: StreamDetails | None = None
     stream_metadata: StreamMetadata | None = None
