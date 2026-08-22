@@ -28,8 +28,6 @@ from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExp
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistError,
     UnsupportedPlatformError,
-    pair_soloist_session,
-    soloist_session_present,
     verify_platform_supported,
 )
 
@@ -62,6 +60,8 @@ from .helpers import (
     get_librespot_binary,
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
+    pair_soloist_session,
+    soloist_session_present,
 )
 from .provider import SpotifyProvider
 

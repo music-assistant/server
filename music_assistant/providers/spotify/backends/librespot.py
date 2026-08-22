@@ -25,6 +25,8 @@ from .base import SpotifyPlaybackBackend
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.streamdetails import StreamDetails
+
     from music_assistant.helpers.json import SerializableType
 
 
@@ -73,7 +75,11 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         )
 
     async def stream_spotify_uri(
-        self, spotify_uri: str, seek_position: int = 0
+        self,
+        spotify_uri: str,
+        seek_position: int = 0,
+        *,
+        streamdetails: StreamDetails | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the Ogg Vorbis audio for one Spotify URI.
@@ -81,6 +87,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         :param spotify_uri: Canonical Spotify URI (``spotify:track:<id>`` or
             ``spotify:episode:<id>``).
         :param seek_position: Position in seconds to start from.
+        :param streamdetails: Unused: every item is fetched on its own.
         """
         # librespot's --single-track parser wants its own spotify://type:id form
         librespot_uri = spotify_uri.replace("spotify:", "spotify://", 1)

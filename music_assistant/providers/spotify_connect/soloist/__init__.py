@@ -5,6 +5,7 @@ from .backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
 )
+from .prefs import write_audio_prefs
 from .runtime import (
     BuildExpiredError,
     ConsentRequiredError,
@@ -30,4 +31,5 @@ __all__ = [
     "SoloistError",
     "UnsupportedPlatformError",
     "verify_platform_supported",
+    "write_audio_prefs",
 ]

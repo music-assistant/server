@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import MagicMock
 
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
-from music_assistant.providers.spotify.backends.soloist import SoloistSingleTrackBackend
+from music_assistant.providers.spotify.backends.soloist import SoloistBackend
 from music_assistant.providers.spotify.constants import (
     BACKEND_LIBRESPOT,
     BACKEND_SOLOIST,
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 def test_realtime_declaration_follows_the_backend() -> None:
     """Soloist declares realtime delivery; librespot can read ahead."""
     librespot = LibrespotBackend(_make_provider({}))
-    soloist = SoloistSingleTrackBackend(_make_provider({CONF_PLAYBACK_BACKEND: "soloist"}))
+    soloist = SoloistBackend(_make_provider({CONF_PLAYBACK_BACKEND: "soloist"}))
     assert librespot.is_realtime is False
     assert soloist.is_realtime is True
 
@@ -46,7 +46,7 @@ def test_backend_defaults_to_librespot() -> None:
 def test_backend_soloist_is_selected() -> None:
     """A stored soloist choice selects the Soloist single-track backend."""
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
-    assert isinstance(prov._create_backend(), SoloistSingleTrackBackend)
+    assert isinstance(prov._create_backend(), SoloistBackend)
 
 
 def test_max_concurrent_streams_follows_the_backend() -> None:

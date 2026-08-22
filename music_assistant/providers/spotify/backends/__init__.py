@@ -2,10 +2,10 @@
 
 from .base import SpotifyPlaybackBackend
 from .librespot import LibrespotBackend
-from .soloist import SoloistSingleTrackBackend
+from .soloist import SoloistBackend
 
 __all__ = [
     "LibrespotBackend",
-    "SoloistSingleTrackBackend",
+    "SoloistBackend",
     "SpotifyPlaybackBackend",
 ]

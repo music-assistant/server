@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.providers.spotify.provider import SpotifyProvider
@@ -62,13 +63,23 @@ class SpotifyPlaybackBackend(ABC):
         """Release any resources held by the backend."""
 
     @abstractmethod
-    def stream_spotify_uri(self, spotify_uri: str, seek_position: int = 0) -> AsyncGenerator[bytes]:
+    def stream_spotify_uri(
+        self,
+        spotify_uri: str,
+        seek_position: int = 0,
+        *,
+        streamdetails: StreamDetails | None = None,
+    ) -> AsyncGenerator[bytes]:
         """
         Yield the audio for one Spotify URI in this backend's audio format.
 
         :param spotify_uri: Canonical Spotify URI (``spotify:track:<id>`` or
             ``spotify:episode:<id>``).
         :param seek_position: Position in seconds to start from.
+        :param streamdetails: The StreamDetails the audio is requested for.
+            Backends that fetch each item on its own ignore these; a backend
+            that keeps one session needs them to know which queue and which
+            item of it this audio belongs to.
         """
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

@@ -60,7 +60,7 @@ from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_wi
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
-from .backends import LibrespotBackend, SoloistSingleTrackBackend, SpotifyPlaybackBackend
+from .backends import LibrespotBackend, SoloistBackend, SpotifyPlaybackBackend
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
@@ -178,7 +178,7 @@ class SpotifyProvider(MusicProvider):
                     "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                     "for supported countries."
                 )
-            if not isinstance(self.backend, SoloistSingleTrackBackend):
+            if not isinstance(self.backend, SoloistBackend):
                 # a paired soloist session left behind by a backend switch holds
                 # login material and is of no further use: remove it — only now
                 # that the load succeeded, so a failed load (and its config
@@ -204,19 +204,13 @@ class SpotifyProvider(MusicProvider):
     @property
     def max_concurrent_streams(self) -> int:
         """
-        Return how many items the configured playback backend can fetch concurrently.
+        Return how many source streams Music Assistant may run against this provider.
 
-        Read from the stored config (not the backend instance): this property is
-        already consulted while the provider object is being constructed.
+        Two on either playback backend: a Spotify account tolerates two
+        concurrent librespot fetches (main + playback), and on the Soloist
+        backend the item that is ending and the item that continues from the
+        same session are two streams reading it in turn.
         """
-        # tolerate a bare instance: the stream-limit declaration tests read this
-        # without constructing the provider
-        if getattr(self, "mass", None) is not None and (
-            self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST
-        ):
-            # a Spotify account supports a single active Soloist session
-            return 1
-        # Spotify accounts tolerate two concurrent sessions (main + librespot)
         return 2
 
     @property
@@ -919,7 +913,9 @@ class SpotifyProvider(MusicProvider):
 
                 try:
                     chunk_count = 0
-                    async for chunk in self.backend.stream_spotify_uri(chapter_uri, chapter_seek):
+                    async for chunk in self.backend.stream_spotify_uri(
+                        chapter_uri, chapter_seek, streamdetails=streamdetails
+                    ):
                         yield chunk
                         chunk_count += 1
                     if chunk_count > 0:
@@ -936,7 +932,9 @@ class SpotifyProvider(MusicProvider):
                 "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
             )
             spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
-            async for chunk in self.backend.stream_spotify_uri(spotify_uri, seek_position):
+            async for chunk in self.backend.stream_spotify_uri(
+                spotify_uri, seek_position, streamdetails=streamdetails
+            ):
                 yield chunk
 
     @lock
@@ -1152,7 +1150,7 @@ class SpotifyProvider(MusicProvider):
     def _create_backend(self) -> SpotifyPlaybackBackend:
         """Return the playback backend selected by this instance's configuration."""
         if self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST:
-            return SoloistSingleTrackBackend(self)
+            return SoloistBackend(self)
         return LibrespotBackend(self)
 
     def _remove_soloist_session_dir(self) -> None:

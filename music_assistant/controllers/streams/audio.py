@@ -1703,9 +1703,14 @@ class StreamsAudio:
                 # tracks and sound effects are finite files that fill and close immediately;
                 # live sources (radio, audio_source) open an upstream connection that would
                 # sit idle and likely time out before the player actually consumes it.
+                # a realtime source is excluded for the same reason from the other side:
+                # the next item's audio does not exist yet at any point during this one,
+                # so only the source itself can say when it does - it triggers the
+                # pre-buffer through prepare_next_audio_buffer() when it gets there.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
+                    and not streamdetails.is_realtime
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
