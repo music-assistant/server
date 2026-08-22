@@ -747,13 +747,25 @@ class SyncGroupPlayer(Player):
         # stamp the start: device state is unreliable while a start settles, so
         # group-command decisions treat this window as playing (see set_members)
         self._playback_start_at = time.monotonic()
-        async with self.mass.players.wait_for_player_update(
-            leader.player_id,
-            attribute_name="playback_state",
-            attribute_value=PlaybackState.PLAYING,
-            timeout=PLAYBACK_START_TIMEOUT,
-        ):
-            yield
+        try:
+            async with self.mass.players.wait_for_player_update(
+                leader.player_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                yield
+        finally:
+            # a start that never reaches PLAYING has no PLAYING -> IDLE transition to
+            # arm the idle-grace dissolve, leaving the group formed forever; arm it
+            # here instead (a start that settles late cancels it again on PLAYING)
+            if (
+                self._attr_powered is not True
+                and self.sync_leader is not None
+                and self.sync_leader.state.playback_state
+                not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            ):
+                self._schedule_idle_grace_timer()
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
