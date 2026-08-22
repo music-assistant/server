@@ -49,6 +49,7 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
     MANAGED_POOL_MAX,
+    ORDERED_MEDIA_TYPES,
     PROBED_DURATION_MEDIA_TYPES,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -100,8 +101,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # item. ADD never starts playback by itself.
         continues_ended_queue = queue.ended and option == QueueOption.ADD
         items_before_add = len(self._queue_data[queue_id].items)
-        if queue.ended and not continues_ended_queue:
-            # mechanical clear: the shuffle state for this batch was already settled by the caller
+        if queue.ended and not continues_ended_queue and option != QueueOption.REPLACE:
+            # mechanical clear: the shuffle state for this batch was already settled by the caller.
+            # Replace is exempt: it swaps the whole queue below without ever emptying it.
             self._clear(queue_id, skip_stop=True)
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
@@ -117,8 +119,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # front of the shuffled rest instead of letting the shuffle move it to a random slot
         pin_first = pin_first and shuffle
 
-        # handle replace: clear all items and replace with the new items
+        # handle replace: swap the queue's contents for the new items in one step
         if option == QueueOption.REPLACE:
+            # Release the audio the outgoing items hold while they are still on the queue: the
+            # track being started needs their source slot, and once they are swapped out nothing
+            # reaches them any more.
+            await self._cleanup_queue_audio_data(queue_id)
+            # the player is still on the old index, so drop it: the swap would otherwise hand it a
+            # "next" item taken from the new list at that position. play_index sets the real one.
+            queue.index_in_buffer = None
+            # playback starts over below, and play_index reads this to decide whether to honour a
+            # stored resume position
+            queue.ended = False
             if pin_first:
                 await self._load_pinned_first(
                     queue_id,
@@ -226,18 +238,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :param keep_remaining: Keep the queue's existing items from the insert index onwards.
         :param keep_played: Keep the queue's existing items before the insert index.
         """
+        # a single load, so the queue is never published holding just the pinned item
         await self.load(
             queue_id,
-            queue_items=queue_items[:1],
+            queue_items=queue_items,
             insert_at_index=insert_at_index,
             keep_remaining=keep_remaining,
             keep_played=keep_played,
-        )
-        await self.load(
-            queue_id,
-            queue_items=queue_items[1:],
-            insert_at_index=insert_at_index + 1,
             shuffle=True,
+            pin_first=True,
         )
 
     def _ensure_current_index(self, queue_id: str) -> None:
@@ -711,18 +720,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ]
             radio_mode = False
 
-        # clear queue if needed
-        if option == QueueOption.REPLACE:
-            self._clear(queue_id, skip_stop=True)
         # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue_data.enqueued_media_items.clear()
-        # The shuffle state has to be settled before the items are resolved below: a shuffled queue
-        # keeps the items preceding a start_item (chosen track pinned first) instead of dropping
-        # them. When the option still has to be derived, this runs as soon as it is known.
-        if option is not None:
-            await self._apply_shuffle_intent(queue_id, option, shuffle)
-
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -731,6 +731,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         media_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
+        shuffle_settled = False
         # resolve all media items
         for item in media_list:
             try:
@@ -787,9 +788,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         config_key = f"default_enqueue_option_{media_item.media_type.value}"
                     config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
-                    if option == QueueOption.REPLACE:
-                        self._clear(queue_id, skip_stop=True)
-                    await self._apply_shuffle_intent(queue_id, option, shuffle)
+
+                # The shuffle state has to be settled before the items are resolved below: a
+                # shuffled queue keeps the items preceding a start_item (chosen track pinned
+                # first) instead of dropping them. The first item that resolves decides for the
+                # whole batch, because it is the only media type known this early.
+                if not shuffle_settled:
+                    shuffle_settled = True
+                    await self._apply_shuffle(
+                        queue_id,
+                        option,
+                        # an explicit request always wins; only an unset one defers to the
+                        # media's own order
+                        False
+                        if shuffle is None and media_item.media_type in ORDERED_MEDIA_TYPES
+                        else shuffle,
+                    )
 
                 # collect media_items to play
                 if is_dynamic_source(media_item):
@@ -841,6 +855,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
                 self.logger.warning("Skipping %s: %s", item, str(err))
+
+        if not shuffle_settled and option is not None:
+            # nothing resolved, so no media type ever decided - but the sources are replaced
+            # below all the same, and a dynamic queue's imposed shuffle must not survive that
+            await self._apply_shuffle(queue_id, option, shuffle)
 
         # overwrite or append the queue's source items
         replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
@@ -903,26 +922,52 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
         )
         insert_at = 0 if base_index is None else base_index + 1
+        if option == QueueOption.REPLACE:
+            # A replace is a fresh queue, so the pool takes the place of the old items rather than
+            # being appended behind the one that is playing (as PLAY, which shares start_playing,
+            # deliberately does). Zeroed before the truncation below so the pool is sized against
+            # an empty queue and none of the discarded tracks are held back from it.
+            insert_at = 0
+            # as on the linear path: release the outgoing audio while its items are still on the
+            # queue, and drop the stale position
+            await self._cleanup_queue_audio_data(queue_id)
+            queue.index_in_buffer = None
+            queue.ended = False
         # PLAY/REPLACE start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT only stage it and
         # never start playback (an idle/empty queue stays idle on an add, just like the linear path)
         start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
-        # drop the finite upcoming tail up front so the pool is sized and deduped against the kept
-        # head only (the tail we are discarding must not exclude its own tracks from the new pool)
-        queue_data.items = queue_data.items[:insert_at]
-        queue.items = len(queue_data.items)
-        pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
-        queue_items = [
-            build_queue_item(queue_id, track) for track in pool_tracks if track.available
-        ]
-        if not queue_items:
-            raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
-        # the managed pool already interleaved the sources in a recency-aware order; load as-is
-        await self.load(queue_id, queue_items, insert_at_index=insert_at, keep_remaining=False)
-        if start_playing:
-            await self.play_index(queue_id, insert_at)
-        else:
-            # give an idle/empty queue a current item without starting playback
-            self._ensure_current_index(queue_id)
+        # The tail is dropped before the pool is fetched, so the pool is sized and deduped against
+        # the kept head only (the tail we are discarding must not exclude its own tracks from it).
+        # That leaves the queue holding less than it plays - for a replace, nothing at all - across
+        # the fetch, so hold player reconciliation off until the new items are in: it would
+        # otherwise publish that half-built state, which is exactly the empty queue this avoids.
+        self._set_transitioning(queue_id, True)
+        try:
+            queue_data.items = queue_data.items[:insert_at]
+            queue.items = len(queue_data.items)
+            pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+            queue_items = [
+                build_queue_item(queue_id, track) for track in pool_tracks if track.available
+            ]
+            if not queue_items:
+                raise MediaNotFoundError(
+                    "No playable items found", translation_key="no_playable_items"
+                )
+            # the managed pool already interleaved the sources in a recency-aware order; load as-is
+            await self.load(
+                queue_id,
+                queue_items,
+                insert_at_index=insert_at,
+                keep_remaining=False,
+                keep_played=option != QueueOption.REPLACE,
+            )
+            if start_playing:
+                await self.play_index(queue_id, insert_at)
+            else:
+                # give an idle/empty queue a current item without starting playback
+                self._ensure_current_index(queue_id)
+        finally:
+            self._set_transitioning(queue_id, False)
 
     async def _get_similar_tracks(
         self,

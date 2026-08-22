@@ -33,6 +33,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TRACKS,
 )
 from music_assistant.helpers.tags import AudioTags
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
     ATTR_HOST_ID,
@@ -41,11 +42,13 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
     DEFAULT_LLM_INSTRUCTIONS,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_WEATHER_DATA_INSTRUCTION,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
@@ -366,7 +369,9 @@ async def test_render_tts_media_falls_back_without_language_on_rejection() -> No
     engine = cast("Any", renderer)._get_tts_engine.return_value
     engine.provider.get_tts_message = AsyncMock(
         side_effect=[
-            Exception("unsupported language"),
+            TTSLanguageNotSupportedError(
+                "TTS engine 'tts.cloud' does not support language 'en-US'"
+            ),
             SimpleNamespace(
                 path="http://example.test/api/tts_proxy/abc123.mp3",
                 audio_format=AudioFormat(content_type=ContentType.MP3),
@@ -496,6 +501,56 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
     assert session.last_render_error
 
 
+class NoWeatherRenderer(DummyRenderer):
+    """Renderer whose weather fetch always fails, leaving deferred weather tokens empty."""
+
+    async def _prepare_weather_tokens(self) -> dict[str, str]:
+        self.weather_calls += 1
+        return {}
+
+
+async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() -> None:
+    """A weather-required clip with no forecast data is skipped instead of airing a guess."""
+    renderer = NoWeatherRenderer()
+    session = SessionState(session_id="sess", station_id="st")
+    renderer._sessions = {"sess": session}
+    item = _clip_item("sess_001")
+    item.extra_attributes[ATTR_WEATHER_REQUIRED] = True
+    _attach_queue(renderer, [item])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert session.skipped_sections == 1
+    assert session.last_render_error
+    assert renderer.llm_prompts == []
+
+
+async def test_non_weather_required_clip_renders_with_no_data_instruction() -> None:
+    """A non-weather-required clip still airs, told to leave the forecast out rather than guess."""
+    renderer = NoWeatherRenderer()
+    item = _clip_item("sess_001")
+    item.extra_attributes[ATTR_WEATHER_REQUIRED] = False
+    _attach_queue(renderer, [item])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert NO_WEATHER_DATA_INSTRUCTION in renderer.llm_prompts[0]
+    assert "<weather_hourly>" not in renderer.llm_prompts[0]
+
+
+async def test_missing_weather_required_attribute_defaults_to_not_required() -> None:
+    """An older queue item with no weather_required attribute must not be treated as required."""
+    renderer = NoWeatherRenderer()
+    item = _clip_item("sess_001")
+    assert ATTR_WEATHER_REQUIRED not in item.extra_attributes
+    _attach_queue(renderer, [item])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert NO_WEATHER_DATA_INSTRUCTION in renderer.llm_prompts[0]
+
+
 async def test_probe_failure_is_not_fatal() -> None:
     """A failed duration probe yields streamdetails without a duration."""
 
@@ -548,7 +603,7 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
 
     session = renderer._sessions["sess"]
     assert session.skipped_sections == 1
-    assert "enough credit" in session.last_render_error
+    assert "Check the logs of the TTS engine" in session.last_render_error
     # the hint is a guess, so the whole probe message travels with it - the url included,
     # since that is what tells a failing engine apart from a failing tts server behind it
     assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error

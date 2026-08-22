@@ -54,7 +54,6 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import AudioSource
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
@@ -104,6 +103,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
+from music_assistant.helpers.player import get_queue_audio_source
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
@@ -116,6 +116,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 
 from .announcements import AnnouncementsMixin
+from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import PlayerLockPurpose
 from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
@@ -127,6 +128,7 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -153,7 +155,7 @@ VOLUME_TARGET_EXPIRY = 2.0
 _SENTINEL: Any = object()
 
 
-class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController):
+class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin, CoreController):
     """Controller holding all logic to control registered players."""
 
     domain: str = "players"
@@ -181,6 +183,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         self._pending_protocol_evaluations: dict[str, asyncio.TimerHandle] = {}
         # Serialize delayed evaluations to prevent race conditions
         self._delayed_evaluation_lock = asyncio.Lock()
+        # Live external AudioSource playing on a player, keyed on player_id
+        self._source_sessions: dict[str, AudioSourceSession] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]
@@ -705,15 +709,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
-        # If an AudioSource is the active queue item, proxy the seek to the plugin
-        if active := self._get_active_audio_source(player):
-            audio_source, plugin_prov = active
-            if audio_source.can_seek:
-                await plugin_prov.on_source_control(
-                    audio_source.item_id, SourceControl.SEEK, position
-                )
-                return
         # Redirect to queue controller if it is active
+        # (it delegates an active seekable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
@@ -737,13 +734,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        # If an AudioSource is the active queue item, proxy next to the plugin
-        if active := self._get_active_audio_source(player):
-            audio_source, plugin_prov = active
-            if audio_source.can_next_previous:
-                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.NEXT)
-                return
         # Redirect to queue controller if it is active
+        # (it delegates an active skippable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.next(active_queue.queue_id)
             return
@@ -767,13 +759,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        # If an AudioSource is the active queue item, proxy previous to the plugin
-        if active := self._get_active_audio_source(player):
-            audio_source, plugin_prov = active
-            if audio_source.can_next_previous:
-                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
-                return
         # Redirect to queue controller if it is active
+        # (it delegates an active skippable AudioSource item to the owning plugin)
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.previous(active_queue.queue_id)
             return
@@ -2845,29 +2832,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         :param player: The player whose active queue to inspect.
         """
-        active_queue = self.get_active_queue(player)
-        if active_queue is None:
-            return None
-        current_item = active_queue.current_item
-        if current_item is None or current_item.media_item is None:
-            return None
-        media_item = current_item.media_item
-        # isinstance check defends against a non-AudioSource subclass that
-        # somehow has media_type=AUDIO_SOURCE set (mutated or constructed wrong)
-        # — the media_type guard alone would let it through and crash later.
-        if not isinstance(media_item, AudioSource):
-            return None
-        provider = self.mass.get_provider(media_item.provider)
-        if not isinstance(provider, PluginProvider):
-            return None
-        # Belt-and-suspenders: a queue item carrying media_type=AUDIO_SOURCE
-        # can only have come from a provider that declared the feature, but
-        # a feature flag flipped off at runtime (provider reload, config
-        # change) would leave on_source_control / on_volume_change raising
-        # NotImplementedError out of cmd_play / cmd_pause. Skip cleanly.
-        if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
-            return None
-        return media_item, provider
+        return get_queue_audio_source(self.mass, self.get_active_queue(player))
 
     def _get_player_groups(self, player: Player) -> Iterator[Player]:
         """

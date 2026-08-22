@@ -6,16 +6,27 @@ import asyncio
 import logging
 import stat
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, RepeatMode, StreamType
 from music_assistant_models.errors import AudioError
 
-from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_NORMAL,
+    AUDIO_QUALITY_VERY_HIGH,
+)
+from music_assistant.providers.spotify_connect.models import (
+    BackendEvent,
+    BackendEventType,
+    QueueEntrySource,
+)
 from music_assistant.providers.spotify_connect.soloist import backend as soloist_backend
 from music_assistant.providers.spotify_connect.soloist.backend import (
     CACHE_SIZE_MB,
@@ -38,6 +49,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPosition,
     SoloistPositionSync,
     SoloistQueueChanged,
+    SoloistQueueEntry,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -103,18 +115,21 @@ class _FakeProc:
         exit_code: int = 0,
         start_error: Exception | None = None,
         *,
-        stderr_lines: list[str] | None = None,
-        block_stderr: bool = False,
+        stdout_lines: list[str] | None = None,
+        block_stdout: bool = False,
         on_close: Callable[[], None] | None = None,
     ) -> None:
         self.returncode: int | None = None
         self.closed = 0
         self._exit_code = exit_code
         self._start_error = start_error
-        self._stderr_lines = stderr_lines or []
-        self._block_stderr = block_stderr
+        self._stdout_lines = stdout_lines or []
+        self._block_stdout = block_stdout
         self._on_close = on_close
         self._closed_event = asyncio.Event()
+        # a real daemon's stdout reaches EOF exactly when the process exits,
+        # so the fake ties its wait() to its output ending
+        self._output_done = asyncio.Event()
 
     async def start(self) -> None:
         """Start the fake process, failing when configured to."""
@@ -129,12 +144,20 @@ class _FakeProc:
         if self._on_close is not None:
             self._on_close()
 
-    async def iter_stderr(self) -> AsyncGenerator[str]:
-        """Yield the configured stderr lines, optionally blocking until closed."""
-        for line in self._stderr_lines:
-            yield line
-        if self._block_stderr:
-            await self._closed_event.wait()
+    async def iter_stdout(self) -> AsyncGenerator[str]:
+        """Yield the configured stdout lines, optionally blocking until closed."""
+        try:
+            for line in self._stdout_lines:
+                yield line
+            if self._block_stdout:
+                await self._closed_event.wait()
+        finally:
+            self._output_done.set()
+
+    async def wait(self) -> int:
+        """Return the exit code once the fake daemon's output ended."""
+        await self._output_done.wait()
+        return self._exit_code
 
 
 def _make_backend(
@@ -320,7 +343,9 @@ async def test_daemon_argv_and_key_never_logged(
         "127.0.0.1:0",
     ]
     assert kwargs["name"] == "soloist[Spotify Test]"
-    assert kwargs["stderr"] is True
+    # the daemon logs to stdout; stderr is merged in so nothing is left uncaptured
+    assert kwargs["stdout"] is True
+    assert kwargs["stderr"] is asyncio.subprocess.STDOUT
     assert kwargs["env"] == {"PULSE_SERVER": "unix:/fake/native", "PULSE_SINK": "sink1"}
     assert all(_API_KEY not in record.getMessage() for record in caplog.records)
 
@@ -462,10 +487,10 @@ async def test_five_daemon_failures_report_fatal_error(
         ),
         pytest.param(
             SoloistOptionsChanged(options=SoloistPlaybackOptions()),
-            BackendEventType.OTHER,
+            BackendEventType.OPTIONS_CHANGED,
             id="options_changed",
         ),
-        pytest.param(SoloistQueueChanged(), BackendEventType.OTHER, id="queue_changed"),
+        pytest.param(SoloistQueueChanged(), BackendEventType.QUEUE_CHANGED, id="queue_changed"),
         pytest.param(
             SoloistCommandResult(command="pause"), BackendEventType.OTHER, id="command_result"
         ),
@@ -616,6 +641,130 @@ async def test_position_sync_maps_to_seconds() -> None:
 
     assert events[0].type is BackendEventType.POSITION
     assert events[0].position == 45
+
+
+async def test_queue_changed_maps_entries() -> None:
+    """A queue_changed event maps its entries to normalized uid/uri/source/name entries."""
+    backend, events = _make_backend()
+    previous = [
+        SoloistQueueEntry(
+            uid="p1",
+            source="context",
+            item=SoloistEntity(
+                uri="spotify:track:t0",
+                entity_type="track",
+                decorations={"identity": {"name": "Played Song"}},
+            ),
+        ),
+    ]
+    upcoming = [
+        SoloistQueueEntry(
+            uid="u1",
+            source="queue",
+            item=SoloistEntity(
+                uri="spotify:track:t1",
+                entity_type="track",
+                decorations={"identity": {"name": "Queued Song"}},
+            ),
+        ),
+        # a name-less entry is tolerated (decorations is an extensible bag)
+        SoloistQueueEntry(
+            uid="u2",
+            source="autoplay",
+            item=SoloistEntity(uri="spotify:track:t2", entity_type="track"),
+        ),
+        # the title fallback used for track metadata applies to queue entries too
+        SoloistQueueEntry(
+            uid="u3",
+            source="new_source_kind",
+            item=SoloistEntity(
+                uri="spotify:track:t3",
+                entity_type="track",
+                decorations={"identity": {"title": "Titled Song"}},
+            ),
+        ),
+        # entries without a resolvable uri are skipped
+        SoloistQueueEntry(uid="u4", source="autoplay", item=None),
+        SoloistQueueEntry(
+            uid="u5", source="autoplay", item=SoloistEntity(uri="", entity_type="track")
+        ),
+    ]
+
+    await backend._handle_event(
+        _event("queue_changed", SoloistQueueChanged(previous=previous, upcoming=upcoming))
+    )
+
+    event = events[0]
+    assert event.type is BackendEventType.QUEUE_CHANGED
+    queue = event.queue
+    assert queue is not None
+    assert [(e.uid, e.uri, e.source, e.name) for e in queue.previous] == [
+        ("p1", "spotify:track:t0", QueueEntrySource.CONTEXT, "Played Song"),
+    ]
+    assert [(e.uid, e.uri, e.source, e.name) for e in queue.upcoming] == [
+        ("u1", "spotify:track:t1", QueueEntrySource.QUEUE, "Queued Song"),
+        ("u2", "spotify:track:t2", QueueEntrySource.AUTOPLAY, None),
+        # an unrecognized source value degrades to UNKNOWN instead of raising
+        ("u3", "spotify:track:t3", QueueEntrySource.UNKNOWN, "Titled Song"),
+    ]
+
+
+async def test_options_changed_maps_shuffle_and_repeat() -> None:
+    """An options_changed event carries the session's shuffle and repeat state."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "options_changed",
+            SoloistOptionsChanged(options=SoloistPlaybackOptions(shuffle=True, repeat="context")),
+        )
+    )
+
+    event = events[0]
+    assert event.type is BackendEventType.OPTIONS_CHANGED
+    assert event.options is not None
+    assert event.options.shuffle is True
+    assert event.options.repeat is RepeatMode.ALL
+
+
+async def test_playback_state_options_emit_options_changed_precursor() -> None:
+    """A playback_state carrying options emits OPTIONS_CHANGED before the state event."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "playback_state",
+            SoloistPlaybackState(
+                status="playing", options=SoloistPlaybackOptions(shuffle=True, repeat="track")
+            ),
+        )
+    )
+
+    assert [e.type for e in events] == [
+        BackendEventType.OPTIONS_CHANGED,
+        BackendEventType.PLAYING,
+    ]
+    options = events[0].options
+    assert options is not None
+    assert options.shuffle is True
+    assert options.repeat is RepeatMode.ONE
+    # the state event itself carries no options; OPTIONS_CHANGED is the one channel
+    assert events[1].options is None
+
+
+async def test_unknown_repeat_vocabulary_degrades_to_unknown() -> None:
+    """An unrecognized repeat value from the wire maps to RepeatMode.UNKNOWN."""
+    backend, events = _make_backend()
+
+    await backend._handle_event(
+        _event(
+            "options_changed",
+            SoloistOptionsChanged(options=SoloistPlaybackOptions(repeat="context_repeat")),
+        )
+    )
+
+    assert events[0].options is not None
+    assert events[0].options.repeat is RepeatMode.UNKNOWN
 
 
 async def test_uri_cache_feeds_all_events() -> None:
@@ -928,13 +1077,13 @@ async def test_binary_refresh_loop_picks_up_sibling_install(
     assert backend._binary == Path("/fake/bin/soloist")
 
 
-async def test_stderr_redacts_api_key(
+async def test_stdout_redacts_api_key(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The api key is redacted from daemon stderr lines before they are logged."""
+    """The api key is redacted from daemon stdout lines before they are logged."""
     backend, _events = _runner_backend()
     proc = _FakeProc(
-        stderr_lines=[f"argv: --api-key {_API_KEY}"],
+        stdout_lines=[f"argv: --api-key {_API_KEY}"],
         on_close=lambda: setattr(backend, "_stop_called", True),
     )
     _patch_spawn(monkeypatch, [proc])
@@ -946,14 +1095,146 @@ async def test_stderr_redacts_api_key(
     assert any("<redacted>" in record.getMessage() for record in caplog.records)
 
 
+async def test_daemon_runner_does_not_wait_for_the_log_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A log reader that never ends must not hold up the daemon supervisor.
+
+    AsyncProcess.close() takes the stream lock and keeps it, so a reader parked
+    mid-line when another supervisor closes the daemon (sink replacement, binary
+    refresh) never reaches EOF. The runner therefore has to key off the process
+    exit, not off its own reader.
+    """
+
+    class _StuckReaderProc(_FakeProc):
+        """A daemon whose output reader never ends, but which does exit."""
+
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            await asyncio.Event().wait()  # never returns, never yields
+            yield ""  # pragma: no cover
+
+        async def wait(self) -> int:
+            return self._exit_code
+
+    backend, _events = _runner_backend()
+    proc = _StuckReaderProc(on_close=lambda: setattr(backend, "_stop_called", True))
+    _patch_spawn(monkeypatch, [proc])
+    # a short drain leaves the outer deadline real headroom, so the assertion is
+    # about the runner returning rather than about which timeout fires first
+    monkeypatch.setattr(soloist_backend, "DAEMON_LOG_DRAIN_TIMEOUT_S", 0.1)
+
+    # the supervisor must return on its own; a hang here is the regression
+    async with asyncio.timeout(5):
+        await backend._daemon_runner()
+
+    assert proc.closed == 1
+
+
+async def test_daemon_runner_cancellation_stops_the_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancelling the supervisor stops it instead of respawning the daemon.
+
+    The log reader is cleaned up on the way out, so the cancellation must not
+    be consumed by that cleanup and leave the loop running.
+    """
+    backend, _events = _runner_backend()
+    proc = _FakeProc(block_stdout=True)
+    _patch_spawn(monkeypatch, [proc])
+
+    task = asyncio.create_task(backend._daemon_runner())
+    # let the runner reach its wait on the (blocked) daemon before cancelling
+    for _ in range(20):
+        await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+async def test_daemon_runner_restarts_when_the_log_reader_dies(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A reader that fails closes the daemon instead of leaving it wedged.
+
+    Nothing else drains the daemon's stdout, so once the pipe fills a daemon
+    with a dead reader can never make progress and the supervisor would wait
+    on it forever.
+    """
+
+    class _FailingReaderProc(_FakeProc):
+        """A daemon whose log reader raises while the process is still alive."""
+
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            for line in self._stdout_lines:
+                yield line
+            raise RuntimeError("reader blew up")
+
+        async def wait(self) -> int:
+            # only ever returns once something closes the daemon
+            await self._closed_event.wait()
+            return self._exit_code
+
+    backend, _events = _runner_backend()
+    proc = _FailingReaderProc(on_close=lambda: setattr(backend, "_stop_called", True))
+    _patch_spawn(monkeypatch, [proc])
+
+    with caplog.at_level(logging.ERROR):
+        async with asyncio.timeout(5):
+            await backend._daemon_runner()
+
+    assert proc.closed >= 1
+    assert any("log reader failed" in record.getMessage() for record in caplog.records)
+
+
+async def test_daemon_runner_drains_buffered_log_after_exit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Output still buffered when the daemon exits is logged, not dropped.
+
+    A daemon that fails at startup writes its reason and exits within
+    milliseconds, so dropping the reader the moment the process ends throws
+    away exactly the output that explains the failure.
+    """
+
+    class _BufferedProc(_FakeProc):
+        """A daemon that has already exited with its output still queued."""
+
+        async def wait(self) -> int:
+            return self._exit_code
+
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            for line in self._stdout_lines:
+                await asyncio.sleep(0)  # the reader cannot drain it all in one step
+                yield line
+
+    backend, _events = _runner_backend()
+    proc = _BufferedProc(
+        stdout_lines=[f"buffered line {index}" for index in range(20)],
+        on_close=lambda: setattr(backend, "_stop_called", True),
+    )
+    _patch_spawn(monkeypatch, [proc])
+
+    with caplog.at_level(logging.DEBUG):
+        await backend._daemon_runner()
+
+    logged = [record.getMessage() for record in caplog.records]
+    assert sum("buffered line" in message for message in logged) == 20
+
+
 async def test_intentional_respawn_skips_failure_accounting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A sink recovery respawn restarts immediately and never counts as a failure."""
     backend, _events = _runner_backend()
     server: Any = backend._server
-    proc1 = _FakeProc(block_stderr=True)
-    proc2 = _FakeProc(block_stderr=True)
+    proc1 = _FakeProc(block_stdout=True)
+    proc2 = _FakeProc(block_stdout=True)
     spawned = _patch_spawn(monkeypatch, [proc1, proc2])
     new_sink: Any = _FakeSink("new")
     monkeypatch.setattr(
@@ -1117,6 +1398,83 @@ async def test_transport_commands_map_to_client() -> None:
     client.deactivate.assert_awaited_once_with()
     call_names = [name for name, _args, _kwargs in client.mock_calls]
     assert call_names.index("pause") < call_names.index("deactivate")
+
+
+async def test_queue_commands_map_to_client() -> None:
+    """The queue-session verbs pass through to the SoloistClient."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    assert backend.supports_queue_control is True
+
+    await backend.add_to_queue("spotify:track:t1")
+    client.add_to_queue.assert_awaited_once_with("spotify:track:t1")
+
+    await backend.set_shuffle(True)
+    client.set_shuffle.assert_awaited_once_with(True)
+
+    # the queue snapshot arrives as a queue_changed event, no ack is awaited
+    await backend.request_queue(limit=25)
+    client.get_queue.assert_awaited_once_with(25)
+
+
+@pytest.mark.parametrize(
+    ("repeat", "expected_calls"),
+    [
+        (RepeatMode.OFF, [("set_repeat_track", False), ("set_repeat_context", False)]),
+        (RepeatMode.ALL, [("set_repeat_track", False), ("set_repeat_context", True)]),
+        (RepeatMode.ONE, [("set_repeat_context", False), ("set_repeat_track", True)]),
+    ],
+)
+async def test_set_repeat_sequences_the_two_flags(
+    repeat: RepeatMode, expected_calls: list[tuple[str, bool]]
+) -> None:
+    """set_repeat disables one repeat flag before enabling the other, awaiting each ack."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    await backend.set_repeat(repeat)
+
+    assert [(name, args[0]) for name, args, _kwargs in client.mock_calls] == expected_calls
+    # each command waits for its ack so the pair cannot race
+    assert all(kwargs == {"await_result": True} for _name, _args, kwargs in client.mock_calls)
+
+
+async def test_set_repeat_rejects_unknown() -> None:
+    """set_repeat refuses RepeatMode.UNKNOWN instead of silently disabling repeat."""
+    backend, _events = _make_backend()
+    client = AsyncMock()
+    backend._client = client
+
+    with pytest.raises(ValueError, match="unknown repeat mode"):
+        await backend.set_repeat(RepeatMode.UNKNOWN)
+    assert client.mock_calls == []
+
+
+async def test_set_repeat_serializes_concurrent_calls() -> None:
+    """Concurrent set_repeat calls cannot interleave their two-command sequences."""
+    backend, _events = _make_backend()
+    call_order: list[tuple[str, bool]] = []
+
+    async def record(name: str, enabled: bool, **_kwargs: Any) -> None:
+        call_order.append((name, enabled))
+        await asyncio.sleep(0)  # yield so an unserialized second call could interleave
+
+    client = AsyncMock()
+    client.set_repeat_track.side_effect = partial(record, "set_repeat_track")
+    client.set_repeat_context.side_effect = partial(record, "set_repeat_context")
+    backend._client = client
+
+    await asyncio.gather(backend.set_repeat(RepeatMode.ALL), backend.set_repeat(RepeatMode.ONE))
+
+    assert call_order == [
+        ("set_repeat_track", False),
+        ("set_repeat_context", True),
+        ("set_repeat_context", False),
+        ("set_repeat_track", True),
+    ]
 
 
 async def test_player_only_pins_spotify_volume_and_suppresses_events() -> None:
@@ -1309,11 +1667,18 @@ async def test_start_failure_releases_capture_server(
     assert server.released
 
 
-def _prefs_backend(tmp_path: Path, *, crossfade_ms: int, normalization: bool) -> SoloistBackend:
+def _prefs_backend(
+    tmp_path: Path,
+    *,
+    crossfade_ms: int,
+    normalization: bool,
+    audio_quality: str = AUDIO_QUALITY_LOSSLESS,
+) -> SoloistBackend:
     """Build a backend with the given audio behavior, rooted in a real tmp data dir."""
     backend, _ = _make_backend(base_dir=tmp_path)
     backend._crossfade_ms = crossfade_ms
     backend._loudness_normalization = normalization
+    backend._audio_quality = audio_quality
     backend._data_dir = tmp_path / "soloist-data"
     return backend
 
@@ -1325,7 +1690,7 @@ def test_audio_prefs_written_to_global_and_per_user(tmp_path: Path) -> None:
     (settings / "Users" / "alice-user").mkdir(parents=True)
     (settings / "prefs").write_text("core.clock_delta=0\naudio.crossfade_v2=false\n")
     (settings / "Users" / "alice-user" / "prefs").write_text(
-        "audio.play_bitrate_non_metered_enumeration=5\naudio.crossfade.time_v2=99\n"
+        "storage.size=512\naudio.crossfade.time_v2=99\n"
     )
 
     backend._write_audio_prefs()
@@ -1338,9 +1703,50 @@ def test_audio_prefs_written_to_global_and_per_user(tmp_path: Path) -> None:
         assert "audio.normalize_v2=false" in prefs
     # foreign keys survive, replaced stale values do not
     assert "core.clock_delta=0" in global_prefs
-    assert "audio.play_bitrate_non_metered_enumeration=5" in user_prefs
+    assert "storage.size=512" in user_prefs
     assert "audio.crossfade_v2=false" not in global_prefs
     assert "audio.crossfade.time_v2=99" not in user_prefs
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [
+        (AUDIO_QUALITY_NORMAL, 2),
+        (AUDIO_QUALITY_HIGH, 3),
+        (AUDIO_QUALITY_VERY_HIGH, 4),
+        (AUDIO_QUALITY_LOSSLESS, 5),
+        # an unknown tier must never reach the prefs file: the engine rejects
+        # anything outside 1-5 and silently drops back to ~160 kbps
+        ("nonsense", 5),
+    ],
+)
+def test_audio_prefs_quality_tier_mapping(tmp_path: Path, tier: str, expected: int) -> None:
+    """Each quality tier writes its bitrate enumeration to both quality keys."""
+    backend = _prefs_backend(tmp_path, crossfade_ms=0, normalization=True, audio_quality=tier)
+
+    backend._write_audio_prefs()
+
+    prefs = (backend._data_dir / "settings" / "prefs").read_text().splitlines()
+    assert f"audio.play_bitrate_enumeration={expected}" in prefs
+    assert f"audio.play_bitrate_non_metered_enumeration={expected}" in prefs
+    # without the migration marker the engine derives the non-metered value itself
+    assert "audio.play_bitrate_non_metered_migrated=true" in prefs
+
+
+def test_audio_prefs_replace_a_stale_quality_tier(tmp_path: Path) -> None:
+    """A quality value left by a previous run is replaced, not appended to."""
+    backend = _prefs_backend(
+        tmp_path, crossfade_ms=0, normalization=True, audio_quality=AUDIO_QUALITY_NORMAL
+    )
+    settings = backend._data_dir / "settings"
+    settings.mkdir(parents=True)
+    (settings / "prefs").write_text("audio.play_bitrate_non_metered_enumeration=5\n")
+
+    backend._write_audio_prefs()
+
+    prefs = (settings / "prefs").read_text().splitlines()
+    assert "audio.play_bitrate_non_metered_enumeration=5" not in prefs
+    assert "audio.play_bitrate_non_metered_enumeration=2" in prefs
 
 
 def test_audio_prefs_crossfade_off_omits_the_time_key(tmp_path: Path) -> None:

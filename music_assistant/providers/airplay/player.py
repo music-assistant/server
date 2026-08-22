@@ -208,6 +208,8 @@ class AirPlayPlayer(Player):
         return (
             bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
             and self.protocol == StreamingProtocol.AIRPLAY2
+            # the compat lane is 16-bit only, so hi-res stands down while the pin is active
+            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
         )
 
     @property
@@ -557,7 +559,7 @@ class AirPlayPlayer(Player):
             ):
                 self._transitioning = True
                 audio_source = self.mass.streams.get_stream(
-                    media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
+                    media, session_pcm_format, self.player_id
                 )
                 if await self.stream.session.replace(audio_source, media):
                     self._transitioning = False
@@ -582,9 +584,7 @@ class AirPlayPlayer(Player):
                 self.stream = None
 
             # select audio source
-            audio_source = self.mass.streams.get_stream(
-                media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
-            )
+            audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
 
             # setup StreamSession for player (and its sync childs if any)
             provider = cast("AirPlayProvider", self.provider)

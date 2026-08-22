@@ -16,6 +16,7 @@ from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.wiim.constants import (
     PLAYER_ID_PREFIX,
     SOURCE_NETWORK,
+    SOURCE_UNKNOWN,
 )
 from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
@@ -252,6 +253,56 @@ class TestFalsePlayingFilter:
         player._update_ma_state_from_sdk_cache()
 
         assert player._attr_playback_state == PlaybackState.IDLE
+
+
+class TestActiveSourceMapping:
+    """Network mode must resolve an active source with or without a registered queue."""
+
+    def test_state_completes_before_the_queue_exists(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """
+        A poll landing before the PlayerQueue is registered must still publish state.
+
+        The player is initialised a moment before its queue, so the first poll after
+        a restart finds no queue; aborting there left the player with no active
+        source and no state update at all.
+        """
+        mock_provider.mass.player_queues.get.return_value = None
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == SOURCE_UNKNOWN
+        player.update_state.assert_called_once()
+
+    def test_queue_with_current_item_is_the_active_source(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A queue that holds a current item makes the player itself the source."""
+        mock_provider.mass.player_queues.get.return_value.current_item = MagicMock()
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == player.player_id
+
+    def test_idle_queue_falls_back_to_unknown(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A registered queue with nothing loaded is not the active source."""
+        mock_provider.mass.player_queues.get.return_value.current_item = None
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == SOURCE_UNKNOWN
 
 
 class TestSupportedFeatures:

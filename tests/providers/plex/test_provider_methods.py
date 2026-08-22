@@ -93,6 +93,7 @@ class FakePlexTrack:
         self.parentKey = parent_key
         self.viewOffset = view_offset
         self.viewCount = 0
+        self.summary = ""
         if has_media:
             media = MagicMock()
             media.container = container

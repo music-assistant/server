@@ -287,7 +287,7 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             valid = ", ".join(f"``{e.value}``" for e in RepeatMode if e is not RepeatMode.UNKNOWN)
             raise ToolError(f"Invalid repeat_mode {repeat_mode!r}. Valid options: {valid}")
 
-        mass.player_queues.set_repeat(queue_id, mode)
+        await mass.player_queues.set_repeat(queue_id, mode)
 
     @sub.tool(
         tags={Tag.DELETE_QUEUE},

@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
     ProviderType,
+    RepeatMode,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -85,6 +86,8 @@ from music_assistant.controllers.streams.constants import (
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    SINGLE_ITEM_READRATE,
+    SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
     get_available_buffer_sizes,
 )
@@ -99,7 +102,6 @@ from music_assistant.helpers.audio import (
     get_mime_type,
     store_content_length_in_cache,
 )
-from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import (
     CACHE_ATTR_FFMPEG_VERSION,
     CACHE_ATTR_LIBSOXR_PRESENT,
@@ -126,7 +128,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
-    from music_assistant_models.streamdetails import StreamMetadata
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -578,52 +580,90 @@ class StreamsController(CoreController):
         via ``_update_radio_stream_metadata`` but goes through a separate path.
 
         The update is rejected silently unless the queue's current item is an
-        AudioSource owned by ``provider`` with ``item_id == source_id``. This
-        guard prevents a late callback (e.g. the provider firing one more
-        metadata update after MA has already moved the queue on to a track or
-        a different AudioSource) from stamping unrelated metadata over the
-        wrong item.
+        AudioSource owned by ``provider`` with ``item_id == source_id``
+        (see ``_resolve_live_source_streamdetails``).
 
         :param queue_id: The queue whose active item should receive the update.
         :param source_id: The AudioSource.item_id emitting this metadata.
         :param provider: The provider instance id emitting this metadata.
         :param stream_metadata: The new stream metadata to attach.
         """
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
+        resolved = self._resolve_live_source_streamdetails(
+            queue_id, source_id, provider, "metadata"
+        )
+        if resolved is None:
             return
-        current_item = queue.current_item
-        if current_item is None or current_item.streamdetails is None:
-            return
-        sd = current_item.streamdetails
-        if (
-            sd.media_type != MediaType.AUDIO_SOURCE
-            or sd.provider != provider
-            or sd.item_id != source_id
-        ):
-            # Log at debug so misbehaving providers firing constantly are
-            # diagnosable (count alone is the signal) without spamming higher
-            # log levels for the legitimate transition cases.
-            self.logger.debug(
-                "Rejected metadata update for queue %s from provider %s source %s "
-                "(current item: %s)",
-                queue_id,
-                provider,
-                source_id,
-                sd.uri if sd else "none",
-            )
-            return
-        # Re-check identity *after* preparing the write so a queue advance that
-        # races with this callback can't slip in between the guard above and
-        # the mutation below. Plugins fire these from arbitrary executor /
-        # event-loop threads (AirPlay metadata reader, Spotify webservice
-        # handler, AriaCast WebSocket reader); the GIL keeps each attribute
-        # write atomic but not the read-then-write sequence.
-        if queue.current_item is not current_item or current_item.streamdetails is not sd:
-            return
+        _queue, sd = resolved
         sd.stream_metadata = stream_metadata
         sd.stream_metadata_last_updated = time.time()
         self.mass.player_queues.signal_update(queue_id)
+
+    def update_source_queue_options(
+        self,
+        queue_id: str,
+        source_id: str,
+        provider: str,
+        *,
+        shuffle_enabled: bool | None,
+        repeat_mode: RepeatMode | None,
+    ) -> None:
+        """
+        Mirror a live session's shuffle/repeat state onto the consuming queue.
+
+        Used by plugin providers whose AudioSource declares queue capabilities
+        (e.g. Spotify Connect) to reflect session-side option changes into the
+        normal PlayerQueue view. A None value (and RepeatMode.UNKNOWN) leaves
+        that option untouched.
+
+        The update is rejected silently unless the queue's current item is an
+        AudioSource owned by ``provider`` with ``item_id == source_id``.
+
+        :param queue_id: The queue whose options should receive the update.
+        :param source_id: The AudioSource.item_id emitting this update.
+        :param provider: The provider instance id emitting this update.
+        :param shuffle_enabled: The session's shuffle state, or None to skip.
+        :param repeat_mode: The session's repeat mode, or None to skip.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        media_item = queue.current_item.media_item if queue.current_item else None
+        # options are queue-scoped, so the identity anchor is the queue item's media
+        # item — unlike stream metadata this must also accept the source-selection
+        # window where the item's streamdetails do not exist yet (the provider replays
+        # the session's cached options right when it claims the queue)
+        if (
+            media_item is None
+            or media_item.media_type != MediaType.AUDIO_SOURCE
+            or media_item.provider != provider
+            or media_item.item_id != source_id
+        ):
+            self.logger.debug(
+                "Rejected queue options update for queue %s from provider %s source %s",
+                queue_id,
+                provider,
+                source_id,
+            )
+            return
+        if repeat_mode == RepeatMode.UNKNOWN:
+            # an unknown mode is not a report
+            repeat_mode = None
+        changed = False
+        if shuffle_enabled is not None and queue.shuffle_enabled != shuffle_enabled:
+            # apply through the queue controller so any MA-owned tail behind the
+            # session is (un)shuffled along with the flag; scheduled as a task
+            # because this callback is synchronous — the task re-validates the
+            # delegation under the player lock before applying
+            self.mass.create_task(
+                self.mass.player_queues._apply_mirrored_shuffle(
+                    queue_id, source_id, provider, shuffle_enabled
+                )
+            )
+        if repeat_mode is not None and queue.repeat_mode != repeat_mode:
+            queue.repeat_mode = repeat_mode
+            changed = True
+        if changed:
+            self.mass.player_queues.signal_update(queue_id)
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream single queueitem audio to a player."""
@@ -758,6 +798,10 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
+            elif queue_item.streamdetails.is_realtime:
+                # a realtime source delivers at playback pace, so it has no audio to
+                # spare for an overlap in either direction
+                crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
@@ -832,7 +876,6 @@ class StreamsController(CoreController):
                 queue=queue,
                 queue_item=queue_item,
                 pcm_format=pcm_format,
-                crossfade_mode=crossfade_mode,
                 overlay_enabled=(
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
@@ -902,6 +945,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
+                    extra_input_args=[
+                        "-readrate",
+                        SINGLE_ITEM_READRATE,
+                        "-readrate_initial_burst",
+                        SINGLE_ITEM_READRATE_INITIAL_BURST,
+                    ],
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -915,6 +964,15 @@ class StreamsController(CoreController):
                 # the abandoned generator.
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        if pq_data.session_id != session_id:
+                            # playback moved on (or stopped) while this response was open;
+                            # the flow path checks the same thing per chunk
+                            self.logger.debug(
+                                "Ending stream for %s: session %s is no longer current",
+                                queue_item.name,
+                                session_id,
+                            )
+                            break
                         try:
                             await resp.write(chunk)
                             bytes_sent += len(chunk)
@@ -1079,7 +1137,6 @@ class StreamsController(CoreController):
             queue=queue,
             queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
-            crossfade_mode=crossfade_mode,
             overlay_enabled=overlay_active(queue),
             session_id=session_id,
         )
@@ -1300,7 +1357,6 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         player_id: str | None = None,
         force_flow_mode: bool = False,
-        use_flow_stream_buffering: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
@@ -1314,9 +1370,6 @@ class StreamsController(CoreController):
             if flow mode should be used based on the player's capabilities.
         :param force_flow_mode: Force flow mode regardless of player capabilities.
             Used for multi-client streaming scenarios that require continuous streams.
-        :param use_flow_stream_buffering: Buffer the flow stream to provide headroom
-            during smart fades transitions. Use for consumers that read directly
-            (e.g. AirPlay, Snapcast) and can't tolerate stalls.
         """
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -1373,16 +1426,10 @@ class StreamsController(CoreController):
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
-                crossfade_mode = (
-                    self.get_crossfade_mode(queue)
-                    if start_queue_item.media_type == MediaType.TRACK
-                    else CrossfadeMode.DISABLED
-                )
                 self._update_audio_processing_context(
                     queue=queue,
                     queue_item=start_queue_item,
                     pcm_format=pcm_format,
-                    crossfade_mode=crossfade_mode,
                     overlay_enabled=overlay_active(queue),
                     session_id=queue_session_id,
                 )
@@ -1397,8 +1444,6 @@ class StreamsController(CoreController):
                     flow_stream = self.audio.get_overlay_mixed_stream(
                         queue, flow_stream, pcm_format
                     )
-                if use_flow_stream_buffering:
-                    return buffered(flow_stream, buffer_size=30, min_buffer_before_yield=1)
                 return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
@@ -1408,11 +1453,6 @@ class StreamsController(CoreController):
                     queue=queue,
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    crossfade_mode=(
-                        self.get_crossfade_mode(queue)
-                        if queue_item.media_type == MediaType.TRACK
-                        else CrossfadeMode.DISABLED
-                    ),
                     overlay_enabled=(
                         queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                     ),
@@ -1592,13 +1632,12 @@ class StreamsController(CoreController):
         finally:
             try:
                 await prov.on_source_unselected(source_id, queue_id, stream_session_id)
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    "on_source_unselected raised for provider %s source %s queue %s",
                     prov.instance_id,
                     source_id,
                     queue_id,
-                    err,
                 )
 
     def _update_audio_processing_context(
@@ -1606,17 +1645,18 @@ class StreamsController(CoreController):
         queue: PlayerQueue,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        crossfade_mode: CrossfadeMode,
         overlay_enabled: bool,
         session_id: str | None = None,
     ) -> None:
         """
         Store the shared processing context selected for a queue item.
 
+        The crossfade is left out on purpose: only the audio layer knows whether one
+        really happens, and it reports that itself once the boundary has decided.
+
         :param queue: Active player queue.
         :param queue_item: Queue item being prepared.
         :param pcm_format: Shared PCM format leaving queue processing.
-        :param crossfade_mode: Effective crossfade mode for the item.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         :param session_id: Queue session that owns processing-detail updates.
         """
@@ -1640,7 +1680,6 @@ class StreamsController(CoreController):
                     "float",
                     queue_item.extra_attributes.get("playback_speed", 1.0),
                 ),
-                crossfade_mode=crossfade_mode,
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,
@@ -1774,6 +1813,50 @@ class StreamsController(CoreController):
         # the single address players are handed, taken from the top of the ranked list
         self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+
+    def _resolve_live_source_streamdetails(
+        self, queue_id: str, source_id: str, provider_instance_id: str, log_noun: str
+    ) -> tuple[PlayerQueue, StreamDetails] | None:
+        """
+        Resolve the queue and streamdetails a live-source push from a plugin applies to.
+
+        Shared guard for the provider push endpoints (stream metadata and queue options):
+        the push only applies when the queue's current item is an AudioSource owned by
+        ``provider_instance_id`` with ``item_id == source_id``. Returns None otherwise,
+        so a late callback (e.g. the provider firing once more after MA already moved the
+        queue on to a track or a different AudioSource) never stamps data over an
+        unrelated item.
+
+        :param queue_id: The queue receiving the push.
+        :param source_id: The AudioSource.item_id emitting the push.
+        :param provider_instance_id: The provider instance id emitting the push.
+        :param log_noun: What is being pushed, used in the rejection debug log.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return None
+        current_item = queue.current_item
+        if current_item is None or current_item.streamdetails is None:
+            return None
+        sd = current_item.streamdetails
+        if (
+            sd.media_type != MediaType.AUDIO_SOURCE
+            or sd.provider != provider_instance_id
+            or sd.item_id != source_id
+        ):
+            # Log at debug so misbehaving providers firing constantly are
+            # diagnosable (count alone is the signal) without spamming higher
+            # log levels for the legitimate transition cases.
+            self.logger.debug(
+                "Rejected %s update for queue %s from provider %s source %s (current item: %s)",
+                log_noun,
+                queue_id,
+                provider_instance_id,
+                source_id,
+                sd.uri,
+            )
+            return None
+        return queue, sd
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

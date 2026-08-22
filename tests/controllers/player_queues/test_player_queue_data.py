@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from music_assistant_models.enums import RepeatMode
 from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
@@ -138,7 +136,7 @@ def test_cache_round_trip_restores_settings() -> None:
         crossfade_enabled=True,
         autoplay_enabled=True,
     )
-    data = PlayerQueueData(queue=queue, shuffle_set_at=time.time())
+    data = PlayerQueueData(queue=queue)
 
     restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
 
@@ -146,9 +144,6 @@ def test_cache_round_trip_restores_settings() -> None:
     assert restored.queue.repeat_mode == RepeatMode.ALL
     assert restored.queue.crossfade_enabled is True
     assert restored.queue.autoplay_enabled is True
-    # the shuffle switch itself is restored, but the moment the user flipped it is not: a shuffle
-    # from an earlier session must not read as intent for whatever is played after a restart
-    assert restored.shuffle_set_at is None
 
 
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:
@@ -230,6 +225,13 @@ def test_from_cache_reads_legacy_flat_layout() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+
+
+def test_to_cache_drops_the_queue_owner() -> None:
+    """A cached queue never restores a queue_owner: the session it points at is gone."""
+    data = PlayerQueueData(queue=_queue(queue_owner="audiosource://spotify_connect--x/main"))
+
+    assert "queue_owner" not in data.to_cache()["queue"]
 
 
 def test_cache_significant_ignores_playback_progress() -> None:
