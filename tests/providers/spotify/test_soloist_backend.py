@@ -11,6 +11,7 @@ setup. No real process or PulseAudio is involved.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +21,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import AudioError, LoginFailed
 
+from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
 from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
@@ -218,18 +220,98 @@ async def test_sink_is_not_gated_before_demand_started(tmp_path: Path) -> None:
     assert session._current.status == "playing"
 
 
-async def test_the_last_item_keeps_the_sink_open_to_drain(tmp_path: Path) -> None:
-    """A pause on the run's last item does not cut the sink: its tail must still arrive."""
+async def test_the_last_item_is_drained_rather_than_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pause on the run's last item drains its tail, then closes it and the sink."""
+    monkeypatch.setattr(soloist_backend, "_DRAIN_TIMEOUT_S", 0.01)
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 1_000
+    sink = _sink_of(session)
+    await session._handle_event(_playback_event("paused"))
+    # the sink stays open for now, so audio still in the FIFO can arrive...
+    sink.suspend.assert_not_awaited()
+    assert item.draining is True
+    assert item._closed is False
+    # ... but only that item's own audio is taken, never the padding silence
+    # the sink keeps rendering after it
+    item.write(b"\x01" * (1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES))
+    item.write(b"\x00" * 4096)
+    assert item._buffered == 1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+    await asyncio.sleep(0.05)
+    sink.suspend.assert_awaited_once()
+    assert item._closed is True
+
+
+async def test_a_pause_with_more_queued_suspends_the_sink(tmp_path: Path) -> None:
+    """A pause while another item is queued behind is ordinary interference, not the end."""
     session = _make_session(tmp_path)
     session._demand_started = True
     session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
-    sink = _sink_of(session)
-    await session._handle_event(_playback_event("paused"))
-    sink.suspend.assert_not_awaited()
-    # ... while a pause with another item queued behind it is ordinary interference
     session._pending.append(TRACK_B)
     await session._handle_event(_playback_event("paused"))
-    sink.suspend.assert_awaited_once()
+    _sink_of(session).suspend.assert_awaited_once()
+
+
+async def test_a_second_player_does_not_steal_a_session_in_use(tmp_path: Path) -> None:
+    """One session serves one player: a second player is refused, not handed the session."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.claim()
+    with pytest.raises(AudioError, match="one player at a time"):
+        await backend._acquire(TRACK_B, 0, "player2")
+    # the session that was playing is untouched
+    assert backend._session is session
+    assert session.usable is True
+
+
+async def test_an_idle_session_is_taken_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session nobody is reading is replaced instead of blocking another player."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    backend._session = session
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+    _install_fake_binary_manager(monkeypatch)
+    # the replacement spawn is out of scope here; only the takeover decision is
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(TRACK_B, 0, "player2")
+    stopped.assert_awaited_once()
+
+
+def test_a_dead_session_task_fails_the_session(tmp_path: Path) -> None:
+    """A session task that dies of an unexpected error takes the session with it."""
+    session = _make_session(tmp_path)
+    task: Any = MagicMock()
+    task.cancelled.return_value = False
+    task.exception.return_value = RuntimeError("reader blew up")
+    session._task_done(task)
+    assert session.usable is False
+    assert session._error is not None
+    assert "reader blew up" in session._error
+
+
+def test_a_cancelled_session_task_is_not_a_failure(tmp_path: Path) -> None:
+    """Teardown cancels the session's tasks; that must not be reported as an error."""
+    session = _make_session(tmp_path)
+    task: Any = MagicMock()
+    task.cancelled.return_value = True
+    session._task_done(task)
+    assert session.usable is True
 
 
 async def test_failed_sink_control_fails_the_session(tmp_path: Path) -> None:
@@ -491,6 +573,8 @@ def test_a_failed_session_is_torn_down(tmp_path: Path) -> None:
     assert session.usable is False
     # every waiting item is released and the teardown is scheduled
     assert item._closed is True
+    # a startup wait must not sit out its timeout on a session that already failed
+    assert item.started.is_set() is True
     discard = cast("MagicMock", session.mass.create_task)
     discard.assert_called_once_with(session.backend.discard_session, session)
     # a second failure does not queue a second teardown

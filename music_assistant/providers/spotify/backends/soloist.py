@@ -339,6 +339,14 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 item.claim()
                 return session, item
             if session is not None:
+                if session.queue_id != queue_id and session.in_use:
+                    # the account runs one Soloist session and a second one would
+                    # terminate this one anyway, so refuse rather than cut off the
+                    # player that is listening to it
+                    raise AudioError(
+                        "Spotify Soloist can only play on one player at a time "
+                        "(already playing elsewhere)"
+                    )
                 self._session = None
                 await session.stop()
             # cheap thanks to the shared verify cache; swaps in a fresh build when
@@ -484,6 +492,11 @@ class _SoloistSession:
         self._pin_in_flight = False
         self._demand_started = False
         self._idle_since: float | None = None
+
+    @property
+    def in_use(self) -> bool:
+        """Return whether an item stream is reading this session right now."""
+        return any(item.claimed for item in self._items.values())
 
     @property
     def current(self) -> _ItemAudio | None:
@@ -659,8 +672,23 @@ class _SoloistSession:
                 await sink.unload()
 
     def _spawn_task(self, coro: object) -> None:
-        """Track a session-scoped task so stop() can cancel and join it."""
-        self._tasks.append(asyncio.create_task(coro))  # type: ignore[arg-type]
+        """
+        Track a session-scoped task so stop() can cancel and join it.
+
+        A task that dies unexpectedly fails the whole session: its work (reading
+        the capture, following the engine) is what the item streams depend on,
+        and stop() suppresses exceptions when it joins.
+        """
+        task: asyncio.Task[None] = asyncio.create_task(coro)  # type: ignore[arg-type]
+        task.add_done_callback(self._task_done)
+        self._tasks.append(task)
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        """Fail the session when one of its tasks died of an unexpected error."""
+        if task.cancelled() or (err := task.exception()) is None:
+            return
+        self.logger.error("Spotify Soloist session task failed: %s", err, exc_info=err)
+        self._fail(f"session task failed: {err}")
 
     def _fail(self, message: str) -> None:
         """
@@ -674,6 +702,9 @@ class _SoloistSession:
             return
         self._error = message
         for item in self._items.values():
+            # started too, so an item still waiting to be reported as current
+            # fails right away instead of sitting out its startup timeout
+            item.started.set()
             item.close()
         self.mass.create_task(self.backend.discard_session, self)
 
@@ -894,7 +925,7 @@ class _SoloistSession:
         asking for items. The grace period is what lets a follow-up item
         continue on the same session instead of paying a cold start.
         """
-        if any(item.claimed for item in self._items.values()):
+        if self.in_use:
             self._idle_since = None
             return
         now = time.monotonic()
@@ -972,8 +1003,11 @@ class _SoloistSession:
         if data.status not in ("buffering", "playing", "paused"):
             return
         if data.status != "playing" and item.finishing:
-            # the last item of a run: let its tail drain instead of cutting the
-            # sink, the engine has nothing more to render anyway
+            # The run's last item: the engine reports no track change to cut it
+            # on, so end it here. The sink keeps rendering (silence included)
+            # until the drain closes it, which is what lets the tail still in
+            # the FIFO arrive.
+            self._drain_last_item(item)
             return
         # the pipe sink writes silence into the FIFO while the engine stalls on
         # rebuffering (or someone paused it from the Spotify app); suspending it
@@ -998,6 +1032,25 @@ class _SoloistSession:
             if client is not None:
                 with suppress(Exception):
                     await client.resume()
+
+    def _drain_last_item(self, item: _ItemAudio) -> None:
+        """
+        Close the run's last item once its tail has had time to arrive.
+
+        :param item: The item the engine stopped on.
+        """
+        if item.draining:
+            return
+        item.start_tail_drain()
+
+        async def _drain() -> None:
+            await asyncio.sleep(_DRAIN_TIMEOUT_S)
+            if (sink := self._sink) is not None:
+                with suppress(Exception):
+                    await sink.suspend()
+            item.close()
+
+        self._spawn_task(_drain())
 
     async def _observe_current(self, uri: str, duration_ms: int | None) -> None:
         """
@@ -1060,8 +1113,12 @@ class _SoloistSession:
             return
         self._pin_in_flight = True
         try:
-            with suppress(Exception):
-                await client.set_volume(100)
+            await client.set_volume(100)
+        except Exception as err:
+            # not fatal: the next playback_state snapshot carries the volume
+            # again and re-asserts the pin. Logged because until then the
+            # captured PCM is attenuated by whatever the app set.
+            self.logger.warning("Unable to reset the Spotify playback volume: %s", err)
         finally:
             self._pin_in_flight = False
 
@@ -1090,7 +1147,10 @@ class _ItemAudio:
         self.broken = False
         self._chunks: deque[bytes] = deque()
         self._buffered = 0
+        self._written = 0
         self._delivered = 0
+        self._tail_target: int | None = None
+        self.draining = False
         self._available = asyncio.Event()
         self._closed = False
 
@@ -1119,13 +1179,28 @@ class _ItemAudio:
         """Append captured audio for this item."""
         if self._closed:
             return
+        if self._tail_target is not None and self._written >= self._tail_target:
+            # the item is over and its own audio has all arrived; what the sink
+            # renders from here on is padding silence, not content
+            return
         if not self.claimed and self._buffered >= int(_UNCLAIMED_LIMIT_S * _BYTES_PER_SECOND):
             # nobody is reading this item and nobody is going to: hold the
             # session's clock steady but stop growing
             return
         self._chunks.append(chunk)
         self._buffered += len(chunk)
+        self._written += len(chunk)
         self._available.set()
+
+    def start_tail_drain(self) -> None:
+        """
+        Mark the item as over, accepting only the rest of its own audio.
+
+        Used for the last item of a run, which the engine never reports a track
+        change away from, so nothing else would close its channel.
+        """
+        self.draining = True
+        self._tail_target = self._duration_bytes()
 
     def close(self) -> None:
         """Close the channel: its stream ends once the buffered audio is drained."""
@@ -1182,12 +1257,7 @@ class _ItemAudio:
             with suppress(TimeoutError):
                 async with asyncio.timeout_at(deadline):
                     await self._available.wait()
-            if self._chunks or self._closed:
-                continue
-            if self.finishing:
-                # the run's last item: the engine will not report a track change
-                # to close this channel, so end it once its tail stops arriving
-                await self._drain_tail()
+            if self._chunks or self._closed or self.draining:
                 continue
             # the engine is playing something else entirely (skipped from the
             # Spotify app): this item is never going to get its audio
@@ -1195,18 +1265,11 @@ class _ItemAudio:
             if starving_for >= _STALL_TIMEOUT_S:
                 raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
 
-    async def _drain_tail(self) -> None:
-        """Close the channel when the last item of a run has stopped producing audio."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _DRAIN_TIMEOUT_S
-        while loop.time() < deadline:
-            self._available.clear()
-            with suppress(TimeoutError):
-                async with asyncio.timeout_at(deadline):
-                    await self._available.wait()
-            if self._chunks or self._closed:
-                return
-        self.close()
+    def _duration_bytes(self) -> int | None:
+        """Return how many bytes this item's own audio amounts to, when known."""
+        if self.duration_ms is None:
+            return None
+        return self.duration_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
