@@ -485,6 +485,46 @@ async def test_artist_refresh_keeps_snapshot_when_no_representative_track() -> N
     assert saved.metadata.genres == {"Jazz", "Ambient"}
 
 
+async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
+    """A valid->malformed album.nfo edit keeps the prior metadata instead of wiping it."""
+    provider = _provider()
+    provider._active_sidecar_index.record(_fs_file("Artist/Album/album.nfo", "2"))
+    provider._read_file = AsyncMock(return_value=b"<album>just text</album>")  # malformed now
+    prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._reparse_album_from_track = AsyncMock()
+
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is False  # deferred, non-destructive
+    provider._reparse_album_from_track.assert_not_awaited()  # never reparsed against the bad NFO
+    provider.mass.music.albums.update_item_in_library.assert_not_awaited()  # prior metadata kept
+
+
+async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
+    """A valid->malformed artist.nfo edit keeps the prior metadata instead of wiping it."""
+    provider = _provider()
+    provider._active_sidecar_index.record(_fs_file("Artist/artist.nfo", "2"))
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed now
+    prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._reparse_artist_from_track = AsyncMock()
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is False
+    provider._reparse_artist_from_track.assert_not_awaited()
+    provider.mass.music.artists.update_item_in_library.assert_not_awaited()
+
+
 # --- detection over the whole library --------------------------------------
 
 

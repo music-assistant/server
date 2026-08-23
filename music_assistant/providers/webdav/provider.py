@@ -186,7 +186,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             relative_path=file_path,
             absolute_path=self._build_authenticated_url(file_path),
             is_dir=webdav_item.is_dir,
-            checksum=webdav_item.last_modified or "unknown",
+            checksum=webdav_item.etag or webdav_item.last_modified or "unknown",
             file_size=webdav_item.size,
         )
 
@@ -282,7 +282,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     relative_path=relative_path,
                     absolute_path=self._build_authenticated_url(relative_path),
                     is_dir=item.is_dir,
-                    checksum=item.last_modified or "unknown",
+                    checksum=item.etag or item.last_modified or "unknown",
                     file_size=item.size,
                 )
             )

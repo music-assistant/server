@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
 
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
+from music_assistant.providers.filesystem_local.helpers import (
+    FileSystemItem,
+    ScanErrors,
+    get_folder_signature,
+)
 from music_assistant.providers.webdav.helpers import WebDAVItem
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 
@@ -104,6 +108,55 @@ def test_convert_skips_base_directory_at_root() -> None:
     result = provider._convert_webdav_items(webdav_items, "")
 
     assert [item.relative_path for item in result] == ["Artist"]
+
+
+def test_convert_uses_etag_as_checksum_with_lastmodified_fallback() -> None:
+    """The ETag is the change token; the HTTP date is only a fallback when the server omits it."""
+    provider = _make_provider()
+    webdav_items = [
+        WebDAVItem(
+            href="/dav/Artist/a.mp3",
+            name="a.mp3",
+            is_dir=False,
+            size=10,
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            etag="abc123",
+        ),
+        WebDAVItem(
+            href="/dav/Artist/b.mp3",
+            name="b.mp3",
+            is_dir=False,
+            size=10,
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            etag=None,
+        ),
+    ]
+
+    result = provider._convert_webdav_items(webdav_items, "")
+
+    assert result[0].checksum == "abc123"
+    assert result[1].checksum == "Wed, 01 Jan 2025 00:00:00 GMT"
+
+
+def test_changed_etag_changes_sidecar_signature_same_date_and_size() -> None:
+    """A replaced sidecar with the same HTTP date and size still changes the signature via ETag."""
+    provider = _make_provider()
+
+    def _folder_jpg(etag: str) -> WebDAVItem:
+        return WebDAVItem(
+            href="/dav/Artist/Album/folder.jpg",
+            name="folder.jpg",
+            is_dir=False,
+            size=2048,
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            etag=etag,
+        )
+
+    before = provider._convert_webdav_items([_folder_jpg("etag-1")], "Artist/Album")
+    after = provider._convert_webdav_items([_folder_jpg("etag-2")], "Artist/Album")
+    assert get_folder_signature(before) != get_folder_signature(after)
+    # the versioned image URL also differs, so clients refetch the new bytes
+    assert before[0].change_token != after[0].change_token
 
 
 async def test_enumerate_stops_on_directory_cycle() -> None:

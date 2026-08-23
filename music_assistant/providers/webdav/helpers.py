@@ -21,6 +21,7 @@ PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
         <d:resourcetype/>
         <d:getcontentlength/>
         <d:getlastmodified/>
+        <d:getetag/>
         <d:displayname/>
     </d:prop>
 </d:propfind>"""
@@ -35,6 +36,7 @@ class WebDAVItem:
     is_dir: bool
     size: int | None = None
     last_modified: str | None = None
+    etag: str | None = None
 
 
 async def webdav_propfind(
@@ -140,6 +142,13 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         lastmodified = prop.find("d:getlastmodified", DAV_NAMESPACE)
         last_modified = lastmodified.text if lastmodified is not None else None
 
+        # Get ETag: the strongest change token, changes on content change even within the same
+        # HTTP-date second; normalize the weak prefix and quotes servers wrap it in
+        etagelem = prop.find("d:getetag", DAV_NAMESPACE)
+        etag = None
+        if etagelem is not None and etagelem.text:
+            etag = etagelem.text.strip().removeprefix("W/").strip('"') or None
+
         # Get display name or extract from href
         displayname = prop.find("d:displayname", DAV_NAMESPACE)
         if displayname is not None and displayname.text:
@@ -154,6 +163,7 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
                 is_dir=is_collection,
                 size=size,
                 last_modified=last_modified,
+                etag=etag,
             )
         )
 

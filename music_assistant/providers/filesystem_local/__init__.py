@@ -131,6 +131,7 @@ from .helpers import (
     FileSystemItem,
     ScanErrors,
     SidecarIndex,
+    SidecarInvalidError,
     SidecarReadError,
     get_absolute_path,
     get_album_dir,
@@ -2025,6 +2026,10 @@ class LocalFileSystemProvider(MusicProvider):
                 raise
             # on demand there is no baseline to protect, so degrade to the tag-only artist
             return artist
+        except SidecarInvalidError as err:
+            # a malformed NFO is not a removal: import the artist from its tags only. The refresh
+            # pass keeps prior metadata for an already-known artist, so this only affects new imports.
+            self.logger.warning("Ignoring malformed artist NFO: %s", err)
         # find local images
         if images := await self._get_local_images(
             artist_path, extra_thumb_names=("artist",), versioned=True
@@ -2537,6 +2542,10 @@ class LocalFileSystemProvider(MusicProvider):
                 raise
             # on demand there is no baseline to protect, so degrade to the tag-only album
             return album
+        except SidecarInvalidError as err:
+            # a malformed NFO is not a removal: import the album from its tags only. The refresh
+            # pass keeps prior metadata for an already-known album, so this only affects new imports.
+            self.logger.warning("Ignoring malformed album NFO: %s", err)
 
         # complete album artwork: the album folder plus its actual disc subfolders
         for folder_path in dict.fromkeys(image_dirs):
@@ -2990,53 +2999,84 @@ class LocalFileSystemProvider(MusicProvider):
             nfo_root_dict, data, root, nfo_item.relative_path, self.logger
         )
 
-    async def _apply_album_nfo(
-        self, album: Album, nfo_item: FileSystemItem
-    ) -> dict[str, Any] | None:
+    async def _apply_album_nfo(self, album: Album, nfo_item: FileSystemItem) -> dict[str, Any]:
         """
         Enrich album from its album.nfo and return the NFO's own contribution snapshot.
 
+        The NFO is validated into a scratch album first (carrying a placeholder artist so the
+        albumartist field is exercised), so a late invalid field cannot partially mutate the real
+        album; only after that succeeds is it applied to the real album.
+
         :param album: The album to enrich in place.
         :param nfo_item: The album.nfo sidecar.
-        :raises SidecarReadError: When the NFO cannot be read.
+        :raises SidecarReadError: When the NFO cannot be read (a transient failure).
+        :raises SidecarInvalidError: When the NFO is malformed or carries an invalid field.
         """
         info = await self._read_nfo(nfo_item, "album")
         if info is None:
-            return None
-        # parse into a scratch album too, so the snapshot captures only the NFO's own contribution
-        # (not the merged tag values) - removal subtraction would otherwise erase tag-derived data
+            raise SidecarInvalidError(f"malformed album NFO {nfo_item.relative_path}")
         scratch = Album(item_id="", provider=self.instance_id, name="", provider_mappings=set())
-        for target in (album, scratch):
-            try:
-                parse_album_nfo(target, info, nfo_item.relative_path)
-            except (ValueError, TypeError) as err:
-                self.logger.warning(
-                    "Ignoring malformed values in album NFO %s: %s", nfo_item.relative_path, err
-                )
+        scratch.artists = UniqueList(
+            [Artist(item_id="", provider=self.instance_id, name="", provider_mappings=set())]
+        )
+        try:
+            parse_album_nfo(scratch, info, nfo_item.relative_path)
+        except (ValueError, TypeError) as err:
+            raise SidecarInvalidError(
+                f"invalid value in album NFO {nfo_item.relative_path}: {err}"
+            ) from err
+        # the scratch parse validated every field, so applying to the real album cannot raise
+        parse_album_nfo(album, info, nfo_item.relative_path)
+        # the snapshot captures only the NFO's own contribution (not the merged tag values)
         return _nfo_snapshot(scratch.metadata, scratch.external_ids)
 
-    async def _apply_artist_nfo(
-        self, artist: Artist, nfo_item: FileSystemItem
-    ) -> dict[str, Any] | None:
+    async def _apply_artist_nfo(self, artist: Artist, nfo_item: FileSystemItem) -> dict[str, Any]:
         """
         Enrich artist from its artist.nfo and return the NFO's own contribution snapshot.
 
+        The NFO is validated into a scratch artist first, so a late invalid field cannot partially
+        mutate the real artist; only after that succeeds is it applied to the real artist.
+
         :param artist: The artist to enrich in place.
         :param nfo_item: The artist.nfo sidecar.
-        :raises SidecarReadError: When the NFO cannot be read.
+        :raises SidecarReadError: When the NFO cannot be read (a transient failure).
+        :raises SidecarInvalidError: When the NFO is malformed or carries an invalid field.
         """
         info = await self._read_nfo(nfo_item, "artist")
         if info is None:
-            return None
+            raise SidecarInvalidError(f"malformed artist NFO {nfo_item.relative_path}")
         scratch = Artist(item_id="", provider=self.instance_id, name="", provider_mappings=set())
-        for target in (artist, scratch):
-            try:
-                parse_artist_nfo(target, info, nfo_item.relative_path)
-            except (ValueError, TypeError) as err:
-                self.logger.warning(
-                    "Ignoring malformed values in artist NFO %s: %s", nfo_item.relative_path, err
-                )
+        try:
+            parse_artist_nfo(scratch, info, nfo_item.relative_path)
+        except (ValueError, TypeError) as err:
+            raise SidecarInvalidError(
+                f"invalid value in artist NFO {nfo_item.relative_path}: {err}"
+            ) from err
+        parse_artist_nfo(artist, info, nfo_item.relative_path)
         return _nfo_snapshot(scratch.metadata, scratch.external_ids)
+
+    async def _nfo_usable(self, nfo_item: FileSystemItem, root: str) -> bool:
+        """
+        Return whether an NFO parses cleanly, without mutating anything.
+
+        :param nfo_item: The NFO sidecar to validate.
+        :param root: The expected root element (``album`` or ``artist``).
+        :raises SidecarReadError: When the NFO cannot be read (a transient failure).
+        """
+        try:
+            if root == "album":
+                throwaway_album = Album(
+                    item_id="", provider=self.instance_id, name="", provider_mappings=set()
+                )
+                await self._apply_album_nfo(throwaway_album, nfo_item)
+            else:
+                throwaway_artist = Artist(
+                    item_id="", provider=self.instance_id, name="", provider_mappings=set()
+                )
+                await self._apply_artist_nfo(throwaway_artist, nfo_item)
+        except SidecarInvalidError:
+            return False
+        return True
 
     def _mapping_details(self, item: Album | Artist) -> str | None:
         """Return this provider's mapping details string for the given item, if any."""
@@ -3205,6 +3245,22 @@ class LocalFileSystemProvider(MusicProvider):
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
         if nfo_changed:
+            # a present-but-malformed album.nfo is not a removal: keep prior metadata/details and
+            # retry, so a valid->malformed edit never wipes the values the previous NFO contributed
+            index = self._active_sidecar_index
+            nfo_item = index.nfo_item(album_dir, "album.nfo") if index is not None else None
+            if nfo_item is not None:
+                try:
+                    if not await self._nfo_usable(nfo_item, "album"):
+                        self.logger.warning(
+                            "Keeping previous metadata for %s: album.nfo is malformed", album_dir
+                        )
+                        return False
+                except SidecarReadError as err:
+                    self.logger.warning(
+                        "Deferring album sidecar refresh for %s: %s", album_dir, err
+                    )
+                    return False
             try:
                 fresh = await self._reparse_album_from_track(stored.item_id)
             except SidecarReadError as err:
@@ -3281,6 +3337,22 @@ class LocalFileSystemProvider(MusicProvider):
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
         if nfo_changed:
+            # a present-but-malformed artist.nfo is not a removal: keep prior metadata/details and
+            # retry, so a valid->malformed edit never wipes the values the previous NFO contributed
+            index = self._active_sidecar_index
+            nfo_item = index.nfo_item(artist_path, "artist.nfo") if index is not None else None
+            if nfo_item is not None:
+                try:
+                    if not await self._nfo_usable(nfo_item, "artist"):
+                        self.logger.warning(
+                            "Keeping previous metadata for %s: artist.nfo is malformed", artist_path
+                        )
+                        return False
+                except SidecarReadError as err:
+                    self.logger.warning(
+                        "Deferring artist sidecar refresh for %s: %s", artist_path, err
+                    )
+                    return False
             try:
                 fresh = await self._reparse_artist_from_track(stored.item_id, artist_path)
             except SidecarReadError as err:

@@ -393,6 +393,10 @@ class SidecarReadError(Exception):
     """Raised when a sidecar or representative track cannot be read due to a transient failure."""
 
 
+class SidecarInvalidError(Exception):
+    """Raised when an NFO sidecar is malformed, has a wrong root, or carries an invalid field."""
+
+
 def reconcile_scalar(
     stored: _ScalarT | None, fresh: _ScalarT | None, previous: _ScalarT | None
 ) -> _ScalarT | None:

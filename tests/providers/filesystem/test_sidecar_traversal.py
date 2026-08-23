@@ -22,6 +22,7 @@ from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     ScanErrors,
     SidecarIndex,
+    SidecarInvalidError,
     SidecarReadError,
     strip_cache_buster,
 )
@@ -125,14 +126,32 @@ async def test_album_images_are_collected_in_deterministic_order() -> None:
     ]
 
 
-async def test_malformed_album_nfo_is_ignored_without_raising() -> None:
-    """A scalar-root album.nfo yields no snapshot and leaves the album untouched."""
+async def test_malformed_album_nfo_raises_invalid_and_leaves_album_untouched() -> None:
+    """A scalar-root album.nfo raises SidecarInvalidError without mutating the album."""
     provider = _provider()
     provider._read_file = AsyncMock(return_value=b"<album>just text</album>")
     album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
-    snapshot = await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
-    assert snapshot is None
+    with pytest.raises(SidecarInvalidError):
+        await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
     assert album.name == "Keep"
+
+
+async def test_invalid_field_album_nfo_is_atomic() -> None:
+    """A late invalid field (bad year) aborts the whole NFO apply, leaving no partial mutation."""
+    provider = _provider()
+    provider._read_file = AsyncMock(
+        return_value=(
+            b"<album><title>New Title</title><review>bio</review>"
+            b"<genre>Rock</genre><year>not-a-year</year></album>"
+        )
+    )
+    album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
+    with pytest.raises(SidecarInvalidError):
+        await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+    # nothing from the NFO was applied because a later field was invalid
+    assert album.name == "Keep"
+    assert album.metadata.description is None
+    assert not album.metadata.genres
 
 
 async def test_transient_nfo_read_failure_raises_sidecar_read_error() -> None:
@@ -162,6 +181,23 @@ async def test_parse_artist_propagates_read_error_during_incomplete_sync() -> No
     provider.sync_running = False
     artist = await provider._parse_artist("Artist", artist_path="Artist")
     assert artist.name == "Artist"
+
+
+async def test_parse_artist_imports_tag_only_when_nfo_malformed() -> None:
+    """A first import with a malformed artist.nfo degrades to a tag-only artist, never raising."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
+
+    # malformed NFO must not raise even mid-sync: a new artist has no baseline to protect
+    provider.sync_running = True
+    artist = await provider._parse_artist("Tag Artist", artist_path="Artist")
+    assert artist.name == "Tag Artist"
+    assert artist.metadata.description is None
 
 
 async def test_local_walk_collects_sidecars_track_dirs_and_skips_strays() -> None:

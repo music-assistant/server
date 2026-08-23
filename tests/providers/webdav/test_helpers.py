@@ -7,7 +7,11 @@ from typing import Any, Self, cast
 import aiohttp
 import pytest
 
-from music_assistant.providers.webdav.helpers import build_webdav_url, webdav_propfind
+from music_assistant.providers.webdav.helpers import (
+    _parse_propfind_response,
+    build_webdav_url,
+    webdav_propfind,
+)
 
 BASE_URL = "https://host.example/remote.php/dav/files/user/Music"
 
@@ -69,6 +73,41 @@ def test_build_webdav_url_passes_through_absolute_urls() -> None:
     """An absolute URL (e.g. from a playlist line) must be returned unchanged."""
     absolute = "http://other.example/song.mp3"
     assert build_webdav_url(BASE_URL, absolute) == absolute
+
+
+def test_propfind_parses_and_normalizes_etag() -> None:
+    """PROPFIND parsing extracts the ETag and strips the weak prefix and surrounding quotes."""
+    response = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/dav/Artist/Album/folder.jpg</d:href>
+    <d:propstat><d:prop>
+      <d:getcontentlength>2048</d:getcontentlength>
+      <d:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</d:getlastmodified>
+      <d:getetag>W/"abc-123"</d:getetag>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+    items = _parse_propfind_response(response, "/dav")
+    assert len(items) == 1
+    assert items[0].etag == "abc-123"
+
+
+def test_propfind_tolerates_missing_etag() -> None:
+    """A server omitting getetag yields a None ETag so the HTTP date remains the change token."""
+    response = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/dav/Artist/Album/folder.jpg</d:href>
+    <d:propstat><d:prop>
+      <d:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</d:getlastmodified>
+    </d:prop></d:propstat>
+  </d:response>
+</d:multistatus>"""
+    items = _parse_propfind_response(response, "/dav")
+    assert len(items) == 1
+    assert items[0].etag is None
+    assert items[0].last_modified == "Wed, 01 Jan 2025 00:00:00 GMT"
 
 
 async def test_webdav_propfind_sends_authorization_header() -> None:
