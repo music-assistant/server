@@ -1574,6 +1574,58 @@ async def test_feeding_the_follower_settles_the_boundary_at_the_items_end(
     assert session.fades_a_boundary_of(streamdetails) is expected
 
 
+@pytest.mark.parametrize(
+    ("follower_state", "expected"),
+    [
+        # handed over and waiting: the engine reaches it by playing on
+        ("pending", True),
+        # the engine is already there, ahead of the stream MA is still reading
+        ("current", True),
+        # served once already, so the next play of it starts a fresh session - an
+        # A-B-A queue reaches this after jumping to B
+        ("drained", False),
+    ],
+)
+async def test_a_follower_the_session_already_holds_decides_the_boundary(
+    tmp_path: Path, follower_state: str, expected: bool
+) -> None:
+    """
+    With nothing left to feed, the channel already there is what the boundary rests on.
+
+    A drained channel cannot be replayed, so crediting it would report an overlap the
+    engine never renders - and the answer has to be the same before and after the feed
+    that finds nothing to send.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    streamdetails = _streamdetails_for(uri=TRACK_B)
+    playing = _queue_item(TRACK_B, streamdetails=streamdetails)
+    streamed = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    streamed.started.set()
+    session._current = streamed
+    follower = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    if follower_state == "pending":
+        session._pending.append(TRACK_A)
+    else:
+        follower.started.set()
+        if follower_state == "current":
+            session._current = follower
+        else:
+            follower.spent = True
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=1)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 1 else None
+    queues.get_next_item.return_value = _queue_item(TRACK_A)
+
+    assert session.fades_a_boundary_of(streamdetails) is expected
+
+    await session.feed_after(streamdetails, TRACK_B)
+
+    _client_of(session).add_to_queue.assert_not_awaited()
+    assert streamed.fades_out is expected
+    assert session.fades_a_boundary_of(streamdetails) is expected
+
+
 async def test_only_a_track_can_carry_a_source_fade(tmp_path: Path) -> None:
     """A podcast episode is never stitched, so both of its boundaries are hard cuts."""
     session = _make_session(tmp_path, queue_id="player1")

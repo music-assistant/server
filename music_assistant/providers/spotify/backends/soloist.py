@@ -946,7 +946,10 @@ class _SoloistSession:
                 return item.fades_out
         # what happens at this item's end is not settled yet, so the follower the
         # engine would be fed is what the boundary rests on
-        return self._feedable_follower_uri(streamdetails) is not None
+        next_uri = self._feedable_follower_uri(streamdetails)
+        if next_uri is None:
+            return False
+        return next_uri not in self._items or self._engine_plays_on_into(next_uri, uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
         """
@@ -1116,9 +1119,9 @@ class _SoloistSession:
         if next_uri is None:
             return False
         if next_uri in self._items:
-            # already fed, unless the follower is the item being streamed itself: a
-            # repeat starts a fresh session rather than replaying a drained channel
-            return next_uri != spotify_uri
+            # nothing left to send, so whether the engine plays on rests entirely on
+            # the channel this session already holds for it
+            return self._engine_plays_on_into(next_uri, spotify_uri)
         # Registered before the command goes out: the engine can reach the item
         # while it is still in flight, and the events task has to find its
         # channel rather than mistake it for something nobody asked for.
@@ -1137,6 +1140,21 @@ class _SoloistSession:
             return False
         self.logger.debug("Fed %s to the soloist session", next_uri)
         return True
+
+    def _engine_plays_on_into(self, next_uri: str, streamed_uri: str) -> bool:
+        """
+        Return whether the engine plays on into a follower this session already holds.
+
+        Only a channel that can still be served across the boundary is played on into:
+        a drained one cannot be replayed, and neither can the item being streamed
+        itself, so both start a fresh session instead.
+
+        :param next_uri: URI of the follower.
+        :param streamed_uri: URI of the item being streamed.
+        """
+        if next_uri == streamed_uri:
+            return False
+        return self.pending_item(next_uri) is not None or self.item_for(next_uri) is not None
 
     def _feedable_follower_uri(self, streamdetails: StreamDetails) -> str | None:
         """

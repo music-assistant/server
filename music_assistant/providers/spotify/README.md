@@ -114,9 +114,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   setting mid-playback takes effect on the next playback, which is also why
   `delivers_crossfaded_audio(streamdetails)` reports the captured value of the session
   serving *that item's* queue rather than the current setting. It answers per boundary:
-  a fade is only reported where the engine plays across the cut, so an item the session
-  was jumped to, one it was handed but has not reached, and the item a fresh session
-  starts on are all reported as hard cuts.
+  a fade is only reported where the engine plays across the cut. Nothing is faded *into*
+  the item a session starts on, one it was jumped to, or one it was handed but has not
+  reached; those are credited only if the engine plays on out of them. Likewise nothing
+  is faded out of an item whose follower this session can no longer serve — a drained
+  channel or a repeat starts a fresh session, so that boundary is a hard cut.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the session runs
