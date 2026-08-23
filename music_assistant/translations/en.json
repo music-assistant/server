@@ -2315,6 +2315,8 @@
   "provider.spotify.errors.refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify.",
   "provider.spotify.errors.soloist_account_mismatch": "Music Assistant was paired from a Spotify app signed in to a different account than the one you connected. Pair again from an app signed in to the same account, so your music library and the audio come from the same place.",
   "provider.spotify.errors.soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
+  "provider.spotify.errors.soloist_app_paused": "Playback was paused from the Spotify app, so {0} stopped playing here. Press play again to continue.",
+  "provider.spotify.errors.soloist_app_took_over": "Playback was taken over from the Spotify app, so {0} stopped playing here. Press play again to bring it back.",
   "provider.spotify.errors.soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",
   "provider.spotify.errors.soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose librespot (community) instead.",
   "provider.spotify.errors.soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",

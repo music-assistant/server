@@ -74,6 +74,29 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   speculative prepare then gives up softly, and the real request, made once the other
   item has been released, gets the session. The cost is a cold start at those
   boundaries rather than a warm buffer.
+- **The Spotify app can reach in, and that ends the session.** The engine always
+  advertises itself as a Connect device and offers no way to suppress that, so the
+  device is listed in the user's Spotify apps for as long as Music Assistant is
+  playing — named `SOLOIST_DEVICE_NAME`, deliberately *not* the plain "Music
+  Assistant" the Spotify Connect provider advertises by default, so the two are
+  told apart. Three things the user can do there are handled:
+  - **Move playback to another device**, which shows up as `is_active` going false
+    on `device_changed`/`auth_state` (`playback_state.is_active` is optional and
+    rides on deltas, so it is ignored). Only a loss of the active status the session
+    itself claimed counts — a daemon is inactive until `_play` activates it.
+  - **Start something else on this device**, which shows up as the engine reporting
+    an item nobody fed it while the current one is still part-way through
+    (`_ItemAudio.mid_play`). The engine's own autoplay and the item it restores at
+    startup both fail that test, which is what keeps them out of it.
+  - **Pause**, which is put back a couple of times (an accidental tap) and then
+    taken at face value.
+
+  All three end the session and hold off a replacement for `_APP_CONTROL_COOLDOWN_S`
+  through `SoloistAppControlError`. That hold is the point: without it the next queue
+  item spawns a daemon that claims the Connect device straight back off whatever the
+  user just moved to. It is a `ProviderStreamLimitError` so the queue treats it as
+  capacity — the item stays playable, other providers get a chance at it, and an
+  explicit play stops the queue with a message saying what happened.
 - **Readiness comes from the session**: the core's blind next-item pre-buffer is
   suppressed for a realtime source (`controllers/streams/audio.py`), because the next
   item's audio does not exist until the session gets there. The session calls

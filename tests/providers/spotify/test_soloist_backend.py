@@ -31,8 +31,11 @@ from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
     _IDLE_TIMEOUT_S,
+    _MAX_APP_PAUSE_RESUMES,
     _MAX_LEAD_TRIM_S,
     _READ_CHUNK_SIZE,
+    SoloistAppControl,
+    SoloistAppControlError,
     SoloistBackend,
     _CaptureShaper,
     _ItemAudio,
@@ -44,13 +47,16 @@ from music_assistant.providers.spotify.constants import (
     CONF_SOLOIST_CONSENT,
     CONF_SOLOIST_SESSION_DIR,
     SOLOIST_DATA_DIR_NAME,
+    SOLOIST_DEVICE_NAME,
 )
 from music_assistant.providers.spotify.helpers import soloist_session_present
 from music_assistant.providers.spotify.provider import SpotifyProvider
+from music_assistant.providers.spotify_connect.provider import DEFAULT_PUBLISH_NAME
 from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
     SoloistAuthState,
+    SoloistDeviceChanged,
     SoloistEntity,
     SoloistError,
     SoloistEvent,
@@ -782,6 +788,170 @@ async def test_app_pause_is_fought_with_a_resume(tmp_path: Path) -> None:
     session._pending.append(TRACK_B)
     await session._handle_event(_playback_event("paused"))
     _client_of(session).resume.assert_awaited_once()
+
+
+async def test_an_app_pause_is_only_undone_so_many_times(tmp_path: Path) -> None:
+    """Someone who keeps pausing means it: the session gives up instead of fighting on."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    for _ in range(_MAX_APP_PAUSE_RESUMES):
+        await session._handle_event(_playback_event("playing"))
+        await session._handle_event(_playback_event("paused"))
+    assert _client_of(session).resume.await_count == _MAX_APP_PAUSE_RESUMES
+    assert session._error is None
+
+    await session._handle_event(_playback_event("playing"))
+    await session._handle_event(_playback_event("paused"))
+    assert _client_of(session).resume.await_count == _MAX_APP_PAUSE_RESUMES
+    assert session.usable is False
+    assert session._app_control is SoloistAppControl.PAUSED
+
+
+async def test_one_pause_reported_twice_counts_once(tmp_path: Path) -> None:
+    """A repeated snapshot of the same pause is not a new pause."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    for _ in range(_MAX_APP_PAUSE_RESUMES + 2):
+        await session._handle_event(_playback_event("paused"))
+    assert session.usable is True
+
+
+async def test_the_pause_budget_resets_on_the_next_item(tmp_path: Path) -> None:
+    """Each item gets its own budget; pausing one track does not spend the next one's."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    for _ in range(_MAX_APP_PAUSE_RESUMES):
+        await session._handle_event(_playback_event("playing"))
+        await session._handle_event(_playback_event("paused"))
+    await session._observe_current(TRACK_B, 200_000)
+    assert session._app_pauses == 0
+
+
+async def test_a_pause_is_not_undone_once_the_device_is_gone(tmp_path: Path) -> None:
+    """A bare resume on a device Spotify no longer routes to would play to nobody."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._was_active = False
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    await session._handle_event(_playback_event("paused"))
+    _client_of(session).resume.assert_not_awaited()
+
+
+async def test_losing_the_active_device_ends_the_session(tmp_path: Path) -> None:
+    """Playback moved to another device from the Spotify app: this session is over."""
+    session = _make_session(tmp_path)
+    await session._handle_event(_device_event(is_active=False))
+    assert session.usable is False
+    assert session._app_control is SoloistAppControl.TOOK_OVER
+
+
+async def test_a_takeover_reported_on_the_auth_state_ends_the_session(tmp_path: Path) -> None:
+    """The active-device state also rides on auth_state, and counts the same there."""
+    session = _make_session(tmp_path)
+    await session._handle_event(_auth_event(logged_in=True, is_active=False))
+    assert session.usable is False
+
+
+async def test_an_inactive_device_before_activation_is_not_a_takeover(tmp_path: Path) -> None:
+    """A fresh daemon is inactive until the session claims it; that is not a takeover."""
+    session = _make_session(tmp_path)
+    session._was_active = False
+    await session._handle_event(_device_event(is_active=False))
+    await session._handle_event(_auth_event(logged_in=True, is_active=False))
+    assert session.usable is True
+
+    await session._handle_event(_device_event(is_active=True))
+    await session._handle_event(_device_event(is_active=False))
+    assert session.usable is False
+
+
+async def test_a_lost_login_is_not_reported_as_a_takeover(tmp_path: Path) -> None:
+    """Losing the login wins over the inactive device it brings with it."""
+    session = _make_session(tmp_path)
+    await session._handle_event(_auth_event(logged_in=False, is_active=False))
+    assert session.usable is False
+    assert session._app_control is None
+
+
+async def test_a_track_started_from_the_app_ends_the_session(tmp_path: Path) -> None:
+    """The engine pulled off an item part-way through is the app playing something else."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    await session._observe_current(TRACK_A, 200_000)
+    item.observe_position(20_000)
+
+    await session._observe_current("spotify:track:theirs", 180_000)
+    assert session.usable is False
+    assert session._app_control is SoloistAppControl.TOOK_OVER
+    assert session.current is item
+
+
+async def test_the_engine_moving_on_at_a_track_end_is_not_a_takeover(tmp_path: Path) -> None:
+    """An unasked-for item the engine reaches at a boundary is its own autoplay."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    await session._observe_current(TRACK_A, 200_000)
+    item.observe_position(200_000)
+
+    await session._observe_current("spotify:track:autoplay", 180_000)
+    assert session.usable is True
+    assert session.item_for("spotify:track:autoplay") is None
+
+
+async def test_an_ended_item_says_what_the_app_did(tmp_path: Path) -> None:
+    """The item's stream fails with the takeover, not a generic session error."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    await session._handle_event(_device_event(is_active=False))
+    with pytest.raises(SoloistAppControlError) as err:
+        await session.validate_item(item)
+    assert err.value.translation_key == SoloistAppControl.TOOK_OVER.value
+    assert isinstance(err.value, ProviderStreamLimitError)
+
+
+async def test_a_session_being_torn_down_does_not_hold_off_the_next_one(tmp_path: Path) -> None:
+    """Teardown pauses the daemon; that must not read as the user pausing."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    session._stopped = True
+    for _ in range(_MAX_APP_PAUSE_RESUMES + 1):
+        await session._handle_event(_playback_event("playing"))
+        await session._handle_event(_playback_event("paused"))
+    await session._handle_event(_device_event(is_active=False))
+    session.backend._raise_if_app_controlled()
+
+
+async def test_no_session_is_started_while_the_app_holds_the_last_one(tmp_path: Path) -> None:
+    """A replacement would claim the Connect device straight back off the user."""
+    backend = _make_backend(tmp_path)
+    backend.note_app_control(SoloistAppControl.TOOK_OVER)
+    with pytest.raises(SoloistAppControlError):
+        await backend._acquire(TRACK_A, 0, "player1")
+
+
+async def test_the_hold_on_a_new_session_expires(tmp_path: Path) -> None:
+    """Coming back to Music Assistant later plays again without any fuss."""
+    backend = _make_backend(tmp_path)
+    backend.note_app_control(SoloistAppControl.TOOK_OVER)
+    backend._app_control_until = time.monotonic() - 1
+    backend._raise_if_app_controlled()
+    assert backend._app_control is None
+
+
+def test_the_playback_device_is_named_apart_from_the_connect_one() -> None:
+    """Two identically named devices in the Spotify app is what causes the takeovers."""
+    assert SOLOIST_DEVICE_NAME != DEFAULT_PUBLISH_NAME
 
 
 async def test_app_volume_change_is_pinned_back_to_unity(tmp_path: Path) -> None:
@@ -1606,8 +1776,10 @@ def _make_session(tmp_path: Path, queue_id: str | None = "player1") -> _SoloistS
     session._sink = AsyncMock()
     session._client = AsyncMock()
     session._proc = MagicMock(returncode=None)
-    # a session under test is past the engine's login unless a test says otherwise
+    # a session under test is past the engine's login and has claimed the
+    # Connect device, unless a test says otherwise
     session._logged_in = True
+    session._was_active = True
     return session
 
 
@@ -1654,12 +1826,19 @@ def _queues_of(session: _SoloistSession) -> MagicMock:
     return cast("MagicMock", session.mass.player_queues)
 
 
-def _auth_event(*, logged_in: bool) -> SoloistEvent:
-    """Return an auth_state event with the given login state."""
+def _auth_event(*, logged_in: bool, is_active: bool = True) -> SoloistEvent:
+    """Return an auth_state event with the given login and active-device state."""
     return SoloistEvent(
         type="auth_state",
-        data=SoloistAuthState(logged_in=logged_in, is_active=False),
+        data=SoloistAuthState(logged_in=logged_in, is_active=is_active),
         raw={},
+    )
+
+
+def _device_event(*, is_active: bool) -> SoloistEvent:
+    """Return a device_changed event with the given active-device state."""
+    return SoloistEvent(
+        type="device_changed", data=SoloistDeviceChanged(is_active=is_active), raw={}
     )
 
 
