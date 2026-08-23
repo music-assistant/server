@@ -1864,13 +1864,17 @@ class _ItemAudio:
         Return whether the engine is part-way through this item.
 
         Distinguishes the engine being pulled off an item from it moving on at
-        the item's own end, which is an ordinary boundary. Answers False
+        the item's own end, which is an ordinary boundary — and with crossfade
+        that boundary falls a crossfade short of the duration. Answers False
         whenever there is nothing to judge by, so an unknown position is never
         read as an interruption.
         """
-        return (
-            self.started.is_set() and not self._closed and not self.draining and not self.at_own_end
-        )
+        if not self.started.is_set() or self._closed or self.draining:
+            return False
+        if self.duration_ms is None or self.last_position_ms is None:
+            return False
+        end_of_item_ms = self.session.crossfade_ms + _INCOMPLETE_TOLERANCE_MS
+        return self.last_position_ms + end_of_item_ms < self.duration_ms
 
     @property
     def tail_complete(self) -> bool:

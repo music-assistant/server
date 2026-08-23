@@ -907,6 +907,19 @@ async def test_the_engine_moving_on_at_a_track_end_is_not_a_takeover(tmp_path: P
     assert session.item_for("spotify:track:autoplay") is None
 
 
+async def test_a_long_crossfade_boundary_is_not_a_takeover(tmp_path: Path) -> None:
+    """With crossfade the engine moves on a crossfade short of the duration."""
+    session = _make_session(tmp_path)
+    session.crossfade_ms = 15_000
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    await session._observe_current(TRACK_A, 200_000)
+    # the last position reported before the engine crossfades into the next track
+    item.observe_position(200_000 - session.crossfade_ms)
+
+    await session._observe_current("spotify:track:autoplay", 180_000)
+    assert session.usable is True
+
+
 async def test_an_ended_item_says_what_the_app_did(tmp_path: Path) -> None:
     """The item's stream fails with the takeover, not a generic session error."""
     session = _make_session(tmp_path)
