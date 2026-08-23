@@ -489,6 +489,33 @@ class TasksController(CoreController):
             return
         self.update_task_progress(task_id, progress, text)
 
+    def set_task_report(self, task_id: str, markdown: str | None) -> None:
+        """
+        Set the Markdown report for a task.
+
+        :param task_id: The id of the task to update.
+        :param markdown: Markdown report content or None to clear.
+        """
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(self.set_task_report, task_id, markdown)
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
+        self._schedule_task_update()
+
+    def set_current_task_report(self, markdown: str | None) -> None:
+        """
+        Set the Markdown report for the task active in the current async context.
+
+        :param markdown: Markdown report content or None to clear.
+        """
+        if not (task_id := ACTIVE_TASK_ID.get()):
+            return
+        self.set_task_report(task_id, markdown)
+
     def add_task_failure(self, task_id: str, message: str) -> None:
         """
         Record a non-fatal failure for a task.
@@ -652,6 +679,7 @@ class TasksController(CoreController):
             managed.task_info.last_error = None
             managed.task_info.failure_count = 0
             managed.task_info.failure_messages.clear()
+            managed.task_info.report = None
             managed.task_info.finished_at = None
         managed.task_info.status = TaskStatus.PENDING
         managed.task_info.last_run_user_id = run_user_id
@@ -693,6 +721,7 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
+            update_report=self.set_task_report,
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)

@@ -42,6 +42,7 @@ from music_assistant.controllers.tasks import (
     get_current_task,
     get_current_task_id,
     report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress,
     update_current_task_progress_from_index,
     update_current_task_progress_text,
@@ -98,6 +99,11 @@ async def test_run_background_task(tasks_controller: TasksController) -> None:
         seen_task_id = get_current_task_id()
         update_current_task_progress(42, "Processing playlist items")
         update_current_task_progress_text("Refreshing playlist")
+        await asyncio.to_thread(
+            set_current_task_report,
+            "## Result\n\nAdded 42 playlist items.",
+        )
+        await asyncio.sleep(0)
         handler_started.set()
 
     task = tasks_controller.run_background_task(
@@ -118,6 +124,7 @@ async def test_run_background_task(tasks_controller: TasksController) -> None:
     assert task.finished_at is not None
     assert task.progress == 42
     assert task.progress_text == "Refreshing playlist"
+    assert task.report == "## Result\n\nAdded 42 playlist items."
     assert any("Task started" in line for line in task.logs)
     assert any("Task completed successfully" in line for line in task.logs)
 
@@ -146,6 +153,52 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
     assert task.progress == 50
     assert task.progress_text == "Matching playlist items"
     assert any("completed with 1 issue" in line for line in task.logs)
+
+
+async def test_task_report_updates_from_thread_and_clears_on_retry(
+    tasks_controller: TasksController,
+) -> None:
+    """Task reports should dispatch from threads and reset before a retry."""
+    retry_started = asyncio.Event()
+    finish_retry = asyncio.Event()
+    attempt = 0
+
+    async def handler() -> None:
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            raise RuntimeError("First attempt failed")
+        retry_started.set()
+        await finish_retry.wait()
+
+    task = tasks_controller.run_background_task(
+        name="Retry report test",
+        handler=handler,
+        allow_retry=True,
+    )
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.FAILED)
+    previous_updated_at = task.updated_at
+    tasks_controller._signal_task_update()
+
+    await asyncio.to_thread(
+        tasks_controller.set_task_report,
+        task.id,
+        "## First attempt\n\nSome items could not be processed.",
+    )
+    await asyncio.sleep(0)
+
+    assert task.report == "## First attempt\n\nSome items could not be processed."
+    assert task.updated_at > previous_updated_at
+    assert tasks_controller._scheduled_task_update_at is not None
+
+    tasks_controller.retry_task(task.id)
+    await retry_started.wait()
+
+    task = tasks_controller.get_task(task.id)
+    assert task.report is None
+
+    finish_retry.set()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
 
 
 async def test_priority_task_runs_before_normal(tasks_controller: TasksController) -> None:
@@ -370,6 +423,7 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
     task.last_run_user_id = "admin-user"
     task.failure_count = 2
     task.failure_messages[:] = ["Album import failed", "Artwork lookup failed"]
+    task.report = "## Sync result\n\nImported 12 artists."
     controller._persist_scheduled_task_state(controller._get_managed_task(task.id))
 
     persisted_states = mass_minimal.config.get("core/tasks/scheduled_task_states", {})
@@ -399,6 +453,7 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
             "Album import failed",
             "Artwork lookup failed",
         ]
+        assert restored_task.report == "## Sync result\n\nImported 12 artists."
         assert restored_task.schedule is not None
         assert restored_task.schedule.enabled is False
         assert restored_task.schedule.type == TaskScheduleType.WEEKLY
