@@ -1566,7 +1566,9 @@ class YandexYnisonProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset plugin state."""
         prev_player_id = self._active_player_id
-        was_in_use = self._in_use_by_player == prev_player_id
+        # the owner is the user-facing MA player; _active_player_id can be the protocol
+        # player that consumed the stream, which is not what holds the source session
+        owner_player_id = self._in_use_by_player
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -1583,8 +1585,10 @@ class YandexYnisonProvider(PluginProvider):
                 "Playback ended on player %s, clearing active player",
                 prev_player_id,
             )
-            if was_in_use:
-                self.mass.create_task(self.mass.players.cmd_stop(prev_player_id))
+            if owner_player_id:
+                # give the source back as well as stopping: a session left on the player
+                # keeps it publishing this source, so its own queue stays unreachable
+                self.mass.create_task(self.mass.players.deselect_source(owner_player_id))
             self.mass.players.trigger_player_update(prev_player_id)
 
     # ------------------------------------------------------------------

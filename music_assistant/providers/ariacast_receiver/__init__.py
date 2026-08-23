@@ -754,11 +754,12 @@ class AriaCastReceiver(PluginProvider):
                 self.logger.debug("Triggering play on player %s", target)
                 self.mass.create_task(self._safe_play_media(target))
         elif not is_playing and was_playing and self._in_use_by_player:
-            player_id = self._active_player_id
+            # deselect the owner, not _active_player_id: that can be a protocol player
+            # whose stream we were consumed over, while the session hangs off the owner
+            owner_player_id = self._in_use_by_player
             # Clear the guard before the stop so a fast resume can re-trigger
             self._in_use_by_player = None
-            if player_id:
-                self.mass.create_task(self.mass.players.deselect_source(player_id))
+            self.mass.create_task(self.mass.players.deselect_source(owner_player_id))
 
         await self._broadcast_meta()
 

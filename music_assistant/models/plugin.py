@@ -213,8 +213,13 @@ class PluginProvider(Provider):
         prior request's teardown — see ``on_source_unselected`` for details.
 
         :param source_id: The AudioSource.item_id that was selected.
-        :param player_id: The player that will receive the stream.
-        :param owner_player_id: The queue that owns this playback session.
+        :param player_id: The player the audio is served to. For a source playing on
+            a player this is the owner itself; only direct-PCM consumers and the
+            legacy queue-item path pass a different (protocol or group member) player.
+        :param owner_player_id: The player that owns this playback session. Prefer this
+            for anything you store: it is the user-facing player and stays valid for
+            play_media and cmd_stop, where ``player_id`` can be an ephemeral protocol
+            bridge whose id is gone by the time you use it.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
@@ -245,7 +250,7 @@ class PluginProvider(Provider):
         the new stream, silently dropping metadata and volume sync.
 
         :param source_id: The AudioSource.item_id whose stream ended.
-        :param owner_player_id: The queue whose stream is being torn down.
+        :param owner_player_id: The player that owns the stream being torn down.
         :param stream_session_id: The token paired with ``on_source_selected``
             for this specific stream request. Ignore the callback if it does
             not match the currently stored active session id.

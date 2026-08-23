@@ -4225,20 +4225,35 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param audio_source: The source that was selected.
         :param provider: The plugin exposing that source.
         """
+        # a player outputs one source at a time, so another one already on it has to be
+        # handed back first: replacing the session silently would leave its plugin
+        # holding an upstream session that still points at this player
+        if (current := self.get_audio_source_session(player.player_id)) is not None and (
+            current.source_id != audio_source.item_id
+            or current.provider_instance_id != provider.instance_id
+        ):
+            await self._release_audio_source(player.player_id)
         session = self._start_audio_source_session(
             player.player_id, audio_source, provider.instance_id
         )
-        await self._handle_play_media(
-            player.player_id,
-            PlayerMedia(
-                uri=audio_source.uri or audio_source.item_id,
-                media_type=MediaType.AUDIO_SOURCE,
-                title=audio_source.name,
-                # the session's owner, which its stream url is keyed on
-                source_id=player.player_id,
-                queue_session_id=session.playback_session_id,
-            ),
-        )
+        try:
+            await self._handle_play_media(
+                player.player_id,
+                PlayerMedia(
+                    uri=audio_source.uri or audio_source.item_id,
+                    media_type=MediaType.AUDIO_SOURCE,
+                    title=audio_source.name,
+                    # the session's owner, which its stream url is keyed on
+                    source_id=player.player_id,
+                    queue_session_id=session.playback_session_id,
+                ),
+            )
+        except Exception:
+            # the source never started, so the player must not go on publishing it:
+            # a session left behind holds the queue inactive with nothing playing it
+            if self.get_audio_source_session(player.player_id) is session:
+                await self._release_audio_source(player.player_id)
+            raise
 
     async def _handle_select_source(self, player_id: str, source: str | None) -> None:
         """

@@ -9,8 +9,9 @@ plugin so an upstream session stops pointing at Music Assistant.
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
@@ -247,3 +248,72 @@ async def test_refreshing_with_another_providers_source_is_rejected() -> None:
     )
 
     assert session.source is original
+
+
+async def test_swapping_one_source_for_another_hands_the_first_back() -> None:
+    """
+    A player switching between two live sources tells the first one's plugin.
+
+    Otherwise the displaced plugin keeps an upstream session pointed at a player it
+    no longer has, and the session it holds is simply overwritten in silence.
+    """
+    controller, first_provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    other_instance = "airplay_receiver--xyz"
+    other_provider = MagicMock(spec=PluginProvider)
+    other_provider.instance_id = other_instance
+    other_provider.supported_features = {ProviderFeature.AUDIO_SOURCE}
+    other_provider.on_source_released = AsyncMock()
+    providers = {PROVIDER_INSTANCE: first_provider, other_instance: other_provider}
+    controller.mass.get_provider = MagicMock(side_effect=lambda key: providers.get(key))
+    other_source = AudioSource(
+        item_id="receiver",
+        provider=other_instance,
+        name="AirPlay",
+        provider_mappings={
+            ProviderMapping(
+                item_id="receiver",
+                provider_domain="airplay_receiver",
+                provider_instance=other_instance,
+            )
+        },
+    )
+    controller.mass.music.get_item_by_uri = AsyncMock(return_value=other_source)
+
+    await controller._handle_select_source(PLAYER_ID, f"{other_instance}://audio_source/receiver")
+
+    first_provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+    other_provider.on_source_released.assert_not_awaited()
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    assert session.provider_instance_id == other_instance
+
+
+async def test_reselecting_the_same_source_does_not_hand_it_back() -> None:
+    """A player reconnecting to the source it already has keeps its session."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    first = controller.get_audio_source_session(PLAYER_ID)
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    provider.on_source_released.assert_not_awaited()
+    assert controller.get_audio_source_session(PLAYER_ID) is first
+
+
+async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:
+    """
+    A failed play command rolls the session back.
+
+    A session left behind would have the player publish a source that never started,
+    and its queue stays inactive with nothing playing it — unreachable from play.
+    """
+    controller, provider, _player = _controller(_source())
+    controller._handle_play_media = AsyncMock(side_effect=PlayerCommandFailed("no route"))
+
+    with pytest.raises(PlayerCommandFailed):
+        await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)

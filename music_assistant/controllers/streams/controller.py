@@ -1020,7 +1020,13 @@ class StreamsController(CoreController):
             try:
                 claimed = True
                 await prov.on_source_selected(
-                    session.source_id, source_player_id, source_player_id, stream_session_id
+                    # deliberately the owner for both: providers store this id to stop
+                    # or re-target the player later, and the url's player can be an
+                    # ephemeral protocol bridge whose id is invalid by then
+                    session.source_id,
+                    source_player_id,
+                    source_player_id,
+                    stream_session_id,
                 )
                 session.stream_session_id = stream_session_id
             except RuntimeError as err:

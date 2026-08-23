@@ -364,6 +364,42 @@ class TestClearActivePlayer:
         assert provider._in_use_by_player is None  # type: ignore[unreachable]
         provider.mass.players.trigger_player_update.assert_called_with("some-player")
 
+    def test_gives_the_source_back_to_its_owner(self) -> None:
+        """
+        The player is told to let the source go, not just to stop.
+
+        A session left on the player keeps it publishing Ynison as its source, so its
+        own queue stays inactive and cannot be started again.
+        """
+        provider = _make_provider()
+        provider._active_player_id = "some-player"
+        provider._in_use_by_player = "some-player"
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_called_once_with("some-player")
+
+    def test_the_owner_is_released_not_the_consuming_player(self) -> None:
+        """The session hangs off the owner, which is not who consumed the audio."""
+        provider = _make_provider()
+        # a protocol bridge streamed the audio on the owner's behalf
+        provider._active_player_id = "spb_bridge_1"
+        provider._in_use_by_player = "owner-player"
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_called_once_with("owner-player")
+
+    def test_nothing_is_released_when_the_source_was_not_in_use(self) -> None:
+        """No owner means no session to give back."""
+        provider = _make_provider()
+        provider._active_player_id = "some-player"
+        provider._in_use_by_player = None
+
+        provider._clear_active_player()
+
+        provider.mass.players.deselect_source.assert_not_called()
+
 
 # ------------------------------------------------------------------
 # Provider matching
