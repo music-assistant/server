@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -1197,21 +1197,36 @@ def test_a_session_being_read_never_expires(tmp_path: Path) -> None:
     assert session.usable is True
 
 
-async def test_a_daemon_that_will_not_die_leaves_the_teardown_open(tmp_path: Path) -> None:
+async def test_a_refused_skip_does_not_leave_the_audio_discarded(tmp_path: Path) -> None:
     """
-    A close that could not terminate the daemon is not a finished teardown.
+    A skip that never landed must not keep the session dropping its audio.
 
-    It is still holding the data directory, so the reference is kept for a later
-    attempt rather than the session being marked clean.
+    The marker silences everything the session captures, so a command that
+    failed has to clear it on the way out.
     """
+    session = _make_session(tmp_path)
+    client = cast("MagicMock", session._client)
+    client.skip_next = AsyncMock(side_effect=TimeoutError)
+    item = _ItemAudio(TRACK_B, session)
+
+    with pytest.raises(AudioError, match="would not skip"):
+        await session.skip_to(item)
+
+    assert session._discard_until is None
+
+
+async def test_a_daemon_that_will_not_die_is_reported_and_released(tmp_path: Path) -> None:
+    """A close that could not terminate the daemon still finishes the teardown."""
     session = _make_session(tmp_path)
     proc = cast("MagicMock", session._proc)
     proc.close = AsyncMock()
     # AsyncProcess.close() gives up after a handful of kill attempts
     proc.returncode = None
-    await session.stop()
-    assert session._teardown_done is False
-    assert session._proc is proc
+    with patch.object(session.logger, "warning") as warning:
+        await session.stop()
+    assert warning.called
+    assert session._teardown_done is True
+    assert session._proc is None
 
 
 async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> None:

@@ -697,12 +697,12 @@ class _SoloistSession:
         # item being left behind
         self._discard_until = item.uri
         try:
-            await client.skip_next()
-        except (TimeoutError, OSError, ClientError, SoloistError) as err:
-            raise AudioError(
-                f"Spotify Soloist would not skip to {item.uri}: {type(err).__name__} {err}"
-            ) from err
-        try:
+            try:
+                await client.skip_next()
+            except (TimeoutError, OSError, ClientError, SoloistError) as err:
+                raise AudioError(
+                    f"Spotify Soloist would not skip to {item.uri}: {type(err).__name__} {err}"
+                ) from err
             async with asyncio.timeout(_STARTUP_TIMEOUT_S):
                 await item.started.wait()
         except TimeoutError:
@@ -915,12 +915,10 @@ class _SoloistSession:
             with suppress(Exception):
                 await proc.close()
             if proc.returncode is None:
-                # close() gives up after a handful of kill attempts. The daemon is
-                # still holding the data directory, so this teardown is not done:
-                # keep the reference and leave the session un-torn-down, so a later
-                # stop() tries again and a spawn reports the directory as busy.
+                # close() has exhausted its kill attempts, so nothing here can do
+                # better; the daemon keeps the data directory and the next spawn
+                # reports it as busy
                 self.logger.warning("The Spotify Soloist daemon could not be stopped")
-                return
             # dropped only now: a cancellation during the awaits above must leave
             # the retry something to close, or the daemon keeps the data
             # directory and every later session is refused
