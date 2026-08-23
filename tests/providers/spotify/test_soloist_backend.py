@@ -46,6 +46,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
     SoloistAuthState,
     SoloistEntity,
+    SoloistError,
     SoloistEvent,
     SoloistPlaybackState,
     SoloistPosition,
@@ -253,6 +254,53 @@ async def test_a_pause_with_more_queued_suspends_the_sink(tmp_path: Path) -> Non
     session._pending.append(TRACK_B)
     await session._handle_event(_playback_event("paused"))
     _sink_of(session).suspend.assert_awaited_once()
+
+
+async def test_nothing_is_sent_before_the_websocket_is_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Commands travel over the events socket: a published endpoint is not enough."""
+    monkeypatch.setattr(soloist_backend, "_STARTUP_TIMEOUT_S", 0.05)
+    session = _make_session(tmp_path)
+    client = _client_of(session)
+    # the endpoint file exists, but the events task has not connected yet
+    client.connected = False
+    endpoint_published = asyncio.Event()
+    endpoint_published.set()
+    with pytest.raises(AudioError, match="WebSocket"):
+        await session._play(TRACK_A, 0, endpoint_published)
+    client.activate.assert_not_awaited()
+    client.play.assert_not_awaited()
+
+
+async def test_startup_activates_before_it_plays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh daemon has to become the active device before it is told to play."""
+    session = _make_session(tmp_path)
+    client = _client_of(session)
+    client.connected = True
+    monkeypatch.setattr(session, "_await_item_ready", AsyncMock())
+    endpoint_published = asyncio.Event()
+    endpoint_published.set()
+    item = await session._play(TRACK_A, 0, endpoint_published)
+    assert item.uri == TRACK_A
+    client.activate.assert_awaited_once_with(await_result=True)
+    client.play.assert_awaited_once_with(TRACK_A)
+
+
+async def test_a_refused_start_command_reports_soloist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped start command surfaces as a Soloist error, not a raw client one."""
+    session = _make_session(tmp_path)
+    client = _client_of(session)
+    client.connected = True
+    client.activate.side_effect = SoloistError("websocket is not connected")
+    endpoint_published = asyncio.Event()
+    endpoint_published.set()
+    with pytest.raises(AudioError, match="Spotify Soloist would not start"):
+        await session._play(TRACK_A, 0, endpoint_published)
 
 
 async def test_a_second_player_does_not_steal_a_session_in_use(tmp_path: Path) -> None:

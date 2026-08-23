@@ -113,6 +113,8 @@ _READ_SLICE_S: Final[float] = 1.0
 _STALL_TIMEOUT_S: Final[float] = 30.0
 # waiting for the daemon's WS endpoint, events and the requested item to appear
 _STARTUP_TIMEOUT_S: Final[float] = 30.0
+# how often to check whether the events task has the WebSocket up yet
+_CONNECT_POLL_S: Final[float] = 0.05
 _SEEK_CONFIRM_TIMEOUT_S: Final[float] = 15.0
 # a seek is re-sent at this interval until a position anchor confirms it
 _SEEK_RETRY_INTERVAL_S: Final[float] = 2.0
@@ -764,15 +766,26 @@ class _SoloistSession:
         assert client is not None
         item = self._items[spotify_uri] = _ItemAudio(spotify_uri, self)
         self._current = item
+        # Commands travel over the events connection, so the endpoint being
+        # published is not enough: the socket has to be up. It is the events
+        # task that opens it, which is why this waits for the connection rather
+        # than just for the endpoint file.
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT_S):
                 await client_ready.wait()
+                while not client.connected and not self._error:
+                    await asyncio.sleep(_CONNECT_POLL_S)
         except TimeoutError:
-            self._raise_startup_error("did not publish its WebSocket endpoint", spotify_uri)
-        # a fresh daemon is not the active Connect device yet, and play() on an
-        # inactive device would start playback on whatever else is active
-        await client.activate(await_result=True)
-        await client.play(spotify_uri)
+            self._raise_startup_error("did not accept a WebSocket connection", spotify_uri)
+        if self._error or not client.connected:
+            self._raise_startup_error("published no usable WebSocket endpoint", spotify_uri)
+        try:
+            # a fresh daemon is not the active Connect device yet, and play() on
+            # an inactive device would start playback on whatever else is active
+            await client.activate(await_result=True)
+            await client.play(spotify_uri)
+        except (TimeoutError, OSError, ClientError, SoloistError) as err:
+            raise AudioError(f"Spotify Soloist would not start {spotify_uri}: {err}") from err
         await self._await_item_ready(item)
         if seek_position:
             await self._cold_seek(client, item, seek_position * 1000)
