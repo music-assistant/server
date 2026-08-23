@@ -894,6 +894,39 @@ async def test_a_track_started_from_the_app_ends_the_session(tmp_path: Path) -> 
     assert session.current is item
 
 
+async def test_a_track_played_earlier_started_from_the_app_ends_the_session(
+    tmp_path: Path,
+) -> None:
+    """A known uri is no exemption: only the item fed behind this one is where we sent it."""
+    session = _make_session(tmp_path)
+    played = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    played.spent = True
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    await session._observe_current(TRACK_A, 200_000)
+    item.observe_position(20_000)
+
+    await session._observe_current(TRACK_B, 180_000)
+    assert session.usable is False
+    assert session._app_control is SoloistAppControl.TOOK_OVER
+
+
+async def test_skipping_from_the_app_to_the_fed_item_is_followed(tmp_path: Path) -> None:
+    """The queue moves to that same track, so following the engine keeps the two in step."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    await session._observe_current(TRACK_A, 200_000)
+    item.observe_position(20_000)
+    fed = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+
+    await session._observe_current(TRACK_B, 180_000)
+    assert session.usable is True
+    assert session.current is fed
+    assert session.item_for(TRACK_B) is fed
+
+
 async def test_the_engine_moving_on_at_a_track_end_is_not_a_takeover(tmp_path: Path) -> None:
     """An unasked-for item the engine reaches at a boundary is its own autoplay."""
     session = _make_session(tmp_path)

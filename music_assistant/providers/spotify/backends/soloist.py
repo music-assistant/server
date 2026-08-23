@@ -1633,13 +1633,15 @@ class _SoloistSession:
             current.started.set()
             return
         item = self._items.get(uri)
+        if uri not in self._pending and current is not None and current.mid_play:
+            # The engine left an item Music Assistant is part-way through for
+            # somewhere it was never sent: the user is driving from the Spotify
+            # app. The session's own moves never land here — the item fed behind
+            # this one is pending (which is also where a skip goes), and an item
+            # played to its end is not mid_play.
+            self._end_on_app_control(SoloistAppControl.TOOK_OVER)
+            return
         if item is None:
-            if current is not None and current.mid_play:
-                # An item Music Assistant is part-way through, dropped for
-                # something nobody asked for: the user started it from the
-                # Spotify app.
-                self._end_on_app_control(SoloistAppControl.TOOK_OVER)
-                return
             # Something nobody asked for: the state the engine restores when it
             # starts, or its own autoplay. It gets a channel so the reader has
             # somewhere to put the audio, but it is never offered as an item's
