@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 from music_assistant_models import media_items
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, MediaType
 
 from music_assistant.helpers import compare
 
@@ -69,6 +69,54 @@ def _track(
         provider_mappings={
             media_items.ProviderMapping(
                 item_id=item_id, provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+
+
+def _provider_track(
+    item_id: str,
+    provider: str,
+    *,
+    name: str = "Track",
+    version: str = "",
+    duration: int = 200,
+    album_name: str = "Album",
+    artist_names: tuple[str, ...] = ("Artist A",),
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> media_items.Track:
+    """Build a provider track for confidence comparisons."""
+    album = _album(
+        item_id=f"album-{item_id}",
+        provider=provider,
+        name=album_name,
+    )
+    return media_items.Track(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        version=version,
+        duration=duration,
+        disc_number=1,
+        track_number=1,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id=f"artist-{index}",
+                    provider=provider,
+                    name=artist_name,
+                    media_type=MediaType.ARTIST,
+                )
+                for index, artist_name in enumerate(artist_names)
+            ]
+        ),
+        album=album,
+        external_ids=external_ids or set(),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
             )
         },
     )
@@ -1212,6 +1260,172 @@ def test_compare_track_missing_disc_number_assumes_disc_one() -> None:
     disc_two = _albumtrack("3", "test2", disc_number=2)
     disc_two.duration = 320
     assert compare.compare_track(untagged, disc_two) is False
+
+
+def test_compare_track_evidence_ranks_release_and_recording_matches() -> None:
+    """Exact-release evidence outranks the same recording on another album."""
+    base = _provider_track("base", "provider_a")
+    exact = _provider_track("exact", "provider_b")
+    alternate_release = _provider_track(
+        "alternate",
+        "provider_b",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(base, exact) == compare.TrackMatchConfidence.EXACT
+    assert (
+        compare.compare_track_evidence(base, alternate_release)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_accepts_missing_remaster_by_album_year() -> None:
+    """Matching album years resolve version metadata omitted by one provider."""
+    base = _provider_track("base", "provider_a")
+    remaster = _provider_track(
+        "remaster",
+        "provider_b",
+        version="2022 Remaster",
+    )
+    assert isinstance(base.album, media_items.Album)
+    base.album.year = 2022
+    assert isinstance(remaster.album, media_items.Album)
+    remaster.album.year = 2022
+
+    assert compare.compare_track_evidence(base, remaster) == compare.TrackMatchConfidence.LIKELY
+
+    remaster.album.year = 2021
+    assert compare.compare_track_evidence(base, remaster) == compare.TrackMatchConfidence.LOOSE
+
+
+def test_compare_track_evidence_rejects_recording_version_conflicts() -> None:
+    """A recording-changing version never matches the original recording."""
+    recording_id = (
+        ExternalID.MB_RECORDING,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = _provider_track("base", "provider_a", external_ids={recording_id})
+    remix = _provider_track(
+        "remix",
+        "provider_b",
+        version="Club Remix",
+        external_ids={recording_id},
+    )
+
+    assert compare.compare_track_evidence(base, remix) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
+    """Featured credits may move between the title and structured artist list."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Guest)",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_ranks_recording_identifiers() -> None:
+    """Release-track IDs are exact while recording IDs identify alternate releases."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    mb_recording = (
+        ExternalID.MB_RECORDING,
+        "abcdefab-abcd-abcd-abcd-abcdefabcdef",
+    )
+    base = _provider_track(
+        "base",
+        "provider_a",
+        album_name="Original",
+        external_ids={mb_track, mb_recording},
+    )
+    exact = _provider_track(
+        "exact",
+        "provider_b",
+        album_name="Reissue",
+        external_ids={mb_track, mb_recording},
+    )
+    recording = _provider_track(
+        "recording",
+        "provider_b",
+        album_name="Compilation",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+            ),
+            mb_recording,
+        },
+    )
+    conflicting_recording = _provider_track(
+        "conflict",
+        "provider_b",
+        external_ids={
+            mb_track,
+            (
+                ExternalID.MB_RECORDING,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ),
+        },
+    )
+
+    assert compare.compare_track_evidence(base, exact) == compare.TrackMatchConfidence.EXACT
+    assert compare.compare_track_evidence(base, recording) == compare.TrackMatchConfidence.LIKELY
+    assert (
+        compare.compare_track_evidence(base, conflicting_recording)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_uses_isrc_duration_tolerance() -> None:
+    """A valid shared ISRC tolerates provider duration drift up to eight seconds."""
+    isrc = (ExternalID.ISRC, "USRC17607839")
+    base = _provider_track("base", "provider_a", duration=200, external_ids={isrc})
+    within_tolerance = _provider_track(
+        "within",
+        "provider_b",
+        duration=208,
+        album_name="Compilation",
+        external_ids={isrc},
+    )
+    outside_tolerance = _provider_track(
+        "outside",
+        "provider_b",
+        duration=209,
+        album_name="Compilation",
+        external_ids={isrc},
+    )
+
+    assert (
+        compare.compare_track_evidence(base, within_tolerance)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+    assert (
+        compare.compare_track_evidence(base, outside_tolerance)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_rejects_explicitness_conflicts() -> None:
+    """Explicit and clean recordings are not interchangeable migration matches."""
+    explicit = _provider_track("explicit", "provider_a")
+    clean = _provider_track("clean", "provider_b")
+    explicit.metadata.explicit = True
+    clean.metadata.explicit = False
+
+    assert compare.compare_track_evidence(explicit, clean) == compare.TrackMatchConfidence.NO_MATCH
 
 
 def test_compare_strings_accent_drift_matches() -> None:

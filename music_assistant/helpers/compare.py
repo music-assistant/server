@@ -6,7 +6,7 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from difflib import SequenceMatcher
-from enum import Enum
+from enum import Enum, IntEnum
 from functools import lru_cache
 from typing import Final
 
@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
+from music_assistant.helpers.util import parse_title_and_version
 
 IGNORE_VERSIONS = (
     "explicit",  # explicit is matched separately
@@ -95,6 +96,8 @@ ALBUM_RETAIL_SUFFIX_KEYS: Final = tuple(
 # match allows more duration drift than a bare title/version fallback
 _ISRC_DURATION_TOLERANCE = 8
 _FALLBACK_DURATION_TOLERANCE = 2
+_TRACK_DURATION_TOLERANCE = 3
+_LOOSE_TRACK_DURATION_TOLERANCE = 5
 
 
 class AlbumMatchEvidence(Enum):
@@ -103,6 +106,15 @@ class AlbumMatchEvidence(Enum):
     MATCH = "match"
     NO_MATCH = "no_match"
     INSUFFICIENT = "insufficient"
+
+
+class TrackMatchConfidence(IntEnum):
+    """Confidence level for a cross-provider track match."""
+
+    NO_MATCH = 0
+    LOOSE = 1
+    LIKELY = 2
+    EXACT = 3
 
 
 def compare_media_item(
@@ -449,6 +461,109 @@ def compare_track(
     # Note that as this stage, all other info already matches,
     # such as title, artist etc.
     return abs(base_item.duration - compare_item.duration) <= 2
+
+
+def compare_track_evidence(
+    base_item: Track,
+    compare_item: Track,
+    base_album: Album | ItemMapping | None = None,
+    compare_album_item: Album | ItemMapping | None = None,
+) -> TrackMatchConfidence:
+    """
+    Return the confidence that two provider tracks represent the same recording.
+
+    :param base_item: Reference track.
+    :param compare_item: Candidate track.
+    :param base_album: Optional full album for the reference track.
+    :param compare_album_item: Optional full album for the candidate track.
+    """
+    if compare_item_ids(base_item, compare_item):
+        return TrackMatchConfidence.EXACT
+
+    base_album = base_album or base_item.album
+    compare_album_item = compare_album_item or compare_item.album
+    if _same_album_position_conflicts(base_item, compare_item, base_album, compare_album_item):
+        return TrackMatchConfidence.NO_MATCH
+
+    base_version = _track_version(base_item)
+    compare_version_value = _track_version(compare_item)
+    if _track_versions_conflict(base_version, compare_version_value):
+        return TrackMatchConfidence.NO_MATCH
+    base_explicit = _track_explicit(base_item)
+    compare_explicit_value = _track_explicit(compare_item)
+    if (
+        base_explicit is not None
+        and compare_explicit_value is not None
+        and base_explicit != compare_explicit_value
+    ):
+        return TrackMatchConfidence.NO_MATCH
+
+    mb_track_match = compare_external_ids(
+        base_item.external_ids, compare_item.external_ids, ExternalID.MB_TRACK
+    )
+
+    recording_id_match = False
+    for external_id_type in (ExternalID.MB_RECORDING, ExternalID.ACOUSTID):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, external_id_type
+        )
+        if external_id_match is False:
+            return TrackMatchConfidence.NO_MATCH
+        recording_id_match |= external_id_match is True
+    if mb_track_match is True:
+        return TrackMatchConfidence.EXACT
+
+    title_matches = compare_track_title(base_item.name, compare_item.name)
+    artists_match = compare_artists(base_item.artists, compare_item.artists, any_match=True)
+    versions_match = compare_version(base_version, compare_version_value)
+    same_album = bool(
+        base_album
+        and compare_album_item
+        and compare_album(base_album, compare_album_item, strict=False)
+    )
+    if (
+        same_album
+        and title_matches
+        and artists_match
+        and versions_match
+        and _same_album_position_matches(base_item, compare_item)
+    ):
+        return TrackMatchConfidence.EXACT
+
+    if recording_id_match:
+        return TrackMatchConfidence.LIKELY
+
+    base_isrcs = _track_isrcs(base_item)
+    compare_isrcs = _track_isrcs(compare_item)
+    if base_isrcs.intersection(compare_isrcs) and _track_durations_match(
+        base_item, compare_item, _ISRC_DURATION_TOLERANCE
+    ):
+        return TrackMatchConfidence.LIKELY
+
+    if not title_matches or not artists_match:
+        return TrackMatchConfidence.NO_MATCH
+    if versions_match and _track_durations_match(
+        base_item, compare_item, _TRACK_DURATION_TOLERANCE
+    ):
+        return TrackMatchConfidence.LIKELY
+    if (
+        _is_missing_remaster_version(base_version, compare_version_value)
+        and _album_years_match(base_album, compare_album_item)
+        and _track_durations_match(base_item, compare_item, _TRACK_DURATION_TOLERANCE)
+    ):
+        return TrackMatchConfidence.LIKELY
+    if _track_durations_match(base_item, compare_item, _LOOSE_TRACK_DURATION_TOLERANCE):
+        return TrackMatchConfidence.LOOSE
+    return TrackMatchConfidence.NO_MATCH
+
+
+def compare_track_title(base_title: str, compare_title: str) -> bool:
+    """Return whether two track titles have the same identity."""
+    if compare_strings(base_title, compare_title, strict=True):
+        return True
+    base_search_title, _ = parse_title_and_version(base_title, strip_for_search=True)
+    compare_search_title, _ = parse_title_and_version(compare_title, strip_for_search=True)
+    return compare_strings(base_search_title, compare_search_title, strict=True)
 
 
 def compare_playlist(
@@ -950,6 +1065,91 @@ def _track_isrcs(track: Track) -> set[str]:
         for current_type, value in track.external_ids
         if current_type == ExternalID.ISRC and is_valid_isrc(value)
     }
+
+
+def _track_version(track: Track) -> str:
+    """Return version metadata combined with any version embedded in the title."""
+    _, version = parse_title_and_version(track.name, track.version)
+    return version
+
+
+def _track_versions_conflict(base_version: str, compare_version_value: str) -> bool:
+    """Return whether version metadata identifies different recordings."""
+    if compare_version(base_version, compare_version_value):
+        return False
+    base_tokens = set(_normalize_version_tokens(base_version))
+    compare_tokens = set(_normalize_version_tokens(compare_version_value))
+    return bool((base_tokens | compare_tokens) & _RECORDING_CONFLICT_VERSION_TOKENS)
+
+
+def _track_explicit(track: Track) -> bool | None:
+    """Return explicitness from the track or its full album."""
+    if track.metadata.explicit is not None:
+        return track.metadata.explicit
+    if isinstance(track.album, Album):
+        return track.album.metadata.explicit
+    return None
+
+
+def _same_album_position_matches(base_track: Track, compare_track: Track) -> bool:
+    """Return whether track positions agree or duration can stand in for a missing position."""
+    if base_track.track_number and compare_track.track_number:
+        return (base_track.disc_number or 1, base_track.track_number) == (
+            compare_track.disc_number or 1,
+            compare_track.track_number,
+        )
+    return _track_durations_match(base_track, compare_track, _TRACK_DURATION_TOLERANCE)
+
+
+def _same_album_position_conflicts(
+    base_track: Track,
+    compare_track: Track,
+    base_album: Album | ItemMapping | None,
+    compare_album_item: Album | ItemMapping | None,
+) -> bool:
+    """Return whether tracks occupy different known positions on the same album."""
+    if not base_album or not compare_album_item:
+        return False
+    if not compare_album(base_album, compare_album_item, strict=False):
+        return False
+    if not base_track.track_number or not compare_track.track_number:
+        return False
+    return (base_track.disc_number or 1, base_track.track_number) != (
+        compare_track.disc_number or 1,
+        compare_track.track_number,
+    )
+
+
+def _track_durations_match(base_track: Track, compare_track: Track, tolerance: int) -> bool:
+    """Return whether two known track durations are within tolerance."""
+    if not base_track.duration or not compare_track.duration:
+        return False
+    return _duration_close(base_track.duration, compare_track.duration, tolerance)
+
+
+def _is_missing_remaster_version(base_version: str, compare_version_value: str) -> bool:
+    """Return whether one provider omitted remaster-only version metadata."""
+    base_tokens = set(_normalize_version_tokens(base_version))
+    compare_tokens = set(_normalize_version_tokens(compare_version_value))
+    if bool(base_tokens) == bool(compare_tokens):
+        return False
+    version_tokens = base_tokens or compare_tokens
+    return "remaster" in version_tokens and all(
+        token == "remaster" or token.isdigit() for token in version_tokens
+    )
+
+
+def _album_years_match(
+    base_album: Album | ItemMapping | None,
+    compare_album_item: Album | ItemMapping | None,
+) -> bool:
+    """Return whether two full albums declare the same release year."""
+    return bool(
+        isinstance(base_album, Album)
+        and isinstance(compare_album_item, Album)
+        and base_album.year
+        and base_album.year == compare_album_item.year
+    )
 
 
 def _duration_close(base_duration: int, compare_duration: int, tolerance: int) -> bool:

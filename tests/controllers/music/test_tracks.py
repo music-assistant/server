@@ -2,12 +2,18 @@
 
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.media_items import Artist, ProviderMapping, UniqueList
 
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.tracks import (
+    TrackProviderMatch,
+    TrackProviderMatchResult,
+)
+from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
 
 from .helpers import create_track
@@ -159,6 +165,184 @@ async def test_match_provider_uses_full_track_mapping(music: MusicController) ->
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == list(full_track.provider_mappings)
+
+
+async def test_find_provider_match_reuses_domain_mapping_for_target_instance(
+    music: MusicController,
+) -> None:
+    """A catalog mapping is reused across instances without searching."""
+    track = create_track("qobuz_1", "track")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_2"
+    provider.domain = "qobuz"
+
+    with patch.object(music.tracks, "search", AsyncMock()) as search:
+        result = await music.tracks.find_provider_match(track, provider)
+
+    assert result.match is not None
+    assert result.match.mapping.item_id == "track"
+    assert result.match.mapping.provider_instance == "qobuz_2"
+    assert result.match.confidence == TrackMatchConfidence.EXACT
+    search.assert_not_awaited()
+
+
+async def test_find_provider_match_prefers_exact_candidate(
+    music: MusicController,
+) -> None:
+    """An exact candidate outranks a loose result returned earlier."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = create_track("spotify_1", "base", isrc="USRC17607839")
+    base.external_ids.add(mb_track)
+    loose = create_track("qobuz_1", "loose", isrc="OTHER")
+    loose.version = "Deluxe"
+    exact = create_track("qobuz_1", "exact", isrc="USRC17607839")
+    exact.external_ids.add(mb_track)
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(music.tracks, "search", AsyncMock(return_value=[loose, exact])),
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(
+                side_effect=lambda item_id, *_args, **_kwargs: {"loose": loose, "exact": exact}[
+                    item_id
+                ]
+            ),
+        ),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LOOSE,
+        )
+
+    assert result.match is not None
+    assert result.match.track.item_id == "exact"
+    assert result.match.confidence == TrackMatchConfidence.EXACT
+
+
+async def test_find_provider_match_reports_ambiguous_loose_candidates(
+    music: MusicController,
+) -> None:
+    """Different tied best-effort versions are ambiguous rather than arbitrary."""
+    base = create_track("spotify_1", "base", isrc="BASE")
+    deluxe = create_track("qobuz_1", "deluxe", isrc="DELUXE")
+    deluxe.version = "Deluxe"
+    remaster = create_track("qobuz_1", "remaster", isrc="REMASTER")
+    remaster.version = "2022 Remaster"
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music.tracks,
+            "search",
+            AsyncMock(return_value=[deluxe, remaster]),
+        ),
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(
+                side_effect=lambda item_id, *_args, **_kwargs: {
+                    "deluxe": deluxe,
+                    "remaster": remaster,
+                }[item_id]
+            ),
+        ),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LOOSE,
+        )
+
+    assert result.match is None
+    assert result.ambiguous is True
+
+
+async def test_enrich_provider_mappings_uses_library_without_mutating_it(
+    music: MusicController,
+) -> None:
+    """Library mappings seed playlist enrichment without being updated."""
+    source = create_track("spotify_1", "source")
+    library_track = create_track("spotify_1", "library")
+    library_track.provider = "library"
+    library_track.item_id = "42"
+    library_track.provider_mappings.add(
+        ProviderMapping(
+            item_id="qobuz-track",
+            provider_domain="qobuz",
+            provider_instance="qobuz_1",
+        )
+    )
+    stale_tidal_mapping = ProviderMapping(
+        item_id="old-tidal-track",
+        provider_domain="tidal",
+        provider_instance="tidal_1",
+        available=False,
+    )
+    library_track.provider_mappings.add(stale_tidal_mapping)
+    original_mappings = set(library_track.provider_mappings)
+    tidal_track = create_track("tidal_1", "tidal-track")
+    tidal_mapping = next(iter(tidal_track.provider_mappings))
+    tidal_provider = MagicMock()
+    tidal_provider.name = "Tidal"
+    tidal_provider.instance_id = "tidal_1"
+    tidal_provider.domain = "tidal"
+    tidal_provider.is_streaming_provider = True
+    match = TrackProviderMatch(
+        track=tidal_track,
+        mapping=tidal_mapping,
+        confidence=TrackMatchConfidence.LIKELY,
+    )
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=library_track),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(return_value=TrackProviderMatchResult(match=match)),
+        ),
+        patch.object(
+            MusicController,
+            "providers",
+            new_callable=PropertyMock,
+            return_value=[tidal_provider],
+        ),
+        patch.object(music, "match_provider_instances", return_value=False),
+    ):
+        result = await music.tracks.enrich_provider_mappings(source)
+
+    assert result.used_library_item is True
+    assert result.track is not library_track
+    assert result.track.provider_mappings == {
+        *(original_mappings - {stale_tidal_mapping}),
+        tidal_mapping,
+    }
+    assert library_track.provider_mappings == original_mappings
+    assert result.matches == (match,)
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(
