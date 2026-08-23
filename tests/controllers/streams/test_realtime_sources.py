@@ -1182,18 +1182,14 @@ def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str
 
 
 async def test_single_item_handler_skips_crossfade_for_a_realtime_item() -> None:
-    """
-    A realtime item is never steered into the crossfaded single-item stream.
-
-    The queue preference is still read for such an item, but only to work out
-    whether its source was handed the fade; our own mixer stays out of it.
-    """
+    """A realtime item is never steered into the crossfaded single-item stream."""
     controller, request, seen = _single_item_handler(is_realtime=True)
 
     with pytest.raises(_PcmFormatRequested):
         await controller.serve_queue_item_stream(request)
 
     assert seen["crossfade_enabled"] is False
+    controller.get_crossfade_mode.assert_not_called()
 
 
 async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None:
@@ -1265,25 +1261,21 @@ def test_only_a_declared_source_fade_is_reported_as_such(
 
 
 @pytest.mark.parametrize(
-    ("media_type", "is_realtime", "has_next"),
+    ("media_type", "is_realtime"),
     [
         # our own mixer owns both of these, so the source's fade is not in play
-        (MediaType.TRACK, False, True),
-        (MediaType.AUDIOBOOK, True, True),
-        # nothing queued after it means there is no boundary to fade across
-        (MediaType.TRACK, True, False),
+        (MediaType.TRACK, False),
+        (MediaType.AUDIOBOOK, True),
     ],
 )
-def test_no_source_fade_where_one_cannot_apply(
-    media_type: MediaType, is_realtime: bool, has_next: bool
+def test_no_source_fade_for_audio_we_mix_ourselves(
+    media_type: MediaType, is_realtime: bool
 ) -> None:
-    """An item is only credited with a source fade where such a fade can happen."""
+    """A source fade is only reported for audio Music Assistant does not mix."""
     controller = _source_crossfade_controller(
         object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
     )
-    controller.mass.player_queues.get_next_item.return_value = (
-        SimpleNamespace() if has_next else None
-    )
+    controller.mass.player_queues.get_next_item.return_value = _follower("same-provider")
     queue_item = SimpleNamespace(
         queue_item_id="item-1",
         media_type=media_type,
@@ -1291,6 +1283,43 @@ def test_no_source_fade_where_one_cannot_apply(
     )
 
     assert controller.get_source_crossfade_mode(MagicMock(), queue_item) == CrossfadeMode.DISABLED
+
+
+@pytest.mark.parametrize(
+    ("follower_kind", "expected"),
+    [
+        # a boundary the source owns both sides of, as a provider item and as a
+        # library item that carries the source in its mappings instead
+        ("same-provider", CrossfadeMode.SOURCE),
+        ("library-mapped", CrossfadeMode.SOURCE),
+        # nothing queued after it, so there is no boundary at all
+        ("none", CrossfadeMode.DISABLED),
+        # the source plays the current item out at any of these, so the cut is hard
+        ("other-provider", CrossfadeMode.DISABLED),
+        ("not-a-track", CrossfadeMode.DISABLED),
+        ("unresolvable", CrossfadeMode.DISABLED),
+    ],
+)
+def test_a_source_fade_needs_a_boundary_the_source_owns(
+    follower_kind: str, expected: CrossfadeMode
+) -> None:
+    """
+    Only a boundary between two items of the same source is credited with its fade.
+
+    Reporting one anywhere else would describe an overlap nobody rendered: we do not
+    mix a realtime item's boundaries either, so what plays there is a hard cut.
+    """
+    controller = _source_crossfade_controller(
+        object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
+    )
+    controller.mass.player_queues.get_next_item.return_value = _follower(follower_kind)
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        media_type=MediaType.TRACK,
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+    )
+
+    assert controller.get_source_crossfade_mode(MagicMock(), queue_item) == expected
 
 
 def test_the_raw_pcm_path_reports_a_source_fade_too() -> None:
@@ -1348,12 +1377,48 @@ def test_a_music_provider_declares_no_source_fade_by_default() -> None:
 
 
 def _source_crossfade_controller(provider: Any, queue_crossfade_mode: CrossfadeMode) -> Any:
-    """Return a controller resolving source fades against one provider and setting."""
+    """
+    Return a controller resolving source fades against one provider and setting.
+
+    The queue follows on with another item of the same source, so only the provider
+    and the setting decide; the boundary cases are covered on their own.
+    """
     controller = cast("Any", object.__new__(StreamsController))
     controller.mass = MagicMock()
     controller.mass.get_provider.return_value = provider
+    controller.mass.player_queues.get_next_item.return_value = _follower("same-provider")
     controller.get_crossfade_mode = MagicMock(return_value=queue_crossfade_mode)
     return controller
+
+
+def _follower(kind: str) -> Any:
+    """Return the queue item that follows, in each shape the resolver has to handle."""
+    if kind == "none":
+        return None
+    if kind == "not-a-track":
+        return SimpleNamespace(media_type=MediaType.AUDIOBOOK, streamdetails=None, media_item=None)
+    if kind == "same-provider":
+        # already resolved to the provider that will serve it
+        return SimpleNamespace(
+            media_type=MediaType.TRACK,
+            streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+            media_item=None,
+        )
+    if kind == "other-provider":
+        other = _make_stream_details(MediaType.TRACK, is_realtime=True)
+        other.provider = "other--1"
+        return SimpleNamespace(media_type=MediaType.TRACK, streamdetails=other, media_item=None)
+    if kind == "library-mapped":
+        return SimpleNamespace(
+            media_type=MediaType.TRACK,
+            streamdetails=None,
+            media_item=SimpleNamespace(
+                provider="library",
+                provider_mappings=[SimpleNamespace(provider_instance="builtin")],
+            ),
+        )
+    # nothing to resolve it with at all
+    return SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, media_item=None)
 
 
 def _realtime_track() -> Any:

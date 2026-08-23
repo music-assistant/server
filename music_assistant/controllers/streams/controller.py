@@ -384,7 +384,7 @@ class StreamsController(CoreController):
         setting instead of Music Assistant mixing the overlap. This only answers for
         audio we do not mix ourselves, and the same two limits apply as to a fade of
         our own: only tracks are faded, and an item with nothing queued after it has
-        no boundary to fade across.
+        no boundary the same source owns both sides of.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item to report the fade for.
@@ -404,7 +404,7 @@ class StreamsController(CoreController):
             source_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
         if not source_fades:
             return CrossfadeMode.DISABLED
-        if self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id) is None:
+        if not self._source_serves_next_item(queue, queue_item):
             return CrossfadeMode.DISABLED
         return CrossfadeMode.SOURCE
 
@@ -792,9 +792,6 @@ class StreamsController(CoreController):
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-            # a crossfade the source performs itself is never mixed here, so it is
-            # tracked apart from the mode that drives our own mixer
-            source_crossfade_mode = self.get_source_crossfade_mode(queue, queue_item)
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
             elif queue_item.streamdetails.is_realtime:
@@ -879,7 +876,9 @@ class StreamsController(CoreController):
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
                 session_id=session_id,
-                source_crossfade_mode=source_crossfade_mode,
+                # a crossfade the source performs itself is never mixed here, so it
+                # is reported apart from the mode that drives our own mixer
+                source_crossfade_mode=self.get_source_crossfade_mode(queue, queue_item),
             )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
@@ -1979,6 +1978,31 @@ class StreamsController(CoreController):
                     source_id,
                     queue_id,
                 )
+
+    def _source_serves_next_item(self, queue: PlayerQueue, queue_item: QueueItem) -> bool:
+        """
+        Return whether the item that follows comes from the same source.
+
+        A source can only fade across a boundary it owns both sides of: with anything
+        else queued next it plays the current item out and the cut is a hard one.
+
+        :param queue: Queue the item is played from.
+        :param queue_item: Queue item whose follower to check.
+        """
+        follower = self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id)
+        if follower is None or follower.media_type != MediaType.TRACK:
+            return False
+        assert queue_item.streamdetails is not None  # guaranteed by the caller
+        provider_instance = queue_item.streamdetails.provider
+        if (follower_details := follower.streamdetails) is not None:
+            # already resolved, so this is the provider that will really serve it
+            return follower_details.provider == provider_instance
+        if (media_item := follower.media_item) is None:
+            return False
+        return media_item.provider == provider_instance or any(
+            mapping.provider_instance == provider_instance
+            for mapping in media_item.provider_mappings
+        )
 
     def _update_audio_processing_context(
         self,
