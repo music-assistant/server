@@ -524,13 +524,14 @@ def compare_track_evidence(
     title_matches = compare_track_title(base_item.name, compare_item.name)
     artists_match = _track_artist_credits_match(base_item, compare_item)
     versions_match = compare_version(base_version, compare_version_value)
-    same_album = bool(
-        base_album
-        and compare_album_item
-        and compare_album(base_album, compare_album_item, strict=False)
+    same_album = (
+        isinstance(base_album, Album)
+        and isinstance(compare_album_item, Album)
+        and bool(compare_album(base_album, compare_album_item, strict=False))
     )
     if (
-        same_album
+        mb_track_match is not False
+        and same_album
         and title_matches
         and artists_match
         and versions_match

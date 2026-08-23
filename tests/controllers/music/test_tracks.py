@@ -205,7 +205,7 @@ async def test_find_provider_match_classifies_library_mapping_against_source(
     provider = MagicMock()
     provider.instance_id = "qobuz_1"
     provider.domain = "qobuz"
-    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_features = set()
     provider.supported_media_types = {MediaType.TRACK}
 
     with (
@@ -213,11 +213,6 @@ async def test_find_provider_match_classifies_library_mapping_against_source(
             music.tracks,
             "get_provider_item",
             AsyncMock(return_value=target),
-        ),
-        patch.object(
-            music,
-            "search_provider",
-            AsyncMock(return_value=SearchResults()),
         ),
         patch.object(
             music.tracks,
@@ -243,6 +238,61 @@ async def test_find_provider_match_classifies_library_mapping_against_source(
     assert exact_result.match is None
     assert likely_result.match is not None
     assert likely_result.match.confidence == TrackMatchConfidence.LIKELY
+
+
+async def test_library_mapping_does_not_preempt_exact_provider_search(
+    music: MusicController,
+) -> None:
+    """An alternate library mapping remains a fallback while exact search continues."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    source = create_track("spotify_1", "source")
+    source.external_ids.add(mb_track)
+    library_track = create_track("spotify_1", "library")
+    mapped_candidate = create_track("qobuz_1", "mapped")
+    exact_candidate = create_track("qobuz_1", "exact")
+    exact_candidate.external_ids.add(mb_track)
+    library_track.provider_mappings.add(next(iter(mapped_candidate.provider_mappings)))
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+    candidates = {
+        "mapped": mapped_candidate,
+        "exact": exact_candidate,
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(side_effect=lambda item_id, *_args, **_kwargs: candidates[item_id]),
+        ),
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[exact_candidate])),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+            mapping_source=library_track,
+            allowed_provider_instances={"qobuz_1"},
+        )
+
+    assert result.match is not None
+    assert result.match.track.item_id == "exact"
+    assert result.match.confidence == TrackMatchConfidence.EXACT
 
 
 async def test_find_provider_match_prefers_exact_candidate(

@@ -693,6 +693,7 @@ class TracksController(MediaControllerBase[Track]):
         :param allowed_provider_instances: Provider instances available to the initiating user.
         """
         resolved_base_album = base_album
+        mapped_match: TrackProviderMatch | None = None
         mapping_source = mapping_source or base_track
         if mapping := self._get_provider_mapping(mapping_source, provider):
             if mapping_source is base_track:
@@ -722,26 +723,28 @@ class TracksController(MediaControllerBase[Track]):
                         provider,
                     )
                 ):
-                    return TrackProviderMatchResult(
-                        match=TrackProviderMatch(
-                            track=mapped_candidate,
-                            mapping=candidate_mapping,
-                            confidence=confidence,
-                        )
+                    mapped_match = TrackProviderMatch(
+                        track=mapped_candidate,
+                        mapping=candidate_mapping,
+                        confidence=confidence,
                     )
+                    if confidence == TrackMatchConfidence.EXACT:
+                        return TrackProviderMatchResult(match=mapped_match)
         if ProviderFeature.SEARCH not in provider.supported_features:
-            return TrackProviderMatchResult()
+            return TrackProviderMatchResult(match=mapped_match)
         if MediaType.TRACK not in provider.supported_media_types:
-            return TrackProviderMatchResult()
+            return TrackProviderMatchResult(match=mapped_match)
         if not base_track.artists:
-            return TrackProviderMatchResult()
+            return TrackProviderMatchResult(match=mapped_match)
 
         search_queries = list(
             dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
         )
-        candidates: list[tuple[int, TrackProviderMatch]] = []
+        candidates: list[tuple[int, TrackProviderMatch]] = (
+            [(0, mapped_match)] if mapped_match else []
+        )
         seen_candidates: set[tuple[str, str]] = set()
-        search_rank = 0
+        search_rank = len(candidates)
         for search_query in search_queries:
             search_results = await self.mass.music.search_provider(
                 search_query,

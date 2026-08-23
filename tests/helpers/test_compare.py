@@ -1279,6 +1279,52 @@ def test_compare_track_evidence_ranks_release_and_recording_matches() -> None:
     )
 
 
+def test_compare_track_evidence_conflicting_release_track_ids_are_not_exact() -> None:
+    """Different MusicBrainz release-track IDs can still identify the same recording."""
+    base = _provider_track(
+        "base",
+        "provider_a",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "11111111-1111-1111-1111-111111111111",
+            )
+        },
+    )
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "22222222-2222-2222-2222-222222222222",
+            )
+        },
+    )
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_simplified_albums_do_not_prove_exact_release() -> None:
+    """Album mappings without artist and year evidence only support a recording match."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+    base.album = media_items.ItemMapping(
+        item_id="album-a",
+        provider="provider_a",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    candidate.album = media_items.ItemMapping(
+        item_id="album-b",
+        provider="provider_b",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
 def test_compare_track_evidence_accepts_missing_remaster_by_album_year() -> None:
     """Matching album years resolve version metadata omitted by one provider."""
     base = _provider_track("base", "provider_a")
