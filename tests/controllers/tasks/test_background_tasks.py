@@ -250,6 +250,55 @@ async def test_stale_task_context_cannot_update_retry_report(
     await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
 
 
+async def test_stale_task_context_cannot_update_recreated_task_report(
+    tasks_controller: TasksController,
+) -> None:
+    """A worker from a replaced task should not update its replacement report."""
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    replacement_started = asyncio.Event()
+    finish_replacement = asyncio.Event()
+
+    def worker() -> None:
+        worker_started.set()
+        release_worker.wait()
+        set_current_task_report("Report from replaced task")
+        worker_finished.set()
+
+    async def first_handler() -> None:
+        await asyncio.to_thread(worker)
+
+    async def replacement_handler() -> None:
+        replacement_started.set()
+        await finish_replacement.wait()
+
+    task = tasks_controller.run_background_task(
+        task_id="recreated_task_report",
+        name="Recreated report test",
+        handler=first_handler,
+    )
+    assert await asyncio.to_thread(worker_started.wait, 2)
+    tasks_controller.cancel_task(task.id)
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.CANCELLED)
+
+    replacement = tasks_controller.run_background_task(
+        task_id=task.id,
+        name="Recreated report test",
+        handler=replacement_handler,
+    )
+    await replacement_started.wait()
+
+    release_worker.set()
+    assert await asyncio.to_thread(worker_finished.wait, 2)
+    await asyncio.sleep(0)
+
+    assert replacement.report is None
+
+    finish_replacement.set()
+    await _wait_for_task_status(tasks_controller, replacement.id, TaskStatus.SUCCESS)
+
+
 async def test_scheduled_report_reset_is_persisted_while_pending(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,

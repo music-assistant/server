@@ -27,7 +27,7 @@ class ManagedTask:
     priority: bool = False
     removed: bool = False
     clear_persisted_state_on_remove: bool = True
-    run_id: int = 0
+    run_token: str = ""
 
     @property
     def is_scheduled(self) -> bool:

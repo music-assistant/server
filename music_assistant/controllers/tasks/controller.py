@@ -608,7 +608,7 @@ class TasksController(CoreController):
         task_id: str,
         markdown: str | None,
         *,
-        run_id: int,
+        run_token: str,
     ) -> None:
         """Set a task report only while its originating run is active."""
         if get_ident() != self.mass.loop_thread_id:
@@ -617,13 +617,13 @@ class TasksController(CoreController):
                     self._set_task_report_for_run,
                     task_id,
                     markdown,
-                    run_id=run_id,
+                    run_token=run_token,
                 )
             )
             return
         if not (managed := self._tasks.get(task_id)):
             return
-        if managed.run_id != run_id or managed.task_info.status != TaskStatus.RUNNING:
+        if managed.run_token != run_token or managed.task_info.status != TaskStatus.RUNNING:
             return
         self._update_task_report(managed, markdown)
 
@@ -699,7 +699,7 @@ class TasksController(CoreController):
         if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
-        managed.run_id += 1
+        managed.run_token = uuid4().hex
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -750,7 +750,10 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
-            update_report=partial(self._set_task_report_for_run, run_id=managed.run_id),
+            update_report=partial(
+                self._set_task_report_for_run,
+                run_token=managed.run_token,
+            ),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
