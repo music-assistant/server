@@ -710,6 +710,7 @@ class TracksController(MediaControllerBase[Track]):
                 mapped_candidate = await self.get_provider_item(
                     mapping.item_id,
                     provider.instance_id,
+                    allow_fallback=False,
                 )
             except MediaNotFoundError:
                 mapped_candidate = None
@@ -771,6 +772,7 @@ class TracksController(MediaControllerBase[Track]):
                     candidate = await self.get_provider_item(
                         search_result.item_id,
                         search_result.provider,
+                        allow_fallback=False,
                     )
                 except MediaNotFoundError:
                     continue

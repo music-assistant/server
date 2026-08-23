@@ -8,8 +8,12 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     Genre,
@@ -27,8 +31,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import pytest
 
 
 def _make_track(item_id: str, provider: str, name: str) -> Track:
@@ -181,6 +183,21 @@ async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
         [MediaType.TRACK],
         limit=5,
     )
+
+
+async def test_search_provider_reports_timeout_as_failure() -> None:
+    """A provider timeout remains distinguishable from a genuine empty result."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    controller._search_provider = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="prov_a"):
+        await controller.search_provider(
+            "My Song",
+            provider.instance_id,
+            [MediaType.TRACK],
+            allowed_provider_instances={provider.instance_id},
+        )
 
 
 async def test_search_provider_returns_none_on_provider_error() -> None:

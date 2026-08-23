@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
@@ -686,15 +687,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         if provider is None:
             return SearchResults()
-        return (
-            await self._search_provider(
-                search_query,
-                provider.instance_id,
-                media_types,
-                limit=limit,
-            )
-            or SearchResults()
+        result = await self._search_provider(
+            search_query,
+            provider.instance_id,
+            media_types,
+            limit=limit,
         )
+        if result is None:
+            raise ResourceTemporarilyUnavailable(
+                f"Search on provider {provider.name} failed or timed out"
+            )
+        return result
 
     async def search_library(
         self,

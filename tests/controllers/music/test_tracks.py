@@ -175,6 +175,38 @@ async def test_match_provider_uses_full_track_mapping(music: MusicController) ->
     assert mappings == list(full_track.provider_mappings)
 
 
+async def test_get_provider_item_can_disable_library_fallback(
+    music: MusicController,
+) -> None:
+    """Authoritative hydration surfaces a missing provider ID instead of stored details."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.get_track = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    library_fallback = create_track("qobuz_1", "stale")
+
+    with (
+        patch.object(music.mass, "get_provider", return_value=provider),
+        patch.object(
+            music.tracks,
+            "get_library_item_by_prov_id",
+            AsyncMock(return_value=library_fallback),
+        ),
+    ):
+        with pytest.raises(MediaNotFoundError, match="not found"):
+            await music.tracks.get_provider_item(
+                "stale",
+                provider.instance_id,
+                allow_fallback=False,
+            )
+        result = await music.tracks.get_provider_item(
+            "stale",
+            provider.instance_id,
+        )
+
+    assert result is library_fallback
+
+
 async def test_find_provider_match_reuses_domain_mapping_for_target_instance(
     music: MusicController,
 ) -> None:
