@@ -849,6 +849,45 @@ async def test_an_item_the_queue_resolved_elsewhere_is_not_fed(tmp_path: Path) -
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
+async def test_skipping_to_the_fed_item_keeps_the_session(tmp_path: Path) -> None:
+    """A next-track lands on the item already fed, so the engine jumps instead of respawning."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    session._client = AsyncMock()
+    session._logged_in = True
+    backend._session = session
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    # fed one ahead and not reached yet, which is where a next-track goes
+    fed = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+
+    async def _engine_gets_there(**_kwargs: Any) -> None:
+        await session._observe_current(TRACK_B, 200_000)
+
+    _client_of(session).skip_next.side_effect = _engine_gets_there
+    got_session, got_item = await backend._acquire(TRACK_B, 0, "player1")
+    # the same session, no respawn, and the item that was already queued
+    assert got_session is session
+    assert got_item is fed
+    assert backend._session is session
+    _client_of(session).skip_next.assert_awaited_once()
+
+
+async def test_a_skip_the_engine_never_reaches_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skip that does not land is an error, not a wait for the track to end."""
+    monkeypatch.setattr(soloist_backend, "_STARTUP_TIMEOUT_S", 0.05)
+    session = _make_session(tmp_path)
+    fed = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    with pytest.raises(AudioError, match="did not reach"):
+        await session.skip_to(fed)
+
+
 async def test_a_fed_item_the_engine_has_not_reached_is_not_served(tmp_path: Path) -> None:
     """Skipping to an already-fed item must not hand over a channel that fills later."""
     session = _make_session(tmp_path)
@@ -967,6 +1006,37 @@ async def test_a_library_item_is_fed_through_its_spotify_mapping(tmp_path: Path)
     queues.get_next_item.return_value = follower
     await session.feed_after(streamdetails, TRACK_A)
     _client_of(session).add_to_queue.assert_awaited_once_with(TRACK_B)
+
+
+@pytest.mark.parametrize(
+    ("provider_option", "player_setting", "expected"),
+    [
+        (True, "enabled", True),
+        # the player's own switch decides first: off means nobody normalizes,
+        # not that the job passes to Spotify
+        (True, "disabled", False),
+        (False, "enabled", False),
+        (False, "disabled", False),
+    ],
+)
+def test_who_normalizes_needs_both_switches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_option: bool,
+    player_setting: str,
+    expected: bool,
+) -> None:
+    """The engine normalizes only when the provider option and the player agree."""
+    session = _make_session(tmp_path, queue_id="player1")
+    monkeypatch.setattr(
+        type(session.backend.provider),
+        "delivers_normalized_audio",
+        property(lambda _self: provider_option),
+    )
+    cast("MagicMock", session.mass.config).get_effective_player_queue_config_value = MagicMock(
+        return_value=player_setting
+    )
+    assert session._engine_normalization_enabled() is expected
 
 
 def test_crossfade_comes_from_the_queue_preference(tmp_path: Path) -> None:
@@ -1088,8 +1158,7 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     async def _never_returns() -> None:
         await asyncio.Event().wait()
 
-    proc.wait = _never_returns
-    proc.close = AsyncMock()
+    proc.close = _never_returns
     task = asyncio.create_task(session.stop())
     await asyncio.sleep(0.01)
     task.cancel()
@@ -1099,7 +1168,7 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     unfinished = session._teardown_done
     kept_proc = session._proc
     kept_sink = session._sink
-    proc.wait = AsyncMock()
+    proc.close = AsyncMock()
     await session.stop()
     assert unfinished is False
     assert kept_proc is proc
@@ -1175,7 +1244,7 @@ def test_the_engine_is_told_not_to_normalize(tmp_path: Path) -> None:
     prefs = backend._data_dir / "settings" / "Users" / "alice-user" / "prefs"
     prefs.parent.mkdir(parents=True)
     prefs.write_text("some.engine.key=1\n", encoding="utf-8")
-    backend._prepare_data_dir(8000)
+    backend._prepare_data_dir(8000, normalize=False)
     content = prefs.read_text(encoding="utf-8").splitlines()
     assert "some.engine.key=1" in content
     assert "audio.normalize_v2=false" in content
@@ -1193,7 +1262,7 @@ def test_disabling_crossfade_writes_the_boolean(tmp_path: Path) -> None:
     prefs = backend._data_dir / "settings" / "prefs"
     prefs.parent.mkdir(parents=True)
     prefs.write_text("audio.crossfade_v2=true\naudio.crossfade.time_v2=8000\n", encoding="utf-8")
-    backend._prepare_data_dir(0)
+    backend._prepare_data_dir(0, normalize=False)
     content = prefs.read_text(encoding="utf-8").splitlines()
     assert "audio.crossfade_v2=false" in content
     assert not any(line.startswith("audio.crossfade.time_v2") for line in content)

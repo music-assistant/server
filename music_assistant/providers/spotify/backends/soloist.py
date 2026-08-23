@@ -35,7 +35,13 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError, LoginFailed, MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_PLAYER_QUEUES
+from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
+    CONF_PLAYER_QUEUES,
+    CONF_VALUE_DISABLED,
+    CONF_VALUE_ENABLED,
+    CONF_VOLUME_NORMALIZATION,
+)
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.pulse_capture import (
     CAPTURE_CHANNELS,
@@ -145,8 +151,6 @@ _IDLE_TIMEOUT_S: Final[float] = 5.0
 # crossfade into the next track), but never unboundedly: without the session
 # reporting a track change by then, something is wrong and the item fails
 _ITEM_OVERRUN_S: Final[float] = 30.0
-# close() SIGINTs a live daemon, so it is given this long to exit by itself first
-_DAEMON_EXIT_GRACE_S: Final[float] = 3.0
 # how far ahead of the playing item to look for the one being streamed: a flow
 # stream runs ahead of the player, a per-item stream is the playing item or its
 # successor
@@ -407,15 +411,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         async with self._session_lock:
             session = self._session
-            if (
-                session is not None
-                and session.usable
-                and session.queue_id == queue_id
-                and not seek_position
-                and (item := session.item_for(spotify_uri)) is not None
-            ):
-                item.claim()
-                return session, item
+            if session is not None and session.usable and session.queue_id == queue_id:
+                if not seek_position and (item := session.item_for(spotify_uri)) is not None:
+                    item.claim()
+                    return session, item
+                if not seek_position and (pending := session.pending_item(spotify_uri)) is not None:
+                    # skipped to the item that was fed next: the engine can jump
+                    # there itself, which keeps the session and its crossfade
+                    # instead of paying a whole respawn
+                    pending.claim()
+                    await session.skip_to(pending)
+                    return session, pending
             if session is not None:
                 if session.in_use and not session.is_playing(spotify_uri):
                     # The session is still delivering a DIFFERENT item, so
@@ -482,11 +488,12 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Return whether the data dir holds a stored (paired) session (blocking)."""
         return soloist_session_present(self._data_dir)
 
-    def _prepare_data_dir(self, crossfade_ms: int) -> None:
+    def _prepare_data_dir(self, crossfade_ms: int, *, normalize: bool) -> None:
         """
         Prepare the data dir for a fresh session spawn (blocking).
 
         :param crossfade_ms: Crossfade duration to configure the engine with.
+        :param normalize: Whether the engine should normalize loudness itself.
         """
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir.chmod(0o700)
@@ -502,7 +509,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
             self._data_dir,
             self.logger,
             crossfade_ms=crossfade_ms,
-            loudness_normalization=self.provider.delivers_normalized_audio,
+            loudness_normalization=normalize,
             audio_quality=self._audio_quality,
         ):
             # the provider has told the rest of the server who normalizes this
@@ -595,6 +602,42 @@ class _SoloistSession:
         """Return whether an item stream is reading this session right now."""
         return any(item.claimed for item in self._items.values())
 
+    def pending_item(self, spotify_uri: str) -> _ItemAudio | None:
+        """
+        Return the channel of an item that was fed but has not started yet.
+
+        The engine can be told to jump to it, which keeps the session (and its
+        crossfade) instead of paying a fresh spawn.
+
+        :param spotify_uri: The canonical Spotify URI to check.
+        """
+        item = self._items.get(spotify_uri)
+        if item is None or item.spent or item.started.is_set():
+            return None
+        return item if spotify_uri in self._pending else None
+
+    async def skip_to(self, item: _ItemAudio) -> None:
+        """
+        Tell the engine to move on to an item it was already fed.
+
+        :param item: The channel of the item to jump to.
+        :raises AudioError: When the engine does not get there in time.
+        """
+        client = self._client
+        if client is None:
+            raise AudioError("Spotify Soloist is not connected")
+        try:
+            await client.skip_next()
+        except (TimeoutError, OSError, ClientError, SoloistError) as err:
+            raise AudioError(
+                f"Spotify Soloist would not skip to {item.uri}: {type(err).__name__} {err}"
+            ) from err
+        try:
+            async with asyncio.timeout(_STARTUP_TIMEOUT_S):
+                await item.started.wait()
+        except TimeoutError:
+            raise AudioError(f"Spotify Soloist did not reach {item.uri}") from None
+
     def is_playing(self, spotify_uri: str) -> bool:
         """
         Return whether this is the item the engine is currently playing.
@@ -647,7 +690,13 @@ class _SoloistSession:
         assert server is not None
         assert backend._binary is not None
         self.crossfade_ms = self._queue_crossfade_ms()
-        await asyncio.to_thread(backend._prepare_data_dir, self.crossfade_ms)
+        await asyncio.to_thread(
+            partial(
+                backend._prepare_data_dir,
+                self.crossfade_ms,
+                normalize=self._engine_normalization_enabled(),
+            )
+        )
         self._sink = sink = await PipeSink.create(server, backend._sink_prefix)
         # unity gain so the FIFO carries the engine's PCM unaltered; the sink
         # stays suspended until the (seeked) item is ready so no infrastructure
@@ -786,12 +835,14 @@ class _SoloistSession:
             self._transport.close()
             self._transport = None
         if (proc := self._proc) is not None:
-            # the log reader stays alive across this wait: nothing else drains
-            # the daemon's stdout, and a full pipe would keep it from exiting
-            with suppress(TimeoutError):
-                async with asyncio.timeout(_DAEMON_EXIT_GRACE_S):
-                    await proc.wait()
-            # a forced close must never be judged by its exit code
+            # Closed straight away, with no grace period for a natural exit: a
+            # session daemon serves items until it is told to stop, so pausing it
+            # never makes it quit and any wait here is pure latency on every
+            # seek and track change. (Its single-track ancestor did exit by
+            # itself, which is where that wait came from.) The log reader stays
+            # alive across the close: nothing else drains the daemon's stdout,
+            # and a full pipe would keep it from exiting. A forced close must
+            # never be judged by its exit code.
             with suppress(Exception):
                 await proc.close()
             # dropped only now: a cancellation during the awaits above must leave
@@ -860,6 +911,27 @@ class _SoloistSession:
             CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
         )
         return int(seconds) * 1000
+
+    def _engine_normalization_enabled(self) -> bool:
+        """
+        Return whether the engine should normalize the loudness it delivers.
+
+        The player's own volume normalization switch decides first: turning it
+        off means nobody normalizes, not that the job passes to Spotify. The
+        streams core reaches the same conclusion from its side, so the two cannot
+        end up disagreeing about who is doing it.
+        """
+        if not self.backend.provider.delivers_normalized_audio:
+            return False
+        if self.queue_id is None:
+            # nothing to read the switch from, so the provider option stands
+            return True
+        return (
+            self.mass.config.get_effective_player_queue_config_value(
+                self.queue_id, CONF_VOLUME_NORMALIZATION, CONF_VALUE_ENABLED
+            )
+            != CONF_VALUE_DISABLED
+        )
 
     def _follower(self, streamdetails: StreamDetails) -> QueueItem | None:
         """Return the queue item that follows the one these StreamDetails belong to."""

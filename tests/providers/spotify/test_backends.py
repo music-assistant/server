@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.backends.soloist import SoloistBackend
 from music_assistant.providers.spotify.constants import (
@@ -28,8 +30,6 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import AsyncGenerator
     from pathlib import Path
-
-    import pytest
 
 
 def test_realtime_declaration_follows_the_backend() -> None:
@@ -104,21 +104,17 @@ def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
     assert prov.delivers_normalized_audio is False
 
 
-def test_the_engine_is_told_who_normalizes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("normalize", [True, False])
+def test_the_engine_is_told_who_normalizes(tmp_path: Path, normalize: bool) -> None:
     """Exactly one of the two normalizes, and the prefs say which."""
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     cast("MagicMock", prov.mass).storage_path = str(tmp_path)
     cast("MagicMock", prov.mass).cache_path = str(tmp_path / "cache")
-    cast("MagicMock", prov.config).get_value = MagicMock(return_value=True)
     backend = SoloistBackend(prov)
     prov.backend = backend
-    backend._prepare_data_dir(0)
+    backend._prepare_data_dir(0, normalize=normalize)
     prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
-    assert "audio.normalize_v2=true" in prefs
-    cast("MagicMock", prov.config).get_value = MagicMock(return_value=False)
-    backend._prepare_data_dir(0)
-    prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
-    assert "audio.normalize_v2=false" in prefs
+    assert f"audio.normalize_v2={'true' if normalize else 'false'}" in prefs
 
 
 def test_the_backend_streams_at_the_configured_quality() -> None:

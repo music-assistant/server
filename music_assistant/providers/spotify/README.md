@@ -54,6 +54,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   sample, so the cut position does not matter and Spotify's crossfade simply lives
   inside the bytes. Only consecutive tracks are stitched; a podcast episode or audiobook
   chapter is played on its own.
+- **Use the engine's transport before respawning it.** A next-track lands on the item
+  that was fed one ahead, so the engine is told to skip to it and the session (with its
+  crossfade) survives. Tearing a session down and spawning another costs a login, an
+  activate and a re-feed, which is seconds — and the daemon never exits on its own, so
+  nothing is gained by waiting for it either: it is closed straight away.
 - **A session in use is never cut short**: the engine allows one session, so an item
   the running one cannot serve would otherwise restart it and truncate whatever it is
   still delivering. That happens at boundaries the session does not drive — a podcast

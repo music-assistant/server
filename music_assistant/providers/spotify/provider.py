@@ -234,7 +234,9 @@ class SpotifyProvider(MusicProvider):
         untouched, so its audio arrives at the master's own level.
         """
         return isinstance(getattr(self, "backend", None), SoloistBackend) and bool(
-            self.config.get_value(CONF_SPOTIFY_NORMALIZATION)
+            # the default is stated here too: get_value answers with the argument,
+            # not the entry's default, if the key was never parsed into the config
+            self.config.get_value(CONF_SPOTIFY_NORMALIZATION, True)
         )
 
     @property
