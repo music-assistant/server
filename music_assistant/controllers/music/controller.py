@@ -691,6 +691,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             None,
         )
         if provider is None:
+            if (
+                allowed_provider_instances is not None
+                and provider_instance_id_or_domain in allowed_provider_instances
+            ):
+                raise ResourceTemporarilyUnavailable(
+                    f"Provider {provider_instance_id_or_domain} is unavailable"
+                )
             return SearchResults()
         result = await self._search_provider(
             search_query,
@@ -2533,7 +2540,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             strict_provider_instance
             and (prov.instance_id != provider_instance_id_or_domain or not prov.available)
         ):
-            return SearchResults()
+            return None if strict_provider_instance else SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
             return SearchResults()
 

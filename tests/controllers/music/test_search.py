@@ -201,14 +201,14 @@ async def test_search_provider_does_not_substitute_unavailable_scoped_instance()
     )
     controller._search_provider = AsyncMock()  # type: ignore[method-assign]
 
-    result = await controller.search_provider(
-        "My Song",
-        "qobuz_1",
-        [MediaType.TRACK],
-        allowed_provider_instances={"qobuz_1"},
-    )
+    with pytest.raises(ResourceTemporarilyUnavailable, match="qobuz_1"):
+        await controller.search_provider(
+            "My Song",
+            "qobuz_1",
+            [MediaType.TRACK],
+            allowed_provider_instances={"qobuz_1"},
+        )
 
-    assert result == SearchResults()
     controller._search_provider.assert_not_awaited()
     controller.mass.get_provider.assert_called_once_with(
         "qobuz_1",
@@ -235,7 +235,7 @@ async def test_internal_search_rejects_strict_instance_fallback() -> None:
         strict_provider_instance=True,
     )
 
-    assert result == SearchResults()
+    assert result is None
     outside_scope_provider.search.assert_not_awaited()
 
 

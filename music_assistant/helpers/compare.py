@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import extract_title_artist_credits, parse_title_and_version
 
 IGNORE_VERSIONS = (
     "explicit",  # explicit is matched separately
@@ -66,11 +66,6 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "remix",
     "session",
 }
-_FEATURED_ARTISTS_PATTERN = re.compile(
-    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
-    r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
-    re.IGNORECASE,
-)
 _FEATURED_ARTIST_SPLITTER = re.compile(
     r"\s*(?:,|&|\+|\band\b|\bwith\b)\s*",
     re.IGNORECASE,
@@ -1106,7 +1101,7 @@ def _track_artist_credit_groups(track: Track) -> set[frozenset[str]]:
     artist_credits: set[frozenset[str]] = set()
     for artist in track.artists:
         artist_credits.add(_artist_credit_group(artist.name))
-    for featured_artists in _FEATURED_ARTISTS_PATTERN.findall(track.name):
+    for featured_artists in extract_title_artist_credits(track.name):
         artist_credits.add(_artist_credit_group(featured_artists))
     return artist_credits
 

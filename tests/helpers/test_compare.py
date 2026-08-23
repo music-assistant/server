@@ -1419,6 +1419,26 @@ def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
     )
 
 
+def test_compare_track_evidence_handles_with_artist_title_drift() -> None:
+    """A with-credit may move between the title and structured artist list."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (with Guest)",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
 def test_compare_track_evidence_stops_feature_credit_before_version() -> None:
     """Version brackets after a bare featured credit are not part of the artist name."""
     title_credit = _provider_track(
