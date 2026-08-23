@@ -134,9 +134,12 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 _INCOMPLETE_TOLERANCE_MS: Final[int] = 10000
 # after the last item of a run ends, how long to keep draining its tail
 _DRAIN_TIMEOUT_S: Final[float] = 2.0
-# how long an idle session (nothing playing, nothing fed) is kept alive so a
-# follow-up item can continue on it instead of paying a cold start
-_IDLE_TIMEOUT_S: Final[float] = 30.0
+# How long a session nothing is reading is kept alive, so a follow-up item can
+# continue on it instead of paying a cold start. Kept short: the engine plays on
+# for this long after playback stops - burning the account's one active stream
+# and showing as a playing device in the Spotify app - while the gap it exists to
+# cover is the handover between two items, which is milliseconds.
+_IDLE_TIMEOUT_S: Final[float] = 5.0
 # an item's stream may run past its nominal duration (it carries the head of the
 # crossfade into the next track), but never unboundedly: without the session
 # reporting a track change by then, something is wrong and the item fails
