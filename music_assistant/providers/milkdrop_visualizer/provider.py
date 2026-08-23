@@ -63,11 +63,9 @@ class MilkdropVisualizerProvider(PluginProvider):
         """Register the relay route once fully loaded."""
         await super().loaded_in_mass()
         self._relay.setup()
-        # PROVIDERS_READ (held by guests) so a cast dashboard, which runs as the
-        # dashboard viewer and has no preferences of its own, can use these.
-        # A provider with depends_on loads twice, and registering a name twice
-        # raises: without dropping the previous handler the command stays bound
-        # to the earlier instance and keeps answering from its stale config.
+        # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these.
+        # loaded_in_mass runs as a background task, so a fast reload can leave a stale
+        # instance's registration in place; registering a taken name raises, drop it first.
         for command, handler in (
             (CONF_COMMAND, self.get_visualizer_config),
             (CAPABILITY_COMMAND, self.report_capability),
@@ -83,8 +81,7 @@ class MilkdropVisualizerProvider(PluginProvider):
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
-        # Read through the config controller rather than this instance's snapshot,
-        # so the answer is current even if an older instance still owns the command.
+        # read live config: a stale instance may still own the command
         value = await self.mass.config.get_provider_config_value(
             self.instance_id, CONF_SHOW_ON_DASHBOARDS, default=False
         )
@@ -120,6 +117,9 @@ class MilkdropVisualizerProvider(PluginProvider):
                 user_agent,
             )
             return
+        # best-effort observability: a malformed field must not fail the report
+        late_ratio = render.get("late_ratio")
+        late_pct = round(late_ratio * 100) if isinstance(late_ratio, (int, float)) else 0
         self.logger.info(
             "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% render=%sms",
             render.get("note"),
@@ -127,7 +127,7 @@ class MilkdropVisualizerProvider(PluginProvider):
             render.get("pixels"),
             render.get("fps"),
             render.get("target_fps"),
-            round(float(render.get("late_ratio") or 0) * 100),
+            late_pct,
             render.get("render_ms"),
         )
 

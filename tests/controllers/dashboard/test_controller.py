@@ -989,6 +989,37 @@ async def test_viewer_preferences_match_now_playing_session_by_player() -> None:
     assert prefs == {"visualizer_preset": "two"}
 
 
+async def test_viewer_preferences_reshown_session_wins() -> None:
+    """Re-showing an earlier session makes its owner the most recently shown again."""
+    controller = _make_controller()
+    device = DashboardDevice(
+        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
+    )
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
+    for dashboard_id, owner_id in (("dash1", "user-1"), ("dash2", "user-2")):
+        controller._sessions[dashboard_id] = DashboardSession(
+            dashboard_id=dashboard_id, name=dashboard_id, dashboard=DashboardType.PARTY
+        )
+        controller._session_owners[dashboard_id] = owner_id
+    users = {
+        "user-1": _owner_user("user-1", {"visualizer_preset": "one"}),
+        "user-2": _owner_user("user-2", {"visualizer_preset": "two"}),
+    }
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda uid: users.get(uid)
+    )
+
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_user",
+        return_value=users["user-1"],
+    ):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    prefs = await controller.get_viewer_preferences(DashboardType.PARTY)
+
+    assert prefs == {"visualizer_preset": "one"}
+
+
 async def test_viewer_preferences_without_matching_session_are_empty() -> None:
     """No matching active session (or unknown owner) yields empty preferences."""
     controller = _make_controller()

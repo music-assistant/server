@@ -152,12 +152,9 @@ class ChromecastDashboards:
             # a release that is already on the wire will close the app anyway, so the
             # receiver's 'already running' short-circuit has to be bypassed
             release_on_the_wire = castplayer.app_quit_sent
-        # Also launch fresh when no dashboard we are tracking shows on the device:
-        # an "already running" receiver is not necessarily visible then. On Android
-        # TV the app keeps running in the background when the user returns to the
-        # launcher, and only a real launch brings it to the foreground again;
-        # merely messaging it would load the dashboard invisibly behind the home
-        # screen.
+        # also launch fresh when we track no active cast on the device: an "already
+        # running" receiver may be backgrounded (Android TV's launcher hides it) and
+        # only a real launch brings it back to the foreground
         force_launch = release_on_the_wire or device_id not in self._active_casts
         url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
         chromecast = await self._get_or_create_chromecast(device_id)

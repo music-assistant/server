@@ -63,8 +63,7 @@ class DashboardController(CoreController):
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
         self._dashboards: dict[str, _RegisteredDashboard] = {}
         self._sessions: dict[str, DashboardSession] = {}
-        # user_id of whoever cast each active session: dashboard viewers follow
-        # that user's (visualizer) preferences, as they have none of their own
+        # who cast each session: dashboard viewers follow that user's visualizer preferences
         self._session_owners: dict[str, str] = {}
 
     @api_command("dashboard/register")
@@ -196,6 +195,8 @@ class DashboardController(CoreController):
             # API registration: url-based clients resolve their own url via `dashboard/get_url`
             self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
 
+        # pop first so dict order stays show order: viewer_preferences takes the last match
+        self._sessions.pop(dashboard_id, None)
         self._sessions[dashboard_id] = session
         if (user := get_current_user()) is not None:
             self._session_owners[dashboard_id] = user.user_id

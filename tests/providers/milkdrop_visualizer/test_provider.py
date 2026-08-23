@@ -52,3 +52,11 @@ async def test_capability_report_tolerates_missing_fields() -> None:
     provider, logger, _config_value = _provider()
     await provider.report_capability()
     assert logger.info.called
+
+
+async def test_capability_report_tolerates_malformed_render_fields() -> None:
+    """A render report with a non-numeric late_ratio is still logged, not raised."""
+    provider, logger, _config_value = _provider()
+    await provider.report_capability(render={"note": "steady", "late_ratio": "not-a-number"})
+    assert logger.info.called
+    assert 0 in logger.info.call_args.args

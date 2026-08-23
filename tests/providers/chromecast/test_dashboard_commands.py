@@ -143,8 +143,7 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     ) as mock_send_show_dashboard:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
-    # a fresh cast always launches: an "already running" receiver may be
-    # backgrounded (Android TV launcher) and only a launch makes it visible
+    # no tracked cast: always launch, the receiver may be backgrounded (Android TV)
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=True)
 
 
