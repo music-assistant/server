@@ -18,7 +18,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderURI,
     MediaNotFoundError,
-    MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
@@ -724,7 +723,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         force_refresh=True,
                     )
                 ]
-            except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                MediaNotFoundError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ) as err:
                 migrated_count = len(target_results)
                 issue = (
                     "Could not verify destination playlist: "
@@ -856,7 +862,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     f"Matching failed on {provider.name}",
                 )
             )
-        except MusicAssistantError as err:
+        except (InvalidDataError, MediaNotFoundError) as err:
             return _PlaylistMigrationTrackResult(
                 error=self._migration_error_message(
                     err,

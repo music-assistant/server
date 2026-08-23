@@ -245,7 +245,7 @@ class TracksController(MediaControllerBase[Track]):
                     allow_update_metadata=False,
                     recursive=False,
                 )
-        except MusicAssistantError as err:
+        except (InvalidDataError, MediaNotFoundError) as err:
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details for %s - %s", track.uri, str(err))
 
