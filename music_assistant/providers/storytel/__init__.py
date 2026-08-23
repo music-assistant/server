@@ -292,7 +292,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
                 if isinstance(err, ProviderUnavailableError):
                     failed_provider_error = failed_provider_error or err
-                self.logger.debug("Skipping Storytel book %s: %s", consumable_id, err)
+                self.report_skipped_sync_item(MediaType.AUDIOBOOK, consumable_id, err)
 
         if not yielded_any and failed_provider_error is not None:
             raise failed_provider_error
@@ -584,7 +584,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
                 if isinstance(err, ProviderUnavailableError):
                     failed_provider_error = failed_provider_error or err
-                self.logger.debug("Skipping Storytel podcast %s: %s", podcast_id, err)
+                self.report_skipped_sync_item(MediaType.PODCAST, podcast_id or None, err)
 
         if not yielded_any and failed_provider_error is not None:
             raise failed_provider_error

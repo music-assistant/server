@@ -505,13 +505,13 @@ class SonosPlayer(Player):
         """Handle incoming event from player."""
         try:
             self.update_attributes()
-        except Exception as err:
-            self.logger.exception("Failed to update player attributes: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player attributes")
             return
         try:
             self.update_state()
-        except Exception as err:
-            self.logger.exception("Failed to update player state: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player state")
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
@@ -784,7 +784,7 @@ class SonosPlayer(Player):
                 await self.client.start_listening(init_ready)
             except Exception as err:
                 if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                    self.logger.exception("Error in Sonos player listener: %s", err)
+                    self.logger.exception("Error in Sonos player listener")
             finally:
                 self.logger.info("Disconnected from player API")
                 if self.connected and not self.mass.closing:

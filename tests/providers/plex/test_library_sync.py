@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import plexapi.exceptions
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Track
 
+from music_assistant.models.music_provider import SYNC_RUN_STATE, SyncRunState
 from music_assistant.providers.plex import PlexProvider
+from music_assistant.providers.plex.constants import CONF_IMPORT_COLLECTIONS
 from music_assistant.providers.plex.helpers import SUPPORTED_FEATURES
 
 LIBRARY_TYPE_AUDIOBOOKS = "audiobooks"
@@ -19,11 +24,14 @@ LIBRARY_TYPE_PODCASTS = "podcasts"
 
 # both listings guard the same destructive failure, so they are covered the same way
 SPOKEN_LIBRARIES = [
-    (LIBRARY_TYPE_AUDIOBOOKS, "get_library_audiobooks", "_parse_audiobook"),
-    (LIBRARY_TYPE_PODCASTS, "get_library_podcasts", "_parse_podcast"),
+    (LIBRARY_TYPE_AUDIOBOOKS, "get_library_audiobooks", "_parse_audiobook", MediaType.AUDIOBOOK),
+    (LIBRARY_TYPE_PODCASTS, "get_library_podcasts", "_parse_podcast", MediaType.PODCAST),
 ]
-SPOKEN_LIBRARY_LISTINGS = [(library, generator) for library, generator, _ in SPOKEN_LIBRARIES]
-SPOKEN_LIBRARY_PARSERS = [(library, parser) for library, _, parser in SPOKEN_LIBRARIES]
+SPOKEN_LIBRARY_LISTINGS = [(library, generator) for library, generator, _, _ in SPOKEN_LIBRARIES]
+SPOKEN_LIBRARY_PARSERS = [(library, parser) for library, _, parser, _ in SPOKEN_LIBRARIES]
+SPOKEN_LIBRARY_ITEMS = [
+    (library, generator, parser) for library, generator, parser, _ in SPOKEN_LIBRARIES
+]
 
 
 class _FakePlexData:
@@ -100,12 +108,41 @@ class _FakePlexAlbum:
         return None
 
 
-def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC) -> Any:
+class _FakePlexCollection:
+    """Minimal PlexCollection stub for the collections-as-playlists listing."""
+
+    def __init__(self, key: str = "/library/collections/5", title: str = "Collection 1") -> None:
+        self.key = key
+        self.title = title
+        # plexapi strips the /children suffix off the raw key, so the payload holds a
+        # different key than the one the item id is built from
+        self._data = _FakePlexData({"title": title, "key": f"{key}/children"})
+
+    def firstAttr(self, *attrs: str) -> str | None:  # noqa: N802
+        return None
+
+
+@contextmanager
+def _sync_run() -> Iterator[SyncRunState]:
+    """Run a library listing as part of a sync run, so its skips are recorded."""
+    state = SyncRunState()
+    token = SYNC_RUN_STATE.set(state)
+    try:
+        yield state
+    finally:
+        SYNC_RUN_STATE.reset(token)
+
+
+def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC, import_collections: bool = False) -> Any:
     """Create a minimal PlexProvider instance for testing."""
     mock_mass = MagicMock()
     mock_config = MagicMock()
     mock_config.instance_id = "plex_instance_1"
-    config_values: dict[str, Any] = {"library_type": library_type, "log_level": "INFO"}
+    config_values: dict[str, Any] = {
+        "library_type": library_type,
+        "log_level": "INFO",
+        CONF_IMPORT_COLLECTIONS: import_collections,
+    }
     mock_config.get_value = lambda key: config_values.get(key)
 
     setup_data = {"library_type": library_type, "token": "local_auth"}
@@ -184,7 +221,7 @@ async def test_library_tracks_does_not_swallow_server_errors(error: Exception) -
         _ = [track async for track in provider.get_library_tracks()]
 
 
-@pytest.mark.parametrize(("library_type", "generator", "parse_method"), SPOKEN_LIBRARIES)
+@pytest.mark.parametrize(("library_type", "generator", "parse_method"), SPOKEN_LIBRARY_ITEMS)
 async def test_spoken_library_skips_unparsable_item(
     library_type: str, generator: str, parse_method: str
 ) -> None:
@@ -282,3 +319,86 @@ async def test_playlist_tracks_skips_unparsable_track() -> None:
 
     assert [track.item_id for track in result] == ["/2", "/3"]
     assert [track.position for track in result] == [1, 2]
+
+
+async def test_skipped_track_is_reported_with_its_item_id() -> None:
+    """
+    A skipped track is reported under the id its provider mapping carries.
+
+    That id is what the deletion pass resolves the item by, so the track it could not read
+    is left alone instead of being removed from the library.
+    """
+    provider = _make_provider()
+    provider._plex_library.searchTracks = MagicMock(
+        side_effect=[[_FakePlexTrack(key="/1", grandparent_key=None)], []]
+    )
+
+    with _sync_run() as state:
+        tracks = [track async for track in provider.get_library_tracks()]
+
+    assert tracks == []
+    assert state.skipped_item_ids == {MediaType.TRACK: {"/1"}}
+    assert not state.incomplete_media_types
+
+
+async def test_unidentifiable_artist_holds_back_the_deletion_pass() -> None:
+    """An artist Plex holds no key for cannot be named, so the whole run is held back."""
+    provider = _make_provider()
+    provider._plex_library.all = MagicMock(return_value=[MagicMock(key="")])
+
+    with _sync_run() as state:
+        assert [artist async for artist in provider.get_library_artists()] == []
+
+    assert state.skipped_item_ids == {}
+    assert MediaType.ARTIST in state.incomplete_media_types
+
+
+async def test_skipped_collection_is_reported_as_a_prefixed_playlist() -> None:
+    """
+    A skipped collection is reported under the prefixed id it is stored as a playlist under.
+
+    The bare Plex key belongs to no library item, so reporting that would leave the
+    collection unprotected against the deletion pass.
+    """
+    provider = _make_provider(import_collections=True)
+    collection = _FakePlexCollection()
+    provider._plex_library.playlists = MagicMock(return_value=[])
+    provider._plex_library.collections = MagicMock(return_value=[collection])
+    # take the expectation from the parser itself, so the two can not drift apart
+    parsed = await provider._parse_collection(collection)
+
+    async def _parse_collection(_collection: Any) -> Any:
+        raise InvalidDataError("no title")
+
+    provider._parse_collection = _parse_collection
+
+    with _sync_run() as state:
+        assert [item async for item in provider.get_library_playlists()] == []
+
+    assert state.skipped_item_ids == {MediaType.PLAYLIST: {parsed.item_id}}
+    assert parsed.item_id.startswith("collection:")
+
+
+@pytest.mark.parametrize(
+    ("library_type", "generator", "parse_method", "media_type"), SPOKEN_LIBRARIES
+)
+async def test_spoken_library_reports_skip_with_its_item_id(
+    library_type: str, generator: str, parse_method: str, media_type: MediaType
+) -> None:
+    """An audiobook or podcast is reported under the prefixed id it is stored under."""
+    provider = _make_provider(library_type)
+    album = _FakePlexAlbum()
+    provider._plex_library.albums = MagicMock(return_value=[album])
+    # take the expectation from the parser itself, so the two can not drift apart
+    parsed = await getattr(provider, parse_method)(album)
+
+    async def _parse(_album: Any, **_kwargs: Any) -> Any:
+        raise InvalidDataError("no title")
+
+    setattr(provider, parse_method, _parse)
+
+    with _sync_run() as state:
+        assert [item async for item in getattr(provider, generator)()] == []
+
+    assert state.skipped_item_ids == {media_type: {parsed.item_id}}
+    assert parsed.item_id != album.key

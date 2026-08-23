@@ -112,6 +112,22 @@ it rewrites it, hence the refresh on every spawn). Crossfade applies to playlist
 transitions; consecutive album tracks keep playing gapless and manual skips stay hard
 cuts (engine behavior, matching desktop Spotify).
 
+The streaming quality setting travels the same way, as `audio.play_bitrate_enumeration`,
+`audio.play_bitrate_non_metered_enumeration` and the `audio.play_bitrate_non_metered_migrated`
+marker that makes the engine honor the non-metered value. Measured against build 1.3.7.349
+(bytes fetched for a whole 4:20 track): `2` ≈ 96 kbps, `3` ≈ 160 kbps, `4` ≈ 320 kbps and
+`5` lossless FLAC (~810 kbps). **`5` is the ceiling** — values outside `1`-`5` are rejected
+and silently fall back to ~160 kbps, so an unrecognized tier must never reach the file.
+Despite the `FLAC_FLAC_24BIT` name in the binary, no value produced a 24-bit stream.
+
+The delivered quality is **not** observable, so it is never reported as the source format.
+The engine keeps no quality field on the WebSocket API, its audio cache is encrypted, and
+the log templates that would name the codec (`AudioRendererImpl ... format [...]`,
+`FileStreamer file average bitrate`) sit behind a log level with no exposed control: the
+daemon's real optstring is `hn:D:C:z:d:i:AVw:k:s:p` (no `-v`; the `-v, --verbose` string in
+the binary is dead text, and no environment variable raises the level either). The setting
+is therefore a ceiling only, and `_capture_format` stays the displayed format.
+
 ## Security
 
 - The data dir persists the Spotify device identity and login session → `chmod 0700`.

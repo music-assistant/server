@@ -18,13 +18,22 @@ from music_assistant.providers.spotify_connect import (
     CONF_VOLUME_MODE,
     SpotifyConnectProvider,
 )
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+)
 from music_assistant.providers.spotify_connect.go_librespot.backend import (
     API_PORT_RANGE_END,
     API_PORT_RANGE_START,
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.go_librespot.client import GoLibrespotClient
-from music_assistant.providers.spotify_connect.provider import CONF_LOUDNESS_NORMALIZATION
+from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
+from music_assistant.providers.spotify_connect.provider import (
+    AUDIO_SOURCE_ID,
+    CONF_AUDIO_QUALITY,
+    CONF_LOUDNESS_NORMALIZATION,
+)
 from music_assistant.providers.spotify_connect.soloist.backend import (
     VOLUME_MODE_SYNC_SPOTIFY,
     SoloistBackend,
@@ -161,6 +170,110 @@ async def test_sync_player_volume_restores_cache_on_failure() -> None:
     assert provider._last_volume_sent is None
 
 
+def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
+    """Build a provider tethered to queue 'player1' with an active (paused) Spotify session."""
+    provider = object.__new__(SpotifyConnectProvider)
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    backend = MagicMock()
+    deactivate = AsyncMock()
+    backend.deactivate = deactivate
+    provider._backend = backend
+    provider._active_player_id = "player1"
+    provider._in_use_by_player = None
+    provider._active_session_id = None
+    provider._spotify_session_active = True
+    provider._playing = False
+    provider._pending_pause_stop_task = None
+    provider._pending_play_media_task = None
+    return provider, deactivate
+
+
+async def test_releasing_a_player_releases_a_paused_spotify_session() -> None:
+    """Letting the player go releases the session the paused stream's teardown left behind."""
+    provider, deactivate = _tethered_provider()
+
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_awaited_once()
+
+
+async def test_release_while_the_stream_is_winding_down_still_releases() -> None:
+    """
+    A release landing before the paused stream finished tearing down still releases.
+
+    The teardown itself releases nothing for a paused source, so waiting for it to hand the
+    claim back would leave the Spotify app tethered for good.
+    """
+    provider, deactivate = _tethered_provider()
+    provider._in_use_by_player = "player1"
+
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_awaited_once()
+
+
+async def test_clearing_another_queue_leaves_the_session_alone() -> None:
+    """Only the queue the source is tethered to may release it."""
+    provider, deactivate = _tethered_provider()
+
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player2")
+
+    deactivate.assert_not_awaited()
+
+
+async def test_queue_clear_without_an_active_session_does_nothing() -> None:
+    """There is nothing to release when MA is not the active Spotify device."""
+    provider, deactivate = _tethered_provider()
+    provider._spotify_session_active = False
+
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_not_awaited()
+
+
+async def _session_inactive(provider: SpotifyConnectProvider) -> list[str]:
+    """Run the backend's 'session inactive' answer and return the players it wanted stopped."""
+    stopped: list[str] = []
+    provider._schedule_pause_stop = lambda player_id: stopped.append(player_id)  # type: ignore[method-assign]
+    with patch.object(SpotifyConnectProvider, "name", "Spotify Test"):
+        await provider._handle_backend_event(BackendEvent(type=BackendEventType.SESSION_INACTIVE))
+    return stopped
+
+
+async def test_releasing_the_session_leaves_the_new_playback_alone() -> None:
+    """
+    Releasing must not stop the player that took the source's place.
+
+    The backend answers a release with the same "session inactive" it sends when the user picks
+    another device in the Spotify app - and that one does stop the player. By then this player is
+    playing whatever replaced the source, so stopping it would cut the music the user just started.
+    """
+    provider, _ = _tethered_provider()
+
+    with patch.object(SpotifyConnectProvider, "name", "Spotify Test"):
+        await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
+
+    assert await _session_inactive(provider) == []
+
+
+async def test_a_spotify_side_deselect_still_stops_the_player() -> None:
+    """Picking another device in the Spotify app does stop what MA was playing from it."""
+    provider, _ = _tethered_provider()
+
+    assert await _session_inactive(provider) == ["player1"]
+
+
+async def test_queue_clear_survives_a_failing_release() -> None:
+    """A backend that cannot be reached must not break clearing the queue."""
+    provider, deactivate = _tethered_provider()
+    deactivate.side_effect = OSError("daemon gone")
+
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
+
+    deactivate.assert_awaited_once()
+
+
 def _provider_with_stored_config(
     setup_data: dict[str, Any], tmp_path: Path
 ) -> SpotifyConnectProvider:
@@ -217,6 +330,11 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
@@ -226,6 +344,7 @@ def test_soloist_setup_data_loads_soloist_backend(tmp_path: Path) -> None:
     assert backend._volume_mode == VOLUME_MODE_SYNC_SPOTIFY
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
@@ -237,6 +356,7 @@ def test_audio_behavior_defaults_reach_the_backend(tmp_path: Path) -> None:
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 0
     assert backend._loudness_normalization is True
+    assert backend._audio_quality == AUDIO_QUALITY_LOSSLESS
 
 
 def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
@@ -252,12 +372,18 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
         type=ConfigEntryType.BOOLEAN,
         value=False,
     )
+    provider.config.values[CONF_AUDIO_QUALITY] = ConfigEntry(
+        key=CONF_AUDIO_QUALITY,
+        type=ConfigEntryType.STRING,
+        value=AUDIO_QUALITY_HIGH,
+    )
 
     backend = provider._create_backend()
 
     assert isinstance(backend, GoLibrespotBackend)
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
+    assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
 def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
@@ -271,9 +397,30 @@ def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     backend.cache_dir = str(tmp_path)
     backend._crossfade_ms = 8000
     backend._loudness_normalization = False
+    backend._audio_quality = AUDIO_QUALITY_HIGH
 
     backend._write_config(None)
 
     config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
     assert config["crossfade_duration"] == 8000
     assert config["normalisation_disabled"] is True
+    assert config["bitrate"] == 160
+
+
+def test_write_config_caps_lossless_at_the_engine_maximum(tmp_path: Path) -> None:
+    """go-librespot cannot do lossless, so that tier lands on its 320 kbps ceiling."""
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend._publish_name = "Test Speaker"
+    backend._instance_id = "spotify_connect--test"
+    backend._api_port = 38800
+    backend.cache_dir = str(tmp_path)
+    backend._crossfade_ms = 0
+    backend._loudness_normalization = True
+    backend._audio_quality = AUDIO_QUALITY_LOSSLESS
+
+    backend._write_config(None)
+
+    config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert config["bitrate"] == 320

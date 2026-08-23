@@ -3,15 +3,37 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+from music_assistant_models.config_entries import ConfigValueOption
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import AudioFormat
 
     from music_assistant.providers.spotify_connect.models import (
         AudioChunkReader,
         BackendStreamSource,
     )
+
+# Streaming quality tiers, named after the Spotify apps' own vocabulary for
+# the same bitrates. They express a ceiling, not a guarantee: Spotify still
+# downshifts on a slow connection and falls back when a track (or the account)
+# has no file at the requested tier. Each backend maps these onto whatever its
+# engine understands, clamping to what that engine can actually deliver.
+AUDIO_QUALITY_NORMAL: Final = "normal"
+AUDIO_QUALITY_HIGH: Final = "high"
+AUDIO_QUALITY_VERY_HIGH: Final = "very_high"
+AUDIO_QUALITY_LOSSLESS: Final = "lossless"
+
+# The tiers as a config-entry option list, in ascending order. Shared so the
+# Spotify music provider's own soloist playback offers the same choice.
+AUDIO_QUALITY_OPTIONS: Final = [
+    ConfigValueOption(AUDIO_QUALITY_NORMAL),
+    ConfigValueOption(AUDIO_QUALITY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_VERY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_LOSSLESS),
+]
 
 
 class SpotifyConnectBackend(ABC):
@@ -45,6 +67,17 @@ class SpotifyConnectBackend(ABC):
         stops the player actively on the paused state event.
         """
         return True
+
+    @property
+    def supports_queue_control(self) -> bool:
+        """
+        Whether the backend implements the queue-session verbs.
+
+        A backend returning True implements ``add_to_queue``, ``set_shuffle``,
+        ``set_repeat`` and ``request_queue`` and emits QUEUE_CHANGED /
+        OPTIONS_CHANGED events.
+        """
+        return False
 
     @abstractmethod
     async def start(self) -> None:
@@ -124,3 +157,49 @@ class SpotifyConnectBackend(ABC):
 
         :param volume: Absolute volume as a 0-100 percentage.
         """
+
+    async def add_to_queue(self, uri: str) -> None:
+        """
+        Add a track to the session's play queue.
+
+        Only available on backends with ``supports_queue_control``.
+
+        :param uri: Spotify track URI to queue.
+        """
+        raise NotImplementedError
+
+    async def set_shuffle(self, enabled: bool) -> None:
+        """
+        Enable or disable shuffle on the active session.
+
+        Only available on backends with ``supports_queue_control``.
+
+        :param enabled: True to enable shuffle, False to disable it.
+        """
+        raise NotImplementedError
+
+    async def set_repeat(self, repeat: RepeatMode) -> None:
+        """
+        Set the repeat mode on the active session.
+
+        Only available on backends with ``supports_queue_control``. May await
+        the engine's acknowledgement, so the call can block and raise — never
+        call it from the backend event callback (the acknowledgement arrives
+        on the same loop and the wait could only time out).
+
+        :param repeat: OFF for no repeat, ONE for the current track, ALL for
+            the playing context.
+        """
+        raise NotImplementedError
+
+    async def request_queue(self, limit: int = 10) -> None:
+        """
+        Ask the session to (re)emit its queue view.
+
+        Only available on backends with ``supports_queue_control``. There is
+        no return value: the snapshot arrives as a QUEUE_CHANGED event.
+
+        :param limit: Maximum number of upcoming entries the snapshot should
+            include.
+        """
+        raise NotImplementedError

@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     PlayerUnavailableError,
     QueueEmpty,
 )
@@ -64,7 +65,6 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
-    SHUFFLE_INTENT_WINDOW,
 )
 from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
@@ -80,6 +80,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -113,6 +114,46 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
         MediaType.AUDIOBOOK,
     }
 )
+
+
+async def _is_audio_source(item: MediaItemType | ItemMapping | str) -> bool:
+    """
+    Return whether the given media names a live audio source.
+
+    :param item: One entry of a play request.
+    """
+    if not isinstance(item, str):
+        return item.media_type == MediaType.AUDIO_SOURCE
+    try:
+        media_type, _, _ = await parse_uri(item)
+    except MusicAssistantError:
+        return False
+    return media_type == MediaType.AUDIO_SOURCE
+
+
+async def _resolve_audio_source_request(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+) -> str | None:
+    """
+    Return the uri of the live audio source a play request names, if it names one.
+
+    A live source is selected on a player rather than queued, so it cannot be lined
+    up behind or alongside other media: naming one among others is a caller error
+    rather than a request to interpret.
+
+    :param media: The media a play request was given.
+    :raises InvalidCommand: When a live source is named among other media.
+    """
+    items = media if isinstance(media, list) else [media]
+    sources = [item for item in items if await _is_audio_source(item)]
+    if not sources:
+        return None
+    if len(items) > 1:
+        raise InvalidCommand(
+            "A live audio source plays on its own: it can not be combined with other media"
+        )
+    item = sources[0]
+    return item if isinstance(item, str) else item.uri
 
 
 class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
@@ -254,33 +295,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
-        queue.shuffle_enabled = shuffle_enabled
-        # remember the moment the user asked for shuffle, so media started right after this
-        # keeps it instead of being reset by the "fresh queue plays in order" default. Monotonic
-        # because only the elapsed interval matters, and a host whose clock is corrected while
-        # MA runs (a Pi without an RTC syncing after boot) would otherwise age it wrongly.
-        self._queue_data[queue_id].shuffle_set_at = time.monotonic() if shuffle_enabled else None
-        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        queue_items = self._queue_data[queue_id].items
-        cur_index = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
-        if cur_index is not None:
-            next_index = cur_index + 1
-            next_items = queue_items[next_index:]
-        else:
-            next_items = []
-            next_index = 0
-        if not shuffle_enabled:
-            # shuffle disabled, try to restore original sort order of the remaining items
-            next_items.sort(key=lambda x: x.sort_index, reverse=False)
-        await self.load(
-            queue_id=queue_id,
-            queue_items=next_items,
-            insert_at_index=next_index,
-            keep_remaining=False,
-            shuffle=shuffle_enabled,
-        )
+        await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
         """
@@ -322,7 +337,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.set_autoplay(queue_id, dont_stop_the_music_enabled)
 
     @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
-    def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
+    async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
         queue = self._queue_data[queue_id].queue
         if queue.is_dynamic:
@@ -499,15 +514,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             saved resume position. The stored progress itself is left untouched.
         :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
             options that start playing right away (play/replace), and never to a dynamic source
-            (an always-on smart mix). Omit to let the queue decide: it keeps shuffle when the user
-            just switched it on, and plays the media in order otherwise.
+            (an always-on smart mix). Omit to follow the queue's own shuffle setting, which media
+            with an order of its own (album, podcast, episode, audiobook, audio source) switches
+            off; the first item of a batch decides for the whole batch.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        # A live source is not queue content: it plays on the player while the queue
+        # keeps its own items. Selecting it is the real operation, so a play request
+        # naming one is forwarded there rather than enqueued.
+        if (source_uri := await _resolve_audio_source_request(media)) is not None:
+            await self.mass.players.select_source(queue_id, source_uri)
+            return
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning, shuffle
+            queue_id,
+            media,
+            option,
+            radio_mode,
+            start_item,
+            sort_by,
+            start_from_beginning,
+            shuffle,
         )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
@@ -1144,13 +1173,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        # The shuffle intent moves with the flag it was recorded for, or the target would judge the
-        # transferred shuffle against a stamp left over from its own previous content. It is good
-        # for one play, so it is taken off the source rather than copied: the gesture followed the
-        # queue to its new player and must not shuffle whatever is started here next.
-        source_data = self._queue_data[source_queue_id]
-        self._queue_data[target_queue_id].shuffle_set_at = source_data.shuffle_set_at
-        source_data.shuffle_set_at = None
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
@@ -1503,6 +1525,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         keep_remaining: bool = True,
         keep_played: bool = True,
         shuffle: bool = False,
+        pin_first: bool = False,
     ) -> None:
         """
         Load new items at index.
@@ -1512,6 +1535,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - insert_at_index: insert the item(s) at this index
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
+        - pin_first: keep the first item at the insert index instead of letting the shuffle
+          move it; only meaningful together with shuffle
         """
         prev_items = self._queue_data[queue_id].items[:insert_at_index] if keep_played else []
         next_items = queue_items
@@ -1526,10 +1551,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (re)shuffle the final batch if needed: smart shuffle when enabled, else pure random
         if shuffle:
             queue = self._queue_data[queue_id].queue
+            # a user-picked item must stay the one that plays, so hold it out of the shuffle
+            pinned = next_items[:1] if pin_first else []
+            shuffled = next_items[1:] if pin_first else next_items
             if self._smart_shuffle.is_enabled(queue_id):
-                next_items = await self._smart_shuffle.arrange(queue, next_items)
+                shuffled = await self._smart_shuffle.arrange(queue, shuffled)
             else:
-                next_items = random.sample(next_items, len(next_items))
+                shuffled = random.sample(shuffled, len(shuffled))
+            next_items = pinned + shuffled
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -1570,6 +1599,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
         queue = queue_data.queue
+        # a mirrored shuffle write (streams controller) changes what smart shuffle
+        # resolves to, so refresh the derived flag with every signaled update
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
@@ -1828,17 +1860,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.update_items(queue_id, [])
 
     def _reset_shuffle(self, queue_id: str) -> None:
-        """Switch shuffle off and drop any pending shuffle intent."""
-        queue_data = self._queue_data[queue_id]
-        queue_data.shuffle_set_at = None
-        queue = queue_data.queue
+        """Switch shuffle off."""
+        queue = self._queue_data[queue_id].queue
         if not queue.shuffle_enabled:
             return
         queue.shuffle_enabled = False
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         self.signal_update(queue_id)
 
-    async def _apply_shuffle_intent(
+    async def _apply_shuffle(
         self, queue_id: str, option: QueueOption, shuffle: bool | None
     ) -> None:
         """
@@ -1846,44 +1876,65 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue the media is played on.
         :param option: The enqueue option this command resolved to.
-        :param shuffle: Explicit shuffle request from the caller; None to derive it.
+        :param shuffle: The state to put the queue's shuffle in; None to leave it as it is.
         """
-        queue_data = self._queue_data[queue_id]
-        queue = queue_data.queue
-        if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
-            # The one staging option that replaces the queue's sources, so the smart mix may be on
+        queue = self._queue_data[queue_id].queue
+        if queue.is_dynamic and option in (
+            QueueOption.PLAY,
+            QueueOption.REPLACE,
+            QueueOption.REPLACE_NEXT,
+        ):
+            # These are the options that replace the queue's sources, so the smart mix may be on
             # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
-            # locked), so it must not outlive the source that imposed it. Recorded directly, as in
-            # the still-dynamic case below: the state is provisional until the sources are known,
-            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic. The
-            # intent goes with it, or a play soon after would resurrect a shuffle the queue's own
-            # toggle now reads as off.
-            queue.shuffle_enabled = False
-            queue_data.shuffle_set_at = None
-            return
-        if option not in (QueueOption.PLAY, QueueOption.REPLACE):
-            # only the options that start playing the media right away are a new listening
-            # session; staging items for later leaves the queue's shuffle state alone
-            return
-        if shuffle is None:
-            # Without an explicit request, shuffle only carries over when the user asked for it
-            # moments ago: starting an album is otherwise expected to play it in track order,
-            # regardless of what the previous listening session left switched on.
-            shuffle = (
-                queue_data.shuffle_set_at is not None
-                and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
-            )
-        if queue.shuffle_enabled != shuffle:
-            if queue.is_dynamic:
-                # set_shuffle refuses a queue that is still a smart mix, but the media being
-                # started may well replace that dynamic source - and the items are resolved
-                # against this flag. Record the requested state directly: should the queue stay
-                # dynamic, `_enter_dynamic_mode` forces shuffle back on further down.
-                queue.shuffle_enabled = shuffle
+            # locked), so it must not outlive the source that imposed it. Recorded directly
+            # because set_shuffle refuses a queue that is still a smart mix, and the items are
+            # resolved against this flag. The state is provisional until the sources are known:
+            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            if option == QueueOption.REPLACE_NEXT:
+                # staging leaves the shuffle the user chose alone, so it never carries a request
+                # of its own to honour here
+                queue.shuffle_enabled = False
             else:
-                # routed through set_shuffle so switching shuffle off also restores the order of
-                # the items that stay in the queue: a play keeps them, and a tail left in shuffled
-                # order behind a queue that now reads unshuffled would contradict its own flag
-                await self.set_shuffle(queue_id, shuffle)
-        # the intent belongs to this play command alone, whether or not it changed anything
-        queue_data.shuffle_set_at = None
+                queue.shuffle_enabled = bool(shuffle)
+            return
+        if shuffle is None or option not in (QueueOption.PLAY, QueueOption.REPLACE):
+            # nothing to settle: the media brings no order of its own to protect, or the option
+            # only stages items for later and leaves the queue's shuffle state alone
+            return
+        if queue.shuffle_enabled == shuffle:
+            return
+        # routed through set_shuffle so switching shuffle off also restores the order of
+        # the items that stay in the queue: a play keeps them, and a tail left in shuffled
+        # order behind a queue that now reads unshuffled would contradict its own flag
+        await self.set_shuffle(queue_id, shuffle)
+
+    async def _apply_local_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """
+        Record the queue's shuffle state and re-order the un-played tail accordingly.
+
+        :param queue_id: The queue to apply the shuffle state to.
+        :param shuffle_enabled: The shuffle state to record and apply to the tail.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.shuffle_enabled = shuffle_enabled
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        queue_items = self._queue_data[queue_id].items
+        cur_index = (
+            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
+        )
+        if cur_index is not None:
+            next_index = cur_index + 1
+            next_items = queue_items[next_index:]
+        else:
+            next_items = []
+            next_index = 0
+        if not shuffle_enabled:
+            # shuffle disabled, try to restore original sort order of the remaining items
+            next_items.sort(key=lambda x: x.sort_index, reverse=False)
+        await self.load(
+            queue_id=queue_id,
+            queue_items=next_items,
+            insert_at_index=next_index,
+            keep_remaining=False,
+            shuffle=shuffle_enabled,
+        )

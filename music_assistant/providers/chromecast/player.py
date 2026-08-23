@@ -399,7 +399,10 @@ class ChromecastPlayer(Player):
                                     "uri": cmd_next_url,
                                     "queue_item_id": cmd_next_url,
                                 },
-                                "contentType": "audio/flac",
+                                # must match the silence file the command url actually
+                                # serves: strict (vendor) cast stacks error out on a
+                                # contentType mismatch where Google's receiver is lenient
+                                "contentType": "audio/mpeg",
                                 "streamType": STREAM_TYPE_LIVE,
                                 "metadata": {},
                             },

@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+from asyncio import FIRST_COMPLETED
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import ClientError
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, RepeatMode, StreamType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
@@ -30,14 +31,22 @@ from music_assistant.helpers.pulse_capture import (
     PipeSink,
     get_pulse_capture_server,
 )
-from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_LOSSLESS,
+    SpotifyConnectBackend,
+)
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
     BackendEventType,
+    BackendPlaybackOptions,
+    BackendQueueEntry,
+    BackendQueueState,
     BackendStreamSource,
     BackendTrackMetadata,
+    QueueEntrySource,
 )
 
+from .prefs import write_audio_prefs
 from .runtime import (
     EXIT_CODE_BUILD_EXPIRED,
     BuildExpiredError,
@@ -48,8 +57,10 @@ from .runtime import (
     SoloistDeviceChanged,
     SoloistError,
     SoloistErrorMessage,
+    SoloistOptionsChanged,
     SoloistPlaybackState,
     SoloistPositionSync,
+    SoloistQueueChanged,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -64,7 +75,7 @@ if TYPE_CHECKING:
         BackendEventCallback,
     )
 
-    from .runtime import SoloistEntity, SoloistEvent
+    from .runtime import SoloistEntity, SoloistEvent, SoloistPlaybackOptions, SoloistQueueEntry
 
 # How Spotify-side volume changes are handled (see set_volume).
 VOLUME_MODE_PLAYER_ONLY: Final = "player_only"
@@ -78,6 +89,10 @@ CACHE_SIZE_MB: Final = 512
 MAX_RESTART_ATTEMPTS: Final = 5
 RESTART_DELAY_S: Final = 2
 
+# How long the daemon's log reader may keep draining buffered output after the
+# process itself exited.
+DAEMON_LOG_DRAIN_TIMEOUT_S: Final = 5
+
 # Proactive binary refresh interval: soloist builds expire 90 days after their
 # build date, so a daily check swaps in a fresh build long before a long-lived
 # instance would hit the expiry.
@@ -87,17 +102,6 @@ BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
 # invalidates the capture sink), so the sink is replaced proactively instead
 # of on the (side-effect-free) stream request.
 GENERATION_WATCH_INTERVAL_S: Final = 5
-
-# The classic desktop-client prefs keys (bare key=value lines) through which the
-# engine's audio behavior is controlled. The per-user prefs override the global
-# prefs per key, so both stores are (re)written before every daemon spawn.
-# NOTE: audio.crossfade.time_v2 is in MILLISECONDS; sub-second values silently
-# disable crossfade (verified empirically), so the key is only written when
-# crossfade is enabled (>= 1000 ms).
-_PREF_CROSSFADE: Final = "audio.crossfade_v2"
-_PREF_CROSSFADE_TIME: Final = "audio.crossfade.time_v2"
-_PREF_NORMALIZE: Final = "audio.normalize_v2"
-_MANAGED_PREFS: Final = (_PREF_CROSSFADE, _PREF_CROSSFADE_TIME, _PREF_NORMALIZE)
 
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
@@ -133,6 +137,7 @@ class SoloistBackend(SpotifyConnectBackend):
         volume_mode: str = VOLUME_MODE_PLAYER_ONLY,
         crossfade_ms: int = 0,
         loudness_normalization: bool = True,
+        audio_quality: str = AUDIO_QUALITY_LOSSLESS,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -156,6 +161,8 @@ class SoloistBackend(SpotifyConnectBackend):
             (0 disables crossfade).
         :param loudness_normalization: Whether Spotify's loudness normalization
             should be applied to the audio.
+        :param audio_quality: Ceiling for the streaming quality Spotify is asked
+            to deliver (one of the AUDIO_QUALITY_* tiers).
         """
         self.mass = mass
         self.logger = logger
@@ -167,6 +174,7 @@ class SoloistBackend(SpotifyConnectBackend):
         self._volume_mode = volume_mode
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
+        self._audio_quality = audio_quality
         self._data_dir = Path(mass.storage_path) / "spotify_connect" / instance_id / "soloist-data"
         self._cache_dir = Path(mass.cache_path) / instance_id / "soloist-cache"
         # PA sink names end up in space-delimited module arguments and env vars
@@ -193,6 +201,8 @@ class SoloistBackend(SpotifyConnectBackend):
         self._respawn_requested: bool = False
         # serializes all volume handling (sink compensation + event forwarding)
         self._volume_lock = asyncio.Lock()
+        # serializes the two-command repeat sequences of concurrent set_repeat calls
+        self._repeat_lock = asyncio.Lock()
         # last volume reported by the daemon (None until the first event)
         self._spotify_volume: int | None = None
         # guards the player_only 100%-pin so overlapping resets are not issued
@@ -231,6 +241,11 @@ class SoloistBackend(SpotifyConnectBackend):
     def stream_ends_on_pause(self) -> bool:
         """The pipe sink delivers silence on pause; the provider stops the player."""
         return False
+
+    @property
+    def supports_queue_control(self) -> bool:
+        """The soloist session implements the queue verbs and queue/options events."""
+        return True
 
     async def start(self) -> None:
         """Start the backend and its supervised soloist daemon."""
@@ -404,6 +419,61 @@ class SoloistBackend(SpotifyConnectBackend):
                 return
             await self._client.set_volume(100)
 
+    async def add_to_queue(self, uri: str) -> None:
+        """
+        Add a track to the session's play queue.
+
+        :param uri: Spotify track URI to queue.
+        """
+        assert self._client is not None
+        await self._client.add_to_queue(uri)
+
+    async def set_shuffle(self, enabled: bool) -> None:
+        """
+        Enable or disable shuffle on the active session.
+
+        :param enabled: True to enable shuffle, False to disable it.
+        """
+        assert self._client is not None
+        await self._client.set_shuffle(enabled)
+
+    async def set_repeat(self, repeat: RepeatMode) -> None:
+        """
+        Set the repeat mode on the active session.
+
+        Awaits the engine's acknowledgement of both underlying commands, so
+        this call can block and raise; never call it from the backend event
+        callback (the acknowledgements arrive on the same loop and the wait
+        could only time out).
+
+        :param repeat: OFF for no repeat, ONE for the current track, ALL for
+            the playing context.
+        """
+        assert self._client is not None
+        if repeat == RepeatMode.UNKNOWN:
+            raise ValueError("cannot apply an unknown repeat mode")
+        # soloist models repeat as two independent booleans (track/context) with
+        # both-true undefined: the lock serializes concurrent callers and the
+        # awaited acks order the pair, so one flag is always cleared before the
+        # other is raised
+        async with self._repeat_lock:
+            if repeat == RepeatMode.ONE:
+                await self._client.set_repeat_context(False, await_result=True)
+                await self._client.set_repeat_track(True, await_result=True)
+                return
+            await self._client.set_repeat_track(False, await_result=True)
+            await self._client.set_repeat_context(repeat == RepeatMode.ALL, await_result=True)
+
+    async def request_queue(self, limit: int = 10) -> None:
+        """
+        Ask the session to (re)emit its queue view (arrives as a QUEUE_CHANGED event).
+
+        :param limit: Maximum number of upcoming entries the snapshot should
+            include.
+        """
+        assert self._client is not None
+        await self._client.get_queue(limit)
+
     async def _ensure_fresh_sink(self) -> PipeSink:
         """
         Return the capture sink, replacing it when the pulse daemon restarted.
@@ -497,52 +567,15 @@ class SoloistBackend(SpotifyConnectBackend):
         ]
 
     def _write_audio_prefs(self) -> None:
-        """
-        Write the configured audio behavior into the engine's prefs stores (blocking).
-
-        Both the global prefs and every existing per-user prefs file are updated:
-        per-user values override the global ones per key, and a per-user file only
-        appears after an account paired — the global store covers that account's
-        first session until the next daemon (re)spawn refreshes both.
-
-        Best-effort: a write failure must never block playback, so errors are
-        logged per store and the daemon spawns with the engine's previous settings.
-        """
-        settings_dir = self._data_dir / "settings"
-        prefs_files = [settings_dir / "prefs"]
-        managed_lines = [
-            f"{_PREF_CROSSFADE}={'true' if self._crossfade_ms else 'false'}",
-            f"{_PREF_NORMALIZE}={'true' if self._loudness_normalization else 'false'}",
-        ]
-        if self._crossfade_ms:
-            managed_lines.insert(1, f"{_PREF_CROSSFADE_TIME}={self._crossfade_ms}")
-        try:
-            users_dir = settings_dir / "Users"
-            if users_dir.is_dir():
-                prefs_files += [
-                    user_dir / "prefs" for user_dir in users_dir.iterdir() if user_dir.is_dir()
-                ]
-        except OSError as err:
-            self.logger.warning("Failed to list the Spotify per-user settings: %s", err)
-        for prefs_file in prefs_files:
-            try:
-                lines = []
-                if prefs_file.is_file():
-                    lines = [
-                        line
-                        for line in prefs_file.read_text(encoding="utf-8").splitlines()
-                        if line.split("=", 1)[0] not in _MANAGED_PREFS
-                    ]
-                prefs_file.parent.mkdir(parents=True, exist_ok=True)
-                # the stores also carry engine-owned keys, so replace atomically
-                # (a truncated in-place write would lose those too)
-                tmp_file = prefs_file.with_suffix(".tmp")
-                tmp_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
-                tmp_file.replace(prefs_file)
-            except (OSError, UnicodeDecodeError) as err:
-                self.logger.warning(
-                    "Failed to write the Spotify audio settings to %s: %s", prefs_file, err
-                )
+        """Write the configured audio behavior into the engine's prefs stores (blocking)."""
+        # best-effort here: nothing outside this backend depends on the result
+        write_audio_prefs(
+            self._data_dir,
+            self.logger,
+            crossfade_ms=self._crossfade_ms,
+            loudness_normalization=self._loudness_normalization,
+            audio_quality=self._audio_quality,
+        )
 
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""
@@ -565,18 +598,21 @@ class SoloistBackend(SpotifyConnectBackend):
                 # the argv (which carries the API key)
                 self._proc = proc = AsyncProcess(
                     self._daemon_args(),
-                    stderr=True,
+                    # the daemon writes all of its logging to stdout and only
+                    # ever puts argument-parsing complaints on stderr, so the
+                    # two are merged into one captured stream. Capturing is
+                    # what makes the redaction below reachable at all: an
+                    # unset stdout is inherited, which would leak the daemon's
+                    # output straight to the server console instead.
+                    stdout=True,
+                    stderr=asyncio.subprocess.STDOUT,
                     name=f"soloist[{self.name}]",
                     env=server.child_env(sink.sink_name),
                 )
                 await proc.start()
                 self.logger.info("Started Spotify Connect background daemon [%s]", self.name)
                 await self._reset_volume_state(sink)
-                async for line in proc.iter_stderr():
-                    # the third-party binary's own output may echo argv (which
-                    # carries the api key), so redact it before logging
-                    text = line.replace(self._api_key, "<redacted>") if self._api_key else line
-                    self.logger.debug("[%s] %s", self.name, text)
+                await self._await_daemon_exit(proc)
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -617,6 +653,61 @@ class SoloistBackend(SpotifyConnectBackend):
                 )
                 return
             await asyncio.sleep(RESTART_DELAY_S)
+
+    async def _await_daemon_exit(self, proc: AsyncProcess) -> None:
+        """
+        Wait for the daemon to exit, forwarding its log for as long as it runs.
+
+        :param proc: The running daemon process.
+        """
+        # The log is drained by a side task rather than inline: a close() from
+        # one of the other supervisors (sink replacement, binary refresh) locks
+        # readers out of the process streams for good, so waiting on the reader
+        # would hang here and the daemon would never be respawned.
+        log_task = asyncio.create_task(self._log_daemon_output(proc))
+        wait_task = asyncio.create_task(proc.wait())
+        try:
+            # Watch both: nothing else drains the daemon's stdout, so a reader
+            # that died would leave the daemon blocked on a full pipe and this
+            # wait would never return.
+            await asyncio.wait((wait_task, log_task), return_when=FIRST_COMPLETED)
+            reader_error = (
+                log_task.exception() if log_task.done() and not log_task.cancelled() else None
+            )
+            if reader_error is not None:
+                self.logger.error(
+                    "soloist log reader failed [%s]: %s; restarting the daemon",
+                    self.name,
+                    reader_error,
+                )
+                await proc.close()
+            await wait_task
+            # an exited daemon still has its last (often most telling) lines in
+            # the stream buffer; the shield keeps the reader alive across the
+            # timeout so it can drain them
+            with suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(log_task), DAEMON_LOG_DRAIN_TIMEOUT_S)
+        finally:
+            # a reader locked out by a close() from another supervisor never
+            # ends on its own; joining it consumes its outcome the way the
+            # other process readers in the codebase do
+            for task in (wait_task, log_task):
+                task.cancel()
+            for task in (wait_task, log_task):
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+
+    async def _log_daemon_output(self, proc: AsyncProcess) -> None:
+        """
+        Forward the daemon's log lines to our logger until its output ends.
+
+        :param proc: The running daemon process.
+        """
+        async for line in proc.iter_stdout():
+            # the third-party binary's own output may echo argv (which carries
+            # the api key), so redact it before logging
+            text = line.replace(self._api_key, "<redacted>") if self._api_key else line
+            self.logger.debug("[%s] %s", self.name, text)
 
     async def _reset_volume_state(self, sink: PipeSink) -> None:
         """
@@ -748,6 +839,16 @@ class SoloistBackend(SpotifyConnectBackend):
             await self._event_callback(
                 self._make_event(BackendEventType.METADATA, metadata=_entity_metadata(item))
             )
+        if isinstance(event.data, SoloistPlaybackState) and event.data.options is not None:
+            # a state snapshot/delta carrying the playback options doubles as an
+            # options report; emit a separate OPTIONS_CHANGED so consumers only
+            # ever need to watch one event type for options
+            await self._event_callback(
+                self._make_event(
+                    BackendEventType.OPTIONS_CHANGED,
+                    options=_backend_options(event.data.options),
+                )
+            )
         await self._event_callback(self._translate_event(event))
 
     async def _handle_volume_changed(self, volume: int) -> None:
@@ -839,9 +940,21 @@ class SoloistBackend(SpotifyConnectBackend):
             )
         if isinstance(data, SoloistErrorMessage):
             return self._make_event(BackendEventType.ERROR, error=data.message)
+        if isinstance(data, SoloistQueueChanged):
+            return self._make_event(
+                BackendEventType.QUEUE_CHANGED,
+                queue=BackendQueueState(
+                    previous=_queue_entries(data.previous),
+                    upcoming=_queue_entries(data.upcoming),
+                ),
+            )
+        if isinstance(data, SoloistOptionsChanged):
+            return self._make_event(
+                BackendEventType.OPTIONS_CHANGED, options=_backend_options(data.options)
+            )
         if isinstance(data, SoloistContextChanged):
             self._cache_uris(context=data.context)
-        # queue/options/context changes, command acks and unknown events
+        # context changes, command acks and unknown events
         return self._make_event(BackendEventType.OTHER)
 
     def _make_event(self, event_type: BackendEventType, **fields: Any) -> BackendEvent:
@@ -875,16 +988,54 @@ def _entity_metadata(item: SoloistEntity) -> BackendTrackMetadata:
     :param item: The soloist entity (track) to extract the metadata from.
     """
     decorations = item.decorations or {}
-    identity = _as_dict(decorations.get("identity"))
     playback = _as_dict(decorations.get("playback"))
     duration_ms = playback.get("duration_ms")
     return BackendTrackMetadata(
         track_uri=item.uri,
-        title=_as_str(identity.get("name")) or _as_str(identity.get("title")),
+        title=_identity_title(decorations),
         artist=_creator_name(decorations.get("creators")),
         album=_nested_entity_name(decorations.get("parent")),
         image_url=_cover_url(decorations),
         duration=int(duration_ms) // 1000 if isinstance(duration_ms, int | float) else None,
+    )
+
+
+def _queue_entries(entries: list[SoloistQueueEntry]) -> list[BackendQueueEntry]:
+    """
+    Map soloist queue entries onto normalized queue entries.
+
+    Entries without a resolvable uri are skipped.
+
+    :param entries: The soloist queue entries (previous or upcoming listing).
+    """
+    result: list[BackendQueueEntry] = []
+    for entry in entries:
+        if entry.item is None or not entry.item.uri:
+            continue
+        result.append(
+            BackendQueueEntry(
+                uid=entry.uid,
+                uri=entry.item.uri,
+                source=QueueEntrySource(entry.source),
+                name=_identity_title(entry.item.decorations or {}),
+            )
+        )
+    return result
+
+
+# soloist's repeat vocabulary mapped onto the MA repeat modes
+_REPEAT_MODES: Final = {
+    "off": RepeatMode.OFF,
+    "context": RepeatMode.ALL,
+    "track": RepeatMode.ONE,
+}
+
+
+def _backend_options(options: SoloistPlaybackOptions) -> BackendPlaybackOptions:
+    """Map soloist playback options onto the normalized model."""
+    return BackendPlaybackOptions(
+        shuffle=options.shuffle,
+        repeat=_REPEAT_MODES.get(options.repeat, RepeatMode.UNKNOWN),
     )
 
 
@@ -896,6 +1047,12 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _as_str(value: Any) -> str | None:
     """Return the value if it is a non-empty string, None otherwise."""
     return value if isinstance(value, str) and value else None
+
+
+def _identity_title(decorations: dict[str, Any]) -> str | None:
+    """Return the display title from a decorations bag's identity."""
+    identity = _as_dict(decorations.get("identity"))
+    return _as_str(identity.get("name")) or _as_str(identity.get("title"))
 
 
 def _entity_name(value: Any) -> str | None:

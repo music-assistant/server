@@ -262,7 +262,12 @@ RUN set -x \
     # declares Conflicts: pulseaudio because both want to own the ALSA default
     # device, but there is no file overlap, so unpack it outside dpkg and keep
     # the ALSA default routed to pipewire by removing pulseaudio's
-    # default-routing and autospawn snippets
+    # default-routing and autospawn snippets.
+    # NOTE: the unpacked package is not registered in dpkg, so package/CVE
+    # scanners will not list pipewire-alsa.
+    # This whole workaround (and the pipewire package above) exists only for
+    # the local audio provider and can be dropped once that moves to its own
+    # dedicated container, leaving a plain apt install of pulseaudio.
     && (cd /tmp && apt-get download pipewire-alsa) \
     && dpkg-deb -x /tmp/pipewire-alsa_*.deb / \
     && rm /tmp/pipewire-alsa_*.deb \

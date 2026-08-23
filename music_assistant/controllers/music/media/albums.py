@@ -29,7 +29,11 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
-from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.helpers import (
+    metadata_for_update,
+    provider_mappings_for_update,
+    search_name_match_clause,
+)
 from music_assistant.helpers.compare import (
     ALBUM_RETAIL_SUFFIX_KEYS,
     AlbumMatchEvidence,
@@ -619,7 +623,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
@@ -633,8 +637,12 @@ class AlbumsController(MediaControllerBase[Album]):
             {
                 "name": name,
                 "sort_name": sort_name,
-                "version": update.version if overwrite else cur_item.version or update.version,
-                "year": update.year if overwrite else cur_item.year or update.year,
+                "version": (update.version or cur_item.version)
+                if overwrite
+                else (cur_item.version or update.version),
+                "year": (update.year or cur_item.year)
+                if overwrite
+                else (cur_item.year or update.year),
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
@@ -649,10 +657,8 @@ class AlbumsController(MediaControllerBase[Album]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set album artist(s)
@@ -707,8 +713,9 @@ class AlbumsController(MediaControllerBase[Album]):
         """Search one provider and return the mappings of every confirmed album match."""
         self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
         matches: list[ProviderMapping] = []
-        artist_name = db_album.artists[0].name
-        search_str = f"{artist_name} - {db_album.name}"
+        search_str = (
+            f"{db_album.artists[0].name} - {db_album.name}" if db_album.artists else db_album.name
+        )
         for search_result_item in await self.search(search_str, provider.instance_id):
             if not search_result_item.available:
                 continue
@@ -893,7 +900,19 @@ class AlbumsController(MediaControllerBase[Album]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Store Album Artists."""
+        """
+        Store Album Artists.
+
+        An empty set of artists never clears the stored rows: an album that lost its
+        artists disappears from their discography and is skipped by provider matching.
+        """
+        all_artists = list(artists)
+        if not all_artists:
+            if overwrite:
+                # a caller asking to replace all artists with none is a bug,
+                # so keep the stored rows and make the attempt visible
+                self.logger.warning("Ignoring request to clear all artists of album id %s", db_id)
+            return
         if overwrite:
             # on overwrite, clear the album_artists table first
             await self.mass.music.database.delete(
@@ -902,7 +921,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "album_id": db_id,
                 },
             )
-        for artist in artists:
+        for artist in all_artists:
             await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
 
     async def _set_album_artist(

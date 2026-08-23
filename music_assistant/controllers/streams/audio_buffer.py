@@ -37,6 +37,7 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.audio import arriving_audio_format, pcm_formats_match
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 
@@ -152,6 +153,16 @@ class AudioBuffer:
     def is_buffering(self) -> bool:
         """Return whether the upstream source producer is still active."""
         return self._producer_task is not None and not self._producer_task.done()
+
+    @property
+    def eof(self) -> bool:
+        """
+        Return whether the source stopped producing.
+
+        A source that failed after delivering audio also ends here, so pair this with
+        ``has_error`` when a clean finish is what matters.
+        """
+        return self._eof_received
 
     @property
     def first_buffered_chunk(self) -> int:
@@ -272,7 +283,9 @@ class AudioBuffer:
         :param filter_params: FFmpeg filter parameters to apply.
         :param exact_seek: Preserve millisecond precision for the input buffer position.
         """
-        needs_ffmpeg = bool(filter_params) or self.pcm_format != output_format
+        # not `!=`: that compares equal for integer and float PCM of the same
+        # depth, and passing one through as the other reinterprets every sample
+        needs_ffmpeg = bool(filter_params) or not pcm_formats_match(self.pcm_format, output_format)
 
         if not needs_ffmpeg:
             async for chunk in self.get_raw_stream(
@@ -460,17 +473,12 @@ class AudioBuffer:
         # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
         seek_seconds = seek_position_ms // 1000
 
-        # for large seeks without existing buffer, start at seek position
-        buffer_seek_seconds = seek_seconds if seek_seconds > 60 else 0
+        # for large seeks without existing buffer, start at seek position.
+        # A realtime source can not produce the skipped audio any faster than playback,
+        # so it always seeks at the source instead of buffering up to the seek point.
+        buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
 
-        pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
-            sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
-            # buffer the stereo fold of a surround source, so audio analysis measures
-            # the same audio that is played back rather than the untouched surround mix
-            channels=min(streamdetails.audio_format.channels, 2),
-        )
+        pcm_format = _buffer_pcm_format(streamdetails)
 
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
@@ -478,9 +486,20 @@ class AudioBuffer:
         crossfade_enabled = bool(
             queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if crossfade_enabled:
+        dynamic_normalization = (
+            streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
+        )
+        if streamdetails.is_realtime:
+            # A realtime source fills the buffer at playback pace, so every second of
+            # audio asked for here is a second of extra startup delay - on a seek or a
+            # track change as much as on a start. The queue's crossfade setting buys
+            # nothing for such a source, because MA's own crossfade is force-disabled
+            # for it (it has no audio to spare for an overlap), so only dynamic
+            # normalization, which genuinely needs lookahead, raises this.
+            ready_threshold = 2 if dynamic_normalization else 1
+        elif crossfade_enabled:
             ready_threshold = 8
-        elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
+        elif dynamic_normalization:
             # radio streams are continuous so the normalization will converge quickly,
             # use a lower threshold to reduce startup latency
             ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
@@ -781,3 +800,25 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
+
+
+def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM format a buffer for these streamdetails holds.
+
+    The buffer stores decoded PCM, so it follows the audio that actually
+    arrives: ``audio_format`` may describe a source the provider decoded on our
+    behalf and can differ in depth or rate, in which case deriving the buffer
+    from it would resample or truncate real audio.
+
+    :param streamdetails: The stream the buffer is for.
+    """
+    arriving = arriving_audio_format(streamdetails)
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=arriving.bit_depth,
+        # buffer the stereo fold of a surround source, so audio analysis measures
+        # the same audio that is played back rather than the untouched surround mix
+        channels=min(arriving.channels, 2),
+    )

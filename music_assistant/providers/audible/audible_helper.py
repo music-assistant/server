@@ -23,6 +23,8 @@ from audible import AsyncClient
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
+
+    from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import (
     LoginFailed,
@@ -145,13 +147,24 @@ class AudibleHelper:
         client: AsyncClient,
         provider_domain: str,
         provider_instance: str,
+        provider: MusicProvider,
         logger: logging.Logger | None = None,
     ):
-        """Initialize the Audible Helper."""
+        """
+        Initialize the Audible Helper.
+
+        :param mass: The MusicAssistant instance.
+        :param client: An authenticated Audible API client.
+        :param provider_domain: Domain of the owning provider.
+        :param provider_instance: Instance id of the owning provider.
+        :param provider: The owning provider, used to report library items it had to skip.
+        :param logger: Logger to use, defaults to a module level logger.
+        """
         self.mass = mass
         self.client = client
         self.provider_domain = provider_domain
         self.provider_instance = provider_instance
+        self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
 
@@ -230,13 +243,8 @@ class AudibleHelper:
             if cached_book is not None:
                 return self._parse_audiobook(cached_book)
             return self._parse_audiobook(audiobook_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid audiobook: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing audiobook {audiobook_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, asin or None, exc)
             return None
 
     async def get_library(self) -> AsyncGenerator[Audiobook]:
@@ -759,13 +767,8 @@ class AudibleHelper:
             if cached_podcast is not None:
                 return self._parse_podcast(cached_podcast)
             return self._parse_podcast(podcast_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid podcast: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing podcast {podcast_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.PODCAST, asin or None, exc)
             return None
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:

@@ -41,6 +41,10 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.music.helpers import (
+    metadata_for_update,
+    provider_mappings_for_update,
+)
 from music_assistant.helpers.compare import (
     compare_album,
     compare_album_name,
@@ -1111,7 +1115,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -1144,10 +1148,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
