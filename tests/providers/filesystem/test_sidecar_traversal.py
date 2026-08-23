@@ -91,6 +91,9 @@ async def test_local_walk_collects_sidecars_and_skips_them_from_classification()
         _file("Artist/Album/album.nfo"),
         _file("Artist/Album/folder.jpg"),
         _file("Artist/artist.nfo"),
+        # stray files the widened scan set also yields: unrecognized image + non-music nfo
+        _file("Random/IMG_1234.jpg"),
+        _file("Random/movie.nfo"),
     ]
     with patch(
         "music_assistant.providers.filesystem_local.recursive_iter", return_value=iter(walk_items)
@@ -110,6 +113,8 @@ async def test_local_walk_collects_sidecars_and_skips_them_from_classification()
     assert index.nfo_item("Artist/Album", "album.nfo") is not None
     assert index.nfo_item("Artist", "artist.nfo") is not None
     assert [img.filename for img in index.image_items("Artist/Album")] == ["folder.jpg"]
+    # stray files are neither indexed nor handed to the classifier (empty-scan safeguard intact)
+    assert index.files("Random") == []
     classified = [
         call.args[0].relative_path for call in provider._classify_scan_item.call_args_list
     ]

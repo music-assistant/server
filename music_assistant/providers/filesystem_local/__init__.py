@@ -1189,6 +1189,11 @@ class LocalFileSystemProvider(MusicProvider):
                     update_current_task_progress_text(f"Scanning files: {scanned} found")
                 if sidecar_index is not None and sidecar_index.record(item):
                     continue
+                # the widened scan set also yields stray images/nfo that are not recognized
+                # sidecars; they must not reach the classifier or they would be recorded as
+                # present and defeat the empty-scan safeguard (matches the WebDAV/cloud walkers)
+                if item.ext not in SUPPORTED_EXTENSIONS:
+                    continue
                 self._classify_scan_item(
                     item,
                     file_checksums=file_checksums,
