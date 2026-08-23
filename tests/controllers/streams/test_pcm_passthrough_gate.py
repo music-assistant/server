@@ -9,7 +9,6 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams import audio_buffer as audio_buffer_module
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.helpers.audio import pcm_formats_match
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
@@ -23,15 +22,16 @@ _F32 = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_de
 
 def test_integer_and_float_pcm_are_not_interchangeable() -> None:
     """
-    Equality cannot be used to decide a passthrough.
+    The gates below rely on the model telling PCM encodings apart.
 
-    Every PCM content type renders the same ``output_format_str``, so the model's
-    own ``==`` reports integer and float PCM of one depth as the same format;
+    Integer and float PCM of one depth share their rate, depth and channel count;
     passing one through as the other reinterprets every sample.
     """
-    assert _S32 == _F32  # the trap this predicate exists to avoid
-    assert not pcm_formats_match(_S32, _F32)
-    assert pcm_formats_match(_S32, _S32)
+    assert _S32 != _F32
+    same_as_s32 = AudioFormat(
+        content_type=ContentType.PCM_S32LE, sample_rate=44100, bit_depth=32, channels=2
+    )
+    assert same_as_s32 == _S32
 
 
 async def test_the_buffer_converts_rather_than_reinterprets(
@@ -68,3 +68,4 @@ def test_a_warm_airplay_replace_refuses_a_differently_encoded_source() -> None:
     session.pcm_format = _F32
     session.sync_clients = []
     assert session.can_replace([], _S32) is False
+    assert session.can_replace([], _F32) is True
