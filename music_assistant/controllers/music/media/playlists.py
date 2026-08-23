@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
+from bisect import bisect_right
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -591,7 +591,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "library_matches": 0,
             "provider_matches": 0,
         }
-        substitutions: list[tuple[str, str, str]] = []
+        substitutions_by_track: dict[str, tuple[str, str, str]] = {}
         skipped_tracks: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
         for key, result in resolved_tracks.items():
@@ -616,14 +616,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             if result.mapping:
                 if result.track and result.confidence != TrackMatchConfidence.EXACT:
-                    substitutions.append(
-                        (
-                            track_label,
-                            self._migration_track_label(result.track),
-                            "Same recording"
-                            if result.confidence == TrackMatchConfidence.LIKELY
-                            else "Best effort",
-                        )
+                    substitutions_by_track[key] = (
+                        track_label,
+                        self._migration_track_label(result.track),
+                        "Same recording"
+                        if result.confidence == TrackMatchConfidence.LIKELY
+                        else "Best effort",
                     )
                 continue
             if result.error:
@@ -676,7 +674,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider.name,
                 prepared_count,
                 counts,
-                substitutions,
+                list(substitutions_by_track.values()),
                 skipped_tracks,
                 provider_issues,
                 completed=False,
@@ -745,13 +743,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 report_current_task_failure(issue)
                 provider_issues.append(("Destination playlist", issue))
             else:
-                missing_results = self._reconcile_migration_results(
+                confirmed_indexes, destination_mismatch = self._reconcile_migration_results(
                     actual_target_ids,
                     target_results,
                 )
-                migrated_count = len(target_results) - len(missing_results)
+                missing_results = [
+                    target_result
+                    for index, target_result in enumerate(target_results)
+                    if index not in confirmed_indexes
+                ]
+                migrated_count = len(confirmed_indexes)
                 for track, result in missing_results:
-                    reason = f"{provider.name} did not add this track"
+                    reason = f"{provider.name} did not add this track in the expected order"
                     counts["skipped"] += 1
                     self._adjust_migration_match_count(
                         counts,
@@ -762,6 +765,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
                         f"{self._migration_track_label(track)}: {reason.lower()}"
                     )
                     skipped_tracks.append((self._migration_track_label(track), reason))
+                if destination_mismatch:
+                    issue = "Destination playlist contains unexpected or reordered tracks"
+                    report_current_task_failure(issue)
+                    provider_issues.append(("Destination playlist", issue))
+                confirmed_track_keys = {
+                    self._migration_track_key(target_results[index][0])
+                    for index in confirmed_indexes
+                }
+                substitutions_by_track = {
+                    key: substitution
+                    for key, substitution in substitutions_by_track.items()
+                    if key in confirmed_track_keys
+                }
             destination_playlist.metadata.last_refresh = None
             await self.update_item_in_library(
                 destination_playlist.item_id,
@@ -784,7 +800,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider.name,
                 migrated_count,
                 counts,
-                substitutions,
+                list(substitutions_by_track.values()),
                 skipped_tracks,
                 provider_issues,
                 completed=True,
@@ -890,18 +906,28 @@ class PlaylistController(MediaControllerBase[Playlist]):
     def _reconcile_migration_results(
         actual_target_ids: list[str],
         target_results: Sequence[tuple[Track, _PlaylistMigrationTrackResult]],
-    ) -> list[tuple[Track, _PlaylistMigrationTrackResult]]:
-        """Return requested tracks missing from the destination playlist."""
-        actual_id_counts = Counter(actual_target_ids)
-        missing_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
-        for track, result in target_results:
+    ) -> tuple[set[int], bool]:
+        """Return confirmed result indexes and whether destination content is unexpected."""
+        expected_positions: dict[str, list[int]] = {}
+        for index, (_track, result) in enumerate(target_results):
             assert result.mapping is not None
-            if actual_id_counts[result.mapping.item_id]:
-                actual_id_counts[result.mapping.item_id] -= 1
+            expected_positions.setdefault(result.mapping.item_id, []).append(index)
+
+        confirmed_indexes: set[int] = set()
+        last_confirmed_index = -1
+        destination_mismatch = False
+        for actual_target_id in actual_target_ids:
+            positions = expected_positions.get(actual_target_id)
+            if not positions:
+                destination_mismatch = True
                 continue
-            missing_results.append((track, result))
-        redirected_count = min(sum(actual_id_counts.values()), len(missing_results))
-        return missing_results[redirected_count:]
+            position_index = bisect_right(positions, last_confirmed_index)
+            if position_index == len(positions):
+                destination_mismatch = True
+                continue
+            last_confirmed_index = positions[position_index]
+            confirmed_indexes.add(last_confirmed_index)
+        return confirmed_indexes, destination_mismatch
 
     @staticmethod
     def _adjust_migration_match_count(

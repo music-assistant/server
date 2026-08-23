@@ -796,7 +796,6 @@ class TracksController(MediaControllerBase[Track]):
                 for mapping in enriched_track.provider_mappings
                 if mapping.provider_instance in provider_instance_ids
             }
-        base_album = await self._get_full_track_album(track)
         existing_domains = (
             {
                 mapping.provider_domain
@@ -806,6 +805,8 @@ class TracksController(MediaControllerBase[Track]):
             if trust_track_mappings
             else set()
         )
+        base_album: Album | ItemMapping | None = None
+        base_album_loaded = False
         matches: list[TrackProviderMatch] = []
         ambiguous_providers: list[str] = []
         failed_providers: list[str] = []
@@ -834,6 +835,9 @@ class TracksController(MediaControllerBase[Track]):
                 self._get_provider_mapping(mapping_source, provider)
             ):
                 continue
+            if not base_album_loaded:
+                base_album = await self._get_full_track_album(track)
+                base_album_loaded = True
             try:
                 result = await self.find_provider_match(
                     track,

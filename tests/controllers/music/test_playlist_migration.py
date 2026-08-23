@@ -19,6 +19,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.playlists import (
     PlaylistController,
     PlaylistMigrationMatchPolicy,
+    _PlaylistMigrationTrackResult,
 )
 from music_assistant.controllers.music.media.tracks import (
     TrackProviderEnrichment,
@@ -123,6 +124,52 @@ def test_migration_report_caps_detail_rows() -> None:
     assert "_1 additional rows omitted._" in report
     assert "| Artist - Track 199 |" in report
     assert "| Artist - Track 200 |" not in report
+
+
+@pytest.mark.parametrize(
+    ("actual_target_ids", "confirmed_indexes", "destination_mismatch"),
+    [
+        (["tidal-a", "tidal-b"], {0, 1}, False),
+        (["tidal-b"], {1}, False),
+        (["tidal-b", "tidal-a"], {1}, True),
+        (["tidal-a", "unexpected"], {0}, True),
+    ],
+)
+def test_migration_reconciliation_preserves_order(
+    actual_target_ids: list[str],
+    confirmed_indexes: set[int],
+    destination_mismatch: bool,
+) -> None:
+    """Migration verification distinguishes omissions from reordered or unexpected tracks."""
+    source_a = create_track("spotify_1", "source-a")
+    source_b = create_track("spotify_1", "source-b")
+    target_a = create_track("tidal_1", "tidal-a")
+    target_b = create_track("tidal_1", "tidal-b")
+    target_results = [
+        (
+            source_a,
+            _PlaylistMigrationTrackResult(
+                track=target_a,
+                mapping=next(iter(target_a.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        (
+            source_b,
+            _PlaylistMigrationTrackResult(
+                track=target_b,
+                mapping=next(iter(target_b.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+    ]
+
+    result = PlaylistController._reconcile_migration_results(
+        actual_target_ids,
+        target_results,
+    )
+
+    assert result == (confirmed_indexes, destination_mismatch)
 
 
 async def test_provider_playlist_additions_are_batched_in_order() -> None:
@@ -363,6 +410,7 @@ async def test_migrate_playlist_rejects_dynamic_source(
         "duplicates_supported",
         "expected_target_ids",
         "actual_target_ids",
+        "expected_verification_failures",
         "expected_failure_count",
     ),
     [
@@ -370,25 +418,39 @@ async def test_migrate_playlist_rejects_dynamic_source(
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
             ["tidal-one", "tidal-two", "tidal-one"],
+            [],
             1,
         ),
         (
             False,
             ["tidal-one", "tidal-two"],
             ["tidal-one", "tidal-two"],
+            [],
             2,
         ),
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
             ["tidal-one", "tidal-one"],
+            ["Test Artist - Test Track: tidal did not add this track in the expected order"],
             2,
         ),
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
             None,
+            ["Could not verify destination playlist: Verification failed (TimeoutError)"],
             2,
+        ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            ["tidal-two", "tidal-one", "tidal-one"],
+            [
+                "Test Artist - Test Track: tidal did not add this track in the expected order",
+                "Destination playlist contains unexpected or reordered tracks",
+            ],
+            3,
         ),
     ],
 )
@@ -397,6 +459,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     duplicates_supported: bool,
     expected_target_ids: list[str],
     actual_target_ids: list[str] | None,
+    expected_verification_failures: list[str],
     expected_failure_count: int,
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -521,16 +584,14 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         expected_failures.append(
             call("Test Artist - Test Track: tidal does not support duplicate playlist entries")
         )
-    if actual_target_ids is not None and "tidal-two" not in actual_target_ids:
-        expected_failures.append(call("Test Artist - Test Track: tidal did not add this track"))
-    if actual_target_ids is None:
-        expected_failures.append(
-            call("Could not verify destination playlist: Verification failed (TimeoutError)")
-        )
+    expected_failures.extend(call(message) for message in expected_verification_failures)
     assert report_failure.call_args_list == expected_failures
     assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
-    assert "### Skipped tracks" in set_report.call_args.args[0]
+    final_report = set_report.call_args.args[0]
+    assert "### Skipped tracks" in final_report
+    if actual_target_ids == ["tidal-one", "tidal-one"]:
+        assert "### Substitutions" not in final_report
 
 
 async def test_builtin_migration_keeps_all_enriched_mappings(

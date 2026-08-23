@@ -673,7 +673,7 @@ async def test_enrich_provider_mappings_uses_library_without_mutating_it(
             music.tracks,
             "_get_full_track_album",
             AsyncMock(return_value=None),
-        ),
+        ) as get_full_track_album,
         patch.object(
             music.tracks,
             "find_provider_match",
@@ -697,6 +697,35 @@ async def test_enrich_provider_mappings_uses_library_without_mutating_it(
     }
     assert library_track.provider_mappings == original_mappings
     assert result.matches == (qobuz_match, tidal_match)
+    get_full_track_album.assert_awaited_once_with(source)
+
+
+async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
+    music: MusicController,
+) -> None:
+    """Trusted source mappings avoid unnecessary album and provider lookups."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "spotify_1"
+    provider.domain = "spotify"
+    provider.is_streaming_provider = True
+    get_full_track_album = AsyncMock()
+    find_provider_match = AsyncMock()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", get_full_track_album),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"spotify_1"},
+        )
+
+    assert result.track.provider_mappings == source.provider_mappings
+    get_full_track_album.assert_not_awaited()
+    find_provider_match.assert_not_awaited()
 
 
 async def test_enrich_provider_mappings_tries_next_instance_after_miss(
