@@ -518,6 +518,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> None:
         """Resolve and copy a playlist inside a managed task."""
         source_playlist = await self.get_library_item(source_playlist_id)
+        if source_playlist.is_dynamic:
+            raise InvalidDataError("Dynamic playlists can not be migrated")
         provider = self.mass.get_provider(destination_provider)
         if not provider or not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
@@ -527,6 +529,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         trust_source_mappings = source_provider_obj.domain != "builtin"
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
+        unsupported_items: list[tuple[str, str]] = []
         async for item in self.tracks(
             source_playlist_item_id,
             source_provider,
@@ -535,9 +538,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if isinstance(item, Track):
                 source_tracks.append(item)
                 continue
-            report_current_task_failure(
-                f"{item.name}: {item.media_type.value} items are not supported"
+            reason = (
+                f"{item.media_type.value.replace('_', ' ').capitalize()} entries are not supported"
             )
+            report_current_task_failure(f"{item.name}: {reason.lower()}")
+            unsupported_items.append((item.name, reason))
         if not source_tracks:
             raise InvalidDataError("The source playlist has no tracks to migrate")
 
@@ -583,17 +588,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         target_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
         builtin_entries: list[PlaylistItem] = []
         counts = {
-            "total": len(source_tracks),
+            "total": len(source_tracks) + len(unsupported_items),
             "exact": 0,
             "same_recording": 0,
             "best_effort": 0,
-            "skipped": 0,
+            "skipped": len(unsupported_items),
             "ambiguous": 0,
             "library_matches": 0,
             "provider_matches": 0,
         }
         substitutions_by_track: dict[str, tuple[str, str, str]] = {}
-        skipped_tracks: list[tuple[str, str]] = []
+        skipped_items = unsupported_items.copy()
         provider_issues: list[tuple[str, str]] = []
         for key, result in resolved_tracks.items():
             track = unique_tracks[key]
@@ -626,13 +631,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     )
                 continue
             if result.error:
-                skipped_tracks.append((track_label, result.error))
+                skipped_items.append((track_label, result.error))
                 continue
             reason = (
                 "multiple equally likely matches" if result.ambiguous else "no acceptable match"
             )
             report_current_task_failure(f"{track_label}: {reason}")
-            skipped_tracks.append((track_label, reason.capitalize()))
+            skipped_items.append((track_label, reason.capitalize()))
 
         seen_target_ids: set[str] = set()
         for track in source_tracks:
@@ -654,7 +659,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 report_current_task_failure(
                     f"{self._migration_track_label(track)}: {reason.lower()}"
                 )
-                skipped_tracks.append((self._migration_track_label(track), reason))
+                skipped_items.append((self._migration_track_label(track), reason))
                 continue
             seen_target_ids.add(result.mapping.item_id)
             target_ids.append(result.mapping.item_id)
@@ -676,7 +681,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prepared_count,
                 counts,
                 list(substitutions_by_track.values()),
-                skipped_tracks,
+                skipped_items,
                 provider_issues,
                 completed=False,
                 builtin_destination=provider.domain == "builtin",
@@ -758,7 +763,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     report_current_task_failure(
                         f"{self._migration_track_label(track)}: {reason.lower()}"
                     )
-                    skipped_tracks.append((self._migration_track_label(track), reason))
+                    skipped_items.append((self._migration_track_label(track), reason))
                 if destination_mismatch:
                     issue = "Destination playlist contains unexpected or reordered tracks"
                     report_current_task_failure(issue)
@@ -795,7 +800,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 migrated_count,
                 counts,
                 list(substitutions_by_track.values()),
-                skipped_tracks,
+                skipped_items,
                 provider_issues,
                 completed=True,
                 builtin_destination=provider.domain == "builtin",
@@ -805,7 +810,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError("The destination provider did not add any tracks")
         update_current_task_progress(
             100,
-            f"Migrated {migrated_count} of {len(source_tracks)} tracks",
+            f"Migrated {migrated_count} of {counts['total']} playlist items",
         )
 
     async def _resolve_migration_track(
@@ -990,7 +995,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         migrated_count: int,
         counts: Mapping[str, int],
         substitutions: list[tuple[str, str, str]],
-        skipped_tracks: list[tuple[str, str]],
+        skipped_items: list[tuple[str, str]],
         provider_issues: list[tuple[str, str]],
         *,
         completed: bool,
@@ -1004,10 +1009,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         lines = [
             f"## Playlist migration {'complete' if completed else 'analysis'}",
             "",
-            f"{action} **{migrated_count}** of **{counts['total']}** tracks "
+            f"{action} **{migrated_count}** of **{counts['total']}** playlist items "
             f"from **{source}** for **{destination}** on **{provider}**.",
             "",
-            "| Result | Tracks |",
+            "| Result | Items |",
             "| --- | ---: |",
         ]
         if builtin_destination:
@@ -1037,9 +1042,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         cls._add_report_table(
             lines,
-            "Skipped tracks",
-            ("Track", "Reason"),
-            skipped_tracks,
+            "Skipped items",
+            ("Item", "Reason"),
+            skipped_items,
         )
         cls._add_report_table(
             lines,

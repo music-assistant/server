@@ -13,7 +13,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
 )
-from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import Playlist, ProviderMapping, Radio, Track
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.playlists import (
@@ -448,6 +448,114 @@ async def test_migrate_playlist_rejects_dynamic_source(
         await music.playlists.migrate_playlist(source_playlist.item_id)
 
 
+async def test_migration_handler_revalidates_dynamic_source(
+    music: MusicController,
+) -> None:
+    """A queued migration stops if its source playlist becomes dynamic."""
+    source_playlist = _playlist("1", "Dynamic", "spotify_1", "source")
+    source_playlist.is_dynamic = True
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        pytest.raises(InvalidDataError, match="Dynamic playlists"),
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            "tidal_1",
+            "Migrated",
+            PlaylistMigrationMatchPolicy.SAME_RECORDING,
+            ("spotify_1", "tidal_1"),
+        )
+
+
+async def test_migration_reports_unsupported_source_items(
+    music: MusicController,
+) -> None:
+    """Mixed playlists include unsupported entries in skipped totals and reports."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    source_track = create_track("spotify_1", "track")
+    source_radio = Radio(
+        item_id="radio",
+        provider="spotify_1",
+        name="Test Radio",
+        provider_mappings=set(),
+    )
+    destination_playlist = _playlist("2", "Migrated", "builtin", "migrated")
+    builtin_provider = MagicMock(spec=MusicProvider)
+    builtin_provider.instance_id = "builtin"
+    builtin_provider.domain = "builtin"
+    builtin_provider.name = "Music Assistant"
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
+    enrichment = TrackProviderEnrichment(
+        track=source_track,
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+
+    async def iter_source_items(*_args: object, **_kwargs: object) -> AsyncGenerator[Track | Radio]:
+        yield source_track
+        yield source_radio
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        patch.object(music.playlists, "tracks", iter_source_items),
+        patch.object(
+            music.tracks,
+            "enrich_provider_mappings",
+            AsyncMock(return_value=enrichment),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id: {
+                "builtin": builtin_provider,
+                "spotify_1": source_provider,
+            }[provider_instance_id],
+        ),
+        patch.object(
+            music.playlists,
+            "_create_builtin_migration_playlist",
+            AsyncMock(return_value=destination_playlist),
+        ),
+        patch(
+            "music_assistant.controllers.music.media.playlists.report_current_task_failure"
+        ) as report_failure,
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            "builtin",
+            "Migrated",
+            PlaylistMigrationMatchPolicy.SAME_RECORDING,
+            ("builtin", "spotify_1"),
+        )
+
+    report_failure.assert_called_once_with("Test Radio: radio entries are not supported")
+    final_report = set_report.call_args.args[0]
+    assert "Migrated **1** of **2** playlist items" in final_report
+    assert "| Skipped | 1 |" in final_report
+    assert "### Skipped items" in final_report
+    assert "Test Radio" in final_report
+
+
 @pytest.mark.parametrize(
     (
         "duplicates_supported",
@@ -636,7 +744,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
     final_report = set_report.call_args.args[0]
-    assert "### Skipped tracks" in final_report
+    assert "### Skipped items" in final_report
     if actual_target_ids == ["tidal-one", "tidal-one"]:
         assert "### Substitutions" not in final_report
 
