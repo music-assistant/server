@@ -534,6 +534,57 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     assert result.matches == (match,)
 
 
+async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(
+    music: MusicController,
+) -> None:
+    """Builtin source entries retain only provider mappings allowed for the initiating user."""
+    source = create_track("spotify_1", "source")
+    allowed_track = create_track("spotify_2", "source")
+    allowed_mapping = next(iter(allowed_track.provider_mappings))
+    allowed_provider = MagicMock(spec=MusicProvider)
+    allowed_provider.name = "Spotify allowed"
+    allowed_provider.instance_id = "spotify_2"
+    allowed_provider.domain = "spotify"
+    allowed_provider.is_streaming_provider = True
+    match = TrackProviderMatch(
+        track=allowed_track,
+        mapping=allowed_mapping,
+        confidence=TrackMatchConfidence.EXACT,
+    )
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(return_value=TrackProviderMatchResult(match=match)),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=allowed_provider,
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"spotify_2"},
+        )
+
+    assert result.track.provider_mappings == {allowed_mapping}
+    assert all(
+        mapping.provider_instance != "spotify_1" for mapping in result.track.provider_mappings
+    )
+
+
 async def test_overwrite_update_keeps_artists_when_none_are_given(
     mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:

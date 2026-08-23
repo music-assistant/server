@@ -826,6 +826,12 @@ class TracksController(MediaControllerBase[Track]):
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
+        if provider_instance_ids is not None:
+            enriched_track.provider_mappings = {
+                mapping
+                for mapping in enriched_track.provider_mappings
+                if mapping.provider_instance in provider_instance_ids
+            }
         base_album = await self._get_full_track_album(track)
         existing_domains = {
             mapping.provider_domain

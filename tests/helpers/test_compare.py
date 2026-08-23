@@ -1305,6 +1305,27 @@ def test_compare_track_evidence_conflicting_release_track_ids_are_not_exact() ->
     assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
 
 
+def test_compare_track_evidence_authoritative_id_overrides_position_drift() -> None:
+    """Provider track-number drift does not override an authoritative release-track ID."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "11111111-1111-1111-1111-111111111111",
+    )
+    base = _provider_track("base", "provider_a", external_ids={mb_track})
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        external_ids={mb_track},
+    )
+    candidate.track_number = 2
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.EXACT
+
+    base.external_ids.clear()
+    candidate.external_ids.clear()
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.NO_MATCH
+
+
 def test_compare_track_evidence_simplified_albums_do_not_prove_exact_release() -> None:
     """Album mappings without artist and year evidence only support a recording match."""
     base = _provider_track("base", "provider_a")

@@ -490,8 +490,6 @@ def compare_track_evidence(
 
     base_album = base_album or base_item.album
     compare_album_item = compare_album_item or compare_item.album
-    if _same_album_position_conflicts(base_item, compare_item, base_album, compare_album_item):
-        return TrackMatchConfidence.NO_MATCH
 
     base_version = _track_version(base_item)
     compare_version_value = _track_version(compare_item)
@@ -549,6 +547,13 @@ def compare_track_evidence(
     ):
         return TrackMatchConfidence.LIKELY
 
+    if _same_album_position_conflicts(
+        base_item,
+        compare_item,
+        base_album,
+        compare_album_item,
+    ):
+        return TrackMatchConfidence.NO_MATCH
     if not title_matches or not artists_match:
         return TrackMatchConfidence.NO_MATCH
     if versions_match and _track_durations_match(
@@ -1153,7 +1158,7 @@ def _same_album_position_conflicts(
     compare_album_item: Album | ItemMapping | None,
 ) -> bool:
     """Return whether tracks occupy different known positions on the same album."""
-    if not base_album or not compare_album_item:
+    if not isinstance(base_album, Album) or not isinstance(compare_album_item, Album):
         return False
     if not compare_album(base_album, compare_album_item, strict=False):
         return False
