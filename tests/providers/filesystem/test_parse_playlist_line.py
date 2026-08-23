@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
 
+from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 if TYPE_CHECKING:
@@ -31,6 +33,9 @@ def provider(
     provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
     provider.base_path = str(music_dir)
     provider.logger = MagicMock()
+    provider.config = MagicMock(instance_id="filesystem_local--test")
+    provider.mass = MagicMock()
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     monkeypatch.setattr(
         "music_assistant.providers.filesystem_local.async_parse_tags",
         AsyncMock(return_value=MagicMock()),
@@ -90,3 +95,61 @@ async def test_missing_file_returns_none(
 
     assert await fs_provider._parse_playlist_line("Missing/nope.mp3", "Playlists") is None
     fs_provider.logger.warning.assert_called_once()  # type: ignore[attr-defined]
+
+
+def _library_track_mock(available: bool) -> MagicMock:
+    """Return a library track mock with a provider mapping for Artist/track.mp3."""
+    library_track = MagicMock(name="library_track")
+    library_track.provider_mappings = {
+        MagicMock(
+            provider_instance="filesystem_local--test",
+            item_id="Artist/track.mp3",
+            available=available,
+        )
+    }
+    return library_track
+
+
+async def test_library_track_preferred_over_tag_parsing(
+    provider: tuple[LocalFileSystemProvider, MagicMock],
+) -> None:
+    """A line whose file is already in the library resolves from the db, without tag parsing."""
+    fs_provider, _ = provider
+    library_track = _library_track_mock(available=True)
+    db_lookup = AsyncMock(return_value=library_track)
+    fs_provider.mass.music.tracks.get_library_item_by_prov_id = db_lookup  # type: ignore[method-assign]
+
+    result = await fs_provider._parse_playlist_line("../Artist/track.mp3", "Playlists")
+
+    assert result is library_track
+    db_lookup.assert_awaited_once_with("Artist/track.mp3", "filesystem_local--test")
+    # the library track is presented under its provider item identity
+    assert result.item_id == "Artist/track.mp3"
+    assert result.provider == "filesystem_local--test"
+    assert result.uri == create_uri(MediaType.TRACK, "filesystem_local--test", "Artist/track.mp3")
+    fs_provider._parse_track.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_stale_unavailable_library_track_falls_back_to_tag_parsing(
+    provider: tuple[LocalFileSystemProvider, MagicMock],
+) -> None:
+    """A library track whose mapping is (stale) unavailable is re-parsed from the file tags."""
+    fs_provider, track = provider
+    library_track = _library_track_mock(available=False)
+    fs_provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        return_value=library_track
+    )
+
+    assert await fs_provider._parse_playlist_line("../Artist/track.mp3", "Playlists") is track
+    fs_provider._parse_track.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+async def test_tag_parsing_fallback_when_not_in_library(
+    provider: tuple[LocalFileSystemProvider, MagicMock],
+) -> None:
+    """A line whose file is not (yet) in the library falls back to parsing the file tags."""
+    fs_provider, track = provider
+
+    assert await fs_provider._parse_playlist_line("../Artist/track.mp3", "Playlists") is track
+    fs_provider.mass.music.tracks.get_library_item_by_prov_id.assert_awaited_once()  # type: ignore[attr-defined]
+    fs_provider._parse_track.assert_awaited_once()  # type: ignore[attr-defined]
