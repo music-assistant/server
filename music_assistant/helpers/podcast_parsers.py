@@ -267,6 +267,18 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
     return None
 
 
+def feed_has_consistent_numbering(episodes: list[dict[str, Any]]) -> bool:
+    """
+    Return True when every episode in the feed carries a valid itunes:episode number.
+
+    When False, callers should use the enumeration index for all episodes to avoid
+    mixing two incompatible numbering schemes within the same show.
+    """
+    return bool(episodes) and all(
+        isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes
+    )
+
+
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
@@ -297,12 +309,9 @@ def parse_podcast_episode(
     if episode_published == 0:
         episode_published = None
 
-    # prefer the explicit itunes:episode number for ordering (parity with podcast_index);
-    # fall back to the feed enumeration order when the feed omits it
-    episode_number = episode.get("number")
-    episode_position = (
-        episode_number if isinstance(episode_number, int) and episode_number > 0 else episode_cnt
-    )
+    # position is decided by the caller; use the feed's itunes:episode number only when
+    # every episode in the feed carries one, otherwise use the enumeration index for all
+    episode_position = episode_cnt
 
     try:
         stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)

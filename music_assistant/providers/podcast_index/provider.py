@@ -283,14 +283,23 @@ class PodcastIndexProvider(MusicProvider):
             )
 
             episodes = response.get("items", [])
+            # only use itunes:episode numbers when every episode in the feed carries one,
+            # otherwise fall back to the listing index for all of them to avoid mixing
+            # two incompatible numbering schemes within the same show
+            all_numbered = all(
+                isinstance(ep.get("episode"), int) and ep["episode"] > 0 for ep in episodes
+            )
+            total = len(episodes)
             for idx, episode_data in enumerate(episodes):
+                # API lists newest-first; number down so bigger position = newer
+                position = episode_data["episode"] if all_numbered else total - idx
                 episode = parse_episode_from_data(
                     episode_data,
                     prov_podcast_id,
-                    idx,
                     self.instance_id,
                     self.domain,
                     podcast_name,
+                    position=position,
                 )
                 if episode:
                     yield episode
@@ -318,7 +327,7 @@ class PodcastIndexProvider(MusicProvider):
             episode_data = response.get("episode")
             if episode_data:
                 episode = parse_episode_from_data(
-                    episode_data, podcast_id, 0, self.instance_id, self.domain
+                    episode_data, podcast_id, self.instance_id, self.domain
                 )
         except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
@@ -447,7 +456,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("recent/episodes", params={"max": 50})
 
             episodes = []
-            for idx, episode_data in enumerate(response.get("items", [])):
+            for episode_data in response.get("items", []):
                 # Extract podcast ID from episode data
                 podcast_id = str(episode_data.get("feedId", ""))
                 # Pass feedTitle to avoid unnecessary API calls
@@ -455,7 +464,6 @@ class PodcastIndexProvider(MusicProvider):
                 episode = parse_episode_from_data(
                     episode_data,
                     podcast_id,
-                    idx,
                     self.instance_id,
                     self.domain,
                     podcast_name,

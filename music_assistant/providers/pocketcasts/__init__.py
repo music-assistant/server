@@ -246,12 +246,21 @@ class PocketCastsProvider(MusicProvider):
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
 
-        for episode_data in episodes:
+        # only use episode numbers when every episode carries one, otherwise use the
+        # enumeration index to avoid mixing two incompatible numbering schemes
+        all_numbered = all(
+            isinstance(ep.get("episodeNumber"), int) and ep["episodeNumber"] > 0 for ep in episodes
+        )
+        total = len(episodes)
+        for idx, episode_data in enumerate(episodes):
+            # API lists newest-first; number down so bigger position = newer
+            position = episode_data["episodeNumber"] if all_numbered else total - idx
             episode_item = self._convert_episode(
                 episode_data,
                 prov_podcast_id,
                 show_notes.get(episode_data.get("uuid", "")),
                 podcast_name,
+                position=position,
             )
             if episode_item:
                 self._enrich_episode_with_status(
@@ -519,8 +528,13 @@ class PocketCastsProvider(MusicProvider):
         podcast_uuid: str,
         show_notes: dict[str, Any] | None = None,
         podcast_name: str = "",
+        position: int = 0,
     ) -> PodcastEpisode | None:
-        """Convert episode data to a PodcastEpisode, or None when it carries no episode uuid."""
+        """
+        Convert episode data to a PodcastEpisode, or None when it carries no episode uuid.
+
+        :param position: The episode's listing position. Defaults to 0 (unknown).
+        """
         episode_uuid = episode_data.get("uuid")
         if not episode_uuid:
             return None
@@ -541,7 +555,7 @@ class PocketCastsProvider(MusicProvider):
                 provider=self.instance_id,
                 name=podcast_name,
             ),
-            position=episode_data.get("episodeNumber", 0),
+            position=position,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,

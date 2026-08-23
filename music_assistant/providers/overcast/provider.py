@@ -41,6 +41,7 @@ from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    feed_has_consistent_numbering,
     find_episode_stream_url,
     get_cached_podcast,
     get_stream_url_and_guid_from_episode,
@@ -183,11 +184,15 @@ class OvercastProvider(MusicProvider):
         subscription = await self._get_subscription(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         podcast_name = podcast.get("title")
-        for cnt, parsed_episode in enumerate(podcast.get("episodes", [])):
+        episodes = podcast.get("episodes", [])
+        use_feed_numbers = feed_has_consistent_numbering(episodes)
+        total = len(episodes)
+        for cnt, parsed_episode in enumerate(episodes):
+            episode_cnt = parsed_episode["number"] if use_feed_numbers else total - cnt
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=cnt,
+                episode_cnt=episode_cnt,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,
@@ -373,7 +378,10 @@ class OvercastProvider(MusicProvider):
         newest_applied: datetime | None = None
         podcast_cover = parsed_podcast.get("cover_url")
         podcast_name = parsed_podcast.get("title")
-        for cnt, parsed_episode in enumerate(parsed_podcast.get("episodes", [])):
+        all_episodes = parsed_podcast.get("episodes", [])
+        use_feed_numbers = feed_has_consistent_numbering(all_episodes)
+        total = len(all_episodes)
+        for cnt, parsed_episode in enumerate(all_episodes):
             try:
                 stream_url, _ = get_stream_url_and_guid_from_episode(episode=parsed_episode)
             except ValueError:
@@ -389,10 +397,11 @@ class OvercastProvider(MusicProvider):
                 # already applied in a previous sync; skipping it also makes sure
                 # local progress made since then is not overwritten
                 continue
+            episode_cnt = parsed_episode["number"] if use_feed_numbers else total - cnt
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=feed_url,
-                episode_cnt=cnt,
+                episode_cnt=episode_cnt,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,

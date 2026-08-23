@@ -9,6 +9,7 @@ from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    feed_has_consistent_numbering,
     find_episode_stream_url,
     get_cached_podcast,
     get_podcastparser_dict,
@@ -212,18 +213,35 @@ def test_podcast_reference_falls_back_to_episode_title() -> None:
 # --- episode position (itunes:episode number) -----------------------------------------------
 
 
-def test_episode_position_uses_itunes_episode_number() -> None:
-    """A declared itunes:episode number drives the episode position over the feed order."""
-    mass_episode = _parse(_episode(number=5))
+def test_episode_position_uses_caller_supplied_cnt() -> None:
+    """The episode position is determined by the caller via episode_cnt."""
+    mass_episode = parse_podcast_episode(
+        episode=_episode(),
+        prov_podcast_id="podcast-1",
+        episode_cnt=5,
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
     assert mass_episode is not None
     assert mass_episode.position == 5
 
 
-def test_episode_position_falls_back_to_feed_order() -> None:
-    """Without an episode number, position falls back to the feed enumeration order (cnt=1)."""
-    mass_episode = _parse(_episode())
-    assert mass_episode is not None
-    assert mass_episode.position == 1
+def test_feed_has_consistent_numbering_all_numbered() -> None:
+    """A feed where every episode has a positive number is consistently numbered."""
+    episodes = [_episode(number=1), _episode(number=2), _episode(number=3)]
+    assert feed_has_consistent_numbering(episodes) is True
+
+
+def test_feed_has_consistent_numbering_mixed() -> None:
+    """A feed where only some episodes are numbered is not consistent."""
+    episodes = [_episode(number=1), _episode(), _episode(number=3)]
+    assert feed_has_consistent_numbering(episodes) is False
+
+
+def test_feed_has_consistent_numbering_none() -> None:
+    """A feed with no numbered episodes is not consistent."""
+    episodes = [_episode(), _episode()]
+    assert feed_has_consistent_numbering(episodes) is False
 
 
 # --- inline (Podlove Simple Chapters) --------------------------------------------------------

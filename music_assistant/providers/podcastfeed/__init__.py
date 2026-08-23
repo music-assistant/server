@@ -34,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    feed_has_consistent_numbering,
     get_cached_podcast,
     get_stream_url_from_episode,
     parse_podcast,
@@ -133,9 +134,12 @@ class PodcastMusicprovider(MusicProvider):
     @use_cache(3600)  # Cache for 1 hour
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
-        for idx, episode in enumerate(self.parsed_podcast["episodes"]):
+        episodes = self.parsed_podcast["episodes"]
+        use_feed_numbers = feed_has_consistent_numbering(episodes)
+        for idx, episode in enumerate(episodes):
             if prov_episode_id == episode["guid"]:
-                if mass_episode := self._parse_episode(episode, idx):
+                position = episode["number"] if use_feed_numbers else idx + 1
+                if mass_episode := self._parse_episode(episode, position):
                     await enrich_episode_chapters(
                         session=self.mass.http_session,
                         chapters_json_url=episode.get("chapters_json_url"),
@@ -155,8 +159,10 @@ class PodcastMusicprovider(MusicProvider):
         episodes: list[dict[str, Any]] = self.parsed_podcast["episodes"]
         if episodes and episodes[0].get("published", 0) != 0:
             episodes.sort(key=lambda x: x.get("published", 0))
+        use_feed_numbers = feed_has_consistent_numbering(episodes)
         for idx, episode in enumerate(episodes):
-            if mass_episode := self._parse_episode(episode, idx):
+            position = episode["number"] if use_feed_numbers else idx + 1
+            if mass_episode := self._parse_episode(episode, position):
                 yield mass_episode
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
