@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
-import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.controllers.streams import audio_buffer as audio_buffer_module
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.helpers.audio import pcm_formats_match
+from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
-_S32 = AudioFormat(
-    content_type=ContentType.PCM_S32LE, sample_rate=44100, bit_depth=32, channels=2
-)
-_F32 = AudioFormat(
-    content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2
-)
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    import pytest
+
+_S32 = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=44100, bit_depth=32, channels=2)
+_F32 = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2)
 
 
 def test_integer_and_float_pcm_are_not_interchangeable() -> None:
@@ -35,17 +38,14 @@ async def test_the_buffer_converts_rather_than_reinterprets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A buffer of integer PCM asked for float PCM has to run its conversion."""
-    from music_assistant.controllers.streams import audio_buffer as audio_buffer_module  # noqa: PLC0415
-    from music_assistant.controllers.streams.audio_buffer import AudioBuffer  # noqa: PLC0415
-
     buffer = AudioBuffer(_S32)
     took: list[str] = []
 
-    async def _fake_ffmpeg_stream(**kwargs: object) -> AsyncGenerator[bytes]:
+    async def _fake_ffmpeg_stream(**_kwargs: object) -> AsyncGenerator[bytes]:
         took.append("ffmpeg")
         yield b""
 
-    async def _fake_raw_stream(**kwargs: object) -> AsyncGenerator[bytes]:
+    async def _fake_raw_stream(**_kwargs: object) -> AsyncGenerator[bytes]:
         took.append("raw")
         yield b""
 
@@ -64,10 +64,6 @@ async def test_the_buffer_converts_rather_than_reinterprets(
 
 def test_a_warm_airplay_replace_refuses_a_differently_encoded_source() -> None:
     """A live session must not absorb a source it would then mislabel."""
-    from music_assistant.providers.airplay.stream_session import (  # noqa: PLC0415
-        AirPlayStreamSession,
-    )
-
     session = object.__new__(AirPlayStreamSession)
     session.pcm_format = _F32
     session.sync_clients = []
