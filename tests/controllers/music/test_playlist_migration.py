@@ -274,8 +274,10 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    track_requests: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+    async def iter_source_tracks(*args: object, **kwargs: object) -> AsyncGenerator[Track]:
+        track_requests.append((args, kwargs))
         for track in (
             source_one,
             source_two,
@@ -346,6 +348,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         )
 
     create_playlist.assert_awaited_once()
+    assert track_requests == [(("source", "spotify_1"), {"force_refresh": True})]
     target_provider.add_playlist_tracks.assert_awaited_once_with(
         "target",
         expected_target_ids,

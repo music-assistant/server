@@ -523,7 +523,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         trust_source_mappings = source_provider_obj.domain != "builtin"
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
-        async for item in self.tracks(source_playlist_item_id, source_provider):
+        async for item in self.tracks(
+            source_playlist_item_id,
+            source_provider,
+            force_refresh=True,
+        ):
             if isinstance(item, Track):
                 source_tracks.append(item)
                 continue
@@ -748,7 +752,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     trust_track_mappings=trust_source_mappings,
                 )
                 return _PlaylistMigrationTrackResult(
-                    track=enrichment.track,
+                    track=enrichment.track if enrichment.track.provider_mappings else None,
                     provider_matches=enrichment.matches,
                     ambiguous_providers=enrichment.ambiguous_providers,
                     failed_providers=enrichment.failed_providers,

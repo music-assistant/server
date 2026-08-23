@@ -838,14 +838,16 @@ class TracksController(MediaControllerBase[Track]):
                 for mapping in enriched_track.provider_mappings
                 if mapping.provider_instance in provider_instance_ids
             }
-        if not trust_track_mappings:
-            enriched_track.provider_mappings.clear()
         base_album = await self._get_full_track_album(track)
-        existing_domains = {
-            mapping.provider_domain
-            for mapping in enriched_track.provider_mappings
-            if mapping.available
-        }
+        existing_domains = (
+            {
+                mapping.provider_domain
+                for mapping in enriched_track.provider_mappings
+                if mapping.available
+            }
+            if trust_track_mappings
+            else set()
+        )
         matches: list[TrackProviderMatch] = []
         ambiguous_providers: list[str] = []
         failed_providers: list[str] = []
@@ -861,11 +863,12 @@ class TracksController(MediaControllerBase[Track]):
             if provider_instance_ids is not None
             else self.mass.music.providers
         )
+        mapping_source = library_track or track
         for provider in providers:
             if provider.domain in existing_domains:
                 continue
             if not provider.is_streaming_provider and not (
-                library_track and self._get_provider_mapping(library_track, provider)
+                self._get_provider_mapping(mapping_source, provider)
             ):
                 continue
             try:
@@ -874,7 +877,7 @@ class TracksController(MediaControllerBase[Track]):
                     provider,
                     minimum_confidence=minimum_confidence,
                     base_album=base_album,
-                    mapping_source=library_track,
+                    mapping_source=mapping_source,
                     allowed_provider_instances=provider_instance_ids,
                     trust_base_mapping=trust_track_mappings,
                 )
@@ -891,7 +894,8 @@ class TracksController(MediaControllerBase[Track]):
                 enriched_track.provider_mappings = {
                     mapping
                     for mapping in enriched_track.provider_mappings
-                    if mapping.provider_domain != provider.domain or mapping.available
+                    if mapping.provider_domain != provider.domain
+                    or (trust_track_mappings and mapping.available)
                 }
                 enriched_track.provider_mappings.add(result.match.mapping)
                 matches.append(result.match)

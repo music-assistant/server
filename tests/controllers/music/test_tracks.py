@@ -627,6 +627,51 @@ async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(
     )
 
 
+async def test_enrich_provider_mappings_preserves_allowed_untrusted_fallback(
+    music: MusicController,
+) -> None:
+    """A Music Assistant copy keeps an allowed source mapping when revalidation finds no match."""
+    source = create_track("qobuz_1", "source")
+    source_mapping = next(iter(source.provider_mappings))
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.is_streaming_provider = True
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(return_value=TrackProviderMatchResult()),
+        ) as find_match,
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            trust_track_mappings=False,
+        )
+
+    assert result.track.provider_mappings == {source_mapping}
+    assert find_match.await_args is not None
+    assert find_match.await_args.kwargs["trust_base_mapping"] is False
+
+
 async def test_overwrite_update_keeps_artists_when_none_are_given(
     mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
