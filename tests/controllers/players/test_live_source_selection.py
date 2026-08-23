@@ -140,6 +140,47 @@ async def test_deselecting_from_another_provider_leaves_the_source_playing() -> 
     controller._handle_cmd_stop.assert_not_awaited()
 
 
+async def test_deselecting_without_an_owned_session_does_not_stop_the_player() -> None:
+    """A provider cannot stop a player when it owns no source session."""
+    controller, provider, _player = _controller(None)
+
+    await controller.deselect_source(PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE)
+
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_a_replacement_source_during_release_is_not_stopped() -> None:
+    """A source taking over during release remains active and playing."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    replacement_instance = "airplay_receiver--xyz"
+    replacement = AudioSource(
+        item_id="receiver",
+        provider=replacement_instance,
+        name="AirPlay",
+        provider_mappings={
+            ProviderMapping(
+                item_id="receiver",
+                provider_domain="airplay_receiver",
+                provider_instance=replacement_instance,
+            )
+        },
+    )
+
+    async def start_replacement(_source_id: str, _player_id: str) -> None:
+        controller._start_audio_source_session(PLAYER_ID, replacement, replacement_instance)
+
+    provider.on_source_released.side_effect = start_replacement
+
+    await controller.deselect_source(PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE)
+
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    assert session.source is replacement
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
     """A release for a player holding no source tells no plugin anything."""
     controller, provider, _player = _controller(None)

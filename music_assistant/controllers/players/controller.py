@@ -1183,21 +1183,27 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if not player:
             return
         session = self._source_sessions.get(player_id)
-        if (
-            provider_instance_id is not None
-            and session is not None
-            and session.provider_instance_id != provider_instance_id
-        ):
+        active_provider_instance_id = session.provider_instance_id if session else None
+        if provider_instance_id is not None and active_provider_instance_id != provider_instance_id:
             self.logger.debug(
                 "Ignoring source release from provider %s on player %s: "
-                "the active source belongs to provider %s",
+                "active source provider is %s",
                 provider_instance_id,
                 player_id,
-                session.provider_instance_id,
+                active_provider_instance_id,
             )
             return
         await self._release_audio_source(player_id)
         if not stop_playback:
+            return
+        replacement_session = self._source_sessions.get(player_id)
+        if provider_instance_id is not None and replacement_session is not None:
+            self.logger.debug(
+                "Not stopping player %s after releasing provider %s: provider %s took over",
+                player_id,
+                provider_instance_id,
+                replacement_session.provider_instance_id,
+            )
             return
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
