@@ -49,11 +49,11 @@ def test_backend_soloist_is_selected() -> None:
     assert isinstance(prov._create_backend(), SoloistBackend)
 
 
-def test_max_concurrent_streams_follows_the_backend() -> None:
-    """Librespot (or an unset choice) allows two parallel fetches, soloist only one."""
+def test_max_concurrent_streams_is_two_on_either_backend() -> None:
+    """Two source streams either way: parallel librespot fetches, or one session handover."""
     assert _make_provider({}).max_concurrent_streams == 2
     assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 2
-    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 1
+    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 2
 
 
 async def test_librespot_receives_the_translated_uri(

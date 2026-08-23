@@ -2159,6 +2159,10 @@ async def test_spotify_flow_rejects_playback_authorized_by_another_account(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Authorizing playback as a different Spotify account re-asks instead of storing it."""
+    from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
+        CONF_PLAYBACK_BACKEND,
+    )
     from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
         CONF_PLAYBACK_AUTH_METHOD,
         CONF_PLAYBACK_CALLBACK_URL,
@@ -2197,6 +2201,16 @@ async def test_spotify_flow_rejects_playback_authorized_by_another_account(
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # playback needs an explicit backend choice; stay on librespot here
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
         await _wait_for(
             lambda: (
                 session.current_step is not None and session.current_step.step_id == "playback_auth"

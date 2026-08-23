@@ -6,6 +6,7 @@ import asyncio
 import logging
 import shutil
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 

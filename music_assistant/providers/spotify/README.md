@@ -7,12 +7,14 @@ flow, stored per instance):
 - **`backends/librespot.py`** — the bundled community librespot fork. One
   `librespot --single-track` process per item, yielding the original Ogg Vorbis stream
   (passthrough). Simple, but relies on reverse-engineered internals: accounts created
-  since December 2024 cannot use it. Source capacity: **2** concurrent streams.
+  since December 2024 cannot use it.
 - **`backends/soloist.py`** — Spotify Soloist, Spotify's official headless client. One
-  `soloist --single-track` process per item, playing into a private PulseAudio capture
-  sink (`helpers/pulse_capture.py`) whose FIFO is read back at realtime pace as
-  s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API (cold seek,
-  buffering, completion). Source capacity: **1** concurrent stream.
+  continuous session, fed one track ahead, playing into a private PulseAudio capture
+  sink (`helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
+  as s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API.
+
+Source capacity is **2** on either backend — for librespot two parallel fetches, for
+Soloist the item that is ending and the item that continues from the same session.
 
 The provider itself (`provider.py`) stays backend-agnostic: it owns the Web API,
 parsing, StreamDetails and the audiobook chapter logic, and hands canonical
@@ -22,30 +24,45 @@ parsing, StreamDetails and the audiobook chapter logic, and hands canonical
 ## Soloist specifics
 
 The heavy lifting (managed binary install with 90-day build expiry, WebSocket client,
-wire models) is shared infrastructure owned by the Spotify Connect provider
-(`providers/spotify_connect/soloist/runtime.py`) — do not duplicate it here.
+audio prefs, wire models) is shared infrastructure owned by the Spotify Connect provider
+(`providers/spotify_connect/soloist/`) — do not duplicate it here.
 
 - **Setup**: explicit backend choice → ToS warning/consent → personal API key (created
   with a Premium account) → `soloist --pair` against a flow-private data dir, which the
   provider adopts into `<storage>/spotify/<instance_id>/soloist-data` on the next load.
   Existing configs without a backend value keep using librespot.
-- **Capacity 1**: a Spotify account supports a single active Soloist session (verified:
-  a second session terminates the first). The current and next item can therefore not
-  be fetched concurrently — next-track preload, crossfade and Smart Fades across track
-  boundaries need additional Spotify provider instances with *different* accounts. The
-  generic provider-capacity handling (`max_concurrent_streams`) enforces this and
-  selects a free instance where possible.
-- **Pacing**: the capture FIFO is reader-clocked and Spotify's delivery cannot sustain
-  accelerated reads (measured: 1.1x sustained is the cold-cache ceiling), so the FIFO is
-  read at 1.1x with a small (1s) initial burst — the surplus banks the cushion that keeps
-  track boundaries clean. On a `buffering` status the sink is suspended so stall silence
-  never enters the delivered PCM. The StreamDetails carry `is_realtime=True`, which makes
-  the streams core adapt its buffer thresholds, seek handling and (flow) crossfade to a
-  source that cannot read ahead.
-- **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence);
-  WebSocket state and process exit delimit the item. Exit code 0 is not proof of
-  complete PCM — the last observed playback position is validated against the item's
-  duration. Exit code 10 (expired build) triggers a forced binary refresh.
+- **One session, fed one track ahead**: a Spotify account supports a single active
+  Soloist session, so items are not fetched one by one. The session plays consecutive
+  tracks continuously — `play(uri)` for the first, `add_to_queue(uri)` for the follower
+  — and that one continuous audio stream is split into ordinary per-item streams: an
+  item's stream ends where the session reports moving on, and the next item's stream
+  begins there. Played back to back the items reproduce the session's audio sample for
+  sample, so the cut position does not matter and Spotify's crossfade simply lives
+  inside the bytes. Only consecutive tracks are stitched; a podcast episode or audiobook
+  chapter is played on its own.
+- **Readiness comes from the session**: the core's blind next-item pre-buffer is
+  suppressed for a realtime source (`controllers/streams/audio.py`), because the next
+  item's audio does not exist until the session gets there. The session calls
+  `prepare_next_audio_buffer()` when it does, identifying the item **by URI** (a queue
+  reorder may have moved it).
+- **Crossfade comes from the queue**: Music Assistant cannot crossfade audio it is not
+  mixing, so the queue's own crossfade preference is written into the engine's prefs
+  before every spawn. Its unit is milliseconds and sub-second values silently disable
+  crossfade, which the seconds-based queue setting can never produce. Changing the
+  setting mid-playback takes effect on the next playback.
+- **Pacing**: the capture FIFO is reader-clocked — the pipe sink applies no rate limit,
+  so reading faster than Spotify delivers makes PulseAudio render silence instead of
+  applying backpressure. It is read at **1.1x** with a small (1s) initial burst, both
+  ear-tested: the surplus banks a cushion (~6s per minute) that carries an item
+  boundary, while a large burst window is unpaced and audibly destabilizes track
+  starts. Do not add ffmpeg-side pacing on top of this. On a `buffering` status the
+  sink is suspended so stall silence never enters the delivered PCM.
+- **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
+  WebSocket state delimits the items. An item stream is deliberately **not** capped at
+  the item duration — with crossfade it carries the head of the next track — but it is
+  bounded, and completeness is validated against the furthest playback position the
+  engine reported for it, with the crossfade added to the tolerance. Exit code 10
+  (expired build) triggers a forced binary refresh.
 - **Normalization**: soloist normalizes loudness per the account's setting and has no
   public switch; `audio.normalize_v2=false` is written to its prefs store before each
   spawn (best effort) so MA's own volume normalization stays the single loudness

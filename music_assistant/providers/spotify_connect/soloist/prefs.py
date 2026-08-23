@@ -85,6 +85,9 @@ def write_audio_prefs(
     ]
     if crossfade_ms:
         managed_lines.insert(1, f"{PREF_CROSSFADE_TIME}={crossfade_ms}")
+    # every crossfade key is dropped even when only the boolean is rewritten:
+    # leaving a stale time behind would keep a previous session's crossfade on
+    managed_keys = {PREF_CROSSFADE, PREF_CROSSFADE_TIME, PREF_NORMALIZE}
     if audio_quality is not None:
         quality = _QUALITY_VALUES.get(audio_quality, _QUALITY_VALUES[AUDIO_QUALITY_LOSSLESS])
         managed_lines += [
@@ -92,9 +95,8 @@ def write_audio_prefs(
             f"{PREF_QUALITY_NON_METERED}={quality}",
             f"{PREF_QUALITY_MIGRATED}=true",
         ]
-    # only the keys actually written are replaced: a caller that does not manage
-    # a setting must leave the engine's own value in place
-    managed_keys = {line.split("=", 1)[0] for line in managed_lines}
+        # a caller that does not manage the quality tier leaves the engine's own
+        managed_keys |= {PREF_QUALITY, PREF_QUALITY_NON_METERED, PREF_QUALITY_MIGRATED}
     settings_dir = data_dir / "settings"
     prefs_files = [settings_dir / "prefs"]
     try:

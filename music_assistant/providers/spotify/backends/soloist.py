@@ -265,6 +265,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
             item.release()
         await session.validate_item(item)
 
+    async def discard_session(self, session: _SoloistSession) -> None:
+        """
+        Stop a session for good, dropping it if it is still the current one.
+
+        :param session: The session to tear down.
+        """
+        async with self._session_lock:
+            if self._session is session:
+                self._session = None
+        await session.stop()
+
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostic details about the backend (never any secret)."""
         session = self._session
@@ -511,7 +522,8 @@ class _SoloistSession:
         """
         backend = self.backend
         server = backend._server
-        assert server is not None and backend._binary is not None
+        assert server is not None
+        assert backend._binary is not None
         self.crossfade_ms = self._queue_crossfade_ms()
         await asyncio.to_thread(backend._prepare_data_dir, self.crossfade_ms)
         self._sink = sink = await PipeSink.create(server, backend._sink_prefix)
@@ -617,6 +629,12 @@ class _SoloistSession:
         self._stopped = True
         for item in self._items.values():
             item.close()
+        if self._client is not None and self._proc is not None:
+            # commands travel over the events connection, so this has to happen
+            # before that task is cancelled; stopping playback lets the engine
+            # wind down by itself instead of on the SIGINT that close() sends
+            with suppress(Exception):
+                await self._client.pause()
         await _cancel_and_join(self._tasks)
         self._tasks.clear()
         if self._transport is not None:
@@ -624,11 +642,6 @@ class _SoloistSession:
             self._transport = None
         if (proc := self._proc) is not None:
             self._proc = None
-            if (client := self._client) is not None:
-                # asking the engine to stop lets it exit on its own, which is
-                # both faster and cleaner than the SIGINT that close() sends
-                with suppress(Exception):
-                    await client.pause()
             # the log reader stays alive across this wait: nothing else drains
             # the daemon's stdout, and a full pipe would keep it from exiting
             with suppress(TimeoutError):
@@ -650,11 +663,19 @@ class _SoloistSession:
         self._tasks.append(asyncio.create_task(coro))  # type: ignore[arg-type]
 
     def _fail(self, message: str) -> None:
-        """Record a fatal session error and unblock every waiting item."""
-        if self._error is None:
-            self._error = message
+        """
+        Record a fatal session error, unblock every waiting item and tear the session down.
+
+        The teardown runs as its own task: it cancels the very tasks this is
+        called from, and the daemon has to go either way — an unusable session
+        would otherwise keep playing to nobody.
+        """
+        if self._error is not None:
+            return
+        self._error = message
         for item in self._items.values():
             item.close()
+        self.mass.create_task(self.backend.discard_session, self)
 
     def _queue_crossfade_ms(self) -> int:
         """
@@ -821,7 +842,8 @@ class _SoloistSession:
         """
         reader = self._reader
         proc = self._proc
-        assert reader is not None and proc is not None
+        assert reader is not None
+        assert proc is not None
         loop = asyncio.get_running_loop()
         lead_skipped = 0
         bytes_read = 0
@@ -1137,8 +1159,10 @@ class _ItemAudio:
         session = self.session
         loop = asyncio.get_running_loop()
         overrun_bytes = self._overrun_limit()
+        starving_for = 0.0
         while True:
             while self._chunks:
+                starving_for = 0.0
                 chunk = self._chunks.popleft()
                 self._buffered -= len(chunk)
                 self._delivered += len(chunk)
@@ -1158,10 +1182,18 @@ class _ItemAudio:
             with suppress(TimeoutError):
                 async with asyncio.timeout_at(deadline):
                     await self._available.wait()
-            if self.finishing and not self._chunks and not self._closed:
+            if self._chunks or self._closed:
+                continue
+            if self.finishing:
                 # the run's last item: the engine will not report a track change
                 # to close this channel, so end it once its tail stops arriving
                 await self._drain_tail()
+                continue
+            # the engine is playing something else entirely (skipped from the
+            # Spotify app): this item is never going to get its audio
+            starving_for += _READ_SLICE_S
+            if starving_for >= _STALL_TIMEOUT_S:
+                raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
 
     async def _drain_tail(self) -> None:
         """Close the channel when the last item of a run has stopped producing audio."""

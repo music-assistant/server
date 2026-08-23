@@ -576,7 +576,6 @@ class SoloistBackend(SpotifyConnectBackend):
             audio_quality=self._audio_quality,
         )
 
-
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""
         # Loop forever; stop() cancels this task and the explicit stop-check below

@@ -53,7 +53,7 @@ async def test_soloist_branch_collects_consent_key_and_pairing(
         ],
     )
     setup_data: dict[str, Any] = {}
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_SOLOIST
     assert setup_data[CONF_SOLOIST_CONSENT] is True
     assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
@@ -79,7 +79,7 @@ async def test_consent_refusal_returns_to_the_backend_choice(
         ],
     )
     setup_data: dict[str, Any] = {}
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     retry_call = session.form.await_args_list[2]
     assert retry_call.kwargs["step_id"] == "playback_backend"
     assert retry_call.kwargs["errors"] == {"base": "soloist_consent_required"}
@@ -109,7 +109,7 @@ async def test_unsupported_platform_falls_back_to_librespot(
         ],
     )
     setup_data: dict[str, Any] = {}
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     retry_call = session.form.await_args_list[1]
     assert retry_call.kwargs["step_id"] == "playback_backend"
     assert retry_call.kwargs["errors"] == {"base": "soloist_unsupported_platform"}
@@ -132,7 +132,7 @@ async def test_short_api_key_is_rejected_and_reasked(
         ],
     )
     setup_data: dict[str, Any] = {}
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     api_key_calls = [
         call for call in session.form.await_args_list if call.kwargs["step_id"] == "soloist_api_key"
     ]
@@ -170,7 +170,7 @@ async def test_pairing_timeout_reshows_the_key_step(
 
     session.progress_until = AsyncMock(side_effect=_expire_first)
     setup_data: dict[str, Any] = {}
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     api_key_calls = [
         call for call in session.form.await_args_list if call.kwargs["step_id"] == "soloist_api_key"
     ]
@@ -206,7 +206,7 @@ async def test_reconfigure_keeps_the_existing_paired_session(
         CONF_SOLOIST_CONSENT: True,
         CONF_SOLOIST_API_KEY: "k" * 20,
     }
-    await setup_flow._setup_playback(session, setup_data)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
     assert _step_ids(session) == [
         "playback_backend",
         "soloist_terms",
