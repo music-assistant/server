@@ -9,8 +9,6 @@ from aiohttp.web import Request, Response
 from async_upnp_client.const import HttpRequest
 from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 
-from music_assistant_models.player import PlayerMedia
-
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester
     from music_assistant import MusicAssistant
