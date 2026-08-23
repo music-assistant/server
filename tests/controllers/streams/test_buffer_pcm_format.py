@@ -27,12 +27,19 @@ def test_the_buffer_follows_the_decoded_format() -> None:
     # advertised as 16-bit lossy, delivered as 32-bit PCM: taking the advert
     # literally would truncate real audio to 16 bits
     advertised = AudioFormat(
-        content_type=ContentType.OGG, codec_type=ContentType.VORBIS, sample_rate=44100,
-        bit_depth=16, channels=2, bit_rate=160,
+        content_type=ContentType.OGG,
+        codec_type=ContentType.VORBIS,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+        bit_rate=160,
     )
     arriving = AudioFormat(
-        content_type=ContentType.PCM_S32LE, codec_type=ContentType.PCM_S32LE,
-        sample_rate=44100, bit_depth=32, channels=2,
+        content_type=ContentType.PCM_S32LE,
+        codec_type=ContentType.PCM_S32LE,
+        sample_rate=44100,
+        bit_depth=32,
+        channels=2,
     )
     pcm = _buffer_pcm_format(_streamdetails(advertised, arriving))
     assert pcm.bit_depth == 32
@@ -46,8 +53,11 @@ def test_the_buffer_uses_the_source_when_nothing_was_decoded() -> None:
     )
 
     advertised = AudioFormat(
-        content_type=ContentType.FLAC, codec_type=ContentType.FLAC, sample_rate=48000,
-        bit_depth=24, channels=2,
+        content_type=ContentType.FLAC,
+        codec_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=2,
     )
     pcm = _buffer_pcm_format(_streamdetails(advertised, None))
     assert pcm.bit_depth == 24
@@ -61,8 +71,11 @@ def test_a_surround_source_is_folded_to_stereo() -> None:
     )
 
     arriving = AudioFormat(
-        content_type=ContentType.PCM_S32LE, codec_type=ContentType.PCM_S32LE,
-        sample_rate=44100, bit_depth=32, channels=6,
+        content_type=ContentType.PCM_S32LE,
+        codec_type=ContentType.PCM_S32LE,
+        sample_rate=44100,
+        bit_depth=32,
+        channels=6,
     )
     advertised = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=24)
     assert _buffer_pcm_format(_streamdetails(advertised, arriving)).channels == 2
