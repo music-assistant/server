@@ -1028,6 +1028,16 @@ class TracksController(MediaControllerBase[Track]):
                     )
                 except MediaNotFoundError:
                     continue
+                except (
+                    ResourceTemporarilyUnavailable,
+                    ProviderUnavailableError,
+                    ClientError,
+                    OSError,
+                    TimeoutError,
+                ):
+                    if candidates:
+                        return candidates
+                    raise
                 confidence, base_album = await self._get_match_confidence(
                     base_track,
                     candidate,

@@ -594,6 +594,45 @@ async def test_find_provider_match_keeps_fallback_after_later_timeout(
     assert search_provider.await_count == 2
 
 
+async def test_find_provider_match_keeps_fallback_after_later_hydration_failure(
+    music: MusicController,
+) -> None:
+    """A later hydration failure does not discard an acceptable candidate."""
+    base = create_track("spotify_1", "base")
+    candidate = create_track("qobuz_1", "candidate")
+    failing_candidate = create_track("qobuz_1", "failing")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+    get_provider_item = AsyncMock(
+        side_effect=(
+            candidate,
+            ResourceTemporarilyUnavailable("Hydration failed"),
+        )
+    )
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[candidate, failing_candidate])),
+        ),
+        patch.object(music.tracks, "get_provider_item", get_provider_item),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
+
+    assert result.match is not None
+    assert result.match.track.item_id == candidate.item_id
+    assert get_provider_item.await_count == 2
+
+
 async def test_find_provider_match_reports_ambiguous_loose_candidates(
     music: MusicController,
 ) -> None:
