@@ -711,7 +711,15 @@ class TracksController(MediaControllerBase[Track]):
         resolved_base_album = base_album
         search_rank = 0
         for search_query in search_queries:
-            for search_result in await self.search(search_query, provider.instance_id):
+            search_results = await self.mass.music.search_provider(
+                search_query,
+                provider.instance_id,
+                [MediaType.TRACK],
+                limit=5,
+            )
+            for search_result in search_results.tracks:
+                if not isinstance(search_result, Track):
+                    continue
                 candidate_key = (search_result.provider, search_result.item_id)
                 if candidate_key in seen_candidates or not search_result.available:
                     continue
@@ -720,11 +728,13 @@ class TracksController(MediaControllerBase[Track]):
                     continue
                 if not compare_artists(base_track.artists, search_result.artists, any_match=True):
                     continue
-                candidate = await self.get_provider_item(
-                    search_result.item_id,
-                    search_result.provider,
-                    fallback=search_result,
-                )
+                try:
+                    candidate = await self.get_provider_item(
+                        search_result.item_id,
+                        search_result.provider,
+                    )
+                except MediaNotFoundError:
+                    continue
                 confidence = compare_track_evidence(
                     base_track,
                     candidate,

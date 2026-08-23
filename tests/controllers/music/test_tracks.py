@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.media_items import Artist, ProviderMapping, UniqueList
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import (
+    Artist,
+    ProviderMapping,
+    SearchResults,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.tracks import (
@@ -176,7 +183,7 @@ async def test_find_provider_match_reuses_domain_mapping_for_target_instance(
     provider.instance_id = "qobuz_2"
     provider.domain = "qobuz"
 
-    with patch.object(music.tracks, "search", AsyncMock()) as search:
+    with patch.object(music, "search_provider", AsyncMock()) as search:
         result = await music.tracks.find_provider_match(track, provider)
 
     assert result.match is not None
@@ -198,6 +205,7 @@ async def test_find_provider_match_prefers_exact_candidate(
     base.external_ids.add(mb_track)
     loose = create_track("qobuz_1", "loose", isrc="OTHER")
     loose.version = "Deluxe"
+    stale = create_track("qobuz_1", "stale", isrc="STALE")
     exact = create_track("qobuz_1", "exact", isrc="USRC17607839")
     exact.external_ids.add(mb_track)
     provider = MagicMock()
@@ -206,16 +214,21 @@ async def test_find_provider_match_prefers_exact_candidate(
     provider.supported_features = {ProviderFeature.SEARCH}
     provider.supported_media_types = {MediaType.TRACK}
 
+    async def get_provider_item(item_id: str, *_args: object, **_kwargs: object) -> Track:
+        if item_id == "stale":
+            raise MediaNotFoundError("Stale search result")
+        return {"loose": loose, "exact": exact}[item_id]
+
     with (
-        patch.object(music.tracks, "search", AsyncMock(return_value=[loose, exact])),
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[stale, loose, exact])),
+        ),
         patch.object(
             music.tracks,
             "get_provider_item",
-            AsyncMock(
-                side_effect=lambda item_id, *_args, **_kwargs: {"loose": loose, "exact": exact}[
-                    item_id
-                ]
-            ),
+            AsyncMock(side_effect=get_provider_item),
         ),
         patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
     ):
@@ -247,9 +260,9 @@ async def test_find_provider_match_reports_ambiguous_loose_candidates(
 
     with (
         patch.object(
-            music.tracks,
-            "search",
-            AsyncMock(return_value=[deluxe, remaster]),
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[deluxe, remaster])),
         ),
         patch.object(
             music.tracks,

@@ -645,6 +645,37 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         return result
 
+    async def search_provider(
+        self,
+        search_query: str,
+        provider_instance_id_or_domain: str,
+        media_types: list[MediaType],
+        limit: int = 10,
+    ) -> SearchResults:
+        """
+        Search one available provider through the cached, timeout-bounded path.
+
+        :param search_query: Search query.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param media_types: Media types to include.
+        :param limit: Maximum results per media type.
+        """
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            provider_type=MusicProvider,
+        )
+        if not provider or not self._apply_user_provider_filter([provider]):
+            return SearchResults()
+        return (
+            await self._search_provider(
+                search_query,
+                provider.instance_id,
+                media_types,
+                limit=limit,
+            )
+            or SearchResults()
+        )
+
     async def search_library(
         self,
         search_query: str,

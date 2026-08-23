@@ -1335,6 +1335,41 @@ def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
     )
 
 
+def test_compare_track_evidence_allows_omitted_featured_artist() -> None:
+    """A provider may omit a featured credit carried by the other provider."""
+    credited = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Guest)",
+        album_name="Original",
+    )
+    omitted = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(credited, omitted) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_rejects_conflicting_featured_artists() -> None:
+    """Different explicit featured credits identify different collaborations."""
+    alice = _provider_track(
+        "alice",
+        "provider_a",
+        name="Track (feat. Alice)",
+        album_name="Original",
+    )
+    bob = _provider_track(
+        "bob",
+        "provider_b",
+        name="Track (feat. Bob)",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
+
+
 def test_compare_track_evidence_ranks_recording_identifiers() -> None:
     """Release-track IDs are exact while recording IDs identify alternate releases."""
     mb_track = (

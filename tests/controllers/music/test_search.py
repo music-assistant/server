@@ -133,6 +133,30 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 1.0) -> None
             await asyncio.sleep(0.01)
 
 
+async def test_search_provider_uses_centralized_provider_search() -> None:
+    """A single-provider lookup uses the cached and timeout-bounded search path."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    expected = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller._apply_user_provider_filter = Mock(return_value=[provider])  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+    )
+
+
 async def test_search_provider_returns_none_on_provider_error() -> None:
     """A provider error during search yields None instead of raising."""
     prov = _make_search_provider("prov_a")

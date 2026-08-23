@@ -66,6 +66,14 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "remix",
     "session",
 }
+_FEATURED_ARTISTS_PATTERN = re.compile(
+    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)\.?\s+(.+?)(?=\)|\]| - |$)",
+    re.IGNORECASE,
+)
+_FEATURED_ARTIST_SPLITTER = re.compile(
+    r"\s*(?:,|&|\+|\band\b|\bwith\b)\s*",
+    re.IGNORECASE,
+)
 
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title.
 # Entries must be a single ASCII alphanumeric word: album_retail_suffix_sql_match matches
@@ -514,7 +522,7 @@ def compare_track_evidence(
         return TrackMatchConfidence.EXACT
 
     title_matches = compare_track_title(base_item.name, compare_item.name)
-    artists_match = compare_artists(base_item.artists, compare_item.artists, any_match=True)
+    artists_match = _track_artist_credits_match(base_item, compare_item)
     versions_match = compare_version(base_version, compare_version_value)
     same_album = bool(
         base_album
@@ -1071,6 +1079,32 @@ def _track_version(track: Track) -> str:
     """Return version metadata combined with any version embedded in the title."""
     _, version = parse_title_and_version(track.name, track.version)
     return version
+
+
+def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool:
+    """Return whether credited artists agree or one provider omitted credits."""
+    if not compare_artists(base_track.artists, compare_track.artists, any_match=True):
+        return False
+    base_credits = _track_artist_credit_keys(base_track)
+    compare_credits = _track_artist_credit_keys(compare_track)
+    return base_credits.issubset(compare_credits) or compare_credits.issubset(base_credits)
+
+
+def _track_artist_credit_keys(track: Track) -> set[str]:
+    """Return normalized structured and title-embedded artist credits."""
+    artist_credits = {_artist_credit_key(artist.name) for artist in track.artists}
+    for featured_artists in _FEATURED_ARTISTS_PATTERN.findall(track.name):
+        artist_credits.update(
+            _artist_credit_key(artist_name)
+            for artist_name in _FEATURED_ARTIST_SPLITTER.split(featured_artists)
+            if artist_name
+        )
+    return artist_credits
+
+
+def _artist_credit_key(name: str) -> str:
+    """Return a stable key for an artist credit."""
+    return create_safe_string(name, True, True) or "".join(name.split()).casefold()
 
 
 def _track_versions_conflict(base_version: str, compare_version_value: str) -> bool:
