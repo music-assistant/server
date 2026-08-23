@@ -261,10 +261,13 @@ class SendspinSourceProvider(PluginProvider):
                     self._cancel_pending_autostart(source_id)
                     if autostart_queue_id is not None:
                         try:
-                            await self.mass.player_queues.stop(autostart_queue_id)
+                            # deselect rather than stopping the queue: the source plays on
+                            # the player, so stopping the queue would leave the source
+                            # published on it while resetting the queue we are preserving
+                            await self.mass.players.deselect_source(autostart_queue_id)
                         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
                             self.logger.debug(
-                                "Failed to stop autostart queue %s: %s",
+                                "Failed to release autostart player %s: %s",
                                 autostart_queue_id,
                                 err,
                             )

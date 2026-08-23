@@ -536,17 +536,20 @@ async def test_delayed_autostart_stream_cannot_override_manual_selection(
     await _settle()
 
     queues = get_queues(provider)
-    queues.stop_started = asyncio.Event()
-    queues.release_stop = asyncio.Event()
+    # the handoff suspends while it releases the autostart player, which is where the
+    # delayed request has to arrive for this to be the race it is testing
+    players = get_players(provider)
+    players.stop_started = asyncio.Event()
+    players.release_stop = asyncio.Event()
     manual = asyncio.create_task(
         provider.on_source_selected("client-1", "player-2", "queue-2", "session-1")
     )
-    await queues.stop_started.wait()
+    await players.stop_started.wait()
     delayed = asyncio.create_task(
         provider.on_source_selected("client-1", "client-1", "client-1", "session-2")
     )
     await asyncio.sleep(0)
-    queues.release_stop.set()
+    players.release_stop.set()
     await manual
     with pytest.raises(RuntimeError, match="Superseded autostart"):
         await delayed
