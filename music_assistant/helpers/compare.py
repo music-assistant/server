@@ -67,7 +67,7 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 _FEATURED_ARTISTS_PATTERN = re.compile(
-    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)\.?\s+(.+?)(?=\)|\]| - |$)",
+    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)\.?\s+(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
     re.IGNORECASE,
 )
 _FEATURED_ARTIST_SPLITTER = re.compile(
@@ -511,8 +511,8 @@ def compare_track_evidence(
     compare_version_value = _track_version(compare_item)
     if _track_versions_conflict(base_version, compare_version_value):
         return TrackMatchConfidence.NO_MATCH
-    base_explicit = _track_explicit(base_item)
-    compare_explicit_value = _track_explicit(compare_item)
+    base_explicit = _track_explicit(base_item, base_album)
+    compare_explicit_value = _track_explicit(compare_item, compare_album_item)
     if (
         base_explicit is not None
         and compare_explicit_value is not None
@@ -1133,12 +1133,16 @@ def _track_versions_conflict(base_version: str, compare_version_value: str) -> b
     return bool((base_tokens | compare_tokens) & _RECORDING_CONFLICT_VERSION_TOKENS)
 
 
-def _track_explicit(track: Track) -> bool | None:
+def _track_explicit(
+    track: Track,
+    album: Album | ItemMapping | None = None,
+) -> bool | None:
     """Return explicitness from the track or its full album."""
     if track.metadata.explicit is not None:
         return track.metadata.explicit
-    if isinstance(track.album, Album):
-        return track.album.metadata.explicit
+    album = album or track.album
+    if isinstance(album, Album):
+        return album.metadata.explicit
     return None
 
 

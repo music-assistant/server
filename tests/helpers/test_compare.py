@@ -1419,6 +1419,28 @@ def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
     )
 
 
+def test_compare_track_evidence_stops_feature_credit_before_version() -> None:
+    """Version brackets after a bare featured credit are not part of the artist name."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track feat. Guest (Radio Edit)",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        version="Radio Edit",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
 def test_compare_track_evidence_allows_omitted_featured_artist() -> None:
     """A provider may omit a featured credit carried by the other provider."""
     credited = _provider_track(
@@ -1566,6 +1588,40 @@ def test_compare_track_evidence_rejects_explicitness_conflicts() -> None:
     clean.metadata.explicit = False
 
     assert compare.compare_track_evidence(explicit, clean) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_uses_hydrated_album_explicitness() -> None:
+    """Hydrated album metadata prevents clean and explicit substitutions."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+    assert isinstance(base.album, media_items.Album)
+    assert isinstance(candidate.album, media_items.Album)
+    base_album = base.album
+    candidate_album = candidate.album
+    base_album.metadata.explicit = True
+    candidate_album.metadata.explicit = False
+    base.album = media_items.ItemMapping(
+        item_id=base_album.item_id,
+        provider=base_album.provider,
+        name=base_album.name,
+        media_type=MediaType.ALBUM,
+    )
+    candidate.album = media_items.ItemMapping(
+        item_id=candidate_album.item_id,
+        provider=candidate_album.provider,
+        name=candidate_album.name,
+        media_type=MediaType.ALBUM,
+    )
+
+    assert (
+        compare.compare_track_evidence(
+            base,
+            candidate,
+            base_album=base_album,
+            compare_album_item=candidate_album,
+        )
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
 
 
 def test_compare_strings_accent_drift_matches() -> None:

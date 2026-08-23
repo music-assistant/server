@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
 from music_assistant.controllers.music import MusicController
@@ -123,6 +123,9 @@ async def test_migrate_playlist_queues_validated_task(
         ProviderFeature.PLAYLIST_TRACKS_EDIT,
     }
     target_provider.supported_media_types = {MediaType.TRACK}
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
     queued_task = MagicMock()
     tasks = MagicMock()
     tasks.run_background_task.return_value = queued_task
@@ -142,7 +145,7 @@ async def test_migrate_playlist_queues_validated_task(
             MusicController,
             "providers",
             new_callable=PropertyMock,
-            return_value=[target_provider],
+            return_value=[source_provider, target_provider],
         ),
         patch.object(
             music.mass,
@@ -177,6 +180,50 @@ async def test_migrate_playlist_queues_validated_task(
         PlaylistMigrationMatchPolicy.BEST_EFFORT,
         ("spotify_1", "tidal_1"),
     )
+
+
+async def test_migrate_playlist_rejects_filtered_source_provider(
+    music: MusicController,
+) -> None:
+    """A deferred migration can not expand the initiating user's provider scope."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
+    target_provider = MagicMock(spec=MusicProvider)
+    target_provider.instance_id = "tidal_1"
+    target_provider.domain = "tidal"
+    target_provider.name = "Tidal"
+    target_provider.is_streaming_provider = True
+    target_provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    target_provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        patch.object(
+            MusicController,
+            "providers",
+            new_callable=PropertyMock,
+            return_value=[target_provider],
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=source_provider,
+        ),
+        pytest.raises(ProviderUnavailableError, match="spotify_1"),
+    ):
+        await music.playlists.migrate_playlist(
+            source_playlist.item_id,
+            destination_provider=target_provider.instance_id,
+        )
 
 
 async def test_migrate_playlist_rejects_dynamic_source(

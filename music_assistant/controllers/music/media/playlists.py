@@ -468,10 +468,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         user = get_current_user()
         source_provider, source_item_id = self._select_provider_id(source_playlist)
-        allowed_provider_instances = {item.instance_id for item in self.mass.music.providers}
-        allowed_provider_instances.update(
-            (source_provider, provider.instance_id),
-        )
+        allowed_provider_instances = {item.instance_id for item in available_providers}
+        if source_provider not in allowed_provider_instances:
+            source_provider_obj = self.mass.get_provider(
+                source_provider,
+                provider_type=MusicProvider,
+            )
+            if not source_provider_obj or source_provider_obj.domain != "builtin":
+                raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+            allowed_provider_instances.add(source_provider)
+        allowed_provider_instances.add(provider.instance_id)
         return self.mass.tasks.run_background_task(
             name=f"Migrate playlist {source_playlist.name}",
             handler=lambda: self._handle_migrate_playlist(
