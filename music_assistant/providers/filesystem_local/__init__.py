@@ -1682,9 +1682,11 @@ class LocalFileSystemProvider(MusicProvider):
 
     @staticmethod
     def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
-        """Append the file checksum so the image cache busts when the file is replaced."""
+        """Append the file change token so the image cache busts when the file is replaced."""
         if checksum:
-            return f"{relative_path}?cs={checksum}"
+            # the token may be an opaque etag (e.g. Base64 for cloud) containing "/" or "="; encode
+            # it so it stays a single trailing segment that strip_cache_buster removes cleanly
+            return f"{relative_path}?cs={urllib.parse.quote(checksum, safe='')}"
         return relative_path
 
     @staticmethod
@@ -3234,8 +3236,10 @@ class LocalFileSystemProvider(MusicProvider):
                     or None
                 )
             else:
-                # no readable filesystem track to rebuild the tag baseline: refresh artwork only
-                new_snapshot = {}
+                # no readable filesystem track to rebuild the tag baseline: refresh artwork and
+                # advance the signature, but keep the previous NFO ownership snapshot so a later
+                # removal can still clear the values this NFO contributed
+                new_snapshot = prev_snapshot
         fresh_images = await self._collect_album_images(album_dir)
         stored.metadata.images = (
             reconcile_images(stored.metadata.images, fresh_images, self.instance_id) or None
@@ -3304,7 +3308,10 @@ class LocalFileSystemProvider(MusicProvider):
                     or None
                 )
             else:
-                new_snapshot = {}
+                # no readable filesystem track to rebuild the tag baseline: refresh artwork and
+                # advance the signature, but keep the previous NFO ownership snapshot so a later
+                # removal can still clear the values this NFO contributed
+                new_snapshot = prev_snapshot
         fresh_images = await self._get_local_images(
             artist_path, extra_thumb_names=("artist",), versioned=True
         )

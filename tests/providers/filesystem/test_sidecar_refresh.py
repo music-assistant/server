@@ -432,6 +432,59 @@ async def test_refresh_skips_unknown_library_item() -> None:
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()
 
 
+async def test_album_refresh_keeps_snapshot_when_no_representative_track() -> None:
+    """A changed NFO with no readable representative track keeps the NFO ownership snapshot."""
+    provider = _provider()
+    prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    provider._reparse_album_from_track = AsyncMock(
+        return_value=None
+    )  # no filesystem track to reparse
+
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    # signatures advance, but the ownership snapshot is retained so a later removal can still clear
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo2",
+        "img2",
+        prev_snap,
+    )
+    # scalars we could not reparse are left untouched (not wiped)
+    assert saved.metadata.description == "theaudiodb biography"
+    assert saved.metadata.genres == {"Rock", "Electronic"}
+
+
+async def test_artist_refresh_keeps_snapshot_when_no_representative_track() -> None:
+    """A changed artist NFO with no readable representative track keeps the ownership snapshot."""
+    provider = _provider()
+    prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._reparse_artist_from_track = AsyncMock(return_value=None)
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo2",
+        "img2",
+        prev_snap,
+    )
+    assert saved.metadata.genres == {"Jazz", "Ambient"}
+
+
 # --- detection over the whole library --------------------------------------
 
 

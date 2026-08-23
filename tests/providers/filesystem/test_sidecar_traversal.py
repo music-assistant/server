@@ -23,6 +23,7 @@ from music_assistant.providers.filesystem_local.helpers import (
     ScanErrors,
     SidecarIndex,
     SidecarReadError,
+    strip_cache_buster,
 )
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 
@@ -89,6 +90,16 @@ async def test_album_image_url_uses_high_resolution_change_token() -> None:
         "Artist/Album", extra_thumb_names=("album",), versioned=True
     )
     assert [img.path for img in images] == ["Artist/Album/folder.jpg?cs=1700000000500000000"]
+
+
+def test_versioned_image_path_encodes_opaque_change_token() -> None:
+    """A Base64 cloud change token with ``/ + =`` is encoded so the suffix stays strippable."""
+    token = "aB3/xY+z=="  # OneDrive/cloud-style etag
+    versioned = LocalFileSystemProvider._versioned_image_path("Artist/Album/folder.jpg", token)
+    suffix = versioned.split("?cs=", 1)[1]
+    assert "/" not in suffix  # no raw separators that would break stripping
+    assert "?" not in suffix
+    assert strip_cache_buster(versioned) == "Artist/Album/folder.jpg"
 
 
 async def test_album_images_are_collected_in_deterministic_order() -> None:
