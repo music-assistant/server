@@ -70,6 +70,10 @@
         "very_high": "Very high (about 320 kbps)",
         "lossless": "Lossless"
       }
+    },
+    "spotify_normalization": {
+      "label": "Let Spotify even out the volume between songs",
+      "description": "Spotify normalizes loudness with values it has computed for its whole catalogue, and will not push a quiet song past the headroom it has left. With this on, Music Assistant leaves the level alone rather than correcting it a second time, which also makes songs start quicker. Turn it off to have Music Assistant measure and normalize instead, the same way it does for every other music source."
     }
   },
   "setup_flow": {

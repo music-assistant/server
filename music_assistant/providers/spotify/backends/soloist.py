@@ -460,13 +460,15 @@ class SoloistBackend(SpotifyPlaybackBackend):
         for endpoint_file in (WS_ADDR_FILE, WS_PORT_FILE):
             (self._data_dir / endpoint_file).unlink(missing_ok=True)
         # The engine reads its prefs at startup only, so they are refreshed on
-        # every spawn. Its own loudness normalization stays off: Music Assistant
-        # normalizes this audio itself and would otherwise do so twice.
+        # every spawn. Whoever normalizes, only one of us may: with the engine
+        # doing it the provider declares the audio pre-normalized, which takes
+        # MA's own normalization out of the path (see
+        # SpotifyProvider.delivers_normalized_audio).
         write_audio_prefs(
             self._data_dir,
             self.logger,
             crossfade_ms=crossfade_ms,
-            loudness_normalization=False,
+            loudness_normalization=self.provider.delivers_normalized_audio,
             audio_quality=self._audio_quality,
         )
 

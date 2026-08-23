@@ -819,6 +819,7 @@ def get_normalization_mode(
     preference: VolumeNormalizationMode,
     volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
+    source_normalized: bool = False,
 ) -> VolumeNormalizationMode:
     """
     Get the volume normalization mode for a given queue and stream.
@@ -828,12 +829,18 @@ def get_normalization_mode(
     :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
         resolved from the per-queue setting and its global (queue controller) fallback.
     :param streamdetails: The stream to evaluate.
+    :param source_normalized: Whether the provider already delivers this audio at a
+        loudness target of its own.
     """
     if not volume_normalization_enabled:
         # disabled for this queue
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on
+        return VolumeNormalizationMode.DISABLED
+    if source_normalized:
+        # the source owns loudness here too: correcting a level it already set would
+        # mean normalizing twice, against a measurement of its own output
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.SOUND_EFFECT:
         # never measured, and the dynamic fallback compresses short clips

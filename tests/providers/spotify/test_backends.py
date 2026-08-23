@@ -19,6 +19,7 @@ from music_assistant.providers.spotify.constants import (
     BACKEND_SOLOIST,
     CONF_AUDIO_QUALITY,
     CONF_PLAYBACK_BACKEND,
+    CONF_SPOTIFY_NORMALIZATION,
 )
 from music_assistant.providers.spotify.provider import SpotifyProvider
 from music_assistant.providers.spotify_connect.base import AUDIO_QUALITY_LOSSLESS
@@ -72,6 +73,52 @@ async def test_the_quality_option_is_offered_for_soloist_only() -> None:
     ]
     librespot = await _make_provider({}).get_config_entries()
     assert next(entry for entry in librespot if entry.key == CONF_AUDIO_QUALITY).hidden is True
+
+
+async def test_spotify_normalization_is_offered_for_soloist_only() -> None:
+    """Librespot hands over the untouched file, so it has nothing to normalize with."""
+    soloist = await _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).get_config_entries()
+    entry = next(e for e in soloist if e.key == CONF_SPOTIFY_NORMALIZATION)
+    assert entry.hidden is False
+    assert entry.default_value is True
+    librespot = await _make_provider({}).get_config_entries()
+    assert next(e for e in librespot if e.key == CONF_SPOTIFY_NORMALIZATION).hidden is True
+
+
+def test_only_the_soloist_backend_declares_normalized_audio() -> None:
+    """The declaration follows the backend, not just the setting."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=True)
+    prov.backend = SoloistBackend(prov)
+    assert prov.delivers_normalized_audio is True
+    # the same setting on librespot declares nothing: its audio is the raw master
+    prov.backend = LibrespotBackend(prov)
+    assert prov.delivers_normalized_audio is False
+
+
+def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
+    """With the setting off, MA measures and normalizes as it does for any source."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=False)
+    prov.backend = SoloistBackend(prov)
+    assert prov.delivers_normalized_audio is False
+
+
+def test_the_engine_is_told_who_normalizes(tmp_path: Path) -> None:
+    """Exactly one of the two normalizes, and the prefs say which."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    cast("MagicMock", prov.mass).storage_path = str(tmp_path)
+    cast("MagicMock", prov.mass).cache_path = str(tmp_path / "cache")
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=True)
+    backend = SoloistBackend(prov)
+    prov.backend = backend
+    backend._prepare_data_dir(0)
+    prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
+    assert "audio.normalize_v2=true" in prefs
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=False)
+    backend._prepare_data_dir(0)
+    prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
+    assert "audio.normalize_v2=false" in prefs
 
 
 def test_the_backend_streams_at_the_configured_quality() -> None:

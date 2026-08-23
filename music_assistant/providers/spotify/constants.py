@@ -31,6 +31,9 @@ SOLOIST_USER_DIR_SUFFIX = "-user"
 # Streaming quality, only meaningful on the soloist backend: librespot hands over
 # Spotify's own ~320 kbps Ogg stream untouched and has nothing to choose.
 CONF_AUDIO_QUALITY = "audio_quality"
+# Whether Spotify's own loudness normalization is used instead of MA's. Only
+# meaningful on the soloist backend: librespot hands over the untouched file.
+CONF_SPOTIFY_NORMALIZATION = "spotify_normalization"
 # The playback session registers under this name, so it shows up as a device in
 # the user's Spotify apps for as long as Music Assistant is playing.
 SOLOIST_DEVICE_NAME = "Music Assistant"

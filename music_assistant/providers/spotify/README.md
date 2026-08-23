@@ -92,7 +92,13 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   its audio is handed over as it is consumed, so a repeated track (or repeat wrapping
   back to the top) starts a fresh session rather than replaying a drained channel.
   Exit code 10 (expired build) triggers a forced binary refresh.
-- **Normalization**: soloist normalizes loudness per the account's setting and has no
-  public switch; `audio.normalize_v2=false` is written to its prefs store before each
-  spawn (best effort) so MA's own volume normalization stays the single loudness
-  authority.
+- **Normalization**: exactly one of the two normalizes, and a provider option decides
+  which. On (the default) the engine's own normalizer is enabled and the provider
+  declares `delivers_normalized_audio`, which makes the streams core skip normalization
+  for these items — Spotify uses values computed over its whole catalogue and will not
+  push a quiet track past its remaining headroom, and MA correcting that again would be
+  normalizing twice, the second time against a measurement of Spotify's own output.
+  Skipping also means the loudness analyzer declines the stream, so no measurement is
+  stored: a value measured on one backend's output can never be applied to the other's,
+  with no erase step needed. Off, `audio.normalize_v2=false` is written and MA measures
+  and normalizes exactly as it does for any other source.

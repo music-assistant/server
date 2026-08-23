@@ -73,6 +73,7 @@ from .constants import (
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
+    CONF_SPOTIFY_NORMALIZATION,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     CREDENTIALS_FILE,
@@ -131,6 +132,15 @@ class SpotifyProvider(MusicProvider):
         audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SPOTIFY_NORMALIZATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+                # librespot hands over Spotify's own file untouched, so there is
+                # nothing on that backend to normalize with
+                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+            ),
             ConfigEntry(
                 key=CONF_AUDIO_QUALITY,
                 type=ConfigEntryType.STRING,
@@ -214,6 +224,18 @@ class SpotifyProvider(MusicProvider):
             # the storage dir holds the soloist login session; never keep it
             # around for a removed instance
             await asyncio.to_thread(self._remove_instance_storage)
+
+    @property
+    def delivers_normalized_audio(self) -> bool:
+        """
+        Return whether Spotify's own loudness normalization handles this audio.
+
+        Only the soloist backend can: librespot hands over Spotify's file
+        untouched, so its audio arrives at the master's own level.
+        """
+        return isinstance(getattr(self, "backend", None), SoloistBackend) and bool(
+            self.config.get_value(CONF_SPOTIFY_NORMALIZATION)
+        )
 
     @property
     def max_concurrent_streams(self) -> int:
