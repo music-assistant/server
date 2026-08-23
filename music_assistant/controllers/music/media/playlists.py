@@ -54,6 +54,7 @@ from .tracks import TrackProviderMatch, TracksController
 _PROVIDER_PLAYLIST_ADD_BATCH_SIZE = 100
 _MIGRATION_REPORT_DETAIL_LIMIT = 200
 _MIGRATION_RESOLVE_BATCH_SIZE = 5
+_MIGRATION_VERIFY_RETRY_DELAYS = (1, 2, 4)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -713,14 +714,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             update_current_task_progress(95, "Verifying destination playlist")
             try:
-                actual_target_ids = [
-                    item.item_id
-                    async for item in self.tracks(
-                        playlist_item_id,
-                        provider.instance_id,
-                        force_refresh=True,
-                    )
-                ]
+                confirmed_indexes, destination_mismatch = await self._verify_migration_results(
+                    playlist_item_id,
+                    provider.instance_id,
+                    target_results,
+                )
             except (
                 ResourceTemporarilyUnavailable,
                 ProviderUnavailableError,
@@ -743,10 +741,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 report_current_task_failure(issue)
                 provider_issues.append(("Destination playlist", issue))
             else:
-                confirmed_indexes, destination_mismatch = self._reconcile_migration_results(
-                    actual_target_ids,
-                    target_results,
-                )
                 missing_results = [
                     target_result
                     for index, target_result in enumerate(target_results)
@@ -901,6 +895,34 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for mapping in playlist.provider_mappings:
             mapping.in_library = True
         return await self.add_item_to_library(playlist, False)
+
+    async def _verify_migration_results(
+        self,
+        playlist_item_id: str,
+        provider_instance_id: str,
+        target_results: Sequence[tuple[Track, _PlaylistMigrationTrackResult]],
+    ) -> tuple[set[int], bool]:
+        """Verify which requested tracks appear in the destination playlist."""
+        confirmed_indexes: set[int] = set()
+        destination_mismatch = False
+        for retry_delay in (0, *_MIGRATION_VERIFY_RETRY_DELAYS):
+            if retry_delay:
+                await asyncio.sleep(retry_delay)
+            actual_target_ids = [
+                item.item_id
+                async for item in self.tracks(
+                    playlist_item_id,
+                    provider_instance_id,
+                    force_refresh=True,
+                )
+            ]
+            confirmed_indexes, destination_mismatch = self._reconcile_migration_results(
+                actual_target_ids,
+                target_results,
+            )
+            if len(confirmed_indexes) == len(target_results) and not destination_mismatch:
+                break
+        return confirmed_indexes, destination_mismatch
 
     @staticmethod
     def _reconcile_migration_results(

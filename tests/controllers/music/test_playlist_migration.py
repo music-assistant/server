@@ -172,6 +172,49 @@ def test_migration_reconciliation_preserves_order(
     assert result == (confirmed_indexes, destination_mismatch)
 
 
+async def test_migration_verification_retries_stale_provider_read(
+    music: MusicController,
+) -> None:
+    """Destination verification retries until successful writes become visible."""
+    source = create_track("spotify_1", "source")
+    target = create_track("tidal_1", "target")
+    target_results = [
+        (
+            source,
+            _PlaylistMigrationTrackResult(
+                track=target,
+                mapping=next(iter(target.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        )
+    ]
+    responses = iter(((), (target,)))
+
+    async def iter_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        for track in next(responses):
+            yield track
+
+    with (
+        patch.object(music.playlists, "tracks", iter_tracks),
+        patch(
+            "music_assistant.controllers.music.media.playlists._MIGRATION_VERIFY_RETRY_DELAYS",
+            (1,),
+        ),
+        patch(
+            "music_assistant.controllers.music.media.playlists.asyncio.sleep",
+            AsyncMock(),
+        ) as sleep,
+    ):
+        result = await music.playlists._verify_migration_results(
+            "playlist",
+            "tidal_1",
+            target_results,
+        )
+
+    assert result == ({0}, False)
+    sleep.assert_awaited_once_with(1)
+
+
 async def test_provider_playlist_additions_are_batched_in_order() -> None:
     """Large playlist writes respect common provider request limits."""
     provider = MagicMock(spec=MusicProvider)
@@ -546,6 +589,10 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
             return_value=("tidal_1", "target"),
         ),
         patch.object(music.playlists, "update_item_in_library", AsyncMock()),
+        patch(
+            "music_assistant.controllers.music.media.playlists._MIGRATION_VERIFY_RETRY_DELAYS",
+            (),
+        ),
         patch(
             "music_assistant.controllers.music.media.playlists.report_current_task_failure"
         ) as report_failure,
