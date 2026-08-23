@@ -90,6 +90,7 @@ def write_audio_prefs(
         managed_lines.insert(1, f"{PREF_CROSSFADE_TIME}={crossfade_ms}")
     # every crossfade key is dropped even when only the boolean is rewritten:
     # leaving a stale time behind would keep a previous session's crossfade on
+    written = True
     managed_keys = {PREF_CROSSFADE, PREF_CROSSFADE_TIME, PREF_NORMALIZE}
     if audio_quality is not None:
         quality = _QUALITY_VALUES.get(audio_quality, _QUALITY_VALUES[AUDIO_QUALITY_LOSSLESS])
@@ -109,8 +110,10 @@ def write_audio_prefs(
                 user_dir / "prefs" for user_dir in users_dir.iterdir() if user_dir.is_dir()
             ]
     except OSError as err:
+        # a per-user store overrides the global one per key, so one we cannot even
+        # enumerate may still be holding a stale value: report failure
         logger.warning("Failed to list the Spotify per-user settings: %s", err)
-    written = True
+        written = False
     for prefs_file in prefs_files:
         try:
             lines = []

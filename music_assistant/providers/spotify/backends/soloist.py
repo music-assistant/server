@@ -305,6 +305,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Soloist delivers at playback pace (~1.1x ceiling): no read-ahead."""
         return True
 
+    @property
+    def session_normalizes(self) -> bool | None:
+        """
+        Return whether the running session's engine is normalizing, if there is one.
+
+        None when nothing is playing yet, in which case the configuration is the
+        only thing to go on.
+        """
+        session = self._session
+        return session.engine_normalizes if session is not None and session.usable else None
+
     async def setup(self) -> None:
         """
         Validate the binary and paired session, and start the capture server.
@@ -336,8 +347,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Stop the session and release the capture server."""
         async with self._session_lock:
             if (session := self._session) is not None:
-                self._session = None
+                # dropped only once the teardown finished, so a cancellation
+                # part-way leaves a later stop() something to clean up
                 await session.stop()
+                self._session = None
         if (server := self._server) is not None:
             self._server = None
             await server.release()
@@ -387,9 +400,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param session: The session to tear down.
         """
         async with self._session_lock:
+            await session.stop()
             if self._session is session:
                 self._session = None
-            await session.stop()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostic details about the backend (never any secret)."""
@@ -463,8 +476,11 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # skipped to the item that was fed next: the engine can jump
                     # there itself, which keeps the session and its crossfade
                     # instead of paying a whole respawn
-                    pending.claim()
+                    # claimed only once the engine is there: a refused skip
+                    # would otherwise leave the channel claimed for good, and
+                    # the session busy and unable to expire
                     await session.skip_to(pending)
+                    pending.claim()
                     return session, pending
             if session is not None:
                 if session.in_use and not session.is_playing(spotify_uri):
@@ -479,8 +495,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     raise SoloistSessionBusyError(self.provider)
                 # re-opening the item that is playing is a seek (or a replay) of
                 # that same item, which is exactly a restart of the session
-                self._session = None
                 await session.stop()
+                self._session = None
             # cheap thanks to the shared verify cache; swaps in a fresh build when
             # the installed one is nearing its 90-day expiry
             try:
@@ -615,6 +631,9 @@ class _SoloistSession:
         self.mass = backend.mass
         self.logger: logging.Logger = backend.logger
         self.crossfade_ms = 0
+        # what the engine was actually told at spawn, which is what the streams
+        # core has to agree with - the setting may be toggled while this plays
+        self.engine_normalizes = False
         self._items: dict[str, _ItemAudio] = {}
         self._current: _ItemAudio | None = None
         # uris handed to the engine that it has not started playing yet
@@ -743,12 +762,9 @@ class _SoloistSession:
         assert server is not None
         assert backend._binary is not None
         self.crossfade_ms = self._queue_crossfade_ms()
+        self.engine_normalizes = self._engine_normalization_enabled()
         await asyncio.to_thread(
-            partial(
-                backend._prepare_data_dir,
-                self.crossfade_ms,
-                normalize=self._engine_normalization_enabled(),
-            )
+            partial(backend._prepare_data_dir, self.crossfade_ms, normalize=self.engine_normalizes)
         )
         self._sink = sink = await PipeSink.create(server, backend._sink_prefix)
         # unity gain so the FIFO carries the engine's PCM unaltered; the sink
@@ -898,6 +914,13 @@ class _SoloistSession:
             # never be judged by its exit code.
             with suppress(Exception):
                 await proc.close()
+            if proc.returncode is None:
+                # close() gives up after a handful of kill attempts. The daemon is
+                # still holding the data directory, so this teardown is not done:
+                # keep the reference and leave the session un-torn-down, so a later
+                # stop() tries again and a spawn reports the directory as busy.
+                self.logger.warning("The Spotify Soloist daemon could not be stopped")
+                return
             # dropped only now: a cancellation during the awaits above must leave
             # the retry something to close, or the daemon keeps the data
             # directory and every later session is refused
@@ -970,11 +993,9 @@ class _SoloistSession:
         Return whether the engine should normalize the loudness it delivers.
 
         The player's own volume normalization switch decides first: turning it
-        off means nobody normalizes, not that the job passes to Spotify. The
-        streams core reaches the same conclusion from its side, so the two cannot
-        end up disagreeing about who is doing it.
+        off means nobody normalizes, not that the job passes to Spotify.
         """
-        if not self.backend.provider.delivers_normalized_audio:
+        if not self.backend.provider.spotify_normalization_configured:
             return False
         if self.queue_id is None:
             # nothing to read the switch from, so the provider option stands

@@ -1059,13 +1059,37 @@ def test_who_normalizes_needs_both_switches(
     session = _make_session(tmp_path, queue_id="player1")
     monkeypatch.setattr(
         type(session.backend.provider),
-        "delivers_normalized_audio",
+        "spotify_normalization_configured",
         property(lambda _self: provider_option),
     )
     cast("MagicMock", session.mass.config).get_effective_player_queue_config_value = MagicMock(
         return_value=player_setting
     )
     assert session._engine_normalization_enabled() is expected
+
+
+def test_a_running_session_answers_for_what_the_engine_is_doing(tmp_path: Path) -> None:
+    """
+    The engine reads its settings at startup, so a later toggle must not split them.
+
+    Otherwise the streams core would start normalizing on top of audio the engine
+    is still normalizing, or stop while it no longer is.
+    """
+    backend = _make_backend(tmp_path)
+    provider = backend.provider
+    # nothing playing yet: the configuration is all there is to go on
+    before_any_session = backend.session_normalizes
+    session = _SoloistSession(backend, "player1")
+    session.engine_normalizes = True
+    backend._session = session
+    while_playing = backend.session_normalizes
+    # ... and a session that has been torn down no longer speaks for the engine
+    session._stopped = True
+    after_teardown = backend.session_normalizes
+    assert before_any_session is None
+    assert while_playing is True
+    assert after_teardown is None
+    assert provider.delivers_normalized_audio is provider.spotify_normalization_configured
 
 
 def test_crossfade_comes_from_the_queue_preference(tmp_path: Path) -> None:
@@ -1173,6 +1197,23 @@ def test_a_session_being_read_never_expires(tmp_path: Path) -> None:
     assert session.usable is True
 
 
+async def test_a_daemon_that_will_not_die_leaves_the_teardown_open(tmp_path: Path) -> None:
+    """
+    A close that could not terminate the daemon is not a finished teardown.
+
+    It is still holding the data directory, so the reference is kept for a later
+    attempt rather than the session being marked clean.
+    """
+    session = _make_session(tmp_path)
+    proc = cast("MagicMock", session._proc)
+    proc.close = AsyncMock()
+    # AsyncProcess.close() gives up after a handful of kill attempts
+    proc.returncode = None
+    await session.stop()
+    assert session._teardown_done is False
+    assert session._proc is proc
+
+
 async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> None:
     """
     A cancelled teardown must leave the retry something to close.
@@ -1198,6 +1239,7 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     kept_proc = session._proc
     kept_sink = session._sink
     proc.close = AsyncMock()
+    proc.returncode = 0
     await session.stop()
     assert unfinished is False
     assert kept_proc is proc

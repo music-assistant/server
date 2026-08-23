@@ -218,17 +218,20 @@ class SpotifyProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
-        if (backend := getattr(self, "backend", None)) is not None:
-            await backend.unload()
-        if is_removed:
-            # the storage dir holds the soloist login session; never keep it
-            # around for a removed instance
-            await asyncio.to_thread(self._remove_instance_storage)
+        try:
+            if (backend := getattr(self, "backend", None)) is not None:
+                await backend.unload()
+        finally:
+            if is_removed:
+                # Both hold reusable login material - the soloist session in the
+                # storage dir, librespot's credential in the cache - so a removed
+                # instance keeps neither, even if the teardown above failed.
+                await asyncio.to_thread(self._remove_login_material)
 
     @property
-    def delivers_normalized_audio(self) -> bool:
+    def spotify_normalization_configured(self) -> bool:
         """
-        Return whether Spotify's own loudness normalization handles this audio.
+        Return whether the configuration asks Spotify to normalize this audio.
 
         Only the soloist backend can: librespot hands over Spotify's file
         untouched, so its audio arrives at the master's own level.
@@ -238,6 +241,21 @@ class SpotifyProvider(MusicProvider):
             # not the entry's default, if the key was never parsed into the config
             self.config.get_value(CONF_SPOTIFY_NORMALIZATION, True)
         )
+
+    @property
+    def delivers_normalized_audio(self) -> bool:
+        """
+        Return whether Spotify's own loudness normalization handles this audio.
+
+        A running session answers for itself. The engine reads its settings only
+        at startup, so a setting changed mid-playback must not make the streams
+        core normalize on top of what the engine is still doing - it takes effect
+        on the next playback instead.
+        """
+        backend = getattr(self, "backend", None)
+        if isinstance(backend, SoloistBackend) and (live := backend.session_normalizes) is not None:
+            return live
+        return self.spotify_normalization_configured
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -1208,9 +1226,10 @@ class SpotifyProvider(MusicProvider):
             self.logger.debug("Removing leftover soloist session at %s", session_dir)
             self._remove_tree(session_dir)
 
-    def _remove_instance_storage(self) -> None:
-        """Remove this instance's storage dir (blocking)."""
+    def _remove_login_material(self) -> None:
+        """Remove everything this instance stored that could log in again (blocking)."""
         self._remove_tree(self._instance_storage_dir)
+        self._remove_tree(Path(self.cache_dir))
 
     def _remove_tree(self, path: Path) -> None:
         """
