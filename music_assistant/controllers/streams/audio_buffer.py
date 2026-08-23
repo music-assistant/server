@@ -475,14 +475,7 @@ class AudioBuffer:
         # so it always seeks at the source instead of buffering up to the seek point.
         buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
 
-        pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
-            sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
-            # buffer the stereo fold of a surround source, so audio analysis measures
-            # the same audio that is played back rather than the untouched surround mix
-            channels=min(streamdetails.audio_format.channels, 2),
-        )
+        pcm_format = _buffer_pcm_format(streamdetails)
 
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
@@ -800,3 +793,25 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
+
+
+def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM format a buffer for these streamdetails holds.
+
+    The buffer stores decoded PCM, so it follows the audio that actually
+    arrives: ``audio_format`` may describe a source the provider decoded on our
+    behalf and can differ in depth or rate, in which case deriving the buffer
+    from it would resample or truncate real audio.
+
+    :param streamdetails: The stream the buffer is for.
+    """
+    arriving = streamdetails.decoded_audio_format or streamdetails.audio_format
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=arriving.bit_depth,
+        # buffer the stereo fold of a surround source, so audio analysis measures
+        # the same audio that is played back rather than the untouched surround mix
+        channels=min(arriving.channels, 2),
+    )

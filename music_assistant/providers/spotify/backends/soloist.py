@@ -640,6 +640,10 @@ class _SoloistSession:
         self._backpressured = False
         self._sink_lock = asyncio.Lock()
         self._idle_since: float | None = None
+        # while set, captured audio is dropped until the engine reports this item:
+        # what is still in the sink and the FIFO belongs to the item jumped away
+        # from, and would otherwise land at the head of this one
+        self._discard_until: str | None = None
 
     @property
     def in_use(self) -> bool:
@@ -670,6 +674,9 @@ class _SoloistSession:
         client = self._client
         if client is None:
             raise AudioError("Spotify Soloist is not connected")
+        # armed before the command: everything already rendered belongs to the
+        # item being left behind
+        self._discard_until = item.uri
         try:
             await client.skip_next()
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
@@ -681,6 +688,8 @@ class _SoloistSession:
                 await item.started.wait()
         except TimeoutError:
             raise AudioError(f"Spotify Soloist did not reach {item.uri}") from None
+        finally:
+            self._discard_until = None
 
     def is_playing(self, spotify_uri: str) -> bool:
         """
@@ -1210,12 +1219,22 @@ class _SoloistSession:
                 pace_anchor = loop.time()
                 paced_bytes = 0
             paced_bytes += len(chunk)
-            if (item := self._current) is not None:
-                item.write(chunk)
+            self._write_if_wanted(chunk)
             del chunk
             resume_at = pace_anchor + paced_bytes / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
             if (delay := resume_at - loop.time()) > 0:
                 await asyncio.sleep(delay)
+
+    def _write_if_wanted(self, chunk: bytes) -> None:
+        """
+        Route captured audio to the current item, unless it is stale.
+
+        :param chunk: Whole sample frames just read from the capture FIFO.
+        """
+        if self._discard_until is not None:
+            return
+        if (item := self._current) is not None:
+            item.write(chunk)
 
     def _expire_idle(self) -> None:
         """
@@ -1432,6 +1451,8 @@ class _SoloistSession:
         with suppress(ValueError):
             self._pending.remove(uri)
         self._current = item
+        if self._discard_until == uri:
+            self._discard_until = None
         item.started.set()
         if current is not None and current.started.is_set():
             # Only an item that was actually playing has a boundary to cut at.

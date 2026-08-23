@@ -876,6 +876,35 @@ async def test_skipping_to_the_fed_item_keeps_the_session(tmp_path: Path) -> Non
     _client_of(session).skip_next.assert_awaited_once()
 
 
+async def test_a_skip_drops_what_the_old_track_left_in_the_pipeline(tmp_path: Path) -> None:
+    """
+    Audio already rendered when the skip is issued belongs to the track left behind.
+
+    The sink and the FIFO hold a few hundred milliseconds of it, which would
+    otherwise be written to the head of the item skipped to - audible as a blip
+    of the previous track.
+    """
+    session = _make_session(tmp_path)
+    leaving = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    leaving.started.set()
+    target = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    captured: list[bytes] = []
+
+    async def _engine_gets_there(**_kwargs: Any) -> None:
+        # the pipeline still holds the old track while the command is in flight
+        session._write_if_wanted(b"\x01" * 32)
+        await session._observe_current(TRACK_B, 200_000)
+        # from here on the audio really is the new item's
+        session._write_if_wanted(b"\x02" * 32)
+
+    _client_of(session).skip_next.side_effect = _engine_gets_there
+    await session.skip_to(target)
+    captured.extend(target._chunks)
+    assert b"".join(captured) == b"\x02" * 32
+    assert session._discard_until is None
+
+
 async def test_a_skip_the_engine_never_reaches_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
