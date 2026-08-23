@@ -12,6 +12,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
@@ -19,6 +20,7 @@ from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     SidecarIndex,
+    SidecarInvalidError,
     SidecarReadError,
     get_folder_signature,
 )
@@ -41,6 +43,7 @@ def _provider() -> Any:
     provider._sync_mapped_album_dirs = set()
     provider._pre_scan_album_details = {}
     provider._pre_scan_artist_details = {}
+    provider._reraise_invalid_nfo = False
     return provider
 
 
@@ -488,41 +491,95 @@ async def test_artist_refresh_keeps_snapshot_when_no_representative_track() -> N
 async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     """A valid->malformed album.nfo edit keeps the prior metadata instead of wiping it."""
     provider = _provider()
-    provider._active_sidecar_index.record(_fs_file("Artist/Album/album.nfo", "2"))
-    provider._read_file = AsyncMock(return_value=b"<album>just text</album>")  # malformed now
     prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
     stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
-    provider._reparse_album_from_track = AsyncMock()
+    # the single authoritative reparse propagates the malformed NFO
+    provider._reparse_album_from_track = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
 
     ok = await provider._refresh_album_sidecars(
         "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
     )
     assert ok is False  # deferred, non-destructive
-    provider._reparse_album_from_track.assert_not_awaited()  # never reparsed against the bad NFO
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()  # prior metadata kept
+    assert provider._reraise_invalid_nfo is False  # flag reset after the reparse
 
 
 async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     """A valid->malformed artist.nfo edit keeps the prior metadata instead of wiping it."""
     provider = _provider()
-    provider._active_sidecar_index.record(_fs_file("Artist/artist.nfo", "2"))
-    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed now
     prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
     stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.artists.update_item_in_library = AsyncMock()
     provider._invalidate_artist_caches = AsyncMock()
-    provider._reparse_artist_from_track = AsyncMock()
+    provider._reparse_artist_from_track = AsyncMock(
+        side_effect=SidecarInvalidError("bad artist.nfo")
+    )
 
     ok = await provider._refresh_artist_sidecars(
         "Artist", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
     )
     assert ok is False
-    provider._reparse_artist_from_track.assert_not_awaited()
     provider.mass.music.artists.update_item_in_library.assert_not_awaited()
+    assert provider._reraise_invalid_nfo is False
+
+
+async def test_representative_source_scopes_to_mapping_directory() -> None:
+    """With two same-instance copies, only tracks under the target directory are chosen."""
+    provider = _provider()
+
+    def _track(item_id: str) -> Track:
+        return Track(
+            item_id="x",
+            provider="library",
+            name="t",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain="filesystem_local",
+                    provider_instance=INSTANCE_ID,
+                )
+            },
+        )
+
+    tracks = [_track("Artist/AlbumA/01.mp3"), _track("Artist/AlbumB/01.mp3")]
+    resolved: list[str] = []
+
+    async def _resolve(path: str) -> Any:
+        resolved.append(path)
+        return _fs_file(path, "1")
+
+    provider.resolve = _resolve
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        kind, (item, _tags) = await provider._representative_source(tracks, "Artist/AlbumB")
+
+    assert kind == "track"
+    assert item.relative_path == "Artist/AlbumB/01.mp3"  # copy B's track
+    assert resolved == ["Artist/AlbumB/01.mp3"]  # copy A was never even read
+
+
+def test_set_mapping_details_targets_exact_mapping() -> None:
+    """With two same-instance mappings, only the mapping for the target directory is updated."""
+    provider = _provider()
+    album = Album(
+        item_id="5",
+        provider="library",
+        name="A",
+        provider_mappings={
+            _fs_mapping("Artist/AlbumA", "detailsA"),
+            _fs_mapping("Artist/AlbumB", "detailsB"),
+        },
+    )
+    provider._set_mapping_details(album, "new-B", item_id="Artist/AlbumB")
+    by_id = {m.item_id: m.details for m in album.provider_mappings}
+    assert by_id["Artist/AlbumB"] == "new-B"
+    assert by_id["Artist/AlbumA"] == "detailsA"  # copy A untouched
 
 
 # --- detection over the whole library --------------------------------------

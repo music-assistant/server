@@ -149,9 +149,13 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
             if isinstance(item, Folder):
                 out.append((item.id, item.name, True, "folder", item.size))
                 continue
-            # quickXorHash is a stable content hash; not every file has one,
-            # so fall back to the size
-            checksum = item.hashes.quick_xor_hash or str(item.size)
+            # quickXorHash (OneDrive personal) or the SHA hashes (business/SharePoint) are stable
+            # content tokens; prefer any of them so a same-size replacement is still detected, and
+            # fall back to the size only when the item carries no hash at all
+            hashes = item.hashes
+            checksum = (
+                hashes.quick_xor_hash or hashes.sha1_hash or hashes.sha256_hash or str(item.size)
+            )
             out.append((item.id, item.name, False, checksum, item.size))
         return out
 

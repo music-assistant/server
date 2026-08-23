@@ -29,7 +29,13 @@ def _folder(item_id: str, name: str) -> Folder:
     return Folder(id=item_id, name=name, parent_reference=_PARENT, created_by=IdentitySet())
 
 
-def _file(item_id: str, name: str, size: int, xor_hash: str | None = None) -> File:
+def _file(
+    item_id: str,
+    name: str,
+    size: int,
+    xor_hash: str | None = None,
+    sha1_hash: str | None = None,
+) -> File:
     """Build a real SDK File item."""
     return File(
         id=item_id,
@@ -37,7 +43,7 @@ def _file(item_id: str, name: str, size: int, xor_hash: str | None = None) -> Fi
         parent_reference=_PARENT,
         created_by=IdentitySet(),
         size=size,
-        hashes=Hashes(quick_xor_hash=xor_hash),
+        hashes=Hashes(quick_xor_hash=xor_hash, sha1_hash=sha1_hash),
     )
 
 
@@ -84,6 +90,24 @@ async def test_list_children_maps_sdk_items() -> None:
     assert items[0] == ("d1", "Albums", True, "folder", None)
     assert items[1] == ("f1", "track.mp3", False, "xor-1", 123)
     assert items[2] == ("f2", "no-hash.mp3", False, "456", 456)
+
+
+async def test_list_children_uses_sha_hash_when_quickxor_absent() -> None:
+    """Without a quickXorHash, a SHA content hash (not the size) is used as the change token."""
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[
+            _file("f1", "a.mp3", 100, sha1_hash="sha-aaa"),
+            _file("f2", "b.mp3", 100, sha1_hash="sha-bbb"),  # same size, different content
+        ]
+    )
+
+    items = await provider._api_list_children("folder-id")
+
+    # the content hash is the change token, so same-size files are distinguishable
+    assert items[0][3] == "sha-aaa"
+    assert items[1][3] == "sha-bbb"
+    assert items[0][3] != items[1][3]
 
 
 async def test_list_children_translates_errors() -> None:

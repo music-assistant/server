@@ -68,6 +68,7 @@ def _provider() -> Any:
     provider.cache.set = AsyncMock()
     provider._active_sidecar_index = SidecarIndex()
     provider._sync_mapped_album_dirs = set()
+    provider._reraise_invalid_nfo = False
     return provider
 
 
@@ -303,7 +304,7 @@ async def test_reparse_album_from_cue_track_id() -> None:
     provider._cue = MagicMock()
     provider._cue.parse_tracks = AsyncMock(return_value=[cue_track])
 
-    result = await provider._reparse_album_from_track("5")
+    result = await provider._reparse_album_from_track("5", "Artist/Album")
     assert result is cue_album
     provider._cue.parse_tracks.assert_awaited_once()
 
