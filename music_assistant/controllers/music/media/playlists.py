@@ -26,6 +26,7 @@ from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, 
 from music_assistant.controllers.tasks.context import (
     get_current_task,
     report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress,
     update_current_task_progress_text,
 )
@@ -546,31 +547,49 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "library_matches": 0,
             "provider_matches": 0,
         }
+        substitutions: list[tuple[str, str, str]] = []
+        skipped_tracks: list[tuple[str, str]] = []
+        provider_issues: list[tuple[str, str]] = []
         for key, result in resolved_tracks.items():
             track = unique_tracks[key]
+            track_label = self._migration_track_label(track)
             if result.used_library_item:
                 counts["library_matches"] += 1
             counts["provider_matches"] += len(result.provider_matches)
             if result.error:
-                report_current_task_failure(f"{track.artist_str} - {track.name}: {result.error}")
+                report_current_task_failure(f"{track_label}: {result.error}")
+                if provider.domain == "builtin":
+                    provider_issues.append((track_label, result.error))
             for provider_name in result.failed_providers:
-                report_current_task_failure(
-                    f"{track.artist_str} - {track.name}: matching failed on {provider_name}"
-                )
+                issue = f"Matching failed on {provider_name}"
+                report_current_task_failure(f"{track_label}: {issue.lower()}")
+                provider_issues.append((track_label, issue))
             for provider_name in result.ambiguous_providers:
-                report_current_task_failure(
-                    f"{track.artist_str} - {track.name}: ambiguous match on {provider_name}"
-                )
+                issue = f"Ambiguous match on {provider_name}"
+                report_current_task_failure(f"{track_label}: {issue.lower()}")
+                provider_issues.append((track_label, issue))
             if provider.domain == "builtin" and result.track:
                 continue
             if result.mapping:
+                if result.track and result.confidence != TrackMatchConfidence.EXACT:
+                    substitutions.append(
+                        (
+                            track_label,
+                            self._migration_track_label(result.track),
+                            "Same recording"
+                            if result.confidence == TrackMatchConfidence.LIKELY
+                            else "Best effort",
+                        )
+                    )
                 continue
             if result.error:
+                skipped_tracks.append((track_label, result.error))
                 continue
             reason = (
                 "multiple equally likely matches" if result.ambiguous else "no acceptable match"
             )
-            report_current_task_failure(f"{track.artist_str} - {track.name}: {reason}")
+            report_current_task_failure(f"{track_label}: {reason}")
+            skipped_tracks.append((track_label, reason.capitalize()))
 
         for track in source_tracks:
             result = resolved_tracks[self._migration_track_key(track)]
@@ -591,6 +610,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 counts["best_effort"] += 1
 
         migrated_count = len(builtin_entries) if provider.domain == "builtin" else len(target_ids)
+        set_current_task_report(
+            self._build_migration_report(
+                source_playlist.name,
+                destination_name,
+                provider.name,
+                migrated_count,
+                counts,
+                substitutions,
+                skipped_tracks,
+                provider_issues,
+                completed=False,
+                builtin_destination=provider.domain == "builtin",
+            )
+        )
         if not migrated_count:
             raise InvalidDataError("No tracks could be migrated")
         update_current_task_progress(85, "Creating destination playlist")
@@ -631,6 +664,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     **counts,
                 }
             )
+        set_current_task_report(
+            self._build_migration_report(
+                source_playlist.name,
+                destination_playlist.name,
+                provider.name,
+                migrated_count,
+                counts,
+                substitutions,
+                skipped_tracks,
+                provider_issues,
+                completed=True,
+                builtin_destination=provider.domain == "builtin",
+            )
+        )
         update_current_task_progress(
             100,
             f"Migrated {migrated_count} of {len(source_tracks)} tracks",
@@ -711,6 +758,112 @@ class PlaylistController(MediaControllerBase[Playlist]):
     def _migration_track_key(track: Track) -> str:
         """Return a stable key for reusing duplicate track resolutions."""
         return track.uri or f"{track.provider}://track/{track.item_id}"
+
+    @classmethod
+    def _build_migration_report(
+        cls,
+        source_name: str,
+        destination_name: str,
+        destination_provider: str,
+        migrated_count: int,
+        counts: Mapping[str, int],
+        substitutions: list[tuple[str, str, str]],
+        skipped_tracks: list[tuple[str, str]],
+        provider_issues: list[tuple[str, str]],
+        *,
+        completed: bool,
+        builtin_destination: bool,
+    ) -> str:
+        """Build the human-readable Markdown report for a migration task."""
+        source = cls._escape_markdown(source_name)
+        destination = cls._escape_markdown(destination_name)
+        provider = cls._escape_markdown(destination_provider)
+        action = "Migrated" if completed else "Prepared"
+        lines = [
+            f"## Playlist migration {'complete' if completed else 'analysis'}",
+            "",
+            f"{action} **{migrated_count}** of **{counts['total']}** tracks "
+            f"from **{source}** for **{destination}** on **{provider}**.",
+            "",
+            "| Result | Tracks |",
+            "| --- | ---: |",
+        ]
+        if builtin_destination:
+            lines.extend(
+                (
+                    f"| Included | {migrated_count} |",
+                    f"| Existing library matches used | {counts['library_matches']} |",
+                    f"| Additional provider mappings found | {counts['provider_matches']} |",
+                    f"| Skipped | {counts['skipped']} |",
+                )
+            )
+        else:
+            lines.extend(
+                (
+                    f"| Exact release | {counts['exact']} |",
+                    f"| Same recording | {counts['same_recording']} |",
+                    f"| Best effort | {counts['best_effort']} |",
+                    f"| Skipped | {counts['skipped']} |",
+                    f"| Ambiguous | {counts['ambiguous']} |",
+                )
+            )
+        cls._add_report_table(
+            lines,
+            "Substitutions",
+            ("Source", "Destination", "Match"),
+            substitutions,
+        )
+        cls._add_report_table(
+            lines,
+            "Skipped tracks",
+            ("Track", "Reason"),
+            skipped_tracks,
+        )
+        cls._add_report_table(
+            lines,
+            "Provider lookup issues",
+            ("Track", "Issue"),
+            provider_issues,
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    def _add_report_table(
+        cls,
+        lines: list[str],
+        title: str,
+        headers: tuple[str, ...],
+        rows: Sequence[tuple[str, ...]],
+    ) -> None:
+        """Append a Markdown report table when it has rows."""
+        if not rows:
+            return
+        lines.extend(
+            (
+                "",
+                f"### {title}",
+                "",
+                f"| {' | '.join(headers)} |",
+                f"| {' | '.join('---' for _ in headers)} |",
+            )
+        )
+        lines.extend(
+            f"| {' | '.join(cls._escape_markdown(value, table=True) for value in row)} |"
+            for row in rows
+        )
+
+    @staticmethod
+    def _migration_track_label(track: Track) -> str:
+        """Return a readable artist and title label."""
+        return f"{track.artist_str} - {track.name}" if track.artist_str else track.name
+
+    @staticmethod
+    def _escape_markdown(value: str, table: bool = False) -> str:
+        """Escape provider text before adding it to a Markdown report."""
+        value = value.replace("\\", "\\\\").replace("\n", " ")
+        for character in ("`", "*", "_", "[", "]", "<", ">"):
+            value = value.replace(character, f"\\{character}")
+        return value.replace("|", "\\|") if table else value
 
     def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
         """

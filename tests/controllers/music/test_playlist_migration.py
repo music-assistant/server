@@ -13,6 +13,7 @@ from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.playlists import (
+    PlaylistController,
     PlaylistMigrationMatchPolicy,
 )
 from music_assistant.controllers.music.media.tracks import (
@@ -58,6 +59,36 @@ def _playlist(
         owner="Test",
         is_editable=True,
     )
+
+
+def test_migration_report_renders_substitutions_and_skips() -> None:
+    """Migration reports summarize counts and item-level decisions as Markdown."""
+    report = PlaylistController._build_migration_report(
+        "Source",
+        "Migrated",
+        "Tidal",
+        2,
+        {
+            "total": 3,
+            "exact": 1,
+            "same_recording": 1,
+            "best_effort": 0,
+            "skipped": 1,
+            "ambiguous": 0,
+            "library_matches": 1,
+            "provider_matches": 0,
+        },
+        [("Artist - Song", "Artist - Song (Remaster)", "Same recording")],
+        [("Artist - Missing", "No acceptable match")],
+        [],
+        completed=True,
+        builtin_destination=False,
+    )
+
+    assert "## Playlist migration complete" in report
+    assert "| Exact release | 1 |" in report
+    assert "### Substitutions" in report
+    assert "Artist - Missing" in report
 
 
 async def test_migrate_playlist_queues_validated_task(
@@ -197,6 +228,9 @@ async def test_streaming_migration_preserves_order_and_duplicates(
         patch(
             "music_assistant.controllers.music.media.playlists.report_current_task_failure"
         ) as report_failure,
+        patch(
+            "music_assistant.controllers.music.media.playlists.set_current_task_report"
+        ) as set_report,
     ):
         await music.playlists._handle_migrate_playlist(
             source_playlist.item_id,
@@ -212,6 +246,8 @@ async def test_streaming_migration_preserves_order_and_duplicates(
     )
     assert find_match.await_count == 3
     report_failure.assert_called_once_with("Test Artist - Test Track: no acceptable match")
+    assert set_report.call_count == 2
+    assert "### Skipped tracks" in set_report.call_args.args[0]
 
 
 async def test_builtin_migration_keeps_all_enriched_mappings(
