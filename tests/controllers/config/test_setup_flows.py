@@ -1590,6 +1590,58 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None
 
 
+async def test_audible_flow_login_link_and_redirect_form(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Audible flow shows its login link with the redirect URL form and stores auth."""
+    from music_assistant.providers.audible import CONF_AUTH_FILE, CONF_LOCALE  # noqa: PLC0415
+    from music_assistant.providers.audible import setup_flow as audible_flow  # noqa: PLC0415
+
+    login_url = "https://www.amazon.com/ap/signin?openid=abc"
+    auth = SimpleNamespace(
+        adp_token="adp-token",
+        device_private_key="private-key",
+        to_file=MagicMock(),
+    )
+    get_auth_info = AsyncMock(return_value=("verifier", login_url, "serial"))
+    custom_login = AsyncMock(return_value=auth)
+    monkeypatch.setattr(audible_flow, "audible_get_auth_info", get_auth_info)
+    monkeypatch.setattr(audible_flow, "audible_custom_login", custom_login)
+
+    with (
+        _use_flow(flow_mass, audible_flow.run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        assert [entry.key for entry in step.entries] == [CONF_LOCALE]
+
+        auth_step = await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_LOCALE: "us"})
+        assert auth_step.type == FlowStepType.FORM
+        assert auth_step.step_id == "authenticate"
+        assert auth_step.translation_params is None
+        assert [entry.key for entry in auth_step.entries] == [
+            "auth_link",
+            audible_flow.CONF_POST_LOGIN_URL,
+        ]
+        assert auth_step.entries[0].translation_params == [login_url]
+
+        redirect_url = "https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=code"
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {audible_flow.CONF_POST_LOGIN_URL: redirect_url}
+        )
+
+    assert finish_step.type == FlowStepType.FINISH
+    custom_login.assert_awaited_once_with("verifier", redirect_url, "serial", "us")
+    auth.to_file.assert_called_once()
+    auth_file = auth.to_file.call_args.args[0]
+    assert auth_file.startswith(flow_mass.storage_path)
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_AUTH_FILE]) == auth_file
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LOCALE]) == "us"
+
+
 async def test_spotify_flow_hosted_bounce_roundtrip(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
