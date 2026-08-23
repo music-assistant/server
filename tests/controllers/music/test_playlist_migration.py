@@ -11,7 +11,6 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
@@ -351,7 +350,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
             )
         else:
             if actual_target_ids is None:
-                raise ResourceTemporarilyUnavailable("Verification timed out")
+                raise TimeoutError
             target_tracks = {
                 "tidal-one": target_one,
                 "tidal-two": target_two,
@@ -445,7 +444,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         expected_failures.append(call("Test Artist - Test Track: tidal did not add this track"))
     if actual_target_ids is None:
         expected_failures.append(
-            call("Could not verify destination playlist: Verification timed out")
+            call("Could not verify destination playlist: Verification failed (TimeoutError)")
         )
     assert report_failure.call_args_list == expected_failures
     assert report_failure.call_count == expected_failure_count
@@ -555,7 +554,7 @@ async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
     with patch.object(
         music.tracks,
         "enrich_provider_mappings",
-        AsyncMock(side_effect=ResourceTemporarilyUnavailable("Lookup failed")),
+        AsyncMock(side_effect=TimeoutError()),
     ):
         result = await music.playlists._resolve_migration_track(
             source,
@@ -567,4 +566,4 @@ async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
         )
 
     assert result.track is None
-    assert result.error == "Lookup failed"
+    assert result.error == "Matching failed on Music Assistant (TimeoutError)"

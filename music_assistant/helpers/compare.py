@@ -1093,31 +1093,43 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
     """Return whether credited artists agree or one provider omitted credits."""
     if not compare_artists(base_track.artists, compare_track.artists, any_match=True):
         return False
-    base_credits = _track_artist_credit_keys(base_track)
-    compare_credits = _track_artist_credit_keys(compare_track)
-    return base_credits.issubset(compare_credits) or compare_credits.issubset(base_credits)
+    base_credits = _track_artist_credit_groups(base_track)
+    compare_credits = _track_artist_credit_groups(compare_track)
+    return _artist_credit_groups_cover(
+        base_credits,
+        compare_credits,
+    ) or _artist_credit_groups_cover(compare_credits, base_credits)
 
 
-def _track_artist_credit_keys(track: Track) -> set[str]:
+def _track_artist_credit_groups(track: Track) -> set[frozenset[str]]:
     """Return normalized structured and title-embedded artist credits."""
-    artist_credits: set[str] = set()
+    artist_credits: set[frozenset[str]] = set()
     for artist in track.artists:
-        artist_credits.update(_artist_credit_variants(artist.name))
+        artist_credits.add(_artist_credit_group(artist.name))
     for featured_artists in _FEATURED_ARTISTS_PATTERN.findall(track.name):
-        artist_credits.update(_artist_credit_variants(featured_artists))
+        artist_credits.add(_artist_credit_group(featured_artists))
     return artist_credits
 
 
-def _artist_credit_variants(name: str) -> set[str]:
-    """Return equivalent keys for a single or combined artist credit."""
-    split_credits = {
+def _artist_credit_group(name: str) -> frozenset[str]:
+    """Return one artist credit as its grouped normalized components."""
+    return frozenset(
         _artist_credit_key(artist_name)
         for artist_name in _FEATURED_ARTIST_SPLITTER.split(name)
         if artist_name
-    }
-    if len(split_credits) <= 1:
-        return {_artist_credit_key(name)}
-    return {*split_credits, "".join(sorted(split_credits))}
+    )
+
+
+def _artist_credit_groups_cover(
+    source_groups: set[frozenset[str]],
+    target_groups: set[frozenset[str]],
+) -> bool:
+    """Return whether target credits contain every complete source credit."""
+    target_singletons = {next(iter(group)) for group in target_groups if len(group) == 1}
+    return all(
+        group in target_groups or (len(group) > 1 and group.issubset(target_singletons))
+        for group in source_groups
+    )
 
 
 def _artist_credit_key(name: str) -> str:

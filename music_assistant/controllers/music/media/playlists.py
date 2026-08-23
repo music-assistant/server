@@ -722,7 +722,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ]
             except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
                 migrated_count = len(target_results)
-                issue = f"Could not verify destination playlist: {err}"
+                issue = (
+                    "Could not verify destination playlist: "
+                    f"{self._migration_error_message(err, 'Verification failed')}"
+                )
                 self.logger.warning(
                     "Could not verify migrated playlist %s on provider %s: %s",
                     destination_playlist.name,
@@ -843,10 +846,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
             TimeoutError,
         ) as err:
             failed_provider_instances.add(provider.instance_id)
-            return _PlaylistMigrationTrackResult(error=str(err))
+            return _PlaylistMigrationTrackResult(
+                error=self._migration_error_message(
+                    err,
+                    f"Matching failed on {provider.name}",
+                )
+            )
         except MusicAssistantError as err:
             return _PlaylistMigrationTrackResult(
-                error=str(err),
+                error=self._migration_error_message(
+                    err,
+                    f"Matching failed on {provider.name}",
+                ),
             )
 
     async def _create_builtin_migration_playlist(
@@ -1017,6 +1028,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
     def _migration_track_label(track: Track) -> str:
         """Return a readable artist and title label."""
         return f"{track.artist_str} - {track.name}" if track.artist_str else track.name
+
+    @staticmethod
+    def _migration_error_message(error: BaseException, fallback: str) -> str:
+        """Return a non-empty error message for a migration report."""
+        return str(error).strip() or f"{fallback} ({type(error).__name__})"
 
     @staticmethod
     def _escape_markdown(value: str, table: bool = False) -> str:

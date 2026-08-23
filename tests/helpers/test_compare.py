@@ -1494,6 +1494,27 @@ def test_compare_track_evidence_rejects_conflicting_colon_featured_artists() -> 
     assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
 
 
+def test_compare_track_evidence_keeps_composite_artist_identity() -> None:
+    """A partial overlap does not match a complete composite artist credit."""
+    partial_credit = _provider_track(
+        "partial",
+        "provider_a",
+        name="Track (feat. Tyler)",
+        album_name="Original",
+    )
+    composite_credit = _provider_track(
+        "composite",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Tyler, The Creator"),
+    )
+
+    assert (
+        compare.compare_track_evidence(partial_credit, composite_credit)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
 def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
     """A separator inside one featured artist name is not treated as conflicting credits."""
     title_credit = _provider_track(
