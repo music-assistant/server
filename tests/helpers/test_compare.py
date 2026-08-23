@@ -1476,6 +1476,24 @@ def test_compare_track_evidence_rejects_conflicting_featured_artists() -> None:
     assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
 
 
+def test_compare_track_evidence_rejects_conflicting_colon_featured_artists() -> None:
+    """Colon-form featured credits remain part of track identity."""
+    alice = _provider_track(
+        "alice",
+        "provider_a",
+        name="Track (feat:Alice)",
+        album_name="Original",
+    )
+    bob = _provider_track(
+        "bob",
+        "provider_b",
+        name="Track (feat:Bob)",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
+
+
 def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
     """A separator inside one featured artist name is not treated as conflicting credits."""
     title_credit = _provider_track(

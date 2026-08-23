@@ -67,7 +67,8 @@ _RECORDING_CONFLICT_VERSION_TOKENS = {
     "session",
 }
 _FEATURED_ARTISTS_PATTERN = re.compile(
-    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)\.?\s+(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
+    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
+    r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
     re.IGNORECASE,
 )
 _FEATURED_ARTIST_SPLITTER = re.compile(
