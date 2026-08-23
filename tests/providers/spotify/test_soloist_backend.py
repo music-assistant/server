@@ -12,9 +12,10 @@ setup. No real process or PulseAudio is involved.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
-from collections.abc import AsyncGenerator, Callable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +32,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     _FRAME_BYTES,
     _IDLE_TIMEOUT_S,
     _MAX_LEAD_TRIM_S,
+    _READ_CHUNK_SIZE,
     SoloistBackend,
     _CaptureShaper,
     _ItemAudio,
@@ -891,13 +893,14 @@ async def test_skipping_to_the_fed_item_keeps_the_session(tmp_path: Path) -> Non
     _client_of(session).skip_next.assert_awaited_once()
 
 
-async def test_a_skip_drops_what_the_old_track_left_in_the_pipeline(tmp_path: Path) -> None:
+async def test_a_skip_drops_what_arrives_while_the_command_is_in_flight(
+    tmp_path: Path,
+) -> None:
     """
-    Audio already rendered when the skip is issued belongs to the track left behind.
+    Audio captured between the skip command and the engine's answer is dropped.
 
-    The sink and the FIFO hold a few hundred milliseconds of it, which would
-    otherwise be written to the head of the item skipped to - audible as a blip
-    of the previous track.
+    Only covers the marker's own window; what the pipeline still holds when the
+    answer arrives is measured at the cut instead.
     """
     session = _make_session(tmp_path)
     leaving = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
@@ -1422,6 +1425,152 @@ def test_session_present_detection(tmp_path: Path) -> None:
     assert soloist_session_present(data_dir) is False
     (data_dir / "session.bin").write_bytes(b"x")
     assert soloist_session_present(data_dir) is True
+
+
+async def test_a_skip_drops_the_audio_still_in_flight(tmp_path: Path) -> None:
+    """The item jumped to opens with its own audio, not the tail of the one left behind."""
+    session = _make_session(tmp_path)
+    left_behind = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    session._current = left_behind
+    left_behind.started.set()
+    left_behind.claim()
+    jumped_to = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    session._discard_until = TRACK_B
+    with _capture_holding(session, fifo_bytes=2 * _FRAME_BYTES, reader_bytes=2 * _FRAME_BYTES):
+        await session._observe_current(TRACK_B, 200_000)
+    assert session._stale_budget == 4 * _FRAME_BYTES
+    session._write_if_wanted(b"s" * (4 * _FRAME_BYTES))
+    session._write_if_wanted(b"n" * (2 * _FRAME_BYTES))
+    jumped_to.claim()
+    jumped_to.close()
+    assert b"".join([chunk async for chunk in jumped_to.read()]) == b"n" * (2 * _FRAME_BYTES)
+
+
+async def test_a_skip_drops_the_stale_audio_across_reads(tmp_path: Path) -> None:
+    """A budget larger than one read keeps dropping, and resumes on a frame boundary."""
+    session = _make_session(tmp_path)
+    session._stale_budget = 3 * _FRAME_BYTES
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.claim()
+    session._write_if_wanted(b"s" * (2 * _FRAME_BYTES))
+    session._write_if_wanted(b"s" * _FRAME_BYTES + b"n" * _FRAME_BYTES)
+    item.close()
+    assert b"".join([chunk async for chunk in item.read()]) == b"n" * _FRAME_BYTES
+
+
+async def test_the_marker_spends_an_earlier_jumps_budget(tmp_path: Path) -> None:
+    """What the marker drops still counts against a budget left from an earlier jump."""
+    session = _make_session(tmp_path)
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._stale_budget = 4 * _FRAME_BYTES
+    session._discard_until = TRACK_B
+    session._write_if_wanted(b"s" * (3 * _FRAME_BYTES))
+    assert session._stale_budget == _FRAME_BYTES
+    # a refused command leaves only what is genuinely still in flight to drop
+    session._discard_until = None
+    session._write_if_wanted(b"s" * _FRAME_BYTES + b"n" * _FRAME_BYTES)
+    item = session._current
+    item.claim()
+    item.close()
+    assert b"".join([chunk async for chunk in item.read()]) == b"n" * _FRAME_BYTES
+
+
+async def test_a_natural_cut_keeps_the_audio_in_flight(tmp_path: Path) -> None:
+    """Nothing is dropped without a jump: what is in flight is the continuation."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    session._current = playing
+    playing.started.set()
+    playing.claim()
+    with _capture_holding(session, fifo_bytes=4 * _FRAME_BYTES, reader_bytes=4 * _FRAME_BYTES):
+        await session._observe_current(TRACK_B, 200_000)
+    assert session._stale_budget == 0
+
+
+def test_stale_bytes_spans_both_buffers_in_whole_frames(tmp_path: Path) -> None:
+    """The in-flight measure covers the FIFO and the reader, and never splits a frame."""
+    session = _make_session(tmp_path)
+    with _capture_holding(session, fifo_bytes=3 * _FRAME_BYTES + 3, reader_bytes=2 * _FRAME_BYTES):
+        assert session._stale_bytes() == 5 * _FRAME_BYTES
+
+
+def test_stale_bytes_falls_back_when_the_reader_cannot_be_sized(tmp_path: Path) -> None:
+    """Losing the reader's internal view drops extra rather than leaving audio behind."""
+    session = _make_session(tmp_path)
+    with _capture_holding(session, fifo_bytes=0, reader_bytes=None):
+        assert session._stale_bytes() == 6 * _READ_CHUNK_SIZE
+
+
+async def test_a_channel_abandoned_at_the_cut_stops_holding_the_cushion(
+    tmp_path: Path,
+) -> None:
+    """A skip closes the channel first and only then unwinds its stream."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    item.write(b"x" * 4096)
+    # the cut lands while the abandoned stream is still unwinding
+    await session._observe_current(TRACK_B, 200_000)
+    assert session._retained_bytes() == 4096
+    item.release()
+    assert session._retained_bytes() == 0
+
+
+def test_an_abandoned_channel_stops_holding_the_cushion(tmp_path: Path) -> None:
+    """A channel skipped away from frees its buffer instead of gating the sink for good."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.claim()
+    item.write(b"x" * 4096)
+    assert session._retained_bytes() == 4096
+    # the stream is gone, then the cut closes the channel
+    item.release()
+    item.close()
+    assert session._retained_bytes() == 0
+
+
+async def test_a_channel_still_being_read_keeps_its_tail(tmp_path: Path) -> None:
+    """Closing the playing item at a cut must not discard what its stream is still owed."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.claim()
+    item.write(b"tail" * 4)
+    item.close()
+    assert item.buffered == 16
+    assert b"".join([chunk async for chunk in item.read()]) == b"tail" * 4
+
+
+@contextmanager
+def _capture_holding(
+    session: _SoloistSession, *, fifo_bytes: int, reader_bytes: int | None
+) -> Iterator[None]:
+    """
+    Give the session a real capture FIFO and a reader holding the given amounts.
+
+    A real pipe is used so the byte count comes from the same ioctl the backend
+    relies on. Pass ``reader_bytes=None`` for a reader whose buffer cannot be read.
+    """
+    read_fd, write_fd = os.pipe()
+    try:
+        if fifo_bytes:
+            os.write(write_fd, bytes(fifo_bytes))
+        pipe = MagicMock()
+        pipe.fileno.return_value = read_fd
+        transport = MagicMock()
+        transport.get_extra_info.return_value = pipe
+        session._transport = transport
+        reader = MagicMock(spec=[]) if reader_bytes is None else MagicMock()
+        if reader_bytes is not None:
+            reader._buffer = bytearray(reader_bytes)
+        session._reader = reader
+        yield
+    finally:
+        session._transport = None
+        session._reader = None
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def _make_provider(tmp_path: Path, setup_data: dict[str, Any] | None = None) -> SpotifyProvider:
