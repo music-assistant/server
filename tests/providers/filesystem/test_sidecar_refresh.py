@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.media_items import (
     Album,
+    Artist,
+    ItemMapping,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -32,6 +34,9 @@ def _provider() -> Any:
     provider.logger = MagicMock()
     provider.mass = MagicMock()
     provider.config = MagicMock(instance_id=INSTANCE_ID)
+    provider.cache = MagicMock()
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.cache.set = AsyncMock()
     provider._active_sidecar_index = SidecarIndex()
     provider._sync_mapped_album_dirs = set()
     return provider
@@ -85,6 +90,36 @@ def _fresh_album(
     album.external_ids = external_ids
     provider._set_mapping_details(album, provider._build_sidecar_details("nfo2", "img2", snapshot))
     return album
+
+
+def _stored_artist(details: str | None) -> Artist:
+    """Build a library artist enriched by another provider, carrying our mapping details."""
+    artist = Artist(
+        item_id="7",
+        provider="library",
+        name="NFO Artist",
+        provider_mappings={_fs_mapping("Artist", details)},
+    )
+    artist.sort_name = "NFO Artist"
+    artist.external_ids = {(ExternalID.MB_ARTIST, "old-nfo-artist-mbid")}
+    artist.metadata.genres = {"Jazz", "Ambient"}
+    return artist
+
+
+def _fresh_artist(
+    provider: Any, snapshot: dict[str, Any], external_ids: set[tuple[ExternalID, str]]
+) -> Artist:
+    """Build a freshly reparsed provider artist carrying its current details snapshot."""
+    artist = Artist(
+        item_id="Artist",
+        provider=INSTANCE_ID,
+        name="Tag Artist",
+        provider_mappings={_fs_mapping("Artist")},
+    )
+    artist.sort_name = "Tag Artist"
+    artist.external_ids = external_ids
+    provider._set_mapping_details(artist, provider._build_sidecar_details("nfo2", "img2", snapshot))
+    return artist
 
 
 # --- classification ---------------------------------------------------------
@@ -220,6 +255,79 @@ async def test_removed_nfo_keeps_other_providers_description() -> None:
     )
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
     assert saved.metadata.description == "theaudiodb biography"
+
+
+async def test_removed_nfo_drops_nfo_only_album_artist() -> None:
+    """Album artists are restored from the fresh parse, so an NFO-only album artist disappears."""
+    provider = _provider()
+    prev_snap: dict[str, Any] = {"description": None, "genres": [], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.artists = UniqueList(
+        [
+            ItemMapping(
+                media_type=stored.media_type, item_id="nfo-only", provider="library", name="X"
+            )
+        ]
+    )
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    fresh = _fresh_album(provider, prev_snap, {(ExternalID.BARCODE, "123")})
+    tag_artist = Artist(
+        item_id="Artist", provider=INSTANCE_ID, name="Tag Artist", provider_mappings=set()
+    )
+    fresh.artists = UniqueList([tag_artist])
+    provider._reparse_album_from_track = AsyncMock(return_value=fresh)
+
+    await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+    )
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    assert [a.name for a in saved.artists] == ["Tag Artist"]  # NFO-only album artist gone
+
+
+async def test_removed_artist_nfo_reverts_sort_and_mbid() -> None:
+    """Removing artist.nfo reverts sort name and drops the NFO-owned artist MBID."""
+    provider = _provider()
+    prev_snap: dict[str, Any] = {
+        "description": "our nfo bio",
+        "genres": ["Jazz"],
+        "external_ids": [["musicbrainz_artistid", "old-nfo-artist-mbid"]],
+    }
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    fresh = _fresh_artist(provider, {"description": None, "genres": [], "external_ids": []}, set())
+    provider._reparse_artist_from_track = AsyncMock(return_value=fresh)
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, EMPTY, "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert saved.sort_name == "Tag Artist"  # reverted to the tag baseline
+    assert saved.mbid is None  # NFO-owned artist MBID removed
+    assert saved.metadata.genres == {"Ambient"}  # our Jazz dropped, other provider's kept
+    assert saved.metadata.description is None  # our bio cleared
+
+
+async def test_collect_album_images_spans_all_disc_folders() -> None:
+    """The complete album image set includes every real disc folder, not just one track's disc."""
+    provider = _provider()
+    index = provider._active_sidecar_index
+    for disc in ("Disc 1", "Disc 2"):
+        index.record(_fs_file(f"Artist/Album/{disc}/folder.jpg", "1"))
+        index.record_track_dir(f"Artist/Album/{disc}")
+    provider._sync_mapped_album_dirs = {"Artist/Album"}
+
+    images = await provider._collect_album_images("Artist/Album")
+    assert {img.path for img in images} == {
+        "Artist/Album/Disc 1/folder.jpg?cs=1",
+        "Artist/Album/Disc 2/folder.jpg?cs=1",
+    }
 
 
 async def test_image_only_refresh_leaves_scalars_untouched() -> None:

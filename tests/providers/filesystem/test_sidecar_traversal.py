@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import Album, ProviderMapping, Track
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -203,6 +203,35 @@ async def test_reparse_album_from_cue_track_id() -> None:
     result = await provider._reparse_album_from_track("5")
     assert result is cue_album
     provider._cue.parse_tracks.assert_awaited_once()
+
+
+async def test_reparse_artist_from_cue_track_id() -> None:
+    """A CUE-only artist is rebuilt from the CUE tracks, matched by its mapping directory."""
+    provider = _provider()
+    cue_id = make_cue_track_id("Artist/Album/album.cue", 1)
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="t1",
+        provider_mappings={
+            ProviderMapping(
+                item_id=cue_id, provider_domain="filesystem_local", provider_instance=INSTANCE_ID
+            )
+        },
+    )
+    provider.mass.music.artists.tracks = AsyncMock(return_value=[track])
+    provider.resolve = AsyncMock(return_value=_file("Artist/Album/album.cue"))
+    cue_artist = Artist(
+        item_id="Artist", provider=INSTANCE_ID, name="Cue Artist", provider_mappings=set()
+    )
+    cue_track = MagicMock(spec=Track)
+    cue_track.artists = [cue_artist]
+    cue_track.album = None
+    provider._cue = MagicMock()
+    provider._cue.parse_tracks = AsyncMock(return_value=[cue_track])
+
+    result = await provider._reparse_artist_from_track("9", "Artist")
+    assert result is cue_artist
 
 
 async def test_music_sync_skips_sidecars_when_track_sync_disabled() -> None:
