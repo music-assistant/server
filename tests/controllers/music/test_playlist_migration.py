@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
@@ -139,6 +140,86 @@ async def test_provider_playlist_additions_are_batched_in_order() -> None:
     batches = [call.args[1] for call in provider.add_playlist_tracks.await_args_list]
     assert [len(batch) for batch in batches] == [100, 100, 5]
     assert [track_id for batch in batches for track_id in batch] == track_ids
+
+
+async def test_migration_resolves_tracks_in_bounded_batches(
+    music: MusicController,
+) -> None:
+    """Large playlists create at most five concurrent track resolutions."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    source_tracks = [create_track("spotify_1", f"source-{index}") for index in range(12)]
+    destination_playlist = _playlist("2", "Migrated", "builtin", "migrated")
+    builtin_provider = MagicMock(spec=MusicProvider)
+    builtin_provider.instance_id = "builtin"
+    builtin_provider.domain = "builtin"
+    builtin_provider.name = "Music Assistant"
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
+    active_resolutions = 0
+    max_active_resolutions = 0
+
+    async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
+        for track in source_tracks:
+            yield track
+
+    async def enrich_track(
+        track: Track,
+        **_kwargs: object,
+    ) -> TrackProviderEnrichment:
+        nonlocal active_resolutions, max_active_resolutions
+        active_resolutions += 1
+        max_active_resolutions = max(
+            max_active_resolutions,
+            active_resolutions,
+        )
+        await asyncio.sleep(0)
+        active_resolutions -= 1
+        return TrackProviderEnrichment(
+            track=track,
+            matches=(),
+            ambiguous_providers=(),
+            failed_providers=(),
+            used_library_item=False,
+        )
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        patch.object(music.playlists, "tracks", iter_source_tracks),
+        patch.object(
+            music.tracks,
+            "enrich_provider_mappings",
+            AsyncMock(side_effect=enrich_track),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id: {
+                "builtin": builtin_provider,
+                "spotify_1": source_provider,
+            }[provider_instance_id],
+        ),
+        patch.object(
+            music.playlists,
+            "_create_builtin_migration_playlist",
+            AsyncMock(return_value=destination_playlist),
+        ),
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            builtin_provider.instance_id,
+            "Migrated",
+            PlaylistMigrationMatchPolicy.SAME_RECORDING,
+            ("builtin", "spotify_1"),
+        )
+
+    assert max_active_resolutions == 5
 
 
 async def test_migrate_playlist_queues_validated_task(

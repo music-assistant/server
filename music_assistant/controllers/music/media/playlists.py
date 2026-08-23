@@ -54,6 +54,7 @@ from .tracks import TrackProviderMatch, TracksController
 
 _PROVIDER_PLAYLIST_ADD_BATCH_SIZE = 100
 _MIGRATION_REPORT_DETAIL_LIMIT = 200
+_MIGRATION_RESOLVE_BATCH_SIZE = 5
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -542,7 +543,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         minimum_confidence = self._minimum_match_confidence(match_policy)
         unique_tracks = {self._migration_track_key(track): track for track in source_tracks}
-        semaphore = asyncio.Semaphore(5)
         allowed_provider_instance_set = set(allowed_provider_instances)
         failed_provider_instances: set[str] = set()
         completed = 0
@@ -551,15 +551,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
             key: str, track: Track
         ) -> tuple[str, _PlaylistMigrationTrackResult]:
             nonlocal completed
-            async with semaphore:
-                result = await self._resolve_migration_track(
-                    track,
-                    provider,
-                    minimum_confidence,
-                    allowed_provider_instance_set,
-                    trust_source_mappings,
-                    failed_provider_instances,
-                )
+            result = await self._resolve_migration_track(
+                track,
+                provider,
+                minimum_confidence,
+                allowed_provider_instance_set,
+                trust_source_mappings,
+                failed_provider_instances,
+            )
             completed += 1
             _update_stage_progress(
                 completed,
@@ -570,11 +569,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
             return key, result
 
-        resolved_tracks = dict(
-            await asyncio.gather(
-                *(resolve_track(key, track) for key, track in unique_tracks.items())
+        resolved_items: list[tuple[str, _PlaylistMigrationTrackResult]] = []
+        for track_batch in batched(
+            unique_tracks.items(),
+            _MIGRATION_RESOLVE_BATCH_SIZE,
+            strict=False,
+        ):
+            resolved_items.extend(
+                await asyncio.gather(*(resolve_track(key, track) for key, track in track_batch))
             )
-        )
+        resolved_tracks = dict(resolved_items)
         target_ids: list[str] = []
         target_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
         builtin_entries: list[PlaylistItem] = []
