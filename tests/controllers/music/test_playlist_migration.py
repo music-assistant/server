@@ -29,6 +29,7 @@ from music_assistant.controllers.music.media.tracks import (
 from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .helpers import create_track
 
@@ -243,9 +244,11 @@ async def test_migration_resolves_tracks_in_bounded_batches(
     builtin_provider.instance_id = "builtin"
     builtin_provider.domain = "builtin"
     builtin_provider.name = "Music Assistant"
+    builtin_provider.available = True
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    source_provider.available = True
     active_resolutions = 0
     max_active_resolutions = 0
 
@@ -288,7 +291,7 @@ async def test_migration_resolves_tracks_in_bounded_batches(
         patch.object(
             music.mass,
             "get_provider",
-            side_effect=lambda provider_instance_id: {
+            side_effect=lambda provider_instance_id, **_kwargs: {
                 "builtin": builtin_provider,
                 "spotify_1": source_provider,
             }[provider_instance_id],
@@ -321,6 +324,7 @@ async def test_migrate_playlist_queues_validated_task(
     target_provider.instance_id = "tidal_1"
     target_provider.domain = "tidal"
     target_provider.name = "Tidal"
+    target_provider.available = True
     target_provider.is_streaming_provider = True
     target_provider.supported_features = {
         ProviderFeature.PLAYLIST_CREATE,
@@ -330,6 +334,7 @@ async def test_migrate_playlist_queues_validated_task(
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    source_provider.available = True
     queued_task = MagicMock()
     tasks = MagicMock()
     tasks.run_background_task.return_value = queued_task
@@ -343,7 +348,10 @@ async def test_migrate_playlist_queues_validated_task(
         patch.object(
             music.mass,
             "get_provider",
-            return_value=target_provider,
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "spotify_1": source_provider,
+                "tidal_1": target_provider,
+            }[provider_instance_id],
         ) as get_provider,
         patch.object(
             MusicController,
@@ -372,7 +380,10 @@ async def test_migrate_playlist_queues_validated_task(
         await tasks.run_background_task.call_args.kwargs["handler"]()
 
     assert result is queued_task
-    get_provider.assert_not_called()
+    get_provider.assert_called_once_with(
+        "spotify_1",
+        return_unavailable=True,
+    )
     assert "task_id" not in tasks.run_background_task.call_args.kwargs
     assert tasks.run_background_task.call_args.kwargs["metadata"]["match_policy"] == "best_effort"
     handle_migration.assert_awaited_once_with(
@@ -386,6 +397,72 @@ async def test_migrate_playlist_queues_validated_task(
     )
 
 
+async def test_migrate_playlist_accepts_static_plugin_source(
+    music: MusicController,
+) -> None:
+    """Static plugin playlists can be queued with untrusted source mappings."""
+    source_playlist = _playlist("1", "Smart", "smart_playlist_1", "source")
+    source_provider = MagicMock(spec=PluginProvider)
+    source_provider.instance_id = "smart_playlist_1"
+    source_provider.available = True
+    target_provider = MagicMock(spec=MusicProvider)
+    target_provider.instance_id = "tidal_1"
+    target_provider.domain = "tidal"
+    target_provider.name = "Tidal"
+    target_provider.available = True
+    target_provider.is_streaming_provider = True
+    target_provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    target_provider.supported_media_types = {MediaType.TRACK}
+    tasks = MagicMock()
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        patch.object(
+            MusicController,
+            "providers",
+            new_callable=PropertyMock,
+            return_value=[target_provider],
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=source_provider,
+        ) as get_provider,
+        patch.object(music.mass, "tasks", tasks, create=True),
+        patch.object(
+            music.playlists,
+            "_handle_migrate_playlist",
+            AsyncMock(),
+        ) as handle_migration,
+    ):
+        await music.playlists.migrate_playlist(
+            source_playlist.item_id,
+            destination_provider="tidal_1",
+        )
+        await tasks.run_background_task.call_args.kwargs["handler"]()
+
+    get_provider.assert_called_once_with(
+        "smart_playlist_1",
+        return_unavailable=True,
+    )
+    handle_migration.assert_awaited_once_with(
+        "1",
+        "source",
+        "smart_playlist_1",
+        "tidal_1",
+        "Smart",
+        PlaylistMigrationMatchPolicy.SAME_RECORDING,
+        ("tidal_1",),
+    )
+
+
 async def test_migrate_playlist_rejects_filtered_source_provider(
     music: MusicController,
 ) -> None:
@@ -394,10 +471,12 @@ async def test_migrate_playlist_rejects_filtered_source_provider(
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    source_provider.available = True
     target_provider = MagicMock(spec=MusicProvider)
     target_provider.instance_id = "tidal_1"
     target_provider.domain = "tidal"
     target_provider.name = "Tidal"
+    target_provider.available = True
     target_provider.is_streaming_provider = True
     target_provider.supported_features = {
         ProviderFeature.PLAYLIST_CREATE,
@@ -474,11 +553,108 @@ async def test_migration_handler_revalidates_dynamic_source(
         )
 
 
+async def test_migration_handler_rejects_unavailable_destination_instance(
+    music: MusicController,
+) -> None:
+    """A deferred migration can not switch to another destination account."""
+    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    unavailable_provider = MagicMock(spec=MusicProvider)
+    unavailable_provider.instance_id = "qobuz_1"
+    unavailable_provider.available = False
+    outside_scope_provider = MagicMock(spec=MusicProvider)
+    outside_scope_provider.instance_id = "qobuz_2"
+    outside_scope_provider.available = True
+
+    with (
+        patch.object(
+            music.playlists,
+            "get_library_item",
+            AsyncMock(return_value=source_playlist),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda _provider_instance_id, return_unavailable=False: (
+                unavailable_provider if return_unavailable else outside_scope_provider
+            ),
+        ),
+        pytest.raises(ProviderUnavailableError, match="qobuz_1"),
+    ):
+        await music.playlists._handle_migrate_playlist(
+            source_playlist.item_id,
+            "source",
+            "spotify_1",
+            "qobuz_1",
+            "Migrated",
+            PlaylistMigrationMatchPolicy.SAME_RECORDING,
+            ("qobuz_1", "spotify_1"),
+        )
+
+
+async def test_playlist_tracks_strict_provider_lookup_rejects_fallback(
+    music: MusicController,
+) -> None:
+    """A strict playlist read can not switch to another provider account."""
+    unavailable_provider = MagicMock(spec=MusicProvider)
+    unavailable_provider.instance_id = "qobuz_1"
+    unavailable_provider.available = False
+    outside_scope_provider = MagicMock(spec=MusicProvider)
+    outside_scope_provider.instance_id = "qobuz_2"
+    outside_scope_provider.available = True
+
+    with (
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda _provider_instance_id, return_unavailable=False: (
+                unavailable_provider if return_unavailable else outside_scope_provider
+            ),
+        ),
+        pytest.raises(ProviderUnavailableError, match="qobuz_1"),
+    ):
+        _ = [
+            item
+            async for item in music.playlists.tracks(
+                "source",
+                "qobuz_1",
+                strict_provider_instance=True,
+            )
+        ]
+
+
+async def test_create_playlist_strict_provider_lookup_rejects_fallback(
+    music: MusicController,
+) -> None:
+    """Strict playlist creation can not switch to another provider account."""
+    unavailable_provider = MagicMock(spec=MusicProvider)
+    unavailable_provider.instance_id = "qobuz_1"
+    unavailable_provider.available = False
+    outside_scope_provider = MagicMock(spec=MusicProvider)
+    outside_scope_provider.instance_id = "qobuz_2"
+    outside_scope_provider.available = True
+
+    with (
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda _provider_instance_id, return_unavailable=False: (
+                unavailable_provider if return_unavailable else outside_scope_provider
+            ),
+        ),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await music.playlists.create_playlist(
+            "Migrated",
+            provider_instance_or_domain="qobuz_1",
+            strict_provider_instance=True,
+        )
+
+
 async def test_migration_reports_unsupported_source_items(
     music: MusicController,
 ) -> None:
     """Mixed playlists include unsupported entries in skipped totals and reports."""
-    source_playlist = _playlist("1", "Source", "spotify_1", "source")
+    source_playlist = _playlist("1", "Source", "smart_playlist_1", "source")
     source_track = create_track("spotify_1", "track")
     source_radio = Radio(
         item_id="radio",
@@ -491,9 +667,11 @@ async def test_migration_reports_unsupported_source_items(
     builtin_provider.instance_id = "builtin"
     builtin_provider.domain = "builtin"
     builtin_provider.name = "Music Assistant"
-    source_provider = MagicMock(spec=MusicProvider)
-    source_provider.instance_id = "spotify_1"
-    source_provider.domain = "spotify"
+    builtin_provider.available = True
+    source_provider = MagicMock(spec=PluginProvider)
+    source_provider.instance_id = "smart_playlist_1"
+    source_provider.domain = "smart_playlist"
+    source_provider.available = True
     enrichment = TrackProviderEnrichment(
         track=source_track,
         matches=(),
@@ -517,13 +695,13 @@ async def test_migration_reports_unsupported_source_items(
             music.tracks,
             "enrich_provider_mappings",
             AsyncMock(return_value=enrichment),
-        ),
+        ) as enrich,
         patch.object(
             music.mass,
             "get_provider",
-            side_effect=lambda provider_instance_id: {
+            side_effect=lambda provider_instance_id, **_kwargs: {
                 "builtin": builtin_provider,
-                "spotify_1": source_provider,
+                "smart_playlist_1": source_provider,
             }[provider_instance_id],
         ),
         patch.object(
@@ -541,7 +719,7 @@ async def test_migration_reports_unsupported_source_items(
         await music.playlists._handle_migrate_playlist(
             source_playlist.item_id,
             "source",
-            "spotify_1",
+            "smart_playlist_1",
             "builtin",
             "Migrated",
             PlaylistMigrationMatchPolicy.SAME_RECORDING,
@@ -549,6 +727,8 @@ async def test_migration_reports_unsupported_source_items(
         )
 
     report_failure.assert_called_once_with("Test Radio: radio entries are not supported")
+    assert enrich.await_args is not None
+    assert enrich.await_args.kwargs["trust_track_mappings"] is False
     final_report = set_report.call_args.args[0]
     assert "Migrated **1** of **2** playlist items" in final_report
     assert "| Skipped | 1 |" in final_report
@@ -562,7 +742,6 @@ async def test_migration_reports_unsupported_source_items(
         "expected_target_ids",
         "actual_target_ids",
         "expected_verification_failures",
-        "expected_failure_count",
     ),
     [
         (
@@ -570,28 +749,24 @@ async def test_migration_reports_unsupported_source_items(
             ["tidal-one", "tidal-two", "tidal-one"],
             ["tidal-one", "tidal-two", "tidal-one"],
             [],
-            1,
         ),
         (
             False,
             ["tidal-one", "tidal-two"],
             ["tidal-one", "tidal-two"],
             [],
-            2,
         ),
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
             ["tidal-one", "tidal-one"],
             ["Test Artist - Test Track: tidal did not add this track in the expected order"],
-            2,
         ),
         (
             True,
             ["tidal-one", "tidal-two", "tidal-one"],
             None,
             ["Could not verify destination playlist: Verification failed (TimeoutError)"],
-            2,
         ),
         (
             True,
@@ -601,7 +776,6 @@ async def test_migration_reports_unsupported_source_items(
                 "Test Artist - Test Track: tidal did not add this track in the expected order",
                 "Destination playlist contains unexpected or reordered tracks",
             ],
-            3,
         ),
     ],
 )
@@ -611,7 +785,6 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     expected_target_ids: list[str],
     actual_target_ids: list[str] | None,
     expected_verification_failures: list[str],
-    expected_failure_count: int,
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
     source_playlist = _playlist("1", "Source", "spotify_1", "source")
@@ -625,11 +798,13 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     target_provider.instance_id = "tidal_1"
     target_provider.domain = "tidal"
     target_provider.name = "Tidal"
+    target_provider.available = True
     target_provider.playlist_duplicates_supported = duplicates_supported
     target_provider.add_playlist_tracks = AsyncMock()
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    source_provider.available = True
     track_requests: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     async def iter_playlist_tracks(*args: object, **kwargs: object) -> AsyncGenerator[Track]:
@@ -681,7 +856,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         patch.object(
             music.mass,
             "get_provider",
-            side_effect=lambda provider_instance_id: {
+            side_effect=lambda provider_instance_id, **_kwargs: {
                 "spotify_1": source_provider,
                 "tidal_1": target_provider,
             }[provider_instance_id],
@@ -718,10 +893,21 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
             ("spotify_1", "tidal_1"),
         )
 
-    create_playlist.assert_awaited_once()
+    create_playlist.assert_awaited_once_with(
+        "Migrated",
+        media_types=[MediaType.TRACK],
+        provider_instance_or_domain="tidal_1",
+        strict_provider_instance=True,
+    )
     assert track_requests == [
-        (("source", "spotify_1"), {"force_refresh": True}),
-        (("target", "tidal_1"), {"force_refresh": True}),
+        (
+            ("source", "spotify_1"),
+            {"force_refresh": True, "strict_provider_instance": True},
+        ),
+        (
+            ("target", "tidal_1"),
+            {"force_refresh": True, "strict_provider_instance": True},
+        ),
     ]
     target_provider.add_playlist_tracks.assert_awaited_once_with(
         "target",
@@ -741,7 +927,6 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         )
     expected_failures.extend(call(message) for message in expected_verification_failures)
     assert report_failure.call_args_list == expected_failures
-    assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
     final_report = set_report.call_args.args[0]
     assert "### Skipped items" in final_report
@@ -766,9 +951,11 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
     builtin_provider.instance_id = "builtin"
     builtin_provider.domain = "builtin"
     builtin_provider.name = "Music Assistant"
+    builtin_provider.available = True
     source_provider = MagicMock(spec=MusicProvider)
     source_provider.instance_id = "spotify_1"
     source_provider.domain = "spotify"
+    source_provider.available = True
     destination_playlist = _playlist("2", "Migrated", "builtin", "migrated")
 
     async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
@@ -800,7 +987,7 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
         patch.object(
             music.mass,
             "get_provider",
-            side_effect=lambda provider_instance_id: {
+            side_effect=lambda provider_instance_id, **_kwargs: {
                 "builtin": builtin_provider,
                 "spotify_1": source_provider,
             }[provider_instance_id],

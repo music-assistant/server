@@ -668,9 +668,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider
                 for provider_instance_id in sorted(allowed_provider_instances)
                 if isinstance(
-                    provider := self.mass.get_provider(provider_instance_id),
+                    provider := self.mass.get_provider(
+                        provider_instance_id,
+                        return_unavailable=True,
+                    ),
                     MusicProvider,
                 )
+                and provider.instance_id == provider_instance_id
+                and provider.available
             ]
         else:
             available_providers = self.providers
@@ -692,6 +697,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider.instance_id,
             media_types,
             limit=limit,
+            strict_provider_instance=True,
         )
         if result is None:
             raise ResourceTemporarilyUnavailable(
@@ -2504,6 +2510,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
+        strict_provider_instance: bool = False,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -2515,9 +2522,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param limit: number of items to return in the search (per type).
         :param skip_item_ids: Optional set of (media_type, provider_domain, item_id)
                               tuples to filter out of the results.
+        :param strict_provider_instance: Do not fall back to another provider instance.
         """
-        prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
-        if not prov:
+        prov = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+            provider_type=MusicProvider,
+        )
+        if not prov or (
+            strict_provider_instance
+            and (prov.instance_id != provider_instance_id_or_domain or not prov.available)
+        ):
             return SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
             return SearchResults()

@@ -71,6 +71,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.instance_id = instance_id
     prov.domain = domain or instance_id
     prov.name = instance_id
+    prov.available = True
     prov.supported_features = {ProviderFeature.SEARCH}
     prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
@@ -157,6 +158,7 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
         provider.instance_id,
         [MediaType.TRACK],
         limit=5,
+        strict_provider_instance=True,
     )
 
 
@@ -182,7 +184,59 @@ async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
         "qobuz_2",
         [MediaType.TRACK],
         limit=5,
+        strict_provider_instance=True,
     )
+
+
+async def test_search_provider_does_not_substitute_unavailable_scoped_instance() -> None:
+    """An unavailable scoped account can not fall back to another account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+    controller._search_provider = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        "qobuz_1",
+        [MediaType.TRACK],
+        allowed_provider_instances={"qobuz_1"},
+    )
+
+    assert result == SearchResults()
+    controller._search_provider.assert_not_awaited()
+    controller.mass.get_provider.assert_called_once_with(
+        "qobuz_1",
+        return_unavailable=True,
+    )
+
+
+async def test_internal_search_rejects_strict_instance_fallback() -> None:
+    """The cached provider search keeps an exact captured account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False, **_kwargs: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+
+    result = await controller._search_provider(
+        "My Song",
+        "qobuz_1",
+        [MediaType.TRACK],
+        strict_provider_instance=True,
+    )
+
+    assert result == SearchResults()
+    outside_scope_provider.search.assert_not_awaited()
 
 
 async def test_search_provider_reports_timeout_as_failure() -> None:

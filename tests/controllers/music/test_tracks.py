@@ -8,6 +8,7 @@ import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -210,6 +211,38 @@ async def test_get_provider_item_can_disable_library_fallback(
         )
 
     assert result is library_fallback
+
+
+async def test_get_provider_item_strict_instance_rejects_fallback(
+    music: MusicController,
+) -> None:
+    """Authoritative hydration can not switch to another provider account."""
+    unavailable_provider = MagicMock(spec=MusicProvider)
+    unavailable_provider.instance_id = "qobuz_1"
+    unavailable_provider.available = False
+    outside_scope_provider = MagicMock(spec=MusicProvider)
+    outside_scope_provider.instance_id = "qobuz_2"
+    outside_scope_provider.available = True
+    outside_scope_provider.get_track = AsyncMock()
+
+    with (
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda _provider_instance_id, return_unavailable=False: (
+                unavailable_provider if return_unavailable else outside_scope_provider
+            ),
+        ),
+        pytest.raises(ProviderUnavailableError, match="qobuz_1"),
+    ):
+        await music.tracks.get_provider_item(
+            "track",
+            "qobuz_1",
+            allow_fallback=False,
+            strict_provider_instance=True,
+        )
+
+    outside_scope_provider.get_track.assert_not_awaited()
 
 
 async def test_find_provider_match_reuses_domain_mapping_for_target_instance(
@@ -503,7 +536,8 @@ async def test_find_provider_match_prefers_exact_candidate(
     assert result.match.track.item_id == "exact"
     assert result.match.confidence == TrackMatchConfidence.EXACT
     assert all(
-        call.args[1] == provider.instance_id for call in get_provider_item_mock.await_args_list
+        call.args[1] == provider.instance_id and call.kwargs["strict_provider_instance"] is True
+        for call in get_provider_item_mock.await_args_list
     )
 
 
@@ -713,6 +747,7 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
     provider = MagicMock(spec=MusicProvider)
     provider.instance_id = "spotify_1"
     provider.domain = "spotify"
+    provider.available = True
     provider.is_streaming_provider = True
     get_full_track_album = AsyncMock()
     find_provider_match = AsyncMock()
@@ -733,6 +768,41 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
     find_provider_match.assert_not_awaited()
 
 
+async def test_enrich_provider_mappings_does_not_substitute_unavailable_instance(
+    music: MusicController,
+) -> None:
+    """A captured provider instance can not fall back to another account."""
+    source = create_track("spotify_1", "source")
+    unavailable_provider = MagicMock(spec=MusicProvider)
+    unavailable_provider.instance_id = "qobuz_1"
+    unavailable_provider.domain = "qobuz"
+    unavailable_provider.available = False
+    outside_scope_provider = MagicMock(spec=MusicProvider)
+    outside_scope_provider.instance_id = "qobuz_2"
+    outside_scope_provider.domain = "qobuz"
+    outside_scope_provider.available = True
+    find_provider_match = AsyncMock()
+
+    def get_provider(
+        _provider_instance_id: str,
+        return_unavailable: bool = False,
+    ) -> MusicProvider:
+        return unavailable_provider if return_unavailable else outside_scope_provider
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+        )
+
+    assert result.track.provider_mappings == set()
+    find_provider_match.assert_not_awaited()
+
+
 async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     music: MusicController,
 ) -> None:
@@ -744,11 +814,13 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     first_provider.name = "Qobuz first"
     first_provider.instance_id = "qobuz_1"
     first_provider.domain = "qobuz"
+    first_provider.available = True
     first_provider.is_streaming_provider = True
     second_provider = MagicMock(spec=MusicProvider)
     second_provider.name = "Qobuz second"
     second_provider.instance_id = "qobuz_2"
     second_provider.domain = "qobuz"
+    second_provider.available = True
     second_provider.is_streaming_provider = True
     match = TrackProviderMatch(
         track=qobuz_track,
@@ -781,7 +853,7 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
         patch.object(
             music.mass,
             "get_provider",
-            side_effect=lambda provider_instance_id: {
+            side_effect=lambda provider_instance_id, **_kwargs: {
                 "qobuz_1": first_provider,
                 "qobuz_2": second_provider,
             }[provider_instance_id],
@@ -808,6 +880,7 @@ async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(
     allowed_provider.name = "Spotify allowed"
     allowed_provider.instance_id = "spotify_2"
     allowed_provider.domain = "spotify"
+    allowed_provider.available = True
     allowed_provider.is_streaming_provider = True
     match = TrackProviderMatch(
         track=allowed_track,
@@ -858,6 +931,7 @@ async def test_enrich_provider_mappings_preserves_allowed_untrusted_fallback(
     provider.name = "Qobuz"
     provider.instance_id = "qobuz_1"
     provider.domain = "qobuz"
+    provider.available = True
     provider.is_streaming_provider = True
 
     with (
@@ -910,6 +984,7 @@ async def test_enrich_provider_mappings_drops_unavailable_source_mappings(
     provider.name = "Qobuz"
     provider.instance_id = "qobuz_1"
     provider.domain = "qobuz"
+    provider.available = True
     provider.is_streaming_provider = True
 
     with (
@@ -944,6 +1019,7 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
     provider.name = "Qobuz"
     provider.instance_id = "qobuz_1"
     provider.domain = "qobuz"
+    provider.available = True
     provider.is_streaming_provider = True
     failed_provider_instances: set[str] = set()
 

@@ -712,6 +712,7 @@ class TracksController(MediaControllerBase[Track]):
                     mapping.item_id,
                     provider.instance_id,
                     allow_fallback=False,
+                    strict_provider_instance=True,
                 )
             except MediaNotFoundError:
                 mapped_candidate = None
@@ -815,9 +816,14 @@ class TracksController(MediaControllerBase[Track]):
                 provider
                 for provider_instance_id in sorted(provider_instance_ids)
                 if isinstance(
-                    provider := self.mass.get_provider(provider_instance_id),
+                    provider := self.mass.get_provider(
+                        provider_instance_id,
+                        return_unavailable=True,
+                    ),
                     MusicProvider,
                 )
+                and provider.instance_id == provider_instance_id
+                and provider.available
             ]
             if provider_instance_ids is not None
             else self.mass.music.providers
@@ -1018,6 +1024,7 @@ class TracksController(MediaControllerBase[Track]):
                         search_result.item_id,
                         provider.instance_id,
                         allow_fallback=False,
+                        strict_provider_instance=True,
                     )
                 except MediaNotFoundError:
                     continue

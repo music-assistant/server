@@ -45,6 +45,7 @@ from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
@@ -173,8 +174,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         allow_dynamic_tracks: bool = False,
+        strict_provider_instance: bool = False,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
-        """Return playlist tracks for the given provider playlist id."""
+        """
+        Return playlist items for a provider playlist.
+
+        :param item_id: Provider playlist ID.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param force_refresh: Bypass cached playlist contents.
+        :param allow_dynamic_tracks: Request a fresh sample from dynamic playlists.
+        :param strict_provider_instance: Do not fall back to another provider instance.
+        """
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
@@ -194,6 +204,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id_or_domain,
                 page=page,
                 force_refresh=force_refresh,
+                strict_provider_instance=strict_provider_instance,
             )
             if not tracks:
                 break
@@ -206,12 +217,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         name: str,
         media_types: list[MediaType] | None = None,
         provider_instance_or_domain: str | None = None,
+        strict_provider_instance: bool = False,
     ) -> Playlist:
-        """Create new playlist."""
+        """
+        Create a playlist on an available provider.
+
+        :param name: Playlist name.
+        :param media_types: Media types the playlist must support.
+        :param provider_instance_or_domain: Destination provider instance ID or domain.
+        :param strict_provider_instance: Do not fall back to another provider instance.
+        """
         # if provider is omitted, just pick builtin provider
         if provider_instance_or_domain:
-            provider = self.mass.get_provider(provider_instance_or_domain)
-            if provider is None:
+            provider = self.mass.get_provider(
+                provider_instance_or_domain,
+                return_unavailable=strict_provider_instance,
+            )
+            if provider is None or (
+                strict_provider_instance
+                and (provider.instance_id != provider_instance_or_domain or not provider.available)
+            ):
                 raise ProviderUnavailableError
         else:
             provider = self.mass.get_provider("builtin")
@@ -473,12 +498,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
         user = get_current_user()
         source_provider, source_item_id = self._select_provider_id(source_playlist)
         allowed_provider_instances = {item.instance_id for item in available_providers}
-        if source_provider not in allowed_provider_instances:
-            source_provider_obj = self.mass.get_provider(
-                source_provider,
-                provider_type=MusicProvider,
-            )
-            if not source_provider_obj or source_provider_obj.domain != "builtin":
+        source_provider_obj = self.mass.get_provider(
+            source_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            or source_provider_obj.instance_id != source_provider
+            or not source_provider_obj.available
+        ):
+            raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+        if isinstance(source_provider_obj, MusicProvider):
+            if (
+                source_provider not in allowed_provider_instances
+                and source_provider_obj.domain != "builtin"
+            ):
                 raise ProviderUnavailableError(f"Provider {source_provider} is not available")
             allowed_provider_instances.add(source_provider)
         allowed_provider_instances.add(provider.instance_id)
@@ -520,13 +554,30 @@ class PlaylistController(MediaControllerBase[Playlist]):
         source_playlist = await self.get_library_item(source_playlist_id)
         if source_playlist.is_dynamic:
             raise InvalidDataError("Dynamic playlists can not be migrated")
-        provider = self.mass.get_provider(destination_provider)
-        if not provider or not isinstance(provider, MusicProvider):
+        provider = self.mass.get_provider(
+            destination_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(provider, MusicProvider)
+            or provider.instance_id != destination_provider
+            or not provider.available
+        ):
             raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
-        source_provider_obj = self.mass.get_provider(source_provider)
-        if not source_provider_obj or not isinstance(source_provider_obj, MusicProvider):
+        source_provider_obj = self.mass.get_provider(
+            source_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            or source_provider_obj.instance_id != source_provider
+            or not source_provider_obj.available
+        ):
             raise ProviderUnavailableError(f"Provider {source_provider} is not available")
-        trust_source_mappings = source_provider_obj.domain != "builtin"
+        trust_source_mappings = (
+            isinstance(source_provider_obj, MusicProvider)
+            and source_provider_obj.domain != "builtin"
+        )
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
         unsupported_items: list[tuple[str, str]] = []
@@ -534,6 +585,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             source_playlist_item_id,
             source_provider,
             force_refresh=True,
+            strict_provider_instance=True,
         ):
             if isinstance(item, Track):
                 source_tracks.append(item)
@@ -702,6 +754,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 destination_name,
                 media_types=[MediaType.TRACK],
                 provider_instance_or_domain=provider.instance_id,
+                strict_provider_instance=True,
             )
             playlist_provider, playlist_item_id = self._select_provider_id(destination_playlist)
             if playlist_provider != provider.instance_id:
@@ -919,6 +972,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     playlist_item_id,
                     provider_instance_id,
                     force_refresh=True,
+                    strict_provider_instance=True,
                 )
             ]
             confirmed_indexes, destination_mismatch = self._reconcile_migration_results(
@@ -1228,12 +1282,24 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
+        strict_provider_instance: bool = False,
     ) -> Sequence[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+        )
+        if strict_provider_instance and (
+            provider is None
+            or provider.instance_id != provider_instance_id_or_domain
+            or not provider.available
+        ):
+            raise ProviderUnavailableError(
+                f"Provider {provider_instance_id_or_domain} is not available"
+            )
+        if not isinstance(provider, MusicProvider | PluginProvider):
             return []
-        provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
