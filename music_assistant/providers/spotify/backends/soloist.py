@@ -20,9 +20,12 @@ capture) is owned by the Spotify Connect provider / core helpers and reused here
 
 from __future__ import annotations
 
+import array
 import asyncio
+import fcntl
 import os
 import shutil
+import termios
 import time
 from collections import deque
 from contextlib import suppress
@@ -671,10 +674,10 @@ class _SoloistSession:
         self._backpressured = False
         self._sink_lock = asyncio.Lock()
         self._idle_since: float | None = None
-        # while set, captured audio is dropped until the engine reports this item:
-        # what is still in the sink and the FIFO belongs to the item jumped away
-        # from, and would otherwise land at the head of this one
+        # while set, captured audio is dropped until the engine reports this item
         self._discard_until: str | None = None
+        # bytes of the item jumped away from still to drop, measured at the jump
+        self._stale_budget = 0
 
     @property
     def in_use(self) -> bool:
@@ -1262,7 +1265,16 @@ class _SoloistSession:
         :param chunk: Whole sample frames just read from the capture FIFO.
         """
         if self._discard_until is not None:
+            # the marker drops everything, an earlier jump's remainder included
+            self._stale_budget = max(0, self._stale_budget - len(chunk))
             return
+        if self._stale_budget > 0:
+            # both are whole frames - the budget floored, the chunk shaped - so
+            # what is kept stays on the session's frame grid
+            drop = min(self._stale_budget, len(chunk))
+            self._stale_budget -= drop
+            if not (chunk := chunk[drop:]):
+                return
         if (item := self._current) is not None:
             item.write(chunk)
 
@@ -1417,6 +1429,34 @@ class _SoloistSession:
                 return
             self._sink_running = want
 
+    def _stale_bytes(self) -> int:
+        """
+        Whole frames of rendered audio sitting between the capture sink and the reader.
+
+        Measured rather than assumed: the reader's share alone ranges over
+        several hundred milliseconds as its flow control fills and drains, so no
+        fixed amount describes it.
+        """
+        stale = 0
+        if self._transport is not None:
+            pipe = self._transport.get_extra_info("pipe")
+            if pipe is not None:
+                try:
+                    pending = array.array("i", [0])
+                    fcntl.ioctl(pipe.fileno(), termios.FIONREAD, pending, True)
+                    stale += pending[0]
+                except OSError as err:
+                    self.logger.debug("Could not size the capture FIFO: %s", err)
+        if (reader := self._reader) is not None:
+            # asyncio exposes no public view of what a StreamReader still holds.
+            # It appends before it pauses at twice its limit, so it tops out a
+            # further pipe read above that - the bound to stand in with if the
+            # attribute ever goes, since dropping extra beats leaving the
+            # previous item audible.
+            held = getattr(reader, "_buffer", None)
+            stale += len(held) if held is not None else 6 * _READ_CHUNK_SIZE
+        return stale - (stale % _FRAME_BYTES)
+
     def _retained_bytes(self) -> int:
         """Return how much captured audio is buffered but not delivered yet."""
         return sum(item.buffered for item in self._items.values())
@@ -1483,6 +1523,13 @@ class _SoloistSession:
         self._current = item
         if self._discard_until == uri:
             self._discard_until = None
+            # The engine confirms a jump over the WebSocket within a few
+            # milliseconds, long before the audio it describes reaches the
+            # reader, so the marker above drops next to nothing on its own. The
+            # engine does flush its own output, but what the sink already mixed
+            # is still on its way here and belongs to the item being left
+            # behind - drop that, so it cannot open this one.
+            self._stale_budget = self._stale_bytes()
         item.started.set()
         if current is not None and current.started.is_set():
             # Only an item that was actually playing has a boundary to cut at.
@@ -1655,6 +1702,7 @@ class _ItemAudio:
     def release(self) -> None:
         """Release the channel after its stream ended (or was abandoned)."""
         self.claimed = False
+        self._drop_undelivered()
 
     def write(self, chunk: bytes) -> None:
         """Append captured audio for this item."""
@@ -1696,6 +1744,7 @@ class _ItemAudio:
         # a closed channel no longer holds the capture sink open for its tail
         self.draining = False
         self._available.set()
+        self._drop_undelivered()
 
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
@@ -1756,6 +1805,19 @@ class _ItemAudio:
             starving_for += _READ_SLICE_S
             if starving_for >= _STALL_TIMEOUT_S:
                 raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
+
+    def _drop_undelivered(self) -> None:
+        """
+        Free audio nothing can read any more, so it stops gating the capture sink.
+
+        A skip leaves its channel closed with its reader gone; without this the
+        buffer it had filled would count against ``_MAX_RETAINED_S`` for the rest
+        of the session, and enough of them would suspend the sink for good.
+        """
+        if self.claimed or not self._closed or not self.spent:
+            return
+        self._chunks.clear()
+        self._buffered = 0
 
     def _duration_bytes(self) -> int | None:
         """
