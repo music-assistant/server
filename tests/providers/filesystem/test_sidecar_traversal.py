@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
@@ -192,6 +192,34 @@ async def test_transient_nfo_read_failure_raises_sidecar_read_error() -> None:
     album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
     with pytest.raises(SidecarReadError):
         await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+
+
+async def test_folder_sidecars_defers_on_transient_listing_failure_during_sync() -> None:
+    """A transient listing failure during sync raises SidecarReadError so the item is deferred."""
+    provider = _provider()
+    provider._active_sidecar_index = None
+    provider.sync_running = True
+    provider._scandir = AsyncMock(side_effect=ProviderUnavailableError("cloud down"))
+    with pytest.raises(SidecarReadError):
+        await provider._folder_sidecars("Artist/Album")
+
+
+async def test_folder_sidecars_degrades_on_transient_listing_failure_on_demand() -> None:
+    """Off-sync a transient listing failure degrades to no sidecars rather than raising."""
+    provider = _provider()
+    provider._active_sidecar_index = None
+    provider.sync_running = False
+    provider._scandir = AsyncMock(side_effect=ProviderUnavailableError("cloud down"))
+    assert await provider._folder_sidecars("Artist/Album") == []
+
+
+async def test_folder_sidecars_returns_empty_for_missing_folder_during_sync() -> None:
+    """A genuinely missing folder yields no sidecars, not a deferral, even during sync."""
+    provider = _provider()
+    provider._active_sidecar_index = None
+    provider.sync_running = True
+    provider._scandir = AsyncMock(side_effect=MediaNotFoundError("no such folder"))
+    assert await provider._folder_sidecars("Artist/Album") == []
 
 
 async def test_parse_artist_propagates_read_error_during_incomplete_sync() -> None:

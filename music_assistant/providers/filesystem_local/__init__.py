@@ -2979,12 +2979,26 @@ class LocalFileSystemProvider(MusicProvider):
         listed on demand.
 
         :param folder: The folder to inspect.
+        :raises SidecarReadError: When a sync cannot list the folder because of a transient storage
+            failure, so the caller defers the item instead of treating it as having no sidecars.
         """
         if self._active_sidecar_index is not None:
             return self._active_sidecar_index.files(folder)
-        if not folder or not await self.exists(folder):
+        if not folder:
             return []
-        return [item for item in await self._scandir(folder) if is_sidecar_file(item)]
+        try:
+            items = await self._scandir(folder)
+        except FileNotFoundError, NotADirectoryError, MediaNotFoundError:
+            # the folder genuinely has no listing, so it carries no sidecars
+            return []
+        except (MusicAssistantError, OSError) as err:
+            if self.sync_running:
+                # a transient listing failure must not look like an empty sidecar folder, or a
+                # changed track could overwrite known NFO metadata with tag-only data; defer instead
+                raise SidecarReadError(f"could not list {folder}: {err}") from err
+            # on demand there is no baseline to protect, so treat it as no sidecars
+            return []
+        return [item for item in items if is_sidecar_file(item)]
 
     @staticmethod
     def _find_nfo(sidecars: list[FileSystemItem], name: str) -> FileSystemItem | None:
