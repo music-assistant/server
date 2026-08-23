@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -95,6 +95,8 @@ class MilkdropVisualizerProvider(PluginProvider):
         webgl2: bool | None = None,
         renderer: str | None = None,
         user_agent: str | None = None,
+        gpu: str | None = None,
+        render: dict[str, Any] | None = None,
     ) -> None:
         """
         Record a display's reported render capabilities in the server log.
@@ -106,12 +108,27 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param webgl2: Whether the display's browser has a working WebGL2 context.
         :param renderer: What the display ended up rendering with.
         :param user_agent: The display browser's user agent string.
+        :param gpu: What the display's GL context reports it draws with.
+        :param render: Measured render performance, for displays whose quality adapts.
         """
+        if render is None:
+            self.logger.info(
+                "Viewer capability: webgl2=%s renderer=%s gpu=%s user_agent=%s",
+                webgl2,
+                renderer,
+                gpu,
+                user_agent,
+            )
+            return
         self.logger.info(
-            "Viewer capability: webgl2=%s renderer=%s user_agent=%s",
-            webgl2,
-            renderer,
-            user_agent,
+            "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% render=%sms",
+            render.get("note"),
+            render.get("level"),
+            render.get("pixels"),
+            render.get("fps"),
+            render.get("target_fps"),
+            round(float(render.get("late_ratio") or 0) * 100),
+            render.get("render_ms"),
         )
 
     async def unload(self, is_removed: bool = False) -> None:
