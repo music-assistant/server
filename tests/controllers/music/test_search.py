@@ -158,6 +158,31 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
     )
 
 
+async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
+    """A domain lookup selects an allowed instance rather than a filtered global instance."""
+    filtered_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    allowed_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([filtered_provider, allowed_provider])
+    expected = SearchResults(tracks=[_make_track("track1", "qobuz_2", "My Song")])
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        "qobuz",
+        [MediaType.TRACK],
+        limit=5,
+        allowed_provider_instances={"qobuz_2"},
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        "qobuz_2",
+        [MediaType.TRACK],
+        limit=5,
+    )
+
+
 async def test_search_provider_returns_none_on_provider_error() -> None:
     """A provider error during search yields None instead of raising."""
     prov = _make_search_provider("prov_a")

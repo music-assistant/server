@@ -662,16 +662,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param limit: Maximum results per media type.
         :param allowed_provider_instances: Explicit provider scope for deferred work.
         """
-        provider = self.mass.get_provider(
-            provider_instance_id_or_domain,
-            provider_type=MusicProvider,
-        )
-        if not provider:
-            return SearchResults()
         if allowed_provider_instances is not None:
-            if provider.instance_id not in allowed_provider_instances:
-                return SearchResults()
-        elif not self._apply_user_provider_filter([provider]):
+            available_providers = [
+                provider
+                for provider_instance_id in sorted(allowed_provider_instances)
+                if isinstance(
+                    provider := self.mass.get_provider(provider_instance_id),
+                    MusicProvider,
+                )
+            ]
+        else:
+            available_providers = self.providers
+        provider = next(
+            (
+                item
+                for item in available_providers
+                if item.instance_id == provider_instance_id_or_domain
+            ),
+            None,
+        ) or next(
+            (item for item in available_providers if item.domain == provider_instance_id_or_domain),
+            None,
+        )
+        if provider is None:
             return SearchResults()
         return (
             await self._search_provider(
