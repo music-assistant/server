@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import batched
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientError
@@ -48,6 +49,8 @@ from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
 from .radio import RadioController
 from .tracks import TrackProviderMatch, TracksController
+
+_PROVIDER_PLAYLIST_ADD_BATCH_SIZE = 100
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -648,7 +651,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 90,
                 f"Adding {len(target_ids)} tracks to destination playlist",
             )
-            await provider.add_playlist_tracks(playlist_item_id, target_ids)
+            await self._add_provider_playlist_tracks(
+                provider,
+                playlist_item_id,
+                target_ids,
+            )
             destination_playlist.metadata.last_refresh = None
             await self.update_item_in_library(
                 destination_playlist.item_id,
@@ -1235,7 +1242,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
-        await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
+        await self._add_provider_playlist_tracks(
+            playlist_prov,
+            playlist_prov_item_id,
+            ids_to_add,
+        )
         # reset 'last_refresh' to force a refresh of the playlist's metadata
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
@@ -1267,6 +1278,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
+
+    @staticmethod
+    async def _add_provider_playlist_tracks(
+        provider: MusicProvider,
+        playlist_item_id: str,
+        track_ids: list[str],
+    ) -> None:
+        """Add tracks in ordered batches accepted by provider APIs."""
+        for track_id_batch in batched(
+            track_ids,
+            _PROVIDER_PLAYLIST_ADD_BATCH_SIZE,
+            strict=False,
+        ):
+            await provider.add_playlist_tracks(
+                playlist_item_id,
+                list(track_id_batch),
+            )
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
         """Parse a raw summary db row into a PlaylistSummary object."""

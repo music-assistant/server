@@ -91,6 +91,23 @@ def test_migration_report_renders_substitutions_and_skips() -> None:
     assert "Artist - Missing" in report
 
 
+async def test_provider_playlist_additions_are_batched_in_order() -> None:
+    """Large playlist writes respect common provider request limits."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.add_playlist_tracks = AsyncMock()
+    track_ids = [str(index) for index in range(205)]
+
+    await PlaylistController._add_provider_playlist_tracks(
+        provider,
+        "playlist",
+        track_ids,
+    )
+
+    batches = [call.args[1] for call in provider.add_playlist_tracks.await_args_list]
+    assert [len(batch) for batch in batches] == [100, 100, 5]
+    assert [track_id for batch in batches for track_id in batch] == track_ids
+
+
 async def test_migrate_playlist_queues_validated_task(
     music: MusicController,
 ) -> None:
