@@ -267,3 +267,64 @@ async def test_music_sync_skips_sidecars_when_track_sync_disabled() -> None:
     assert captured["sidecar_index"] is None
     provider._refresh_changed_sidecars.assert_not_awaited()
     provider._query_mapping_details.assert_not_awaited()
+
+
+async def test_incomplete_scan_does_not_publish_index_or_reconcile() -> None:
+    """An incomplete scan keeps the index unpublished so changed tracks fall back to folder reads."""
+    config_values = {
+        CONF_ENTRY_CONTENT_TYPE.key: "music",
+        CONF_ENTRY_LIBRARY_SYNC_TRACKS.key: True,
+        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.key: False,
+    }
+    with patch.object(LocalFileSystemProvider, "__init__", lambda *_a, **_kw: None):
+        provider: Any = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
+    provider.config = MagicMock()
+    provider.config.get_value = MagicMock(side_effect=lambda key: config_values.get(key))
+    provider.media_content_type = "music"
+    provider.sync_running = False
+    provider.logger = MagicMock()
+    provider.mass = MagicMock()
+    provider.mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
+    provider._process_deletions = AsyncMock()
+    provider._process_orphaned_albums_and_artists = AsyncMock()
+    provider._set_available = MagicMock()
+    provider._query_mapping_details = AsyncMock(return_value=({}, {}))
+    provider._refresh_changed_sidecars = AsyncMock()
+    provider._cue = MagicMock()
+
+    published: dict[str, Any] = {}
+
+    async def _enumerate(**kwargs: Any) -> None:
+        # collection still happens (index passed in) but a folder failed to read
+        published["index_arg"] = kwargs["sidecar_index"]
+        kwargs["scan_errors"].failed_dirs = 1
+
+    provider._enumerate_files_for_sync = _enumerate
+    with patch("music_assistant.providers.filesystem_local.report_current_task_failure"):
+        await provider.sync_library(MediaType.TRACK)
+
+    assert published["index_arg"] is not None  # sidecars were still collected during the walk
+    assert provider._active_sidecar_index is None  # but never published for indexed parsing
+    provider._refresh_changed_sidecars.assert_not_awaited()
+    provider._query_mapping_details.assert_not_awaited()
+
+
+async def test_changed_track_with_unreadable_nfo_retains_existing_item() -> None:
+    """A transient NFO failure while parsing a changed track keeps the library item untouched."""
+    provider = _provider()
+    provider._sync_tracks = True
+    provider._parse_track = AsyncMock(side_effect=SidecarReadError("nfo unreadable"))
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    provider._versioned_image_path = MagicMock(return_value="Artist/Album/track.mp3?cs=old")
+    cur_filenames: set[str] = set()
+    track = _file("Artist/Album/track.mp3")
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await provider._process_item_async(track, "old", cur_filenames, set(), set())
+
+    assert result is False
+    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # existing item untouched
+    assert "Artist/Album/track.mp3" in cur_filenames  # kept so deletion never removes it

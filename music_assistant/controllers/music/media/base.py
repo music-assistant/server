@@ -308,13 +308,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @final
     async def update_item_in_library(
-        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: ItemCls,
+        overwrite: bool = False,
+        full_replace: bool = False,
     ) -> ItemCls:
-        """Update existing library record in the library database."""
+        """
+        Update existing library record in the library database.
+
+        :param item_id: The library item id to update.
+        :param update: The item carrying the new values.
+        :param overwrite: Replace this provider's values, keeping other providers' data.
+        :param full_replace: Persist the given item as the authoritative full state, allowing
+            fields the source no longer provides to be cleared. Only album and artist honor it.
+        """
         self.mass.music.match_provider_instances(update)
         # batch the many writes of an item update into a single commit
         async with self.mass.music.database.deferred_commit():
-            await self._update_library_item(item_id, update, overwrite=overwrite)
+            await self._update_library_item(
+                item_id, update, overwrite=overwrite, full_replace=full_replace
+            )
         # return the updated object
         library_item = await self.get_library_item(item_id)
         if SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -1375,20 +1389,30 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         item_id: str | int,
         external_ids: Iterable[tuple[ExternalID, str]],
+        replace: bool = False,
     ) -> None:
         """
         Update the external_id_lookup table rows for the media item.
 
         An empty set never clears the stored rows: identifiers are the strongest
-        evidence available when matching an item across providers.
+        evidence available when matching an item across providers. An authoritative
+        caller can pass ``replace=True`` to persist the given set verbatim, deleting
+        existing rows even when the set is empty.
+
+        :param item_id: The library item id.
+        :param external_ids: The external ids to store for the item.
+        :param replace: Whether to delete rows not present in the given set (allows clearing).
         """
         db_id = int(item_id)  # ensure integer
-        if not (external_ids := normalize_external_ids(external_ids)):
+        external_ids = normalize_external_ids(external_ids)
+        if not external_ids and not replace:
             return
         await self.mass.music.database.delete(
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
+        if not external_ids:
+            return
         await self.mass.music.database.upsert_many(
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             [
@@ -1766,7 +1790,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @abstractmethod
     async def _update_library_item(
-        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: ItemCls,
+        overwrite: bool = False,
+        full_replace: bool = False,
     ) -> None:
         """Update existing library record in the database."""
 

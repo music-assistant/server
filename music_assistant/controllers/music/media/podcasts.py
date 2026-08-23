@@ -293,7 +293,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Podcast, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Podcast,
+        overwrite: bool = False,
+        full_replace: bool = False,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer

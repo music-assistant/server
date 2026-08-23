@@ -1104,29 +1104,36 @@ class ArtistsController(MediaControllerBase[Artist]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Artist | ItemMapping,
+        overwrite: bool = False,
+        full_replace: bool = False,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
+        authoritative = overwrite or full_replace
         if isinstance(update, ItemMapping):
             # NOTE that artist is the only mediatype where its accepted we
             # receive an itemmapping from streaming providers
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
+            metadata = metadata_for_update(
+                cur_item.metadata, update.metadata, overwrite, full_replace=full_replace
+            )
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
-        if (not mbid or overwrite) and getattr(update, "mbid", None):
+        if (not mbid or authoritative) and getattr(update, "mbid", None):
             if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
                 update.mbid = VARIOUS_ARTISTS_MBID
             if update.mbid == VARIOUS_ARTISTS_MBID:
                 update.name = VARIOUS_ARTISTS_NAME
 
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        name = update.name if authoritative else cur_item.name
+        sort_name = update.sort_name if authoritative else cur_item.sort_name or update.sort_name
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -1145,13 +1152,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # update/set external id lookup table
         await self.set_external_ids(
-            db_id, update.external_ids if overwrite else cur_item.external_ids
+            db_id,
+            update.external_ids if authoritative else cur_item.external_ids,
+            replace=full_replace,
         )
         # update/set provider_mappings table
         provider_mappings = provider_mappings_for_update(
-            cur_item.provider_mappings, update.provider_mappings, overwrite
+            cur_item.provider_mappings, update.provider_mappings, authoritative
         )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, authoritative)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:

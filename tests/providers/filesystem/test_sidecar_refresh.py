@@ -378,6 +378,47 @@ async def test_transient_read_failure_defers_without_advancing_details() -> None
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()
 
 
+async def test_artist_transient_read_failure_defers() -> None:
+    """A transient artist reparse failure leaves the artist unchanged and retries next sync."""
+    provider = _provider()
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", {}))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._reparse_artist_from_track = AsyncMock(side_effect=SidecarReadError("blip"))
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, "nfo2", "img1", ("nfo1", "img1", {})
+    )
+    assert ok is False
+    provider.mass.music.artists.update_item_in_library.assert_not_awaited()
+
+
+async def test_artist_image_only_removal_clears_art() -> None:
+    """Removing the last artist folder image clears our artwork without reparsing a track."""
+    provider = _provider()
+    prev_snap: dict[str, Any] = {"description": None, "genres": [], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.metadata.images = UniqueList([_image(INSTANCE_ID, "Artist/folder.jpg?cs=1")])
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._reparse_artist_from_track = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())  # image removed
+
+    await provider._refresh_artist_sidecars(
+        "Artist", False, "nfo1", EMPTY, ("nfo1", "img1", prev_snap)
+    )
+    provider._reparse_artist_from_track.assert_not_awaited()
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert not saved.metadata.images  # our only image cleared
+    # a provenance baseline exists, so the clear is persisted authoritatively
+    assert (
+        provider.mass.music.artists.update_item_in_library.await_args.kwargs["full_replace"] is True
+    )
+
+
 async def test_refresh_skips_unknown_library_item() -> None:
     """A changed sidecar for a folder with no library item does nothing (no auto-add)."""
     provider = _provider()
@@ -420,6 +461,42 @@ async def test_refresh_changed_sidecars_targets_only_changed_items() -> None:
     provider._refresh_album_sidecars.assert_awaited_once()
     assert provider._refresh_album_sidecars.await_args.args[0] == "Artist/Changed"
     assert provider._refresh_album_sidecars.await_args.args[1] is True  # nfo changed
+
+
+async def test_refresh_excludes_first_sync_nested_album_from_parent_artwork() -> None:
+    """A nested album discovered this sync is refreshed into the mapped set before signatures."""
+    provider = _provider()
+    index = provider._active_sidecar_index
+    index.record(_fs_file("Artist/Album/folder.jpg", "1"))
+    index.record_track_dir("Artist/Album")
+    index.record(_fs_file("Artist/Album/Nested/folder.jpg", "2"))
+    index.record_track_dir("Artist/Album/Nested")
+    # the pre-scan set is empty: both albums were created during this very sync
+    provider._sync_mapped_album_dirs = set()
+    provider._query_mapping_details = AsyncMock(
+        return_value=(
+            {
+                "Artist/Album": provider._build_sidecar_details("x", "y", {}),
+                "Artist/Album/Nested": None,
+            },
+            {},
+        )
+    )
+    captured: dict[str, str] = {}
+
+    async def _capture(
+        album_dir: str, _changed: bool, _nfo: str, img_sig: str, _prev: object
+    ) -> bool:
+        captured[album_dir] = img_sig
+        return True
+
+    provider._refresh_album_sidecars = _capture
+    await provider._refresh_changed_sidecars(index)
+
+    # the nested album is now known, so it is excluded from the parent's disc artwork
+    assert provider._sync_mapped_album_dirs == {"Artist/Album", "Artist/Album/Nested"}
+    parent_only = index.album_signatures("Artist/Album", {"Artist/Album", "Artist/Album/Nested"})[1]
+    assert captured["Artist/Album"] == parent_only
 
 
 def _fs_file(relative_path: str, checksum: str) -> Any:

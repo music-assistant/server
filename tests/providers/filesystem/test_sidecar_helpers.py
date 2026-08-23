@@ -123,6 +123,43 @@ def test_reconcile_images_replaces_own_keeps_others() -> None:
     assert {img.path for img in result} == {"art/remote.jpg", "Album/folder.jpg?cs=2"}
 
 
+def test_reconcile_images_keeps_embedded_art_when_no_folder_image() -> None:
+    """Embedded audio-file cover art survives as a fallback when no folder image replaces it."""
+    stored = [_image("filesystem--1", "Album/track01.mp3")]  # embedded album art
+    # no folder image parsed now: the embedded fallback must remain
+    assert [img.path for img in reconcile_images(stored, [], "filesystem--1")] == [
+        "Album/track01.mp3"
+    ]
+    # a folder image takes over, so the embedded fallback is dropped in its favor
+    fresh = [_image("filesystem--1", "Album/folder.jpg?cs=1")]
+    assert [img.path for img in reconcile_images(stored, fresh, "filesystem--1")] == [
+        "Album/folder.jpg?cs=1"
+    ]
+
+
+def test_folder_signature_detects_same_second_same_size_edit() -> None:
+    """A local same-second, same-size replacement is detected via the nanosecond mtime token."""
+    before = FileSystemItem(
+        filename="album.nfo",
+        relative_path="Artist/Album/album.nfo",
+        absolute_path="/media/Artist/Album/album.nfo",
+        is_dir=False,
+        checksum="1700000000",
+        file_size=200,
+        mtime_ns=1700000000_100000000,
+    )
+    after = FileSystemItem(
+        filename="album.nfo",
+        relative_path="Artist/Album/album.nfo",
+        absolute_path="/media/Artist/Album/album.nfo",
+        is_dir=False,
+        checksum="1700000000",  # identical whole-second mtime and size
+        file_size=200,
+        mtime_ns=1700000000_900000000,
+    )
+    assert get_folder_signature([before]) != get_folder_signature([after])
+
+
 def test_nfo_root_dict_accepts_valid_and_rejects_invalid() -> None:
     """A well-formed NFO returns its root; malformed/scalar/wrong roots are ignored."""
     info = nfo_root_dict("<album><title>Kind of Blue</title></album>", "album", "a.nfo", LOG)

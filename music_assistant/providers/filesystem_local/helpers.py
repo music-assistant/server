@@ -172,6 +172,7 @@ class FileSystemItem:
     checksum: str | None = None
     file_size: int | None = None
     created_at: int | None = None  # file creation timestamp (Unix epoch)
+    mtime_ns: int | None = None  # nanosecond mtime, high-res sidecar change token (local only)
 
     @property
     def ext(self) -> str | None:
@@ -229,18 +230,24 @@ class FileSystemItem:
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
             created_at=created_at,
+            mtime_ns=stat.st_mtime_ns,
         )
 
 
 def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
-    Return an order-independent digest of the given files' paths, mtimes and sizes.
+    Return an order-independent digest of the given files' paths, change tokens and sizes.
 
-    Intended as a cache checksum: any file added, removed, replaced or retagged changes it.
+    Intended as a sidecar cache checksum: any file added, removed, replaced or retagged changes
+    it. The nanosecond mtime is used when available so a same-second, same-size local replacement
+    is still detected; providers without it (WebDAV/cloud) fall back to their etag-based checksum.
 
     :param items: The files to include in the digest.
     """
-    parts = sorted(f"{x.relative_path}\0{x.checksum}\0{x.file_size}" for x in items)
+    parts = sorted(
+        f"{x.relative_path}\0{x.mtime_ns if x.mtime_ns is not None else x.checksum}\0{x.file_size}"
+        for x in items
+    )
     return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
 
 
@@ -402,17 +409,25 @@ def reconcile_images(
     provider_instance: str,
 ) -> UniqueList[MediaItemImage]:
     """
-    Merge freshly parsed provider images with images owned by other providers.
+    Merge freshly parsed provider folder images with images owned by other providers.
 
-    Images previously contributed by this provider instance are dropped and replaced by the fresh
-    set, so a removed local image disappears while other providers' images are kept.
+    This provider's folder images are dropped and replaced by the fresh set, so a removed local
+    image disappears. Other providers' images are kept, and this provider's embedded audio-file
+    artwork is kept as a fallback only while there is no folder image to take its place.
 
     :param stored: Images currently on the library item.
-    :param fresh_provider_images: Images parsed from this provider's folder(s) now.
+    :param fresh_provider_images: Folder images parsed from this provider's folder(s) now.
     :param provider_instance: This provider's instance id (the image provenance key).
     """
-    kept = [image for image in (stored or ()) if image.provider != provider_instance]
-    return UniqueList([*kept, *fresh_provider_images])
+    fresh = list(fresh_provider_images)
+    kept: list[MediaItemImage] = []
+    for image in stored or ():
+        if image.provider != provider_instance:
+            kept.append(image)
+        elif not fresh and not _is_folder_image_path(image.path):
+            # embedded audio-file cover art survives as a fallback when no folder image replaces it
+            kept.append(image)
+    return UniqueList([*kept, *fresh])
 
 
 def nfo_root_dict(
@@ -445,6 +460,12 @@ def nfo_root_dict(
 def _is_image_sidecar(item: FileSystemItem) -> bool:
     """Return True when item is a recognized folder image."""
     return item.ext in IMAGE_EXTENSIONS and item.name.lower() in RECOGNIZED_IMAGE_STEMS
+
+
+def _is_folder_image_path(path: str) -> bool:
+    """Return True when an image path points at a folder image file (not embedded audio art)."""
+    ext = path.split("?", 1)[0].rsplit(".", 1)[-1].lower()
+    return ext in IMAGE_EXTENSIONS
 
 
 def _is_nfo_sidecar(item: FileSystemItem) -> bool:

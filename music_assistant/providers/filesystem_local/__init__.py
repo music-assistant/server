@@ -546,12 +546,10 @@ class LocalFileSystemProvider(MusicProvider):
         sidecar_index = SidecarIndex() if collect_sidecars else None
         self.sync_running = True
         try:
-            self._active_sidecar_index = sidecar_index
+            # the index is built during the walk but only published for indexed parsing once the
+            # scan is known to be complete, so a partial listing never makes a sidecar look removed
+            self._active_sidecar_index = None
             self._sync_mapped_album_dirs = set()
-            if sidecar_index is not None:
-                # preload existing album mappings so an album's disc folders can be told apart
-                # from nested sub-albums while parsing/refreshing
-                self._sync_mapped_album_dirs = set((await self._query_mapping_details())[0])
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
                 cue_file_checksums=cue_file_checksums,
@@ -569,6 +567,14 @@ class LocalFileSystemProvider(MusicProvider):
                 report_current_task_failure("Sync aborted: filesystem unavailable during scan")
                 self._set_available(False)
                 return
+            # publish the index for indexed sidecar parsing only when the scan is complete; on an
+            # incomplete scan changed tracks fall back to on-demand folder reads (which fail safely)
+            # and sidecar reconciliation is skipped entirely
+            if sidecar_index is not None and not scan_errors.incomplete:
+                self._active_sidecar_index = sidecar_index
+                # preload existing album mappings so an album's disc folders can be told apart
+                # from nested sub-albums while parsing
+                self._sync_mapped_album_dirs = set((await self._query_mapping_details())[0])
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -653,8 +659,8 @@ class LocalFileSystemProvider(MusicProvider):
                 self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
                 report_current_task_failure(f"Deletions skipped: {summary}")
             else:
-                if sidecar_index is not None:
-                    await self._refresh_changed_sidecars(sidecar_index)
+                if self._active_sidecar_index is not None:
+                    await self._refresh_changed_sidecars(self._active_sidecar_index)
                 deleted_files = prev_filenames - cur_filenames
                 await self._process_deletions(deleted_files)
                 await self._process_orphaned_albums_and_artists()
@@ -1431,6 +1437,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return True
 
+        except SidecarReadError as err:
+            # a transient sidecar/track read failure while parsing a changed item: keep the
+            # existing library item untouched and retry next sync rather than overwriting it
+            self.logger.warning("Deferring %s to next sync: %s", item.relative_path, err)
+            self._keep_failed_item(item, cur_filenames, prev_filenames)
         except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
             self.logger.error(
@@ -1991,7 +2002,10 @@ class LocalFileSystemProvider(MusicProvider):
                 nfo_snapshot = await self._apply_artist_nfo(artist, artist_nfo_item)
         except SidecarReadError:
             if index is not None:
-                self._set_mapping_details(artist, None)
+                # during a sync a transient NFO failure must not overwrite the known artist with
+                # tag-only data or advance its baseline; propagate so the item is retained and retried
+                raise
+            # on demand there is no baseline to protect, so degrade to the tag-only artist
             return artist
         # find local images
         if images := await self._get_local_images(
@@ -2498,10 +2512,11 @@ class LocalFileSystemProvider(MusicProvider):
             if album_nfo_item is not None:
                 nfo_snapshot = await self._apply_album_nfo(album, album_nfo_item)
         except SidecarReadError:
-            # transient read failure: keep the album usable but do not record a signature, so the
-            # next sync retries instead of treating the NFO as applied
             if index is not None:
-                self._set_mapping_details(album, None)
+                # during a sync a transient NFO failure must not overwrite the known album with
+                # tag-only data or advance its baseline; propagate so the item is retained and retried
+                raise
+            # on demand there is no baseline to protect, so degrade to the tag-only album
             return album
 
         # complete album artwork: the album folder plus its actual disc subfolders
@@ -3072,6 +3087,9 @@ class LocalFileSystemProvider(MusicProvider):
         :param sidecar_index: The sidecars collected during this scan.
         """
         album_details, artist_details = await self._query_mapping_details()
+        # albums discovered during this sync are now mapped, so refresh the set before computing
+        # signatures: a first-sync nested album must be excluded from its parent's disc artwork
+        self._sync_mapped_album_dirs = set(album_details.keys())
         refreshed = 0
         deferred = 0
         for album_dir, details in album_details.items():
@@ -3112,8 +3130,10 @@ class LocalFileSystemProvider(MusicProvider):
         Decide how a mapped item's sidecars changed since its stored details.
 
         Returns True for an NFO change (full reconciliation), False for an image-only change, or
-        None when nothing changed. With no stored baseline the item is refreshed once when sidecars
-        exist, applying them without provenance-clearing anything it never recorded.
+        None when nothing changed. Details only start tracking from the first sync on this version:
+        with no stored baseline the item is refreshed once when sidecars exist now, applying them
+        additively without clearing anything it never recorded. A pre-upgrade sidecar removed before
+        any baseline existed is therefore left untouched rather than destructively reconciled.
 
         :param prev: The item's stored ``(nfo_sig, img_sig, snapshot)``, or None.
         :param nfo_sig: The item's current NFO signature.
@@ -3124,6 +3144,7 @@ class LocalFileSystemProvider(MusicProvider):
                 return True
             if img_sig != _EMPTY_SIGNATURE:
                 return False
+            # no baseline and no sidecars: nothing we can attribute, so make no change
             return None
         prev_nfo, prev_img, _ = prev
         if prev_nfo != nfo_sig:
@@ -3199,7 +3220,11 @@ class LocalFileSystemProvider(MusicProvider):
         self._set_mapping_details(
             stored, self._build_sidecar_details(nfo_sig, img_sig, new_snapshot)
         )
-        await self.mass.music.albums.update_item_in_library(stored.item_id, stored, overwrite=True)
+        # with a provenance baseline the reconciliation is authoritative and may clear values the
+        # NFO no longer provides; without one it only adds, so never destructively clear
+        await self.mass.music.albums.update_item_in_library(
+            stored.item_id, stored, overwrite=True, full_replace=prev is not None
+        )
         return True
 
     async def _refresh_artist_sidecars(
@@ -3266,7 +3291,9 @@ class LocalFileSystemProvider(MusicProvider):
         self._set_mapping_details(
             stored, self._build_sidecar_details(nfo_sig, img_sig, new_snapshot)
         )
-        await self.mass.music.artists.update_item_in_library(stored.item_id, stored, overwrite=True)
+        await self.mass.music.artists.update_item_in_library(
+            stored.item_id, stored, overwrite=True, full_replace=prev is not None
+        )
         return True
 
     async def _collect_album_images(self, album_dir: str) -> UniqueList[MediaItemImage]:

@@ -226,10 +226,15 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         session = self._session
         auth_header = self._auth_header
         headers = {"Authorization": auth_header} if auth_header else None
-        async with session.get(webdav_url, headers=headers) as resp:
-            if resp.status != 200:
-                raise MediaNotFoundError(f"File not found: {path}")
-            return await resp.read()
+        try:
+            async with session.get(webdav_url, headers=headers) as resp:
+                if resp.status != 200:
+                    raise MediaNotFoundError(f"File not found: {path}")
+                return await resp.read()
+        except aiohttp.ClientError as err:
+            # a transport failure is transient, not a missing file: surface it as a provider
+            # error so callers (e.g. sidecar reads) can defer and retry instead of aborting
+            raise ProviderUnavailableError(f"WebDAV request failed for {path}: {err}") from err
 
     def _convert_webdav_items(
         self,

@@ -1334,7 +1334,7 @@ class GenreController(MediaControllerBase[Genre]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Genre, overwrite: bool = False
+        self, item_id: str | int, update: Genre, overwrite: bool = False, full_replace: bool = False
     ) -> None:
         """Update existing genre record in the database."""
         db_id = int(item_id)

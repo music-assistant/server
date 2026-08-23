@@ -618,31 +618,45 @@ class AlbumsController(MediaControllerBase[Album]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Album, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Album,
+        overwrite: bool = False,
+        full_replace: bool = False,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
+        metadata = metadata_for_update(
+            cur_item.metadata, update.metadata, overwrite, full_replace=full_replace
+        )
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
             album_type = cur_item.album_type
         cur_item.external_ids.update(update.external_ids)
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        authoritative = overwrite or full_replace
+        name = update.name if authoritative else cur_item.name
+        sort_name = update.sort_name if authoritative else cur_item.sort_name or update.sort_name
+        if full_replace:
+            # the sidecar refresh delivers the complete filesystem-owned identity, so an NFO-only
+            # value it no longer carries must be cleared rather than kept via a truthiness fallback
+            version = update.version
+            year = update.year
+        elif overwrite:
+            version = update.version or cur_item.version
+            year = update.year or cur_item.year
+        else:
+            version = cur_item.version or update.version
+            year = cur_item.year or update.year
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
             {
                 "name": name,
                 "sort_name": sort_name,
-                "version": (update.version or cur_item.version)
-                if overwrite
-                else (cur_item.version or update.version),
-                "year": (update.year or cur_item.year)
-                if overwrite
-                else (cur_item.year or update.year),
+                "version": version,
+                "year": year,
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),
                 "search_name": create_safe_string(name, True, True),
@@ -654,16 +668,18 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         # update/set external id lookup table
         await self.set_external_ids(
-            db_id, update.external_ids if overwrite else cur_item.external_ids
+            db_id,
+            update.external_ids if authoritative else cur_item.external_ids,
+            replace=full_replace,
         )
         # update/set provider_mappings table
         provider_mappings = provider_mappings_for_update(
-            cur_item.provider_mappings, update.provider_mappings, overwrite
+            cur_item.provider_mappings, update.provider_mappings, authoritative
         )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, authoritative)
         # set album artist(s)
-        artists = update.artists if overwrite else cur_item.artists + update.artists
-        await self._set_album_artists(db_id, artists, overwrite=overwrite)
+        artists = update.artists if authoritative else cur_item.artists + update.artists
+        await self._set_album_artists(db_id, artists, overwrite=authoritative)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_album_tracks(
