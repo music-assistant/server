@@ -51,6 +51,7 @@ from music_assistant.providers.spotify.constants import (
     SOLOIST_DEVICE_NAME,
 )
 from music_assistant.providers.spotify.helpers import soloist_session_present
+from music_assistant.providers.spotify_connect.base import AUDIO_QUALITY_LOSSLESS
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistBinaryManager,
     SoloistClient,
@@ -146,6 +147,18 @@ _FOLLOWER_SEARCH_DEPTH: Final[int] = 4
 # audio held for an item whose stream has not been opened (or reopened) yet;
 # beyond this the session is considered abandoned
 _UNCLAIMED_LIMIT_S: Final[float] = 60.0
+# How much captured-but-undelivered audio the session may hold. Reading at
+# _PACE_RATE deliberately makes the engine run ahead of the player, and that
+# surplus has nowhere to go: the engine renders in real time and the capture
+# FIFO applies no backpressure of its own. Past this the sink is suspended,
+# which stalls the engine, so the surplus stays bounded — and with it both the
+# memory held and how far the engine's item can run ahead of the queue's, which
+# the URI match in _signal_ready depends on. Resume well below the cap so the
+# sink is not flipped on every chunk.
+_MAX_RETAINED_S: Final[float] = 20.0
+_RESUME_RETAINED_S: Final[float] = 10.0
+# how often the tail drain checks whether the item's own audio has all arrived
+_DRAIN_POLL_S: Final[float] = 0.1
 
 
 class SoloistBackend(SpotifyPlaybackBackend):
@@ -413,14 +426,18 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # endpoint files from a previous run would point the client at a dead port
         for endpoint_file in (WS_ADDR_FILE, WS_PORT_FILE):
             (self._data_dir / endpoint_file).unlink(missing_ok=True)
-        # the engine reads its prefs at startup only, so they are refreshed on
+        # The engine reads its prefs at startup only, so they are refreshed on
         # every spawn. Its own loudness normalization stays off: Music Assistant
-        # normalizes this audio itself and would otherwise do so twice.
+        # normalizes this audio itself and would otherwise do so twice. The
+        # quality tier has to be stated rather than left alone - the engine's own
+        # default would decide it, and the capture format promises 32-bit PCM.
+        # Spotify serves the best the account is entitled to below the ceiling.
         write_audio_prefs(
             self._data_dir,
             self.logger,
             crossfade_ms=crossfade_ms,
             loudness_normalization=False,
+            audio_quality=AUDIO_QUALITY_LOSSLESS,
         )
 
     def _session_args(self) -> list[str]:
@@ -493,6 +510,10 @@ class _SoloistSession:
         self._logged_out = False
         self._pin_in_flight = False
         self._demand_started = False
+        self._engine_playing = False
+        self._sink_running = False
+        self._backpressured = False
+        self._sink_lock = asyncio.Lock()
         self._idle_since: float | None = None
 
     @property
@@ -519,11 +540,14 @@ class _SoloistSession:
         """
         Return the audio channel for an item this session plays or was fed, if any.
 
-        A channel whose stream was abandoned mid-item cannot be resumed (the
-        audio it already handed over is gone), so it is not offered again.
+        A channel is served at most once. Its audio is handed over as it is
+        consumed, so a stream that already read it — to the end or part-way —
+        cannot be replayed, and the item needs a fresh session instead. That is
+        what a queue holding the same track twice, or repeat wrapping back to
+        the top, ends up asking for.
         """
         item = self._items.get(spotify_uri)
-        if item is None or item.broken:
+        if item is None or item.spent:
             return None
         return item
 
@@ -572,8 +596,7 @@ class _SoloistSession:
         self._reader, self._transport = await _open_fifo_reader(sink.fifo_path)
         self._spawn_task(self._read_capture())
         self._demand_started = True
-        if item.status == "playing":
-            await sink.resume()
+        await self._apply_sink_state(engine_playing=item.status == "playing")
         return item
 
     async def feed_after(self, streamdetails: StreamDetails, spotify_uri: str) -> None:
@@ -880,9 +903,10 @@ class _SoloistSession:
         Read the capture FIFO once for the whole session and route it to the current item.
 
         The pace is the session's clock: the pipe sink applies no rate limit of
-        its own, so reading faster than the engine can deliver makes PulseAudio
-        render silence instead of applying backpressure. Reading slightly above
-        realtime banks the cushion that carries an item boundary.
+        its own, so how fast this reads is how fast the engine plays. Reading
+        slightly above realtime is what banks the cushion that carries an item
+        boundary; reading unpaced makes PulseAudio render silence instead of
+        applying backpressure, and the engine runs off the end of its content.
         """
         reader = self._reader
         proc = self._proc
@@ -890,43 +914,51 @@ class _SoloistSession:
         assert proc is not None
         loop = asyncio.get_running_loop()
         lead_skipped = 0
-        bytes_read = 0
-        # doubles as the "first audio byte of the session seen" marker
-        pace_start: float | None = None
+        first_audio_seen = False
+        pace_anchor: float | None = None
+        paced_bytes = 0
         stalled_for = 0.0
         while not self._stopped:
             self._expire_idle()
+            await self._apply_sink_state()
             if proc.returncode is not None:
                 self._fail(f"the session exited with code {proc.returncode}")
                 return
             try:
                 chunk = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), _READ_SLICE_S)
             except TimeoutError:
-                # no data: the sink is suspended (the engine is rebuffering or
-                # the run is over); bounded so a dead session cannot hang
-                stalled_for += _READ_SLICE_S
-                if stalled_for >= _STALL_TIMEOUT_S:
-                    self._fail("audio stalled")
-                    return
+                # No data. Either the sink is suspended on purpose (the engine
+                # is rebuffering or paused, or the cushion is at its cap) or the
+                # session has died; only the latter is a stall.
+                if self._sink_running:
+                    stalled_for += _READ_SLICE_S
+                    if stalled_for >= _STALL_TIMEOUT_S:
+                        self._fail("audio stalled")
+                        return
+                # Restart the pacing clock rather than carry the gap: making up
+                # lost time would mean an unpaced burst, which over-demands the
+                # engine's fetch pipeline exactly when it is recovering.
+                pace_anchor = None
                 continue
             stalled_for = 0.0
             if not chunk:
                 # writer end closed: the capture sink is gone (pulse restart)
                 self._fail("the capture sink was lost mid-stream")
                 return
-            if pace_start is None:
+            if not first_audio_seen:
                 chunk, skipped = _trim_lead_silence(chunk, lead_skipped)
                 lead_skipped += skipped
                 if not chunk:
                     continue
-                pace_start = loop.time()
-            bytes_read += len(chunk)
+                first_audio_seen = True
+            if pace_anchor is None:
+                pace_anchor = loop.time()
+                paced_bytes = 0
+            paced_bytes += len(chunk)
             if (item := self._current) is not None:
                 item.write(chunk)
             del chunk
-            # pace the whole session from its first audio byte, so the average
-            # holds at _PACE_RATE across item boundaries
-            resume_at = pace_start + bytes_read / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
+            resume_at = pace_anchor + paced_bytes / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
             if (delay := resume_at - loop.time()) > 0:
                 await asyncio.sleep(delay)
 
@@ -1013,31 +1045,18 @@ class _SoloistSession:
             await self._repin_volume(data.volume)
         if not self._demand_started or item is None:
             return
-        if data.status not in ("buffering", "playing", "paused"):
-            return
-        if data.status != "playing" and item.finishing:
-            # The run's last item: the engine reports no track change to cut it
-            # on, so end it here. The sink keeps rendering (silence included)
-            # until the drain closes it, which is what lets the tail still in
-            # the FIFO arrive.
+        playing = data.status == "playing"
+        if playing:
+            # the engine picked the item back up: it was only rebuffering after all
+            self._cancel_tail_drain(item)
+        elif item.finishing and item.at_own_end:
+            # The run's last item, played out: the engine reports no track change
+            # to cut it on, so end it here. This is also the branch a finished run
+            # actually arrives on — its snapshot is stopped/idle, not paused.
             self._drain_last_item(item)
             return
-        # the pipe sink writes silence into the FIFO while the engine stalls on
-        # rebuffering (or someone paused it from the Spotify app); suspending it
-        # keeps that silence out of the delivered PCM
-        sink = self._sink
-        assert sink is not None
-        try:
-            if data.status == "playing":
-                await sink.resume()
-            else:
-                await sink.suspend()
-        except Exception as err:
-            # fail closed: a sink with unknown suspend state would leak stall
-            # silence into (or withhold audio from) the delivered PCM
-            self._fail(f"capture sink control failed: {err}")
-            return
-        if data.status == "paused" and not item.finishing:
+        await self._apply_sink_state(engine_playing=playing)
+        if data.status == "paused" and not item.draining and not self._backpressured:
             # this session has no user-facing pause: someone paused it from the
             # Spotify app — resume playback (a persistently re-paused session
             # ends through the stall timeout)
@@ -1046,9 +1065,55 @@ class _SoloistSession:
                 with suppress(Exception):
                     await client.resume()
 
+    async def _apply_sink_state(self, *, engine_playing: bool | None = None) -> None:
+        """
+        Run the capture sink only while its audio has somewhere to go.
+
+        Three things gate it: the engine actually playing (a suspended sink keeps
+        rebuffering and pause silence out of the delivered PCM), a tail drain in
+        progress (which needs the sink running to collect what is still in
+        flight), and how much captured audio is still undelivered — see
+        ``_MAX_RETAINED_S``.
+
+        :param engine_playing: The engine's new playing state, when this call
+            is reacting to one.
+        """
+        async with self._sink_lock:
+            if not self._demand_started or (sink := self._sink) is None:
+                return
+            if engine_playing is not None:
+                self._engine_playing = engine_playing
+            backpressured = False
+            if any(item.draining for item in self._items.values()):
+                want = True
+            elif not self._engine_playing:
+                want = False
+            else:
+                limit = _MAX_RETAINED_S if self._sink_running else _RESUME_RETAINED_S
+                want = self._retained_bytes() < limit * _BYTES_PER_SECOND
+                backpressured = not want
+            self._backpressured = backpressured
+            if want == self._sink_running:
+                return
+            try:
+                if want:
+                    await sink.resume()
+                else:
+                    await sink.suspend()
+            except Exception as err:
+                # fail closed: a sink with unknown suspend state would leak stall
+                # silence into (or withhold audio from) the delivered PCM
+                self._fail(f"capture sink control failed: {err}")
+                return
+            self._sink_running = want
+
+    def _retained_bytes(self) -> int:
+        """Return how much captured audio is buffered but not delivered yet."""
+        return sum(item.buffered for item in self._items.values())
+
     def _drain_last_item(self, item: _ItemAudio) -> None:
         """
-        Close the run's last item once its tail has had time to arrive.
+        Close the run's last item once its own audio has arrived.
 
         :param item: The item the engine stopped on.
         """
@@ -1057,13 +1122,26 @@ class _SoloistSession:
         item.start_tail_drain()
 
         async def _drain() -> None:
-            await asyncio.sleep(_DRAIN_TIMEOUT_S)
-            if (sink := self._sink) is not None:
-                with suppress(Exception):
-                    await sink.suspend()
+            loop = asyncio.get_running_loop()
+            # the tail is still travelling through the sink and the FIFO; wait
+            # for it, bounded so a session that stopped short cannot hang
+            deadline = loop.time() + _STALL_TIMEOUT_S
+            while not item.tail_complete and loop.time() < deadline:
+                await asyncio.sleep(_DRAIN_POLL_S)
             item.close()
+            await self._apply_sink_state()
 
-        self._spawn_task(_drain())
+        item.drain_task = asyncio.create_task(_drain())
+        self._tasks.append(item.drain_task)
+
+    def _cancel_tail_drain(self, item: _ItemAudio) -> None:
+        """Undo an armed tail drain because the engine resumed the item."""
+        if not item.draining:
+            return
+        if (task := item.drain_task) is not None:
+            item.drain_task = None
+            task.cancel()
+        item.cancel_tail_drain()
 
     async def _observe_current(self, uri: str, duration_ms: int | None) -> None:
         """
@@ -1156,8 +1234,10 @@ class _ItemAudio:
         self.status: str | None = None
         self.playing_seen = False
         self.claimed = False
-        # its stream was abandoned mid-item, so the channel can never be resumed
-        self.broken = False
+        # served once already: its audio was handed over and cannot be replayed
+        self.spent = False
+        self.drain_task: asyncio.Task[None] | None = None
+        self._last_write = 0.0
         self._chunks: deque[bytes] = deque()
         self._buffered = 0
         self._written = 0
@@ -1172,21 +1252,42 @@ class _ItemAudio:
         """Return whether this is the current item and nothing is queued behind it."""
         return self.session.current is self and not self.session.has_pending
 
+    @property
+    def buffered(self) -> int:
+        """Return how many captured bytes are waiting to be delivered."""
+        return self._buffered
+
+    @property
+    def at_own_end(self) -> bool:
+        """
+        Return whether the engine reported this item played (nearly) to its end.
+
+        Tells a run that genuinely finished apart from someone pausing in the
+        Spotify app part-way through the last track.
+        """
+        if self.duration_ms is None or self.last_position_ms is None:
+            # nothing to judge by: treat a stop as the end rather than hanging
+            return True
+        return self.last_position_ms + _INCOMPLETE_TOLERANCE_MS >= self.duration_ms
+
+    @property
+    def tail_complete(self) -> bool:
+        """Return whether everything this item is going to deliver has arrived."""
+        if self._closed:
+            return True
+        if self._tail_target is not None:
+            return self._written >= self._tail_target
+        # no duration to aim at: settle for nothing new arriving
+        return time.monotonic() - self._last_write >= _DRAIN_TIMEOUT_S
+
     def claim(self) -> None:
-        """Mark this channel as being read by an item stream."""
+        """Mark this channel as being read; a channel is only ever served once."""
         self.claimed = True
+        self.spent = True
 
     def release(self) -> None:
-        """
-        Release the channel after its stream ended (or was abandoned).
-
-        An abandoned channel is marked broken: the audio it already handed over
-        cannot be replayed, so a later stream for the same item has to restart
-        the session instead of continuing here.
-        """
+        """Release the channel after its stream ended (or was abandoned)."""
         self.claimed = False
-        if not self._closed:
-            self.broken = True
 
     def write(self, chunk: bytes) -> None:
         """Append captured audio for this item."""
@@ -1203,6 +1304,7 @@ class _ItemAudio:
         self._chunks.append(chunk)
         self._buffered += len(chunk)
         self._written += len(chunk)
+        self._last_write = time.monotonic()
         self._available.set()
 
     def start_tail_drain(self) -> None:
@@ -1214,10 +1316,18 @@ class _ItemAudio:
         """
         self.draining = True
         self._tail_target = self._duration_bytes()
+        self._last_write = time.monotonic()
+
+    def cancel_tail_drain(self) -> None:
+        """Un-arm the tail drain: the item is playing on after all."""
+        self.draining = False
+        self._tail_target = None
 
     def close(self) -> None:
         """Close the channel: its stream ends once the buffered audio is drained."""
         self._closed = True
+        # a closed channel no longer holds the capture sink open for its tail
+        self.draining = False
         self._available.set()
 
     def observe_position(self, position_ms: int) -> None:
@@ -1246,7 +1356,6 @@ class _ItemAudio:
         """
         session = self.session
         loop = asyncio.get_running_loop()
-        overrun_bytes = self._overrun_limit()
         starving_for = 0.0
         while True:
             while self._chunks:
@@ -1256,6 +1365,9 @@ class _ItemAudio:
                 self._delivered += len(chunk)
                 yield chunk
                 del chunk
+                # re-read the bound every time: the engine may only report the
+                # item's duration once it is under way
+                overrun_bytes = self._overrun_limit()
                 if overrun_bytes is not None and self._delivered >= overrun_bytes:
                     raise AudioError(
                         f"Spotify Soloist never moved on from {self.uri} "

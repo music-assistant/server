@@ -70,6 +70,7 @@ from .constants import (
     CONF_REFRESH_TOKEN_GLOBAL,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
+    CREDENTIALS_FILE,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
 )
@@ -178,12 +179,10 @@ class SpotifyProvider(MusicProvider):
                     "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                     "for supported countries."
                 )
-            if not isinstance(self.backend, SoloistBackend):
-                # a paired soloist session left behind by a backend switch holds
-                # login material and is of no further use: remove it — only now
-                # that the load succeeded, so a failed load (and its config
-                # rollback) still has the working session
-                await asyncio.to_thread(self._remove_soloist_session_dir)
+            # login material the other backend left behind is of no further use:
+            # remove it — only now that the load succeeded, so a failed load (and
+            # its config rollback) still has the working credential
+            await asyncio.to_thread(self._remove_unused_playback_credentials)
         except BaseException:
             # a failed load is never registered, so unload() will not run:
             # release whatever the backend acquired (e.g. the shared pulse
@@ -1153,8 +1152,14 @@ class SpotifyProvider(MusicProvider):
             return SoloistBackend(self)
         return LibrespotBackend(self)
 
-    def _remove_soloist_session_dir(self) -> None:
-        """Remove a leftover paired soloist session (blocking)."""
+    def _remove_unused_playback_credentials(self) -> None:
+        """Remove the login material the unselected playback backend left behind (blocking)."""
+        if isinstance(self.backend, SoloistBackend):
+            credentials_file = Path(self.cache_dir) / CREDENTIALS_FILE
+            if credentials_file.is_file():
+                self.logger.debug("Removing leftover librespot credential %s", credentials_file)
+                credentials_file.unlink(missing_ok=True)
+            return
         session_dir = self._instance_storage_dir / SOLOIST_DATA_DIR_NAME
         if session_dir.is_dir():
             self.logger.debug("Removing leftover soloist session at %s", session_dir)

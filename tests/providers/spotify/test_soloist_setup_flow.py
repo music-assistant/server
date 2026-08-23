@@ -11,6 +11,7 @@ itself is covered as well.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import AsyncMock, MagicMock
@@ -252,6 +253,30 @@ async def test_a_stored_choice_is_preselected(
     assert entries[0].value == BACKEND_SOLOIST
 
 
+async def test_pairing_captures_its_output_and_redacts_the_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pairing daemon's output is captured, not inherited, and never carries the key."""
+    api_key = "k" * 20
+    spawns: list[tuple[list[str], dict[str, Any]]] = []
+    _install_fake_soloist(
+        monkeypatch,
+        0,
+        on_wait=lambda: (tmp_path / "data" / "session.bin").write_bytes(b"x"),
+        spawns=spawns,
+        output_lines=(f"starting with --api-key {api_key}",),
+    )
+    (tmp_path / "data").mkdir()
+    with caplog.at_level(logging.DEBUG):
+        await pair_soloist_session(MagicMock(), api_key, tmp_path / "data")
+    _args, kwargs = spawns[0]
+    # an unset stdout is inherited, which would put the argv on the server console
+    assert kwargs["stdout"] is True
+    assert kwargs["stderr"] == asyncio.subprocess.STDOUT
+    assert api_key not in caplog.text
+    assert "<redacted>" in caplog.text
+
+
 async def test_pairing_failure_exit_code_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -315,9 +340,19 @@ def _record_pairing(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
 
 def _install_fake_soloist(
-    monkeypatch: pytest.MonkeyPatch, returncode: int, on_wait: Callable[[], object] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    on_wait: Callable[[], object] | None = None,
+    spawns: list[tuple[list[str], dict[str, Any]]] | None = None,
+    output_lines: tuple[str, ...] = (),
 ) -> None:
-    """Replace the binary manager and pairing process in helpers with canned fakes."""
+    """
+    Replace the binary manager and pairing process in helpers with canned fakes.
+
+    :param spawns: Collects the (argv, kwargs) of every spawn, for assertions.
+    :param output_lines: Lines the fake daemon writes to its stdout.
+    """
+    recorded = spawns if spawns is not None else []
     manager = MagicMock()
     manager.ensure_fresh = AsyncMock(return_value=Path("/fake/soloist"))
     monkeypatch.setattr(spotify_helpers, "SoloistBinaryManager", MagicMock(return_value=manager))
@@ -325,23 +360,18 @@ def _install_fake_soloist(
     class _FakePairProcess:
         """AsyncProcess stand-in for the soloist --pair run."""
 
-        def __init__(self, _args: list[str], **_kwargs: Any) -> None:
-            self._stderr_task: asyncio.Task[None] | None = None
+        def __init__(self, args: list[str], **kwargs: Any) -> None:
+            recorded.append((args, kwargs))
 
         async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_exc_info: object) -> None:
-            # consume the attached stderr reader so no pending task leaks a warning
-            if self._stderr_task is not None:
-                await self._stderr_task
+            return None
 
-        def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
-            self._stderr_task = task
-
-        async def iter_stderr(self) -> AsyncGenerator[str]:
-            lines: tuple[str, ...] = ()
-            for line in lines:
+        async def iter_stdout(self) -> AsyncGenerator[str]:
+            # the daemon echoes its own argv, api key included
+            for line in output_lines:
                 yield line
 
         async def wait(self) -> int:

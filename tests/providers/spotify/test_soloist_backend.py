@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -145,25 +146,26 @@ async def test_audio_read_before_the_stream_opens_is_kept(tmp_path: Path) -> Non
     assert b"".join(chunks) == b"head" * 8
 
 
-async def test_an_abandoned_channel_cannot_be_continued(tmp_path: Path) -> None:
-    """A stream abandoned mid-item marks its channel broken so the session restarts."""
+async def test_a_channel_is_only_ever_served_once(tmp_path: Path) -> None:
+    """A consumed channel cannot be replayed, so the item needs a fresh session."""
     session = _make_session(tmp_path)
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
     assert session.item_for(TRACK_A) is item
     item.claim()
+    item.close()
     item.release()
-    assert item.broken is True
+    # this is what a queue holding the same track twice, or repeat wrapping back
+    # to the top, asks for: it must not be handed a drained channel
     assert session.item_for(TRACK_A) is None
 
 
-async def test_a_completed_channel_is_not_broken(tmp_path: Path) -> None:
-    """A channel released after its normal end is not marked broken."""
+async def test_an_abandoned_channel_cannot_be_continued(tmp_path: Path) -> None:
+    """A stream abandoned mid-item cannot resume where it left off either."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
     item.claim()
-    item.close()
     item.release()
-    assert item.broken is False
+    assert session.item_for(TRACK_A) is None
 
 
 async def test_a_stuck_item_fails_instead_of_streaming_forever(tmp_path: Path) -> None:
@@ -193,19 +195,22 @@ async def test_auth_event_records_logout(tmp_path: Path) -> None:
 
 
 async def test_buffering_gates_the_sink_once_demand_started(tmp_path: Path) -> None:
-    """Once PCM demand started, buffering suspends the sink and playing resumes it."""
+    """Once PCM demand started, playing runs the sink and buffering suspends it again."""
     session = _make_session(tmp_path)
     session._demand_started = True
     session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
     session._pending.append(TRACK_B)
     sink = _sink_of(session)
+    # the sink is created suspended, so there is nothing to suspend yet
     await session._handle_event(_playback_event("buffering"))
-    sink.suspend.assert_awaited_once()
-    sink.resume.assert_not_awaited()
+    sink.suspend.assert_not_awaited()
     await session._handle_event(_playback_event("playing"))
     sink.resume.assert_awaited_once()
     assert session._current is not None
     assert session._current.playing_seen is True
+    # the engine stalling on a rebuffer keeps that silence out of the PCM
+    await session._handle_event(_playback_event("buffering"))
+    sink.suspend.assert_awaited_once()
 
 
 async def test_sink_is_not_gated_before_demand_started(tmp_path: Path) -> None:
@@ -221,35 +226,94 @@ async def test_sink_is_not_gated_before_demand_started(tmp_path: Path) -> None:
     assert session._current.status == "playing"
 
 
-async def test_the_last_item_is_drained_rather_than_cut(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A pause on the run's last item drains its tail, then closes it and the sink."""
-    monkeypatch.setattr(soloist_backend, "_DRAIN_TIMEOUT_S", 0.01)
+@pytest.mark.parametrize("end_status", ["stopped", "idle", "paused"])
+async def test_the_last_item_is_drained_rather_than_cut(tmp_path: Path, end_status: str) -> None:
+    """However the engine reports the end of a run, the last item drains and closes."""
     session = _make_session(tmp_path)
     session._demand_started = True
+    session._sink_running = True
     item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
     item.duration_ms = 1_000
+    item.last_position_ms = 1_000
+    one_second = 1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
     sink = _sink_of(session)
-    await session._handle_event(_playback_event("paused"))
+    await session._handle_event(_playback_event(end_status, position_ms=1_000))
     # the sink stays open for now, so audio still in the FIFO can arrive...
     sink.suspend.assert_not_awaited()
     assert item.draining is True
     assert item._closed is False
-    # ... but only that item's own audio is taken, never the padding silence
-    # the sink keeps rendering after it
-    item.write(b"\x01" * (1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES))
+    # ... but only that item's own audio is taken, never the padding silence the
+    # sink keeps rendering afterwards
+    item.write(b"\x01" * one_second)
     item.write(b"\x00" * 4096)
-    assert item._buffered == 1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
-    await asyncio.sleep(0.05)
+    assert item.buffered == one_second
+    await _wait_for(lambda: item._closed)
     sink.suspend.assert_awaited_once()
-    assert item._closed is True
+
+
+async def test_an_app_pause_midway_through_the_last_item_is_not_the_end(
+    tmp_path: Path,
+) -> None:
+    """Pausing in the Spotify app halfway through the last track must not truncate it."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._sink_running = True
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    item.last_position_ms = 90_000
+    await session._handle_event(_playback_event("paused", position_ms=90_000))
+    assert item.draining is False
+    assert item._closed is False
+    # treated as interference instead: the sink is gated and playback resumed
+    _sink_of(session).suspend.assert_awaited_once()
+    _client_of(session).resume.assert_awaited_once()
+
+
+async def test_a_resumed_item_cancels_its_tail_drain(tmp_path: Path) -> None:
+    """An armed drain is undone when the engine turns out to have been rebuffering."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._sink_running = True
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    item.last_position_ms = 199_000
+    await session._handle_event(_playback_event("stopped", position_ms=199_000))
+    armed = item.draining
+    await session._handle_event(_playback_event("playing", position_ms=199_500))
+    assert armed is True
+    assert item.draining is False
+    assert item._closed is False
+    assert item.drain_task is None
+
+
+async def test_the_cushion_is_capped_by_suspending_the_sink(tmp_path: Path) -> None:
+    """Undelivered audio is handed back as backpressure rather than piling up."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._sink_running = True
+    session._engine_playing = True
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.claim()
+    sink = _sink_of(session)
+    await session._apply_sink_state()
+    sink.suspend.assert_not_awaited()
+    # the engine has run this far ahead of what the player has taken
+    item.write(b"\x01" * int((soloist_backend._MAX_RETAINED_S + 1) * _BYTES_PER_SECOND))
+    await session._apply_sink_state()
+    sink.suspend.assert_awaited_once()
+    assert session._backpressured is True
+    # and it comes back once the player has drained enough of it
+    item._buffered = int(soloist_backend._RESUME_RETAINED_S * _BYTES_PER_SECOND) - 1
+    await session._apply_sink_state()
+    sink.resume.assert_awaited_once()
+    assert session._backpressured is False
 
 
 async def test_a_pause_with_more_queued_suspends_the_sink(tmp_path: Path) -> None:
     """A pause while another item is queued behind is ordinary interference, not the end."""
     session = _make_session(tmp_path)
     session._demand_started = True
+    session._sink_running = True
     session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
     session._pending.append(TRACK_B)
     await session._handle_event(_playback_event("paused"))
@@ -289,9 +353,7 @@ async def test_startup_activates_before_it_plays(
     client.play.assert_awaited_once_with(TRACK_A)
 
 
-async def test_a_refused_start_command_reports_soloist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_refused_start_command_reports_soloist(tmp_path: Path) -> None:
     """A dropped start command surfaces as a Soloist error, not a raw client one."""
     session = _make_session(tmp_path)
     client = _client_of(session)
@@ -366,6 +428,7 @@ async def test_failed_sink_control_fails_the_session(tmp_path: Path) -> None:
     """A failed suspend/resume fails the session instead of leaking stall silence."""
     session = _make_session(tmp_path)
     session._demand_started = True
+    session._sink_running = True
     session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
     session._pending.append(TRACK_B)
     _sink_of(session).suspend.side_effect = RuntimeError("pactl failed")
@@ -682,8 +745,10 @@ def test_the_engine_is_told_not_to_normalize(tmp_path: Path) -> None:
     assert "audio.normalize_v2=false" in content
     assert "audio.crossfade_v2=true" in content
     assert "audio.crossfade.time_v2=8000" in content
-    # the quality tier is not managed here, so the engine keeps its own
-    assert not any(line.startswith("audio.play_bitrate") for line in content)
+    # the ceiling is stated rather than left to the engine's own default
+    assert "audio.play_bitrate_enumeration=5" in content
+    assert "audio.play_bitrate_non_metered_enumeration=5" in content
+    assert "audio.play_bitrate_non_metered_migrated=true" in content
 
 
 def test_disabling_crossfade_writes_the_boolean(tmp_path: Path) -> None:
@@ -788,6 +853,17 @@ def _queue_item(uri: str, streamdetails: Any = None) -> MagicMock:
         queue_item_id=f"qi-{item_id}",
         streamdetails=streamdetails,
     )
+
+
+async def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    """Wait until the predicate holds, so a background task can get there."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
 
 
 def _client_of(session: _SoloistSession) -> AsyncMock:

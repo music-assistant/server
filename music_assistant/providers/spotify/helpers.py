@@ -9,6 +9,7 @@ import platform
 import re
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,9 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
 )
 
 from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE, PAIRING_DEVICE_NAME
+
+# how long the pairing daemon's log reader is given to drain after it exits
+PAIR_LOG_DRAIN_TIMEOUT = 2.0
 
 LOGGER = logging.getLogger(__name__)
 PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
@@ -165,11 +169,29 @@ async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Pat
         ]
         # the explicit process name keeps AsyncProcess logging free of the argv
         # (which carries the API key)
-        async with AsyncProcess(args, stderr=True, name="soloist-pair") as pair_proc:
-            pair_proc.attach_stderr_reader(
-                asyncio.create_task(_log_soloist_pairing_output(pair_proc, api_key))
-            )
-            returncode = await pair_proc.wait()
+        # the daemon writes all of its logging to stdout and only ever puts
+        # argument-parsing complaints on stderr, so the two are merged into one
+        # captured stream. Capturing is also what makes the redaction below
+        # reachable: an unset stdout is inherited, which would leak the daemon's
+        # output - argv included - straight to the server console.
+        async with AsyncProcess(
+            args,
+            stdout=True,
+            stderr=asyncio.subprocess.STDOUT,
+            name="soloist-pair",
+        ) as pair_proc:
+            log_task = asyncio.create_task(_log_soloist_pairing_output(pair_proc, api_key))
+            try:
+                returncode = await pair_proc.wait()
+                # an exited daemon still has its last (and most telling) lines in
+                # the stream buffer; the shield keeps the reader alive across the
+                # timeout so a pairing failure stays diagnosable
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(log_task), PAIR_LOG_DRAIN_TIMEOUT)
+            finally:
+                log_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await log_task
     if returncode != 0:
         raise LoginFailed(f"Soloist pairing failed (exit code {returncode})")
     if not await asyncio.to_thread(soloist_session_present, data_dir):
@@ -272,7 +294,7 @@ async def get_spotify_token(
 
 async def _log_soloist_pairing_output(pair_proc: AsyncProcess, api_key: str) -> None:
     """Log the pairing daemon's output (API key redacted) so failures are diagnosable."""
-    async for line in pair_proc.iter_stderr():
+    async for line in pair_proc.iter_stdout():
         # the third-party binary's own output may echo argv (which carries the
         # api key), so redact it before logging
         text = line.replace(api_key, "<redacted>") if api_key else line

@@ -25,7 +25,8 @@ CONF_SOLOIST_CONSENT = "soloist_download_consent"
 CONF_SOLOIST_SESSION_DIR = "soloist_session_dir"
 SOLOIST_DATA_DIR_NAME = "soloist-data"
 SOLOIST_PAIRING_DIR = "spotify/pairing"
-# device name for single-track playback; not advertised to the Spotify apps
+# The playback session registers under this name, so it shows up as a device in
+# the user's Spotify apps for as long as Music Assistant is playing.
 SOLOIST_DEVICE_NAME = "Music Assistant"
 
 # Librespot playback authorization

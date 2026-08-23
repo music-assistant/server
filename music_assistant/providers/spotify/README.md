@@ -50,19 +50,34 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   before every spawn. Its unit is milliseconds and sub-second values silently disable
   crossfade, which the seconds-based queue setting can never produce. Changing the
   setting mid-playback takes effect on the next playback.
-- **Pacing**: the capture FIFO is reader-clocked — the pipe sink applies no rate limit,
-  so reading faster than Spotify delivers makes PulseAudio render silence instead of
-  applying backpressure. It is read at **1.1x** with a small (1s) initial burst, both
-  ear-tested: the surplus banks a cushion (~6s per minute) that carries an item
+- **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
+  the engine plays, because the pipe sink applies no rate limit of its own (read
+  unpaced, PulseAudio renders silence rather than pushing back, and the session runs
+  off the end of its content). It is read at **1.1x** with a small (1s) initial burst,
+  both ear-tested: the surplus banks the cushion (~6s per minute) that carries an item
   boundary, while a large burst window is unpaced and audibly destabilizes track
-  starts. Do not add ffmpeg-side pacing on top of this. On a `buffering` status the
-  sink is suspended so stall silence never enters the delivered PCM.
+  starts. Do not add ffmpeg-side pacing on top of this. The pacing clock restarts after
+  any gap instead of making it up, since catching up would mean exactly that unpaced
+  burst.
+- **Backpressure is ours to apply**: reading above realtime means the engine runs ahead
+  of the player, and nothing upstream stops it. `_MAX_RETAINED_S` caps the
+  captured-but-undelivered audio and suspends the capture sink past it, which stalls
+  the engine until the player catches up. Without that cap the cushion grows without
+  limit and the engine's own item eventually runs more than one queue item ahead —
+  which breaks the URI match the readiness signal depends on. The same gate keeps
+  rebuffering and pause silence out of the delivered PCM, so all sink control goes
+  through one place (`_apply_sink_state`).
 - **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
   WebSocket state delimits the items. An item stream is deliberately **not** capped at
   the item duration — with crossfade it carries the head of the next track — but it is
   bounded, and completeness is validated against the furthest playback position the
-  engine reported for it, with the crossfade added to the tolerance. Exit code 10
-  (expired build) triggers a forced binary refresh.
+  engine reported for it, with the crossfade added to the tolerance. The **last** item
+  of a run gets no track change to cut it on, so a stop/idle/pause snapshot at its own
+  end arms a bounded tail drain instead; a pause part-way through is treated as app
+  interference, and the engine resuming cancels the drain. A channel is served **once**:
+  its audio is handed over as it is consumed, so a repeated track (or repeat wrapping
+  back to the top) starts a fresh session rather than replaying a drained channel.
+  Exit code 10 (expired build) triggers a forced binary refresh.
 - **Normalization**: soloist normalizes loudness per the account's setting and has no
   public switch; `audio.normalize_v2=false` is written to its prefs store before each
   spawn (best effort) so MA's own volume normalization stays the single loudness
