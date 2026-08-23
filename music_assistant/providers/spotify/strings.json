@@ -175,7 +175,8 @@
     "soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",
     "soloist_invalid_archive": "The Spotify Soloist app downloaded from Spotify could not be used. Try again later.",
     "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",
-    "soloist_account_mismatch": "Music Assistant was paired from a Spotify app signed in to a different account than the one you connected. Pair again from an app signed in to the same account, so your music library and the audio come from the same place."
+    "soloist_account_mismatch": "Music Assistant was paired from a Spotify app signed in to a different account than the one you connected. Pair again from an app signed in to the same account, so your music library and the audio come from the same place.",
+    "soloist_session_busy": "{0} is already playing something else. Spotify Soloist plays one thing at a time, so stop the other player first."
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."

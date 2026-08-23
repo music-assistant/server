@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Final, NoReturn
 
 from aiohttp import ClientError
 from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.errors import AudioError, LoginFailed
+from music_assistant_models.errors import AudioError, LoginFailed, MusicAssistantError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_PLAYER_QUEUES
@@ -43,7 +43,7 @@ from music_assistant.helpers.pulse_capture import (
     PipeSink,
     get_pulse_capture_server,
 )
-from music_assistant.models.music_provider import ProviderStreamLimitError
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.spotify.constants import (
     CONF_AUDIO_QUALITY,
     CONF_SOLOIST_API_KEY,
@@ -174,6 +174,35 @@ _REPEAT_OFF: Final[str] = "off"
 _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
+
+
+class SoloistSessionBusyError(ProviderStreamLimitError):
+    """
+    Raised when the one Soloist session is delivering a different item.
+
+    A ProviderStreamLimitError so a speculative prepare gives up softly and the
+    item is not marked unplayable, but with a message of its own: the engine
+    allows a single session, which is not the same thing as the provider's
+    source-stream budget (a handover legitimately holds two streams against it).
+    """
+
+    def __init__(self, provider: MusicProvider) -> None:
+        """
+        Initialize the error.
+
+        :param provider: The provider whose session is busy.
+        """
+        # deliberately skips ProviderStreamLimitError.__init__, whose whole job is
+        # to phrase the message in terms of that source-stream budget
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} is already playing something else",
+            translation_key="soloist_session_busy",
+            translation_owner="provider.spotify",
+            translation_args=[provider.name],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = 1
 
 
 class SoloistBackend(SpotifyPlaybackBackend):
@@ -388,16 +417,18 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 item.claim()
                 return session, item
             if session is not None:
-                if session.in_use:
-                    # The session cannot serve this item and is still delivering
-                    # another one, so restarting it would cut that item short.
-                    # This is what an early fetch across a boundary the session
-                    # does not drive looks like - a podcast episode or audiobook
-                    # chapter, which are never stitched, or the same track twice
-                    # in a row. Reported as capacity so a speculative prepare
-                    # gives up softly and the real request, made once the other
-                    # item has been released, gets the session.
-                    raise ProviderStreamLimitError(self.provider, None)
+                if session.in_use and not session.is_playing(spotify_uri):
+                    # The session is still delivering a DIFFERENT item, so
+                    # restarting it here would cut that one short. This is what
+                    # an early fetch across a boundary the session does not drive
+                    # looks like - a podcast episode or audiobook chapter, which
+                    # are never stitched, or the same track twice in a row.
+                    # Reported as capacity so a speculative prepare gives up
+                    # softly and the real request, made once the other item has
+                    # been released, gets the session.
+                    raise SoloistSessionBusyError(self.provider)
+                # re-opening the item that is playing is a seek (or a replay) of
+                # that same item, which is exactly a restart of the session
                 self._session = None
                 await session.stop()
             # cheap thanks to the shared verify cache; swaps in a fresh build when
@@ -563,6 +594,14 @@ class _SoloistSession:
     def in_use(self) -> bool:
         """Return whether an item stream is reading this session right now."""
         return any(item.claimed for item in self._items.values())
+
+    def is_playing(self, spotify_uri: str) -> bool:
+        """
+        Return whether this is the item the engine is currently playing.
+
+        :param spotify_uri: The canonical Spotify URI to check.
+        """
+        return self._current is not None and self._current.uri == spotify_uri
 
     @property
     def current(self) -> _ItemAudio | None:

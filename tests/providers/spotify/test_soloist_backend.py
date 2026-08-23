@@ -587,6 +587,35 @@ async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -
     assert session.has_pending is False
 
 
+async def test_seeking_the_playing_item_restarts_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A seek re-opens the item that is playing, which is a restart of the session.
+
+    A realtime source has not captured anything past the play position, so any
+    forward seek lands outside the buffer and comes back here.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    # its own stream is still attached when the seek re-opens it
+    item.claim()
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+    _install_fake_binary_manager(monkeypatch)
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(TRACK_A, 90, "player1")
+    stopped.assert_awaited_once()
+
+
 @pytest.mark.parametrize("other_queue", ["player2", "player1"])
 async def test_a_session_in_use_is_never_cut_short(tmp_path: Path, other_queue: str) -> None:
     """
@@ -604,8 +633,12 @@ async def test_a_session_in_use_is_never_cut_short(tmp_path: Path, other_queue: 
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
     item.started.set()
     item.claim()
-    with pytest.raises(ProviderStreamLimitError):
+    with pytest.raises(ProviderStreamLimitError) as err:
         await backend._acquire(TRACK_B, 0, other_queue)
+    # a stream-limit error so the item is not marked unplayable, but the message
+    # is about the session, not the provider's source-stream budget
+    assert err.value.limit == 1
+    assert err.value.translation_key == "soloist_session_busy"
     # the session that was playing is untouched
     assert backend._session is session
     assert session.usable is True

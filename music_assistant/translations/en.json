@@ -2322,6 +2322,7 @@
   "provider.spotify.errors.soloist_pairing_failed": "Pairing with Spotify didn't work. Check that the API key is complete and try again.",
   "provider.spotify.errors.soloist_pairing_not_completed": "Music Assistant Pairing wasn't selected in the Spotify app in time. Try again.",
   "provider.spotify.errors.soloist_pairing_required": "Spotify Soloist is not paired with your Spotify account (or the pairing was lost). Open the Spotify provider settings and run through the setup once more to restore playback.",
+  "provider.spotify.errors.soloist_session_busy": "{0} is already playing something else. Spotify Soloist plays one thing at a time, so stop the other player first.",
   "provider.spotify.errors.soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose librespot (community) instead.",
   "provider.spotify.manifest.description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
   "provider.spotify.media.folder.genres_and_moods.name": "Genres & Moods",
