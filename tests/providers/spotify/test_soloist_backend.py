@@ -124,6 +124,7 @@ async def test_item_stream_ends_where_the_session_moves_on(tmp_path: Path) -> No
     session = _make_session(tmp_path)
     item_a = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
     session._current = item_a
+    item_a.started.set()
     item_a.claim()
     item_a.write(b"a" * 16)
     await session._observe_current(TRACK_B, 200_000)
@@ -134,6 +135,30 @@ async def test_item_stream_ends_where_the_session_moves_on(tmp_path: Path) -> No
     item_b = session._items[TRACK_B]
     assert session.current is item_b
     assert item_b.duration_ms == 200_000
+
+
+async def test_the_engines_restored_state_does_not_cut_a_pending_item(
+    tmp_path: Path,
+) -> None:
+    """A daemon reports the item it restored before playing ours; that is not a boundary."""
+    session = _make_session(tmp_path)
+    requested = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    session._current = requested
+    requested.claim()
+    # the engine announces the state it came up with, which is someone else's item
+    await session._observe_current("spotify:track:restored", 152_000)
+    # closing our item here would end its stream before it delivered anything
+    assert requested._closed is False
+    assert requested.started.is_set() is False
+    # ... and the restored item is never offered as an item's audio
+    assert session.item_for("spotify:track:restored") is None
+    # then ours starts for real, and picks up from there
+    await session._observe_current(TRACK_A, 200_000)
+    assert session.current is requested
+    assert requested.started.is_set() is True
+    requested.write(b"\x01" * 32)
+    requested.close()
+    assert b"".join([chunk async for chunk in requested.read()]) == b"\x01" * 32
 
 
 async def test_audio_read_before_the_stream_opens_is_kept(tmp_path: Path) -> None:
@@ -187,6 +212,7 @@ async def test_a_stuck_item_fails_instead_of_streaming_forever(tmp_path: Path) -
 async def test_the_first_logged_out_snapshot_is_not_a_lost_pairing(tmp_path: Path) -> None:
     """A daemon reports logged_in=False until it has restored its session."""
     session = _make_session(tmp_path)
+    session._logged_in = None
     await session._handle_event(_auth_event(logged_in=False))
     # failing here would break every playback on a perfectly good pairing
     assert session.usable is True
@@ -340,7 +366,25 @@ async def test_nothing_is_sent_before_the_websocket_is_up(
     client.connected = False
     endpoint_published = asyncio.Event()
     endpoint_published.set()
-    with pytest.raises(AudioError, match="WebSocket"):
+    with pytest.raises(AudioError, match="did not connect and log in"):
+        await session._play(TRACK_A, 0, endpoint_published)
+    client.activate.assert_not_awaited()
+    client.play.assert_not_awaited()
+
+
+async def test_nothing_is_sent_before_the_engine_has_logged_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine drops commands sent before it has restored its session."""
+    monkeypatch.setattr(soloist_backend, "_STARTUP_TIMEOUT_S", 0.05)
+    session = _make_session(tmp_path)
+    client = _client_of(session)
+    client.connected = True
+    # connected, but the engine has not announced its login yet
+    session._logged_in = None
+    endpoint_published = asyncio.Event()
+    endpoint_published.set()
+    with pytest.raises(AudioError, match="did not connect and log in"):
         await session._play(TRACK_A, 0, endpoint_published)
     client.activate.assert_not_awaited()
     client.play.assert_not_awaited()
@@ -1043,6 +1087,8 @@ def _make_session(tmp_path: Path, queue_id: str | None = "player1") -> _SoloistS
     session._sink = AsyncMock()
     session._client = AsyncMock()
     session._proc = MagicMock(returncode=None)
+    # a session under test is past the engine's login unless a test says otherwise
+    session._logged_in = True
     return session
 
 

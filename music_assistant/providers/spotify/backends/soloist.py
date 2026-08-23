@@ -654,19 +654,22 @@ class _SoloistSession:
         next_uri = self._track_uri(follower)
         if next_uri is None or next_uri in self._items:
             return
+        # Registered before the command goes out: the engine can reach the item
+        # while it is still in flight, and the events task has to find its
+        # channel rather than mistake it for something nobody asked for.
+        item = self._items[next_uri] = _ItemAudio(next_uri, self)
+        self._pending.append(next_uri)
         try:
             await client.add_to_queue(next_uri)
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
             # a failed feed only costs the crossfade at that boundary: the next
             # item still plays, on a fresh session
             self.logger.debug("Unable to feed %s to the soloist session: %s", next_uri, err)
+            if self._current is not item:
+                del self._items[next_uri]
+                with suppress(ValueError):
+                    self._pending.remove(next_uri)
             return
-        # the engine may have reached the item while the command was in flight,
-        # in which case the events task already made its channel the current one
-        if next_uri not in self._items:
-            self._items[next_uri] = _ItemAudio(next_uri, self)
-        if self._current is None or self._current.uri != next_uri:
-            self._pending.append(next_uri)
         self.logger.debug("Fed %s to the soloist session", next_uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
@@ -827,17 +830,18 @@ class _SoloistSession:
         assert client is not None
         item = self._items[spotify_uri] = _ItemAudio(spotify_uri, self)
         self._current = item
-        # Commands travel over the events connection, so the endpoint being
-        # published is not enough: the socket has to be up. It is the events
-        # task that opens it, which is why this waits for the connection rather
-        # than just for the endpoint file.
+        # Commands travel over the events connection, and the engine takes them
+        # in three stages: it publishes its endpoint, then accepts a connection,
+        # then restores its session and logs in. A command sent before that last
+        # step is dropped and its acknowledgement never arrives, so wait for the
+        # login the engine announces rather than for the socket alone.
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT_S):
                 await client_ready.wait()
-                while not client.connected and not self._error:
+                while not self._error and not (client.connected and self._logged_in):
                     await asyncio.sleep(_CONNECT_POLL_S)
         except TimeoutError:
-            self._raise_startup_error("did not accept a WebSocket connection", spotify_uri)
+            self._raise_startup_error("did not connect and log in", spotify_uri)
         if self._error or not client.connected:
             self._raise_startup_error("published no usable WebSocket endpoint", spotify_uri)
         try:
@@ -852,7 +856,10 @@ class _SoloistSession:
             await client.set_repeat_track(False)
             await client.play(spotify_uri)
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
-            raise AudioError(f"Spotify Soloist would not start {spotify_uri}: {err}") from err
+            # a bare TimeoutError stringifies to nothing, so name the type too
+            raise AudioError(
+                f"Spotify Soloist would not start {spotify_uri}: {type(err).__name__} {err}"
+            ) from err
         await self._await_item_ready(item)
         if seek_position:
             await self._cold_seek(client, item, seek_position * 1000)
@@ -1230,18 +1237,23 @@ class _SoloistSession:
             return
         item = self._items.get(uri)
         if item is None:
-            # the engine moved on to something nobody asked for (its own
-            # autoplay, or a track started from the Spotify app): give it a
-            # channel so the reader has somewhere to put the audio, and let the
-            # idle timeout end the session
+            # Something nobody asked for: the state the engine restores when it
+            # starts, its own autoplay, or a track started from the Spotify app.
+            # It gets a channel so the reader has somewhere to put the audio,
+            # but it is never offered as an item's audio.
             item = self._items[uri] = _ItemAudio(uri, self)
+            item.spent = True
         if duration_ms:
             item.duration_ms = duration_ms
         with suppress(ValueError):
             self._pending.remove(uri)
         self._current = item
         item.started.set()
-        if current is not None:
+        if current is not None and current.started.is_set():
+            # Only an item that was actually playing has a boundary to cut at.
+            # A channel still waiting to start is not over - the engine simply
+            # reported its own state before getting to it - and closing it would
+            # end that item's stream before it had delivered anything.
             current.close()
         if not item.claimed:
             self._signal_ready(uri)
