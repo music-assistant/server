@@ -200,6 +200,80 @@ def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
     assert serialized_outputs["lossless-player"]["fidelity"]["bit_perfect"] is True
 
 
+def test_a_wider_provider_handoff_preserves_the_source_samples() -> None:
+    """A provider that decodes upstream into wider PCM does not lose the source samples."""
+    streamdetails = _source_handled_soloist_item(_format(ContentType.FLAC, 44100, 24))
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.input_fidelity.quality == AudioQuality.HI_RES
+    assert chain.outputs[0].fidelity.bit_perfect is True
+
+
+def test_an_output_narrower_than_the_source_is_not_bit_perfect() -> None:
+    """Dropping a 24-bit source to a 16-bit output loses bits, wide handoff or not."""
+    streamdetails = _source_handled_soloist_item(_format(ContentType.FLAC, 44100, 16))
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is False
+
+
+def test_an_internal_stage_narrower_than_the_source_is_not_bit_perfect() -> None:
+    """A narrowed internal stage loses bits the output cannot bring back."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    narrowed = _format(ContentType.PCM_S16LE, 44100, 16)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=narrowed,
+        pcm_format=narrowed,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = narrowed
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is False
+
+
+def test_float_headroom_alone_does_not_break_the_bit_perfect_claim() -> None:
+    """DSP enabled with no filters gets F32 headroom but leaves the samples alone."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    headroom = _format(ContentType.PCM_F32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=headroom,
+        pcm_format=headroom,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = headroom
+    lossless_plan.output_details.dsp = AudioDSPDetails(state=DSPState.ENABLED)
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is True
+
+
 def test_shared_output_destinations_are_registered_atomically() -> None:
     """One shared output publishes all destinations in a single queue update."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
@@ -1313,6 +1387,41 @@ def _manager_context(
         input_format=pcm_format,
     )
     return manager, mass, queue_data, streamdetails, lossless_plan, lossy_plan
+
+
+def _source_handled_soloist_item(
+    output_format: AudioFormat,
+) -> StreamDetails:
+    """Prepare a Spotify-soloist-shaped item: a 24-bit tier delivered as 32-bit PCM."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    streamdetails.decoded_audio_format = _format(ContentType.PCM_S32LE, 44100, 32)
+    pcm_format = _format(ContentType.PCM_S32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=pcm_format,
+        pcm_format=pcm_format,
+        normalization=AudioNormalizationDetails(mode=VolumeNormalizationMode.SOURCE),
+        playback_speed=1.0,
+    )
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-1",
+        AudioQueueProcessing(pcm_format=pcm_format, crossfade_mode=CrossfadeMode.SOURCE),
+    )
+    lossless_plan.input_format = pcm_format
+    lossless_plan.output_details.output_format = output_format
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    return streamdetails
 
 
 def _streamdetails(item_id: str = "item-1") -> StreamDetails:

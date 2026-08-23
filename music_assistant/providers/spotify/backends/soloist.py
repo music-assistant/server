@@ -64,10 +64,8 @@ from music_assistant.providers.spotify.constants import (
 )
 from music_assistant.providers.spotify.helpers import soloist_session_present
 from music_assistant.providers.spotify_connect.base import (
-    AUDIO_QUALITY_HIGH,
     AUDIO_QUALITY_LOSSLESS,
-    AUDIO_QUALITY_NORMAL,
-    AUDIO_QUALITY_VERY_HIGH,
+    spotify_source_audio_format,
 )
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistBinaryManager,
@@ -109,16 +107,6 @@ if TYPE_CHECKING:
 # as the display format.
 _FRAME_BYTES: Final[int] = 4 * CAPTURE_CHANNELS
 _BYTES_PER_SECOND: Final[int] = CAPTURE_SAMPLE_RATE * _FRAME_BYTES
-
-# The bitrate each lossy tier is advertised at, matching the Spotify apps' own
-# vocabulary. Spoken content is never lossless, so the lossless tier falls back
-# to the highest lossy rate for it rather than claiming more than it can be.
-_MAX_LOSSY_BIT_RATE: Final[int] = 320
-_LOSSY_BIT_RATES: Final[dict[str, int]] = {
-    AUDIO_QUALITY_NORMAL: 96,
-    AUDIO_QUALITY_HIGH: 160,
-    AUDIO_QUALITY_VERY_HIGH: _MAX_LOSSY_BIT_RATE,
-}
 
 # Bounded soloist playback cache (docs: 0 = unlimited, otherwise at least 100 MB).
 _CACHE_SIZE_MB: Final[int] = 512
@@ -324,21 +312,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param media_type: What is being streamed.
         """
         quality = self._audio_quality
-        if media_type == MediaType.TRACK and quality == AUDIO_QUALITY_LOSSLESS:
-            return AudioFormat(
-                content_type=ContentType.FLAC,
-                codec_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=24,
-                channels=2,
-            )
-        return AudioFormat(
-            content_type=ContentType.OGG,
-            codec_type=ContentType.VORBIS,
-            sample_rate=44100,
-            bit_depth=16,
-            channels=2,
-            bit_rate=_LOSSY_BIT_RATES.get(quality, _MAX_LOSSY_BIT_RATE),
+        return spotify_source_audio_format(
+            quality,
+            lossless=media_type == MediaType.TRACK and quality == AUDIO_QUALITY_LOSSLESS,
         )
 
     @property

@@ -596,9 +596,12 @@ def _is_bit_perfect(
         )
     )
     reference = source_format
+    # a wider container carries the source samples untouched — F32 processing
+    # headroom, or a provider that decoded upstream and hands over PCM wider than
+    # the tier it advertises. Only a stage that narrows below the source loses bits.
     if any(
         audio_format.sample_rate != reference.sample_rate
-        or audio_format.bit_depth != reference.bit_depth
+        or audio_format.bit_depth < reference.bit_depth
         or audio_format.channels != reference.channels
         for audio_format in formats
     ):
