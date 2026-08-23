@@ -36,6 +36,7 @@ from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     ScanErrors,
     SidecarIndex,
+    strip_cache_buster,
 )
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
@@ -290,7 +291,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
         # drop the cache-busting suffix appended for versioned local images
-        path = path.split("?cs=", 1)[0]
+        path = strip_cache_buster(path)
         # Check if this is an audio file with embedded image
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:

@@ -200,6 +200,18 @@ class FileSystemItem:
         """Return relative parent path of this item."""
         return os.path.dirname(self.relative_path)
 
+    @property
+    def change_token(self) -> str | None:
+        """
+        Return the highest-resolution change token available for this file.
+
+        The nanosecond mtime is preferred (local sidecars) so a same-second, same-size replacement
+        is still detected; providers without it (WebDAV/cloud) fall back to their etag-based checksum.
+        """
+        if self.mtime_ns is not None:
+            return str(self.mtime_ns)
+        return self.checksum
+
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
         """
@@ -244,16 +256,32 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
 
     :param items: The files to include in the digest.
     """
-    parts = sorted(
-        f"{x.relative_path}\0{x.mtime_ns if x.mtime_ns is not None else x.checksum}\0{x.file_size}"
-        for x in items
-    )
+    parts = sorted(f"{x.relative_path}\0{x.change_token}\0{x.file_size}" for x in items)
     return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
 
 
 def is_sidecar_file(item: FileSystemItem) -> bool:
     """Return True when item is a recognized music metadata sidecar (NFO or folder image)."""
     return not item.is_dir and (_is_image_sidecar(item) or _is_nfo_sidecar(item))
+
+
+def strip_cache_buster(path: str) -> str:
+    """
+    Remove a trailing ``?cs=<token>`` cache-buster appended by the image path versioner.
+
+    Only the final appended suffix is removed: a ``?cs=`` that is part of the real path (followed
+    by a further separator) is left intact.
+
+    :param path: The (possibly versioned) image path or URL.
+    """
+    marker = "?cs="
+    idx = path.rfind(marker)
+    if idx == -1:
+        return path
+    suffix = path[idx + len(marker) :]
+    if "/" in suffix or "?" in suffix:
+        return path
+    return path[:idx]
 
 
 @dataclass
@@ -290,8 +318,9 @@ class SidecarIndex:
             self._track_children = None
 
     def image_items(self, folder: str) -> list[FileSystemItem]:
-        """Return the recognized image sidecars recorded directly inside folder."""
-        return [item for item in self.files_by_dir.get(folder, ()) if _is_image_sidecar(item)]
+        """Return the recognized image sidecars recorded directly inside folder, name-sorted."""
+        items = [item for item in self.files_by_dir.get(folder, ()) if _is_image_sidecar(item)]
+        return sorted(items, key=lambda item: item.relative_path)
 
     def files(self, folder: str) -> list[FileSystemItem]:
         """Return all recognized sidecars recorded directly inside folder."""
@@ -355,7 +384,8 @@ class SidecarIndex:
             children: dict[str, list[str]] = {}
             for track_dir in self.track_dirs:
                 children.setdefault(os.path.dirname(track_dir), []).append(track_dir)
-            self._track_children = children
+            # sort each bucket so disc-folder artwork order is deterministic across runs
+            self._track_children = {parent: sorted(dirs) for parent, dirs in children.items()}
         return self._track_children.get(parent, [])
 
 
@@ -411,21 +441,23 @@ def reconcile_images(
     """
     Merge freshly parsed provider folder images with images owned by other providers.
 
-    This provider's folder images are dropped and replaced by the fresh set, so a removed local
-    image disappears. Other providers' images are kept, and this provider's embedded audio-file
-    artwork is kept as a fallback only while there is no folder image to take its place.
+    This provider's folder images are dropped and replaced by the fresh set. Other providers'
+    images are kept. This provider's embedded audio-file artwork is kept per image type, dropped
+    only when the fresh folder set provides an image of that same type: adding only fanart keeps
+    the embedded thumbnail, while a folder thumbnail replaces the embedded one.
 
     :param stored: Images currently on the library item.
     :param fresh_provider_images: Folder images parsed from this provider's folder(s) now.
     :param provider_instance: This provider's instance id (the image provenance key).
     """
     fresh = list(fresh_provider_images)
+    fresh_types = {image.type for image in fresh}
     kept: list[MediaItemImage] = []
     for image in stored or ():
         if image.provider != provider_instance:
             kept.append(image)
-        elif not fresh and not _is_folder_image_path(image.path):
-            # embedded audio-file cover art survives as a fallback when no folder image replaces it
+        elif not _is_folder_image_path(image.path) and image.type not in fresh_types:
+            # embedded audio-file art survives unless a fresh folder image of the same type replaces it
             kept.append(image)
     return UniqueList([*kept, *fresh])
 

@@ -16,6 +16,7 @@ from music_assistant.providers.filesystem_local.helpers import (
     reconcile_images,
     reconcile_provenance_set,
     reconcile_scalar,
+    strip_cache_buster,
 )
 
 LOG = logging.getLogger("test")
@@ -34,11 +35,9 @@ def _file(relative_path: str, checksum: str = "1", size: int = 10) -> FileSystem
     )
 
 
-def _image(provider: str, path: str) -> MediaItemImage:
-    """Build a thumbnail image with the given provenance."""
-    return MediaItemImage(
-        type=ImageType.THUMB, path=path, provider=provider, remotely_accessible=False
-    )
+def _image(provider: str, path: str, image_type: ImageType = ImageType.THUMB) -> MediaItemImage:
+    """Build an image with the given provenance and type."""
+    return MediaItemImage(type=image_type, path=path, provider=provider, remotely_accessible=False)
 
 
 def test_is_sidecar_file_recognizes_nfo_and_named_images() -> None:
@@ -135,6 +134,49 @@ def test_reconcile_images_keeps_embedded_art_when_no_folder_image() -> None:
     assert [img.path for img in reconcile_images(stored, fresh, "filesystem--1")] == [
         "Album/folder.jpg?cs=1"
     ]
+
+
+def test_reconcile_images_keeps_embedded_thumb_when_only_fanart_added() -> None:
+    """Adding a folder fanart must not drop an embedded thumbnail of a different type."""
+    stored = [_image("filesystem--1", "Album/track01.mp3", ImageType.THUMB)]  # embedded thumb
+    fresh = [_image("filesystem--1", "Album/fanart.jpg?cs=1", ImageType.FANART)]
+    result = reconcile_images(stored, fresh, "filesystem--1")
+    assert {(img.type, img.path) for img in result} == {
+        (ImageType.THUMB, "Album/track01.mp3"),
+        (ImageType.FANART, "Album/fanart.jpg?cs=1"),
+    }
+
+
+def test_strip_cache_buster_removes_only_trailing_suffix() -> None:
+    """Only the final appended ``?cs=`` suffix is stripped; a mid-path ``?cs=`` stays intact."""
+    assert strip_cache_buster("Album/folder.jpg?cs=1700000000900") == "Album/folder.jpg"
+    assert strip_cache_buster("Album/folder.jpg") == "Album/folder.jpg"
+    # a real path that itself contains ?cs= before a further segment must be preserved
+    assert strip_cache_buster("Album/a?cs=x/folder.jpg?cs=9") == "Album/a?cs=x/folder.jpg"
+    assert strip_cache_buster("Album/a?cs=x/folder.jpg") == "Album/a?cs=x/folder.jpg"
+
+
+def test_change_token_prefers_nanosecond_mtime() -> None:
+    """The change token uses the nanosecond mtime when present, else the second-resolution checksum."""
+    local = FileSystemItem(
+        filename="folder.jpg",
+        relative_path="Album/folder.jpg",
+        absolute_path="/media/Album/folder.jpg",
+        is_dir=False,
+        checksum="1700000000",
+        file_size=10,
+        mtime_ns=1700000000_123456789,
+    )
+    assert local.change_token == "1700000000123456789"
+    remote = FileSystemItem(
+        filename="folder.jpg",
+        relative_path="Album/folder.jpg",
+        absolute_path="http://dav/Album/folder.jpg",
+        is_dir=False,
+        checksum="etag-abc",
+        file_size=10,
+    )
+    assert remote.change_token == "etag-abc"
 
 
 def test_folder_signature_detects_same_second_same_size_edit() -> None:

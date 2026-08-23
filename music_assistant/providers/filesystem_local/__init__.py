@@ -144,6 +144,7 @@ from .helpers import (
     reconcile_scalar,
     recursive_iter,
     sorted_scandir,
+    strip_cache_buster,
 )
 from .parsers import parse_album_nfo, parse_artist_nfo
 
@@ -249,6 +250,11 @@ class LocalFileSystemProvider(MusicProvider):
         # walk's listings instead of extra probes
         self._active_sidecar_index: SidecarIndex | None = None
         self._sync_mapped_album_dirs: set[str] = set()
+        # album/artist mapping details as they were before this sync started; used as the
+        # reconciliation baseline so a same-sync audio change that overwrites an item's details
+        # cannot hide a sidecar that was removed in the same sync
+        self._pre_scan_album_details: dict[str, str | None] = {}
+        self._pre_scan_artist_details: dict[str, str | None] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -550,6 +556,8 @@ class LocalFileSystemProvider(MusicProvider):
             # scan is known to be complete, so a partial listing never makes a sidecar look removed
             self._active_sidecar_index = None
             self._sync_mapped_album_dirs = set()
+            self._pre_scan_album_details = {}
+            self._pre_scan_artist_details = {}
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
                 cue_file_checksums=cue_file_checksums,
@@ -572,9 +580,14 @@ class LocalFileSystemProvider(MusicProvider):
             # and sidecar reconciliation is skipped entirely
             if sidecar_index is not None and not scan_errors.incomplete:
                 self._active_sidecar_index = sidecar_index
-                # preload existing album mappings so an album's disc folders can be told apart
-                # from nested sub-albums while parsing
-                self._sync_mapped_album_dirs = set((await self._query_mapping_details())[0])
+                # capture the pre-scan mapping details as the reconciliation baseline and preload
+                # existing album mappings so an album's disc folders can be told apart from nested
+                # sub-albums while parsing
+                (
+                    self._pre_scan_album_details,
+                    self._pre_scan_artist_details,
+                ) = await self._query_mapping_details()
+                self._sync_mapped_album_dirs = set(self._pre_scan_album_details)
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -671,6 +684,8 @@ class LocalFileSystemProvider(MusicProvider):
             self.sync_running = False
             self._active_sidecar_index = None
             self._sync_mapped_album_dirs = set()
+            self._pre_scan_album_details = {}
+            self._pre_scan_artist_details = {}
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -1083,7 +1098,7 @@ class LocalFileSystemProvider(MusicProvider):
         """
         # drop the cache-busting suffix appended by _versioned_image_path
         try:
-            file_item = await self.resolve(path.split("?cs=", 1)[0])
+            file_item = await self.resolve(strip_cache_buster(path))
         except FileNotFoundError as err:
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
@@ -2001,9 +2016,10 @@ class LocalFileSystemProvider(MusicProvider):
             if artist_nfo_item is not None:
                 nfo_snapshot = await self._apply_artist_nfo(artist, artist_nfo_item)
         except SidecarReadError:
-            if index is not None:
-                # during a sync a transient NFO failure must not overwrite the known artist with
-                # tag-only data or advance its baseline; propagate so the item is retained and retried
+            if self.sync_running:
+                # during any sync (even one whose index is unpublished after an incomplete scan)
+                # a transient NFO failure must not overwrite the known artist with tag-only data;
+                # propagate so the item is retained and retried next sync
                 raise
             # on demand there is no baseline to protect, so degrade to the tag-only artist
             return artist
@@ -2512,9 +2528,10 @@ class LocalFileSystemProvider(MusicProvider):
             if album_nfo_item is not None:
                 nfo_snapshot = await self._apply_album_nfo(album, album_nfo_item)
         except SidecarReadError:
-            if index is not None:
-                # during a sync a transient NFO failure must not overwrite the known album with
-                # tag-only data or advance its baseline; propagate so the item is retained and retried
+            if self.sync_running:
+                # during any sync (even one whose index is unpublished after an incomplete scan)
+                # a transient NFO failure must not overwrite the known album with tag-only data;
+                # propagate so the item is retained and retried next sync
                 raise
             # on demand there is no baseline to protect, so degrade to the tag-only album
             return album
@@ -2589,7 +2606,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         def _image_path(item: FileSystemItem) -> str:
             return (
-                self._versioned_image_path(item.relative_path, item.checksum)
+                self._versioned_image_path(item.relative_path, item.change_token)
                 if versioned
                 else item.relative_path
             )
@@ -3078,11 +3095,13 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _refresh_changed_sidecars(self, sidecar_index: SidecarIndex) -> None:
         """
-        Refresh known albums/artists whose sidecars changed since their stored mapping details.
+        Refresh known albums/artists whose sidecars changed since before this sync.
 
-        Items rebuilt by track processing already carry the current signature in their mapping
-        details, so they are detected as unchanged and skipped. A transient read failure leaves the
-        stored details untouched, so the item is retried on the next sync.
+        Existing mappings are classified against the details captured before the scan, so a
+        same-sync audio change that overwrote an item's details cannot hide a sidecar removed in the
+        same sync. Newly discovered mappings use their freshly written details (already current), so
+        they are detected as unchanged and skipped. A transient read failure leaves the stored
+        details untouched, so the item is retried on the next sync.
 
         :param sidecar_index: The sidecars collected during this scan.
         """
@@ -3092,8 +3111,11 @@ class LocalFileSystemProvider(MusicProvider):
         self._sync_mapped_album_dirs = set(album_details.keys())
         refreshed = 0
         deferred = 0
-        for album_dir, details in album_details.items():
-            prev = self._parse_sidecar_details(details)
+        for album_dir, current in album_details.items():
+            # existing mappings use their pre-scan details; new mappings (absent pre-scan) use the
+            # freshly written current details
+            baseline = self._pre_scan_album_details.get(album_dir, current)
+            prev = self._parse_sidecar_details(baseline)
             nfo_sig, img_sig = sidecar_index.album_signatures(
                 album_dir, self._sync_mapped_album_dirs
             )
@@ -3104,8 +3126,9 @@ class LocalFileSystemProvider(MusicProvider):
                 refreshed += 1
             else:
                 deferred += 1
-        for artist_path, details in artist_details.items():
-            prev = self._parse_sidecar_details(details)
+        for artist_path, current in artist_details.items():
+            baseline = self._pre_scan_artist_details.get(artist_path, current)
+            prev = self._parse_sidecar_details(baseline)
             nfo_sig, img_sig = sidecar_index.artist_signatures(artist_path)
             decision = self._classify_sidecar_change(prev, nfo_sig, img_sig)
             if decision is None:

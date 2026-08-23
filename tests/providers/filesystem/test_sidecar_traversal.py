@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -29,7 +29,7 @@ from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 INSTANCE_ID = "filesystem_local--test"
 
 
-def _file(relative_path: str, checksum: str = "1") -> FileSystemItem:
+def _file(relative_path: str, checksum: str = "1", mtime_ns: int | None = None) -> FileSystemItem:
     """Build a minimal file FileSystemItem."""
     return FileSystemItem(
         filename=relative_path.rsplit("/", 1)[-1],
@@ -38,6 +38,7 @@ def _file(relative_path: str, checksum: str = "1") -> FileSystemItem:
         is_dir=False,
         checksum=checksum,
         file_size=10,
+        mtime_ns=mtime_ns,
     )
 
 
@@ -78,6 +79,41 @@ async def test_album_images_are_versioned_with_the_file_checksum() -> None:
     assert [img.path for img in images] == ["Artist/Album/folder.jpg?cs=111"]
 
 
+async def test_album_image_url_uses_high_resolution_change_token() -> None:
+    """The versioned image URL uses the nanosecond mtime so same-second edits bust the client cache."""
+    provider = _provider()
+    provider._active_sidecar_index.record(
+        _file("Artist/Album/folder.jpg", checksum="1700000000", mtime_ns=1700000000_500000000)
+    )
+    images = await provider._get_local_images(
+        "Artist/Album", extra_thumb_names=("album",), versioned=True
+    )
+    assert [img.path for img in images] == ["Artist/Album/folder.jpg?cs=1700000000500000000"]
+
+
+async def test_album_images_are_collected_in_deterministic_order() -> None:
+    """Disc folders sort deterministically so the primary artwork is stable across runs."""
+    provider = _provider()
+    index = provider._active_sidecar_index
+    index.record(_file("Artist/Album/folder.jpg", checksum="1"))
+    # record discs out of order; collection must not depend on insertion/set order
+    for disc in ("Disc 2", "Disc 1"):
+        index.record_track_dir(f"Artist/Album/{disc}")
+        index.record(_file(f"Artist/Album/{disc}/folder.jpg", checksum="1"))
+    provider._sync_mapped_album_dirs = {"Artist/Album"}
+
+    first = [img.path for img in await provider._collect_album_images("Artist/Album")]
+    index._track_children = None  # bust the memoized order and recollect
+    second = [img.path for img in await provider._collect_album_images("Artist/Album")]
+    assert first == second
+    # album folder first, then Disc 1 before Disc 2
+    assert first == [
+        "Artist/Album/folder.jpg?cs=1",
+        "Artist/Album/Disc 1/folder.jpg?cs=1",
+        "Artist/Album/Disc 2/folder.jpg?cs=1",
+    ]
+
+
 async def test_malformed_album_nfo_is_ignored_without_raising() -> None:
     """A scalar-root album.nfo yields no snapshot and leaves the album untouched."""
     provider = _provider()
@@ -95,6 +131,26 @@ async def test_transient_nfo_read_failure_raises_sidecar_read_error() -> None:
     album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
     with pytest.raises(SidecarReadError):
         await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+
+
+async def test_parse_artist_propagates_read_error_during_incomplete_sync() -> None:
+    """During a sync with an unpublished index a failed NFO read must raise, not tag-only degrade."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None  # incomplete scan: index intentionally unpublished
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._apply_artist_nfo = AsyncMock(side_effect=SidecarReadError("nfo unreadable"))
+
+    provider.sync_running = True
+    with pytest.raises(SidecarReadError):
+        await provider._parse_artist("Artist", artist_path="Artist")
+
+    # outside a sync there is no baseline to protect, so it degrades to a tag-only artist
+    provider.sync_running = False
+    artist = await provider._parse_artist("Artist", artist_path="Artist")
+    assert artist.name == "Artist"
 
 
 async def test_local_walk_collects_sidecars_track_dirs_and_skips_strays() -> None:

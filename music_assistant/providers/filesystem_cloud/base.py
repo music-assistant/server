@@ -42,6 +42,7 @@ from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     ScanErrors,
     SidecarIndex,
+    strip_cache_buster,
 )
 
 if TYPE_CHECKING:
@@ -211,7 +212,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Return raw image bytes for a cloud image file or embedded cover art."""
         # drop the cache-busting suffix the parent appends for embedded images
-        path = path.split("?cs=", 1)[0]
+        path = strip_cache_buster(path)
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:
             # audio file: extract the embedded art with ffmpeg over our stream URL

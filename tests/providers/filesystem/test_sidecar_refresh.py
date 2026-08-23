@@ -39,6 +39,8 @@ def _provider() -> Any:
     provider.cache.set = AsyncMock()
     provider._active_sidecar_index = SidecarIndex()
     provider._sync_mapped_album_dirs = set()
+    provider._pre_scan_album_details = {}
+    provider._pre_scan_artist_details = {}
     return provider
 
 
@@ -497,6 +499,36 @@ async def test_refresh_excludes_first_sync_nested_album_from_parent_artwork() ->
     assert provider._sync_mapped_album_dirs == {"Artist/Album", "Artist/Album/Nested"}
     parent_only = index.album_signatures("Artist/Album", {"Artist/Album", "Artist/Album/Nested"})[1]
     assert captured["Artist/Album"] == parent_only
+
+
+async def test_refresh_classifies_existing_mapping_against_pre_scan_baseline() -> None:
+    """A same-sync audio change that cleared an item's details cannot hide a removed sidecar."""
+    provider = _provider()
+    index = provider._active_sidecar_index
+    index.record(_fs_file("Artist/Album/folder.jpg", "1"))  # image unchanged; album.nfo is gone
+    index.record_track_dir("Artist/Album")
+    provider._sync_mapped_album_dirs = {"Artist/Album"}
+    nfo_sig, img_sig = index.album_signatures("Artist/Album", {"Artist/Album"})
+    assert nfo_sig == EMPTY  # the NFO was removed this sync
+    baseline_snap = {"description": "old", "genres": ["Rock"], "external_ids": []}
+    # pre-scan the album carried an NFO; this-sync track processing overwrote its details to None
+    provider._pre_scan_album_details = {
+        "Artist/Album": provider._build_sidecar_details("nfo-old", img_sig, baseline_snap)
+    }
+    provider._query_mapping_details = AsyncMock(return_value=({"Artist/Album": None}, {}))
+    captured: dict[str, Any] = {}
+
+    async def _capture(_album_dir: str, changed: bool, _nfo: str, _img: str, prev: Any) -> bool:
+        captured["changed"] = changed
+        captured["prev"] = prev
+        return True
+
+    provider._refresh_album_sidecars = _capture
+    await provider._refresh_changed_sidecars(index)
+
+    # detected as an NFO change against the pre-scan baseline, with that baseline as prev
+    assert captured["changed"] is True
+    assert captured["prev"] == ("nfo-old", img_sig, baseline_snap)
 
 
 def _fs_file(relative_path: str, checksum: str) -> Any:
