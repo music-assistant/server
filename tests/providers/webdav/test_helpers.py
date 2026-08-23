@@ -110,6 +110,36 @@ def test_propfind_tolerates_missing_etag() -> None:
     assert items[0].last_modified == "Wed, 01 Jan 2025 00:00:00 GMT"
 
 
+def test_propfind_reads_only_successful_propstat_block() -> None:
+    """A 404 propstat placed before the 200 block must not drop resourcetype/size/etag data."""
+    response = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/dav/Artist/Album/folder.jpg</d:href>
+    <d:propstat>
+      <d:prop><d:getetag/></d:prop>
+      <d:status>HTTP/1.1 404 Not Found</d:status>
+    </d:propstat>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype/>
+        <d:getcontentlength>2048</d:getcontentlength>
+        <d:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</d:getlastmodified>
+        <d:getetag>"real-etag"</d:getetag>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+    items = _parse_propfind_response(response, "/dav")
+    assert len(items) == 1
+    # the 404 block is ignored, so the file keeps its type, size and ETag
+    assert items[0].is_dir is False
+    assert items[0].size == 2048
+    assert items[0].etag == "real-etag"
+    assert items[0].last_modified == "Wed, 01 Jan 2025 00:00:00 GMT"
+
+
 async def test_webdav_propfind_sends_authorization_header() -> None:
     """A provided auth_header must be sent as the Authorization request header."""
     session = _FakeSession(_FakeResponse(207, EMPTY_MULTISTATUS))

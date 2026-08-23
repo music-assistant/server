@@ -43,7 +43,7 @@ def _provider() -> Any:
     provider._sync_mapped_album_dirs = set()
     provider._pre_scan_album_details = {}
     provider._pre_scan_artist_details = {}
-    provider._reraise_invalid_nfo_dir = None
+    provider._reraise_invalid_nfo_target = None
     return provider
 
 
@@ -504,7 +504,7 @@ async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     )
     assert ok is False  # deferred, non-destructive
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()  # prior metadata kept
-    assert provider._reraise_invalid_nfo_dir is None  # scope reset after the reparse
+    assert provider._reraise_invalid_nfo_target is None  # scope reset after the reparse
 
 
 async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
@@ -524,7 +524,7 @@ async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     )
     assert ok is False
     provider.mass.music.artists.update_item_in_library.assert_not_awaited()
-    assert provider._reraise_invalid_nfo_dir is None  # scope reset after the reparse
+    assert provider._reraise_invalid_nfo_target is None  # scope reset after the reparse
 
 
 async def test_representative_source_scopes_to_mapping_directory() -> None:
