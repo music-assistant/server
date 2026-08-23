@@ -49,6 +49,8 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistEntity,
     SoloistError,
     SoloistEvent,
+    SoloistOptionsChanged,
+    SoloistPlaybackOptions,
     SoloistPlaybackState,
     SoloistPosition,
     SoloistTrackChanged,
@@ -182,16 +184,23 @@ async def test_a_stuck_item_fails_instead_of_streaming_forever(tmp_path: Path) -
             pass
 
 
-async def test_auth_event_records_logout(tmp_path: Path) -> None:
-    """An auth_state event with logged_in=False fails the session for re-pairing."""
+async def test_the_first_logged_out_snapshot_is_not_a_lost_pairing(tmp_path: Path) -> None:
+    """A daemon reports logged_in=False until it has restored its session."""
     session = _make_session(tmp_path)
-    await session._handle_event(
-        SoloistEvent(
-            type="auth_state", data=SoloistAuthState(logged_in=False, is_active=False), raw={}
-        )
-    )
-    assert session._logged_out is True
+    await session._handle_event(_auth_event(logged_in=False))
+    # failing here would break every playback on a perfectly good pairing
+    assert session.usable is True
+    await session._handle_event(_auth_event(logged_in=True))
+    assert session.usable is True
+
+
+async def test_losing_an_established_login_fails_the_session(tmp_path: Path) -> None:
+    """A login that goes away mid-session is real, and ends the session."""
+    session = _make_session(tmp_path)
+    await session._handle_event(_auth_event(logged_in=True))
+    await session._handle_event(_auth_event(logged_in=False))
     assert session.usable is False
+    assert session._error == "the session was logged out"
 
 
 async def test_buffering_gates_the_sink_once_demand_started(tmp_path: Path) -> None:
@@ -363,6 +372,145 @@ async def test_a_refused_start_command_reports_soloist(tmp_path: Path) -> None:
     endpoint_published.set()
     with pytest.raises(AudioError, match="Spotify Soloist would not start"):
         await session._play(TRACK_A, 0, endpoint_published)
+
+
+async def test_the_engine_is_told_not_to_shuffle_or_repeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MA owns the order, and a repeating engine would never reach the item fed behind."""
+    session = _make_session(tmp_path)
+    client = _client_of(session)
+    client.connected = True
+    monkeypatch.setattr(session, "_await_item_ready", AsyncMock())
+    endpoint_published = asyncio.Event()
+    endpoint_published.set()
+    await session._play(TRACK_A, 0, endpoint_published)
+    client.set_shuffle.assert_awaited_once_with(False)
+    client.set_repeat_context.assert_awaited_once_with(False)
+    client.set_repeat_track.assert_awaited_once_with(False)
+
+
+async def test_repeat_turned_on_from_the_app_is_pinned_back_off(tmp_path: Path) -> None:
+    """Repeat enabled in the Spotify app is undone before it can loop the item."""
+    session = _make_session(tmp_path)
+    await session._handle_event(
+        SoloistEvent(
+            type="options_changed",
+            data=SoloistOptionsChanged(
+                options=SoloistPlaybackOptions(shuffle=True, repeat="track")
+            ),
+            raw={},
+        )
+    )
+    client = _client_of(session)
+    client.set_shuffle.assert_awaited_once_with(False)
+    client.set_repeat_track.assert_awaited_once_with(False)
+    client.set_repeat_context.assert_awaited_once_with(False)
+    # options that are already off are left alone
+    client.set_shuffle.reset_mock()
+    await session._handle_event(
+        SoloistEvent(
+            type="options_changed",
+            data=SoloistOptionsChanged(options=SoloistPlaybackOptions()),
+            raw={},
+        )
+    )
+    client.set_shuffle.assert_not_awaited()
+
+
+async def test_a_pairing_that_never_logs_in_routes_through_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session that cannot log in sends the user back to setup, not a per-track error."""
+    session = _make_session(tmp_path)
+    unload_with_error = MagicMock()
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", unload_with_error)
+    await session._handle_event(_auth_event(logged_in=False))
+    with pytest.raises(LoginFailed) as err:
+        session._raise_startup_error("timed out waiting for playback to start", TRACK_A)
+    assert err.value.translation_key == "soloist_pairing_required"
+    # ... and the provider is taken out of service, so the user is asked to redo setup
+    unload_with_error.assert_called_once()
+
+
+async def test_a_login_that_never_happened_is_not_confused_with_another_failure(
+    tmp_path: Path,
+) -> None:
+    """An unrelated failure keeps its own message even before any login was reported."""
+    session = _make_session(tmp_path)
+    session._fail("the capture sink was lost mid-stream")
+    with pytest.raises(AudioError, match="capture sink was lost"):
+        session._raise_startup_error("exited before playback started", TRACK_A)
+
+
+def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
+    """A seeked item delivers the remainder, so its targets are based on that."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    full = 200_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+    assert item._duration_bytes() == full
+    item.seek_target_ms = 150_000
+    remainder = 50_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+    assert item._duration_bytes() == remainder
+    # so the tail drain has a target it can actually reach
+    item.start_tail_drain()
+    item.write(b"\x01" * remainder)
+    assert item.tail_complete is True
+    # and the padding silence after it is refused
+    item.write(b"\x00" * 4096)
+    assert item.buffered == remainder
+
+
+def test_the_lead_trim_never_exceeds_its_budget() -> None:
+    """Silence beyond the budget is content, including where audio starts mid-chunk."""
+    budget = int(_MAX_LEAD_TRIM_S * _BYTES_PER_SECOND)
+    # already at the budget, with a chunk whose silence runs well past it
+    chunk = b"\x00" * 4096 + b"\x01" * 64
+    trimmed, skipped = _trim_lead_silence(chunk, budget - _FRAME_BYTES)
+    assert skipped == _FRAME_BYTES
+    assert len(trimmed) == len(chunk) - _FRAME_BYTES
+
+
+async def test_a_dying_log_reader_fails_the_session(tmp_path: Path) -> None:
+    """Nothing else drains the daemon's stdout, so a dead reader must not go unnoticed."""
+    session = _make_session(tmp_path)
+
+    async def _boom() -> None:
+        raise RuntimeError("reader blew up")
+
+    session._log_task = asyncio.create_task(_boom())
+    session._log_task.add_done_callback(session._task_done)
+    await asyncio.sleep(0)
+    await _wait_for(lambda: not session.usable)
+    assert session._error is not None
+    assert "reader blew up" in session._error
+
+
+async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -> None:
+    """If the engine reaches the fed item first, its live channel must survive."""
+    session = _make_session(tmp_path, queue_id="player1")
+    streamdetails = MagicMock()
+    playing = _queue_item(TRACK_A, streamdetails=streamdetails)
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
+    queues.get_next_item.return_value = _queue_item(TRACK_B)
+
+    async def _engine_gets_there_first(_uri: str, **_kwargs: Any) -> None:
+        # the events task advances to the fed item while the command is in flight
+        await session._observe_current(TRACK_B, 200_000)
+
+    _client_of(session).add_to_queue.side_effect = _engine_gets_there_first
+    await session.feed_after(streamdetails, TRACK_A)
+    live = session.current
+    assert live is not None
+    assert live.uri == TRACK_B
+    # the channel the reader is writing to is the one a stream will be handed
+    assert session._items[TRACK_B] is live
+    assert session.item_for(TRACK_B) is live
+    # and it is not queued as pending, because it already started
+    assert session.has_pending is False
 
 
 async def test_a_second_player_does_not_steal_a_session_in_use(tmp_path: Path) -> None:
@@ -879,6 +1027,15 @@ def _sink_of(session: _SoloistSession) -> AsyncMock:
 def _queues_of(session: _SoloistSession) -> MagicMock:
     """Return the mocked player_queues controller the session consults."""
     return cast("MagicMock", session.mass.player_queues)
+
+
+def _auth_event(*, logged_in: bool) -> SoloistEvent:
+    """Return an auth_state event with the given login state."""
+    return SoloistEvent(
+        type="auth_state",
+        data=SoloistAuthState(logged_in=logged_in, is_active=False),
+        raw={},
+    )
 
 
 def _playback_event(status: str, position_ms: int = 0) -> SoloistEvent:

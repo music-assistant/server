@@ -64,6 +64,8 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
     SoloistAuthState,
+    SoloistOptionsChanged,
+    SoloistPlaybackOptions,
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistTrackChanged,
@@ -160,6 +162,8 @@ _MAX_RETAINED_S: Final[float] = 20.0
 _RESUME_RETAINED_S: Final[float] = 10.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
+# the engine's "no repeat" value for its playback options
+_REPEAT_OFF: Final[str] = "off"
 
 
 class SoloistBackend(SpotifyPlaybackBackend):
@@ -516,8 +520,10 @@ class _SoloistSession:
         self._reader: asyncio.StreamReader | None = None
         self._error: str | None = None
         self._stopped = False
-        self._logged_out = False
+        # None until the engine reports its login state for the first time
+        self._logged_in: bool | None = None
         self._pin_in_flight = False
+        self._options_pin_in_flight = False
         self._demand_started = False
         self._engine_playing = False
         self._sink_running = False
@@ -543,7 +549,7 @@ class _SoloistSession:
     @property
     def usable(self) -> bool:
         """Return whether this session can still serve items."""
-        return not self._stopped and self._error is None and self._logged_out is False
+        return not self._stopped and self._error is None
 
     def item_for(self, spotify_uri: str) -> _ItemAudio | None:
         """
@@ -595,7 +601,11 @@ class _SoloistSession:
             env=server.child_env(sink.sink_name),
         )
         await proc.start()
+        # kept out of _tasks so stop() does not cancel it before the daemon has
+        # exited, but a reader that dies still has to fail the session: nothing
+        # else drains stdout and the daemon would block on a full pipe
         self._log_task = asyncio.create_task(self._log_output(proc))
+        self._log_task.add_done_callback(self._task_done)
         self._client = client = SoloistClient(self.mass, backend._data_dir, self.logger)
         client_ready = asyncio.Event()
         self._spawn_task(self._run_events(client, client_ready))
@@ -636,8 +646,12 @@ class _SoloistSession:
             # item still plays, on a fresh session
             self.logger.debug("Unable to feed %s to the soloist session: %s", next_uri, err)
             return
-        self._items[next_uri] = _ItemAudio(next_uri, self)
-        self._pending.append(next_uri)
+        # the engine may have reached the item while the command was in flight,
+        # in which case the events task already made its channel the current one
+        if next_uri not in self._items:
+            self._items[next_uri] = _ItemAudio(next_uri, self)
+        if self._current is None or self._current.uri != next_uri:
+            self._pending.append(next_uri)
         self.logger.debug("Fed %s to the soloist session", next_uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
@@ -815,6 +829,12 @@ class _SoloistSession:
             # a fresh daemon is not the active Connect device yet, and play() on
             # an inactive device would start playback on whatever else is active
             await client.activate(await_result=True)
+            # Music Assistant owns the queue: order and repeats are decided here.
+            # A session that inherited repeat from the account would replay this
+            # item instead of moving on to the one fed behind it.
+            await client.set_shuffle(False)
+            await client.set_repeat_context(False)
+            await client.set_repeat_track(False)
             await client.play(spotify_uri)
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
             raise AudioError(f"Spotify Soloist would not start {spotify_uri}: {err}") from err
@@ -859,9 +879,10 @@ class _SoloistSession:
 
     def _raise_startup_error(self, detail: str, spotify_uri: str) -> NoReturn:
         """Raise the most specific startup failure for the requested item."""
-        if self._error:
-            raise AudioError(f"Spotify Soloist: {self._error}")
-        if self._logged_out:
+        # a pairing that never logged in is checked first: it also fails the
+        # session, and its recovery (back through the setup flow) beats failing
+        # every track with a generic error
+        if self._logged_in is False:
             # the stored session no longer logs in: route the user through the
             # setup flow instead of failing every item (mirrors librespot's
             # INVALID_CREDENTIALS handling)
@@ -874,6 +895,8 @@ class _SoloistSession:
             if provider.available:
                 provider.unload_with_error(error)
             raise error
+        if self._error:
+            raise AudioError(f"Spotify Soloist: {self._error}")
         raise AudioError(f"Spotify Soloist {detail} for {spotify_uri}")
 
     async def _cold_seek(self, client: SoloistClient, item: _ItemAudio, target_ms: int) -> None:
@@ -1021,9 +1044,7 @@ class _SoloistSession:
         """Track what the engine is playing and gate the capture sink on its state."""
         data = event.data
         if isinstance(data, SoloistAuthState):
-            if not data.logged_in:
-                self._logged_out = True
-                self._fail("the stored pairing no longer logs in")
+            self._observe_auth_state(logged_in=data.logged_in)
             return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
@@ -1035,6 +1056,9 @@ class _SoloistSession:
             return
         if isinstance(data, SoloistVolumeChanged):
             await self._repin_volume(data.volume)
+            return
+        if isinstance(data, SoloistOptionsChanged):
+            await self._repin_options(data.options)
             return
         if isinstance(data, SoloistPlaybackState):
             await self._handle_playback_state(data)
@@ -1052,6 +1076,8 @@ class _SoloistSession:
                 item.observe_position(data.position.position_ms)
         if data.volume is not None:
             await self._repin_volume(data.volume)
+        if data.options is not None:
+            await self._repin_options(data.options)
         if not self._demand_started or item is None:
             return
         playing = data.status == "playing"
@@ -1200,6 +1226,56 @@ class _SoloistSession:
         if self._track_uri(next_item) != uri:
             return
         self.mass.player_queues.prepare_next_audio_buffer(queue_id)
+
+    def _observe_auth_state(self, *, logged_in: bool) -> None:
+        """
+        Follow the engine's login state.
+
+        A daemon accepts a WebSocket connection before it has finished restoring
+        its session, so its first snapshot reports logged_in=False even for a
+        perfectly good pairing. That is a startup race, not a lost pairing, and
+        failing on it would break every playback. Only losing a login that was
+        already established is fatal; a pairing that never logs in surfaces when
+        the item fails to start, where _raise_startup_error routes the user back
+        through the setup flow.
+
+        :param logged_in: Whether the engine reports an active login.
+        """
+        if logged_in:
+            self._logged_in = True
+            return
+        was_logged_in = self._logged_in
+        self._logged_in = False
+        if was_logged_in:
+            self._fail("the session was logged out")
+
+    async def _repin_options(self, options: SoloistPlaybackOptions) -> None:
+        """
+        Put shuffle and repeat back to off when something turned them on.
+
+        Music Assistant decides the order, and an engine repeating the current
+        item would never advance to the one fed behind it — it would run until
+        the item's overrun guard trips.
+        """
+        client = self._client
+        if client is None or self._options_pin_in_flight:
+            return
+        if not options.shuffle and options.repeat == _REPEAT_OFF:
+            return
+        self._options_pin_in_flight = True
+        try:
+            if options.shuffle:
+                await client.set_shuffle(False)
+            if options.repeat != _REPEAT_OFF:
+                await client.set_repeat_track(False)
+                await client.set_repeat_context(False)
+        except Exception as err:
+            # not fatal: the next snapshot carries the options again and
+            # re-asserts the pin. Logged because until then the engine may
+            # replay this item instead of moving on.
+            self.logger.warning("Unable to reset the Spotify playback options: %s", err)
+        finally:
+            self._options_pin_in_flight = False
 
     async def _repin_volume(self, volume: int) -> None:
         """
@@ -1400,18 +1476,23 @@ class _ItemAudio:
                 raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
 
     def _duration_bytes(self) -> int | None:
-        """Return how many bytes this item's own audio amounts to, when known."""
+        """
+        Return how many bytes this item's own audio amounts to, when known.
+
+        A seeked item starts part-way in, so only what is left of it is ever
+        delivered — the full duration would be a target nothing can reach.
+        """
         if self.duration_ms is None:
             return None
-        return self.duration_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+        remaining_ms = max(0, self.duration_ms - (self.seek_target_ms or 0))
+        return remaining_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
-        if self.duration_ms is None:
+        if (own_audio := self._duration_bytes()) is None:
             return None
-        return int(
-            (self.duration_ms / 1000 + self.session.crossfade_ms / 1000 + _ITEM_OVERRUN_S)
-            * _BYTES_PER_SECOND
+        return own_audio + int(
+            (self.session.crossfade_ms / 1000 + _ITEM_OVERRUN_S) * _BYTES_PER_SECOND
         )
 
 
@@ -1473,6 +1554,8 @@ def _trim_lead_silence(chunk: bytes, already_skipped: int) -> tuple[bytes, int]:
             return b"", len(chunk)
         # budget exhausted: this is genuine silence content, not infrastructure
         return chunk, 0
-    # keep sample-frame alignment when the audio starts mid-chunk
-    offset = (len(chunk) - len(stripped)) // _FRAME_BYTES * _FRAME_BYTES
+    # Keep sample-frame alignment when the audio starts mid-chunk, and never trim
+    # past the budget: whatever silence is left by then is content, not pre-roll.
+    remaining = max(0, max_lead_trim - already_skipped)
+    offset = min(len(chunk) - len(stripped), remaining) // _FRAME_BYTES * _FRAME_BYTES
     return chunk[offset:], offset
