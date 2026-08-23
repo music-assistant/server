@@ -3293,7 +3293,10 @@ class LocalFileSystemProvider(MusicProvider):
                 stored.version = fresh.version
                 stored.year = fresh.year
                 stored.sort_name = fresh.sort_name
-                stored.artists = fresh.artists
+                # album artists are deliberately left as the existing library mappings: an album
+                # sidecar refresh must not overwrite shared artist records, which would drop other
+                # providers' artist description/images. A newly added albumartist identity is
+                # picked up by a full track sync, not by this album-only refresh.
                 stored.external_ids = reconcile_provenance_set(
                     stored.external_ids, fresh.external_ids, _snapshot_external_ids(prev_snapshot)
                 )

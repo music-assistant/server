@@ -207,6 +207,39 @@ async def test_edited_nfo_reconciles_scalars_and_keeps_other_providers() -> None
     )
 
 
+async def test_album_refresh_preserves_existing_album_artist_records() -> None:
+    """An album sidecar refresh must not replace album-artist records with freshly parsed ones."""
+    provider = _provider()
+    prev_snap = {"description": None, "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    # the library album artist carries rich metadata contributed by another provider
+    rich_artist = Artist(
+        item_id="10", provider="library", name="The Artist", provider_mappings={_fs_mapping("A")}
+    )
+    rich_artist.metadata.description = "theaudiodb artist bio"
+    rich_artist.metadata.images = UniqueList([_image("theaudiodb", "remote/artist.jpg")])
+    stored.artists = UniqueList([rich_artist])
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    # the fresh parse yields a minimal album artist with no other-provider metadata
+    fresh = _fresh_album(provider, {"description": None, "genres": [], "external_ids": []}, set())
+    fresh.artists = UniqueList(
+        [Artist(item_id="A", provider=INSTANCE_ID, name="The Artist", provider_mappings=set())]
+    )
+    provider._reparse_album_from_track = AsyncMock(return_value=fresh)
+
+    await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    # the original rich library artist survives; the minimal fresh artist did not replace it
+    assert [artist.item_id for artist in saved.artists] == ["10"]
+    assert saved.artists[0].metadata.description == "theaudiodb artist bio"
+    assert [img.path for img in saved.artists[0].metadata.images] == ["remote/artist.jpg"]
+
+
 async def test_removed_nfo_reverts_identity_and_clears_only_our_values() -> None:
     """Removing album.nfo reverts tag identity and clears only what the NFO had contributed."""
     provider = _provider()
@@ -265,8 +298,8 @@ async def test_removed_nfo_keeps_other_providers_description() -> None:
     assert saved.metadata.description == "theaudiodb biography"
 
 
-async def test_removed_nfo_drops_nfo_only_album_artist() -> None:
-    """Album artists are restored from the fresh parse, so an NFO-only album artist disappears."""
+async def test_removed_nfo_keeps_existing_album_artist_untouched() -> None:
+    """The album refresh never rewrites album artists, so an existing album artist is preserved."""
     provider = _provider()
     prev_snap: dict[str, Any] = {"description": None, "genres": [], "external_ids": []}
     stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
@@ -292,7 +325,8 @@ async def test_removed_nfo_drops_nfo_only_album_artist() -> None:
         "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
     )
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
-    assert [a.name for a in saved.artists] == ["Tag Artist"]  # NFO-only album artist gone
+    # the album refresh leaves album artists as-is; the change applies only on a full track sync
+    assert [a.name for a in saved.artists] == ["X"]
 
 
 async def test_removed_artist_nfo_reverts_sort_keeps_mbid() -> None:
