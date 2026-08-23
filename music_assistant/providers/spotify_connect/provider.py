@@ -34,10 +34,8 @@ from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_P
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .base import (
-    AUDIO_QUALITY_HIGH,
     AUDIO_QUALITY_LOSSLESS,
-    AUDIO_QUALITY_NORMAL,
-    AUDIO_QUALITY_VERY_HIGH,
+    AUDIO_QUALITY_OPTIONS,
 )
 from .go_librespot import GoLibrespotBackend
 from .models import BackendEventType
@@ -73,14 +71,6 @@ CONF_LOUDNESS_NORMALIZATION = "loudness_normalization"
 MAX_CROSSFADE_DURATION = 12  # seconds, matching the Spotify apps' slider
 CONF_AUDIO_QUALITY = "audio_quality"
 
-# The selectable streaming quality tiers, named after the Spotify apps'
-# own vocabulary for the same bitrates.
-AUDIO_QUALITY_OPTIONS: Final = [
-    ConfigValueOption(AUDIO_QUALITY_NORMAL),
-    ConfigValueOption(AUDIO_QUALITY_HIGH),
-    ConfigValueOption(AUDIO_QUALITY_VERY_HIGH),
-    ConfigValueOption(AUDIO_QUALITY_LOSSLESS),
-]
 AUDIO_QUALITY_VALUES: Final = {option.value for option in AUDIO_QUALITY_OPTIONS}
 
 # The selectable volume modes (labels resolve from strings.json), shared

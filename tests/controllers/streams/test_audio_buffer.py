@@ -882,7 +882,11 @@ class _FakeAudioBuffer:
 
 
 async def _stream_until_prebuffer_window(
-    mass: MusicAssistant, *, next_item_media_type: MediaType, queue_id: str
+    mass: MusicAssistant,
+    *,
+    next_item_media_type: MediaType,
+    queue_id: str,
+    is_realtime: bool = False,
 ) -> None:
     """
     Drive get_queue_item_stream for a 90s current TRACK item past the pre-buffer trigger point.
@@ -890,8 +894,12 @@ async def _stream_until_prebuffer_window(
     Sets up a queue whose next item has ``next_item_media_type`` and streams the current
     item to completion, so the pre-buffer trigger condition (evaluated once more than
     duration - 60 seconds of PCM has been yielded) gets a chance to fire.
+
+    :param is_realtime: Whether the current item's source hands over its audio
+        just-in-time, which moves the trigger to the source itself.
     """
     streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
+    streamdetails.is_realtime = is_realtime
     streamdetails.loudness = -10.0  # skip the audio-analysis hydration call
     current_item = QueueItem(
         queue_id=queue_id,
@@ -937,6 +945,28 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
         mass_minimal, next_item_media_type=MediaType.AUDIO_SOURCE, queue_id="player_a"
     )
 
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_realtime_source_leaves_the_prebuffer_to_the_source(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A realtime source triggers the next item itself, so the blind trigger stays quiet."""
+    calls: list[str] = []
+    mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
+        lambda queue_id: calls.append(queue_id)
+    )
+
+    await _stream_until_prebuffer_window(
+        mass_minimal,
+        next_item_media_type=MediaType.TRACK,
+        queue_id="player_a",
+        is_realtime=True,
+    )
+
+    # the next item's audio does not exist yet while this one plays, so triggering here
+    # would only open a source that times out and gets discarded
     assert calls == []
 
 

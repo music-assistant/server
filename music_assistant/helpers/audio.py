@@ -740,6 +740,42 @@ async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -
     )
 
 
+def pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
+    """
+    Return True if two PCM formats describe identical raw bytes.
+
+    ``AudioFormat.__eq__`` cannot answer this: every PCM content type renders
+    the same ``output_format_str``, so integer and float PCM of equal depth
+    compare equal. Anything that decides whether audio may be passed through
+    unconverted has to use this instead, or it will hand one to a consumer
+    expecting the other.
+
+    :param a: One format.
+    :param b: The format to compare it against.
+    """
+    return (
+        a.content_type == b.content_type
+        and a.sample_rate == b.sample_rate
+        and a.bit_depth == b.bit_depth
+        and a.channels == b.channels
+    )
+
+
+def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the format the audio actually arrives in.
+
+    ``audio_format`` is what the source claims, which is meant for display and
+    may describe something the provider decoded on our behalf. Every decision
+    about the bytes themselves - what to hand ffmpeg, what a buffer holds, what
+    depth to carry - has to follow this instead, or real audio gets truncated or
+    reinterpreted.
+
+    :param streamdetails: The stream the audio belongs to.
+    """
+    return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -819,6 +855,7 @@ def get_normalization_mode(
     preference: VolumeNormalizationMode,
     volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
+    source_normalized: bool = False,
 ) -> VolumeNormalizationMode:
     """
     Get the volume normalization mode for a given queue and stream.
@@ -828,12 +865,18 @@ def get_normalization_mode(
     :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
         resolved from the per-queue setting and its global (queue controller) fallback.
     :param streamdetails: The stream to evaluate.
+    :param source_normalized: Whether the provider already delivers this audio at a
+        loudness target of its own.
     """
     if not volume_normalization_enabled:
         # disabled for this queue
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on
+        return VolumeNormalizationMode.DISABLED
+    if source_normalized:
+        # the source owns loudness here too: correcting a level it already set would
+        # mean normalizing twice, against a measurement of its own output
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.SOUND_EFFECT:
         # never measured, and the dynamic fallback compresses short clips

@@ -120,6 +120,7 @@ from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
+    arriving_audio_format,
     build_concat_filelist,
     calculate_content_length,
     get_bit_rate,
@@ -128,6 +129,7 @@ from music_assistant.helpers.audio import (
     is_grouping_preventing_dsp,
     iter_pcm_slices,
     parse_extinf_metadata,
+    pcm_formats_match,
     realtime_pcm_pacer,
     resample_pcm_audio,
     resolve_output_player_ids,
@@ -226,16 +228,6 @@ def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) ->
         return target
     lower = [r for r in supported_sample_rates if r < target]
     return max(lower) if lower else min(supported_sample_rates)
-
-
-def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
-    """Return True if two PCM formats describe identical raw bytes."""
-    return (
-        a.content_type == b.content_type
-        and a.sample_rate == b.sample_rate
-        and a.bit_depth == b.bit_depth
-        and a.channels == b.channels
-    )
 
 
 def overlay_active(queue: PlayerQueue) -> bool:
@@ -620,6 +612,7 @@ class StreamsAudio:
             self._get_volume_normalization_preference(streamdetails),
             volume_normalization_enabled,
             streamdetails,
+            self._source_delivers_normalized_audio(streamdetails),
         )
 
         self.logger.debug(
@@ -1568,6 +1561,7 @@ class StreamsAudio:
                     self._get_volume_normalization_preference(streamdetails),
                     volume_normalization_enabled,
                     streamdetails,
+                    self._source_delivers_normalized_audio(streamdetails),
                 )
 
         # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
@@ -1703,9 +1697,14 @@ class StreamsAudio:
                 # tracks and sound effects are finite files that fill and close immediately;
                 # live sources (radio, audio_source) open an upstream connection that would
                 # sit idle and likely time out before the player actually consumes it.
+                # a realtime source is excluded for the same reason from the other side:
+                # the next item's audio does not exist yet at any point during this one,
+                # so only the source itself can say when it does - it triggers the
+                # pre-buffer through prepare_next_audio_buffer() when it gets there.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
+                    and not streamdetails.is_realtime
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
@@ -2997,6 +2996,17 @@ class StreamsAudio:
         music_prov = cast("MusicProvider", provider)
         self.mass.create_task(music_prov.on_streamed(streamdetails))
 
+    def _source_delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether the provider already normalized this audio on the way out.
+
+        :param streamdetails: The stream to evaluate.
+        """
+        # plugin providers serve playable items too, and only a music provider
+        # declares this (a plugin's live audio is handled by the media type)
+        provider = self.mass.get_provider(streamdetails.provider)
+        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
+
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
     ) -> VolumeNormalizationMode:
@@ -3515,11 +3525,7 @@ class StreamsAudio:
         cancelled = False
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
-        # AirPlay receivers piping PCM after their own decode), audio_format is
-        # the original source format meant for display while decoded_audio_format
-        # is what ffmpeg actually needs to read off the wire.
-        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
+        ffmpeg_input_format = arriving_audio_format(streamdetails)
         ffmpeg_proc = FFMpeg(
             audio_input=audio_source,
             input_format=ffmpeg_input_format,
@@ -3832,7 +3838,10 @@ class StreamsAudio:
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes]:
         """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
-        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
+        # deliberately the advertised format: an AudioSource provider states the
+        # PCM it delivers here, and providers that advertise a codec instead rely
+        # on the ffmpeg path below to notice their source ending
+        if pcm_formats_match(streamdetails.audio_format, pcm_format):
             source_gen = self._open_audio_source_generator(streamdetails)
             async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
                 yield chunk
@@ -4154,7 +4163,10 @@ class StreamsAudio:
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
-        bit_depth = streamdetails.audio_format.bit_depth
+        # the depth the audio arrives in, not the one the source claims: a
+        # provider that decoded on our behalf may advertise a narrower format
+        # for display, and narrowing the stream to that would truncate it
+        bit_depth = arriving_audio_format(streamdetails).bit_depth
         return ContentType.from_bit_depth(bit_depth), bit_depth
 
     def _select_audio_source_pcm_format(

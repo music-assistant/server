@@ -98,6 +98,7 @@ from music_assistant.helpers.audio import (
     create_streaming_wave_header,
     get_content_length,
     get_mime_type,
+    pcm_formats_match,
     store_content_length_in_cache,
 )
 from music_assistant.helpers.ffmpeg import (
@@ -1427,7 +1428,7 @@ class StreamsController(CoreController):
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get_player(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
-            if ugp_stream.base_pcm_format == pcm_format:
+            if pcm_formats_match(ugp_stream.base_pcm_format, pcm_format):
                 # no conversion needed
                 return ugp_stream.subscribe_raw()
             return ugp_stream.get_stream(output_format=pcm_format)

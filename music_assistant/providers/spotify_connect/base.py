@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Final
 
+from music_assistant_models.config_entries import ConfigValueOption
+
 if TYPE_CHECKING:
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import AudioFormat
@@ -23,6 +25,15 @@ AUDIO_QUALITY_NORMAL: Final = "normal"
 AUDIO_QUALITY_HIGH: Final = "high"
 AUDIO_QUALITY_VERY_HIGH: Final = "very_high"
 AUDIO_QUALITY_LOSSLESS: Final = "lossless"
+
+# The tiers as a config-entry option list, in ascending order. Shared so the
+# Spotify music provider's own soloist playback offers the same choice.
+AUDIO_QUALITY_OPTIONS: Final = [
+    ConfigValueOption(AUDIO_QUALITY_NORMAL),
+    ConfigValueOption(AUDIO_QUALITY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_VERY_HIGH),
+    ConfigValueOption(AUDIO_QUALITY_LOSSLESS),
+]
 
 
 class SpotifyConnectBackend(ABC):

@@ -184,7 +184,10 @@ def _queue_item_with_mapping(media_item_cls: type) -> QueueItem:
     [
         pytest.param(True, False, None, MediaType.RADIO, 1, id="realtime_base"),
         pytest.param(True, False, None, MediaType.AUDIO_SOURCE, 1, id="realtime_audio_source"),
-        pytest.param(True, True, None, MediaType.TRACK, 2, id="realtime_crossfade"),
+        # the queue's crossfade setting buys nothing for a realtime source: MA's own
+        # crossfade is force-disabled for one, so a second of audio here would only
+        # be a second of extra startup delay
+        pytest.param(True, True, None, MediaType.TRACK, 1, id="realtime_crossfade"),
         pytest.param(
             True,
             False,
@@ -221,6 +224,8 @@ async def test_ready_threshold_ladder(
     expected_threshold: int,
 ) -> None:
     """The buffered-ready threshold follows the realtime ladder, leaving the old one intact."""
+    # a realtime source is only ever raised above the floor by dynamic normalization,
+    # which genuinely needs its lookahead
     queue = SimpleNamespace(crossfade_enabled=crossfade_enabled)
     mass, scheduled_tasks, _seek_positions = _make_mass_for_get_buffer(queue=queue)
     streamdetails = _make_stream_details(
