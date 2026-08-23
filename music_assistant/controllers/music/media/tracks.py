@@ -742,63 +742,15 @@ class TracksController(MediaControllerBase[Track]):
         if not base_track.artists:
             return TrackProviderMatchResult(match=mapped_match)
 
-        search_queries = list(
-            dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
+        candidates = await self._search_provider_track_matches(
+            base_track,
+            provider,
+            minimum_confidence,
+            resolved_base_album,
+            allowed_provider_instances,
+            trust_base_mapping,
+            mapped_match,
         )
-        candidates: list[tuple[int, TrackProviderMatch]] = (
-            [(0, mapped_match)] if mapped_match else []
-        )
-        seen_candidates: set[tuple[str, str]] = set()
-        for search_query in search_queries:
-            search_results = await self.mass.music.search_provider(
-                search_query,
-                provider.instance_id,
-                [MediaType.TRACK],
-                limit=5,
-                allowed_provider_instances=allowed_provider_instances,
-            )
-            for search_result in search_results.tracks:
-                if not isinstance(search_result, Track):
-                    continue
-                candidate_key = (search_result.provider, search_result.item_id)
-                if candidate_key in seen_candidates or not search_result.available:
-                    continue
-                seen_candidates.add(candidate_key)
-                if not compare_track_title(base_track.name, search_result.name):
-                    continue
-                if not compare_artists(base_track.artists, search_result.artists, any_match=True):
-                    continue
-                try:
-                    candidate = await self.get_provider_item(
-                        search_result.item_id,
-                        search_result.provider,
-                        allow_fallback=False,
-                    )
-                except MediaNotFoundError:
-                    continue
-                confidence, resolved_base_album = await self._get_match_confidence(
-                    base_track,
-                    candidate,
-                    resolved_base_album,
-                    allow_item_id_match=trust_base_mapping,
-                )
-                if confidence < minimum_confidence:
-                    continue
-                if not (mapping := self._get_provider_mapping(candidate, provider)):
-                    continue
-                candidate_match = TrackProviderMatch(
-                    track=candidate,
-                    mapping=mapping,
-                    confidence=confidence,
-                )
-                if confidence == TrackMatchConfidence.EXACT:
-                    return TrackProviderMatchResult(match=candidate_match)
-                candidates.append(
-                    (
-                        len(candidates),
-                        candidate_match,
-                    )
-                )
 
         if not candidates:
             return TrackProviderMatchResult()
@@ -1010,6 +962,80 @@ class TracksController(MediaControllerBase[Track]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
+
+    async def _search_provider_track_matches(
+        self,
+        base_track: Track,
+        provider: MusicProvider,
+        minimum_confidence: TrackMatchConfidence,
+        base_album: Album | ItemMapping | None,
+        allowed_provider_instances: set[str] | None,
+        allow_item_id_match: bool,
+        mapped_match: TrackProviderMatch | None,
+    ) -> list[tuple[int, TrackProviderMatch]]:
+        """Return ranked provider candidates, stopping when an exact match is found."""
+        search_queries = list(
+            dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
+        )
+        candidates: list[tuple[int, TrackProviderMatch]] = (
+            [(0, mapped_match)] if mapped_match else []
+        )
+        seen_candidates: set[tuple[str, str]] = set()
+        for search_query in search_queries:
+            try:
+                search_results = await self.mass.music.search_provider(
+                    search_query,
+                    provider.instance_id,
+                    [MediaType.TRACK],
+                    limit=5,
+                    allowed_provider_instances=allowed_provider_instances,
+                )
+            except ResourceTemporarilyUnavailable:
+                if candidates:
+                    break
+                raise
+            for search_result in search_results.tracks:
+                if not isinstance(search_result, Track):
+                    continue
+                candidate_key = (search_result.provider, search_result.item_id)
+                if candidate_key in seen_candidates or not search_result.available:
+                    continue
+                seen_candidates.add(candidate_key)
+                if not compare_track_title(base_track.name, search_result.name):
+                    continue
+                if not compare_artists(
+                    base_track.artists,
+                    search_result.artists,
+                    any_match=True,
+                ):
+                    continue
+                try:
+                    candidate = await self.get_provider_item(
+                        search_result.item_id,
+                        search_result.provider,
+                        allow_fallback=False,
+                    )
+                except MediaNotFoundError:
+                    continue
+                confidence, base_album = await self._get_match_confidence(
+                    base_track,
+                    candidate,
+                    base_album,
+                    allow_item_id_match=allow_item_id_match,
+                )
+                if confidence < minimum_confidence:
+                    continue
+                if not (mapping := self._get_provider_mapping(candidate, provider)):
+                    continue
+                candidate_match = TrackProviderMatch(
+                    track=candidate,
+                    mapping=mapping,
+                    confidence=confidence,
+                )
+                candidates.append((len(candidates), candidate_match))
+                if confidence == TrackMatchConfidence.EXACT:
+                    return candidates
+        return candidates
 
     async def _get_match_confidence(
         self,

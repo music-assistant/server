@@ -474,6 +474,59 @@ async def test_find_provider_match_prefers_exact_candidate(
     assert result.match.confidence == TrackMatchConfidence.EXACT
 
 
+async def test_find_provider_match_keeps_fallback_after_later_timeout(
+    music: MusicController,
+) -> None:
+    """A later artist-query timeout does not discard an acceptable candidate."""
+    base = create_track("spotify_1", "base")
+    base.artists.append(
+        ItemMapping(
+            item_id="other-artist",
+            provider="spotify_1",
+            name="Other Artist",
+            media_type=MediaType.ARTIST,
+        )
+    )
+    candidate = create_track("qobuz_1", "candidate")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(
+                side_effect=(
+                    SearchResults(tracks=[candidate]),
+                    ResourceTemporarilyUnavailable("Later search timed out"),
+                )
+            ),
+        ) as search_provider,
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(return_value=candidate),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
+
+    assert result.match is not None
+    assert result.match.confidence == TrackMatchConfidence.LIKELY
+    assert search_provider.await_count == 2
+
+
 async def test_find_provider_match_reports_ambiguous_loose_candidates(
     music: MusicController,
 ) -> None:
