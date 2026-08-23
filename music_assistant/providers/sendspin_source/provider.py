@@ -570,7 +570,13 @@ class SendspinSourceProvider(PluginProvider):
         # source resolves to no queue, which is not a reason to refuse - it is the
         # player we start on either way.
         queue = self.mass.players.get_active_queue(player)
-        target_id = queue.queue_id if queue else (player.state.active_group or player.player_id)
+        # mirror the controller's owner resolution: a sync child starts on its leader and
+        # a group member on its group, never on itself - selecting on the child ungroups it
+        target_id = (
+            queue.queue_id
+            if queue
+            else (player.state.synced_to or player.state.active_group or player.player_id)
+        )
         return target_id, create_uri(MediaType.AUDIO_SOURCE, self.instance_id, client_id)
 
     async def _attach_stream(

@@ -56,6 +56,7 @@ def _controller(session: AudioSourceSession | None) -> tuple[Any, MagicMock, Mag
     player = MagicMock()
     player.player_id = CONSUMER_ID
     ctrl.mass.players.get_player = MagicMock(return_value=player)
+    ctrl.mass.players.deselect_source = AsyncMock()
     return ctrl, provider, player
 
 
@@ -183,3 +184,47 @@ def test_a_direct_pcm_request_carrying_the_live_token_is_served() -> None:
     ctrl._get_audio_source_session_stream.assert_called_once_with(
         session, AudioFormat(), CONSUMER_ID
     )
+
+
+async def test_a_plugin_refusing_the_stream_takes_the_source_off_the_player() -> None:
+    """
+    A source that never starts is released, not left published.
+
+    The play command that pointed the renderer here has already returned, so nothing
+    else clears the session — and a plugin refusing the stream is a designed path
+    (Ynison raises from the hook when it redirects to its configured target).
+    """
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+    provider.on_source_selected = AsyncMock(side_effect=RuntimeError("switching disabled"))
+
+    with pytest.raises(web.HTTPNotFound):
+        await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
+
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(OWNER_ID)
+
+
+async def test_failing_stream_details_also_takes_the_source_off_the_player() -> None:
+    """The same holds when the plugin claims the source but cannot describe its stream."""
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+    provider.get_stream_details = AsyncMock(side_effect=OSError("daemon gone"))
+
+    with pytest.raises(web.HTTPNotFound):
+        await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
+
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(OWNER_ID)
+
+
+async def test_a_session_already_superseded_is_not_released() -> None:
+    """A newer session on the player is not this request's to take away."""
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+    provider.on_source_selected = AsyncMock(side_effect=RuntimeError("nope"))
+    # the player moved on to a different session while this request was setting up
+    ctrl.mass.players.get_audio_source_session = MagicMock(return_value=_session())
+
+    with pytest.raises(web.HTTPNotFound):
+        await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
+
+    ctrl.mass.players.deselect_source.assert_not_awaited()

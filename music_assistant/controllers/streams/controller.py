@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -1016,6 +1016,7 @@ class StreamsController(CoreController):
         # wire the provider in before awaiting the hook: a plugin that claims the
         # source and then raises must still get its release
         claimed = False
+        serving = False
         try:
             try:
                 claimed = True
@@ -1061,6 +1062,7 @@ class StreamsController(CoreController):
                 session=session,
                 streamdetails=streamdetails,
             )
+            serving = True
             self._active_output_streams += 1
             try:
                 async with aclosing(audio_bytes):
@@ -1092,6 +1094,8 @@ class StreamsController(CoreController):
                         source_player_id,
                         exc_info=True,
                     )
+            if not serving:
+                await self._release_unstarted_audio_source(session)
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -1667,6 +1671,27 @@ class StreamsController(CoreController):
             )
         return session, player, prov
 
+    async def _release_unstarted_audio_source(self, session: AudioSourceSession) -> None:
+        """
+        Take a source that never started off the player holding it.
+
+        The command that pointed the renderer here has already returned, so nothing
+        else will clear the session: without this the player goes on publishing a
+        source that never played, with its own queue held inactive behind it.
+
+        :param session: The session whose stream failed before any audio flowed.
+        """
+        if self.mass.players.get_audio_source_session(session.player_id) is not session:
+            # already superseded, so it is not ours to release
+            return
+        self.logger.debug(
+            "AudioSource %s never started on player %s, releasing it",
+            session.source_id,
+            session.player_id,
+        )
+        with suppress(Exception):
+            await self.mass.players.deselect_source(session.player_id)
+
     async def _serve_audio_source_head(
         self, request: web.Request, session: AudioSourceSession
     ) -> web.StreamResponse:
@@ -1792,6 +1817,7 @@ class StreamsController(CoreController):
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
         stream_session_id = uuid4().hex
+        serving = False
         try:
             try:
                 await prov.on_source_selected(
@@ -1809,6 +1835,7 @@ class StreamsController(CoreController):
                     session.source_id, MediaType.AUDIO_SOURCE
                 )
                 session.attach_streamdetails(streamdetails)
+            serving = True
             async for chunk in self.audio.get_audio_source_stream(
                 streamdetails=streamdetails,
                 pcm_format=pcm_format,
@@ -1829,6 +1856,8 @@ class StreamsController(CoreController):
                     session.player_id,
                     exc_info=True,
                 )
+            if not serving:
+                await self._release_unstarted_audio_source(session)
 
     async def _wrap_with_audio_source_lifecycle(
         self,
