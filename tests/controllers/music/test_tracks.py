@@ -888,6 +888,48 @@ async def test_enrich_provider_mappings_preserves_allowed_untrusted_fallback(
     assert find_match.await_args.kwargs["trust_base_mapping"] is False
 
 
+async def test_enrich_provider_mappings_drops_unavailable_source_mappings(
+    music: MusicController,
+) -> None:
+    """Unavailable source mappings are not copied into a migrated playlist."""
+    source = create_track("qobuz_1", "source")
+    source.provider_mappings = {
+        ProviderMapping(
+            item_id="unavailable",
+            provider_domain="qobuz",
+            provider_instance="qobuz_1",
+            available=False,
+        )
+    }
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.is_streaming_provider = True
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(return_value=TrackProviderMatchResult()),
+        ),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            trust_track_mappings=False,
+        )
+
+    assert result.track.provider_mappings == set()
+
+
 async def test_enrich_provider_mappings_stops_after_provider_failure(
     music: MusicController,
 ) -> None:

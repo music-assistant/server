@@ -794,7 +794,7 @@ class TracksController(MediaControllerBase[Track]):
             enriched_track.provider_mappings = {
                 mapping
                 for mapping in enriched_track.provider_mappings
-                if mapping.provider_instance in provider_instance_ids
+                if mapping.provider_instance in provider_instance_ids and mapping.available
             }
         existing_domains = (
             {
