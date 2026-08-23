@@ -935,11 +935,14 @@ class _SoloistSession:
         if self.crossfade_ms == 0 or streamdetails.media_type != MediaType.TRACK:
             return False
         uri = f"spotify:track:{streamdetails.item_id}"
-        if (item := self._items.get(uri)) is not None:
-            if uri in self._pending:
-                # the engine has not played on to this item, so it is reached by a
-                # jump - which drops the overlap already rendered for it
-                return False
+        if uri in self._pending:
+            # the engine has not played on to this item, so it is reached by a jump -
+            # which drops the overlap already rendered for it
+            return False
+        # Channels are keyed by track, so an entry left from an earlier play of the
+        # same one says nothing about this play: only the channel the engine is on
+        # can answer for its own boundaries.
+        if (item := self._items.get(uri)) is not None and item is self._current:
             if item.faded_in:
                 return True
             if item.fades_out is not None:

@@ -1516,6 +1516,74 @@ async def test_a_jumped_to_item_opens_on_a_hard_cut(tmp_path: Path) -> None:
     assert session.fades_a_boundary_of(_streamdetails_for(uri=TRACK_B)) is False
 
 
+async def test_an_item_only_fed_is_reached_by_a_jump(tmp_path: Path) -> None:
+    """
+    An item MA opens before the engine gets to it is jumped to, so no fade reaches it.
+
+    Its own follower would otherwise stand in and claim one, which is why being handed
+    over but not reached has to answer first.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    streamdetails = _streamdetails_for(uri=TRACK_B)
+    playing = _queue_item(TRACK_B, streamdetails=streamdetails)
+    session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=1)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 1 else None
+    # a follower it could be fed, so only the pending state can produce the hard cut
+    queues.get_next_item.return_value = _queue_item(TRACK_A)
+
+    assert session.fades_a_boundary_of(streamdetails) is False
+
+
+async def test_an_item_the_engine_reached_unfed_carries_no_fade(tmp_path: Path) -> None:
+    """
+    Only an item handed to the engine can be played on into.
+
+    The engine also reports items nobody asked for - the session it restores at
+    startup, its own autoplay - and crediting those would claim an overlap that
+    was never rendered.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+
+    await session._observe_current("spotify:track:restored", 200_000)
+
+    assert session._items["spotify:track:restored"].faded_in is False
+
+
+async def test_an_earlier_play_of_a_track_does_not_answer_for_a_later_one(
+    tmp_path: Path,
+) -> None:
+    """
+    Channels are keyed by track, so a repeated one must not read the first play's fades.
+
+    In an A-B-A queue the first A faded out into B, but the last A plays on a fresh
+    session with nothing after it, so both of its boundaries are hard cuts.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    first_a = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    first_a.started.set()
+    first_a.spent = True
+    first_a.fades_out = True
+    playing_b = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    playing_b.started.set()
+    playing_b.faded_in = True
+    session._current = playing_b
+    last_a = _streamdetails_for(uri=TRACK_A)
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=2)
+    queues.get_item.side_effect = lambda _queue_id, index: (
+        _queue_item(TRACK_A, streamdetails=last_a) if index == 2 else None
+    )
+    queues.get_next_item.return_value = None
+
+    assert session.fades_a_boundary_of(last_a) is False
+
+
 async def test_a_fresh_sessions_first_item_rests_on_its_own_follower(tmp_path: Path) -> None:
     """
     Nothing was faded into the item a session starts on, so only its end can be faded.
