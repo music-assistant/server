@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterator, Mapping
+from contextlib import contextmanager
 
 import pytest
 from music_assistant_models.enums import ExternalID
@@ -15,12 +16,23 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_EXTERNAL_ID_LOOKUP
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.base import FULL_REPLACE_UPDATE
 from music_assistant.mass import MusicAssistant
 
 INSTANCE = "filesystem_local_1"
 DOMAIN = "filesystem_local"
 ALBUM_MBID = "aa11bb22-cc33-dd44-ee55-ff6677889900"
 ARTIST_MBID = "11223344-5566-7788-99aa-bbccddeeff00"
+
+
+@contextmanager
+def _full_replace() -> Iterator[None]:
+    """Enable the authoritative full-replace update mode for the duration of the block."""
+    token = FULL_REPLACE_UPDATE.set(True)
+    try:
+        yield
+    finally:
+        FULL_REPLACE_UPDATE.reset(token)
 
 
 @pytest.fixture
@@ -110,7 +122,8 @@ async def test_full_replace_clears_album_nfo_owned_values(music: MusicController
         },
         artists=stored.artists,
     )
-    await music.albums.update_item_in_library(stored.item_id, cleared, full_replace=True)
+    with _full_replace():
+        await music.albums.update_item_in_library(stored.item_id, cleared)
 
     row = await _album_row(music, stored.item_id)
     assert not row["version"]
@@ -178,7 +191,8 @@ async def test_full_replace_keeps_artist_external_ids_sticky(music: MusicControl
             ProviderMapping(item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE)
         },
     )
-    await music.artists.update_item_in_library(stored.item_id, cleared, full_replace=True)
+    with _full_replace():
+        await music.artists.update_item_in_library(stored.item_id, cleared)
     refreshed = await music.artists.get_library_item(stored.item_id)
     assert refreshed.mbid == ARTIST_MBID  # sticky: the MusicBrainz id is not cleared
     assert (ExternalID.DISCOGS, "12345") in refreshed.external_ids  # other id survives too
@@ -195,5 +209,6 @@ async def test_full_replace_keeps_artist_external_ids_sticky(music: MusicControl
             ProviderMapping(item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE)
         },
     )
-    await music.artists.update_item_in_library(stored.item_id, updated, full_replace=True)
+    with _full_replace():
+        await music.artists.update_item_in_library(stored.item_id, updated)
     assert (await music.artists.get_library_item(stored.item_id)).mbid == new_mbid

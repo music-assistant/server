@@ -16,7 +16,11 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.controllers.music.media.base import FULL_REPLACE_UPDATE
+from music_assistant.providers.filesystem_local import (
+    _RERAISE_INVALID_NFO_TARGET,
+    LocalFileSystemProvider,
+)
 from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     SidecarIndex,
@@ -43,7 +47,6 @@ def _provider() -> Any:
     provider._sync_mapped_album_dirs = set()
     provider._pre_scan_album_details = {}
     provider._pre_scan_artist_details = {}
-    provider._reraise_invalid_nfo_target = None
     return provider
 
 
@@ -407,7 +410,14 @@ async def test_artist_image_only_removal_clears_art() -> None:
     stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     stored.metadata.images = UniqueList([_image(INSTANCE_ID, "Artist/folder.jpg?cs=1")])
     provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
-    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    captured: dict[str, Any] = {}
+
+    async def _capture_full_replace(*_args: Any, **_kwargs: Any) -> None:
+        captured["full_replace"] = FULL_REPLACE_UPDATE.get()
+
+    provider.mass.music.artists.update_item_in_library = AsyncMock(
+        side_effect=_capture_full_replace
+    )
     provider._invalidate_artist_caches = AsyncMock()
     provider._reparse_artist_from_track = AsyncMock()
     provider._get_local_images = AsyncMock(return_value=UniqueList())  # image removed
@@ -419,9 +429,7 @@ async def test_artist_image_only_removal_clears_art() -> None:
     saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
     assert not saved.metadata.images  # our only image cleared
     # a provenance baseline exists, so the clear is persisted authoritatively
-    assert (
-        provider.mass.music.artists.update_item_in_library.await_args.kwargs["full_replace"] is True
-    )
+    assert captured["full_replace"] is True
 
 
 async def test_refresh_skips_unknown_library_item() -> None:
@@ -504,7 +512,7 @@ async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     )
     assert ok is False  # deferred, non-destructive
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()  # prior metadata kept
-    assert provider._reraise_invalid_nfo_target is None  # scope reset after the reparse
+    assert _RERAISE_INVALID_NFO_TARGET.get() is None  # scope reset after the reparse
 
 
 async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
@@ -524,7 +532,7 @@ async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     )
     assert ok is False
     provider.mass.music.artists.update_item_in_library.assert_not_awaited()
-    assert provider._reraise_invalid_nfo_target is None  # scope reset after the reparse
+    assert _RERAISE_INVALID_NFO_TARGET.get() is None  # scope reset after the reparse
 
 
 async def test_representative_source_scopes_to_mapping_directory() -> None:

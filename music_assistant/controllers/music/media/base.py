@@ -114,6 +114,13 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
 
+# When set (task-local), the current library update is authoritative and persists the given item
+# as the complete state, allowing fields the source no longer provides to be cleared. It is an
+# internal control for the filesystem sidecar refresh, deliberately kept off the public update
+# command so external clients cannot request a destructive full replace. Only album and artist
+# honor it.
+FULL_REPLACE_UPDATE: ContextVar[bool] = ContextVar("FULL_REPLACE_UPDATE", default=False)
+
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
     # so we have use an additional column for this
@@ -312,7 +319,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         item_id: str | int,
         update: ItemCls,
         overwrite: bool = False,
-        full_replace: bool = False,
     ) -> ItemCls:
         """
         Update existing library record in the library database.
@@ -320,14 +326,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param item_id: The library item id to update.
         :param update: The item carrying the new values.
         :param overwrite: Replace this provider's values, keeping other providers' data.
-        :param full_replace: Persist the given item as the authoritative full state, allowing
-            fields the source no longer provides to be cleared. Only album and artist honor it.
         """
         self.mass.music.match_provider_instances(update)
         # batch the many writes of an item update into a single commit
         async with self.mass.music.database.deferred_commit():
             await self._update_library_item(
-                item_id, update, overwrite=overwrite, full_replace=full_replace
+                item_id, update, overwrite=overwrite, full_replace=FULL_REPLACE_UPDATE.get()
             )
         # return the updated object
         library_item = await self.get_library_item(item_id)

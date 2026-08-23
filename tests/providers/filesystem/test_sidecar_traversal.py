@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +11,10 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local import (
+    _RERAISE_INVALID_NFO_TARGET,
+    LocalFileSystemProvider,
+)
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -68,7 +72,6 @@ def _provider() -> Any:
     provider.cache.set = AsyncMock()
     provider._active_sidecar_index = SidecarIndex()
     provider._sync_mapped_album_dirs = set()
-    provider._reraise_invalid_nfo_target = None
     return provider
 
 
@@ -185,6 +188,70 @@ async def test_non_scalar_artist_nfo_field_is_rejected() -> None:
     assert artist.metadata.description is None
 
 
+async def test_repeated_genre_nfo_is_accepted() -> None:
+    """Multiple <genre> tags parse to a list and are imported as separate genres."""
+    provider = _provider()
+    provider._read_file = AsyncMock(
+        return_value=b"<album><title>X</title><genre>Rock</genre><genre>Pop</genre></album>"
+    )
+    album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
+    await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+    assert album.metadata.genres == {"Rock", "Pop"}
+
+
+async def test_nested_genre_nfo_field_is_rejected() -> None:
+    """A nested <genre> element (a mapping from xmltodict) is rejected as malformed."""
+    provider = _provider()
+    provider._read_file = AsyncMock(
+        return_value=b"<album><title>X</title><genre><name>Rock</name></genre></album>"
+    )
+    album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
+    with pytest.raises(SidecarInvalidError):
+        await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+    assert album.name == "Keep"
+    assert not album.metadata.genres
+
+
+async def test_repeated_mbid_nfo_field_is_rejected() -> None:
+    """A repeated MusicBrainz id is rejected as malformed, not silently dropped as absent."""
+    provider = _provider()
+    provider._read_file = AsyncMock(
+        return_value=(
+            b"<album><title>X</title>"
+            b"<musicbrainzalbumid>id-1</musicbrainzalbumid>"
+            b"<musicbrainzalbumid>id-2</musicbrainzalbumid></album>"
+        )
+    )
+    album = Album(item_id="x", provider=INSTANCE_ID, name="Keep", provider_mappings=set())
+    with pytest.raises(SidecarInvalidError):
+        await provider._apply_album_nfo(album, _file("Artist/Album/album.nfo"))
+    assert album.name == "Keep"
+
+
+async def test_reraise_marker_is_task_local() -> None:
+    """A parse in a sibling task never observes another task's invalid-NFO propagation marker."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+
+    async def _sibling() -> Any:
+        # this task never set the marker, so the malformed NFO must degrade instead of raising
+        return await provider._parse_artist("A", artist_path="Artist")
+
+    # the sibling copies the current (marker-free) context at creation time
+    sibling = asyncio.create_task(_sibling())
+    token = _RERAISE_INVALID_NFO_TARGET.set(("Artist", "artist"))
+    try:
+        artist = await sibling
+    finally:
+        _RERAISE_INVALID_NFO_TARGET.reset(token)
+    assert artist.name == "A"  # unaffected by our task's marker
+
+
 async def test_transient_nfo_read_failure_raises_sidecar_read_error() -> None:
     """An IO/provider failure reading the NFO raises rather than looking like a removed NFO."""
     provider = _provider()
@@ -268,17 +335,19 @@ async def test_invalid_nfo_propagation_is_scoped_to_the_refreshed_item() -> None
     provider._get_local_images = AsyncMock(return_value=UniqueList())
     provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
     # a refresh of the "Artist" artist is in progress
-    provider._reraise_invalid_nfo_target = ("Artist", "artist")
+    token = _RERAISE_INVALID_NFO_TARGET.set(("Artist", "artist"))
+    try:
+        # the target item's malformed NFO propagates so its refresh keeps prior metadata
+        provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+        with pytest.raises(SidecarInvalidError):
+            await provider._parse_artist("A", artist_path="Artist")
 
-    # the target item's malformed NFO propagates so its refresh keeps prior metadata
-    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
-    with pytest.raises(SidecarInvalidError):
-        await provider._parse_artist("A", artist_path="Artist")
-
-    # a different item parsed in the same reparse degrades to tag-only instead of blocking it
-    provider._folder_sidecars = AsyncMock(return_value=[_file("Other/artist.nfo")])
-    other = await provider._parse_artist("B", artist_path="Other")
-    assert other.name == "B"
+        # a different item parsed in the same reparse degrades to tag-only instead of blocking it
+        provider._folder_sidecars = AsyncMock(return_value=[_file("Other/artist.nfo")])
+        other = await provider._parse_artist("B", artist_path="Other")
+        assert other.name == "B"
+    finally:
+        _RERAISE_INVALID_NFO_TARGET.reset(token)
 
 
 async def test_invalid_artist_nfo_does_not_block_album_refresh_in_same_folder() -> None:
@@ -290,13 +359,15 @@ async def test_invalid_artist_nfo_does_not_block_album_refresh_in_same_folder() 
     provider._get_local_images = AsyncMock(return_value=UniqueList())
     provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
     # an album refresh for folder "Music" is in progress; its album artist maps to the same folder
-    provider._reraise_invalid_nfo_target = ("Music", "album")
-    provider._folder_sidecars = AsyncMock(return_value=[_file("Music/artist.nfo")])
-
-    # resolving the album artist parses the malformed artist.nfo, but the target is the album,
-    # so it degrades to tag-only and never blocks the album refresh
-    artist = await provider._parse_artist("Various", artist_path="Music")
-    assert artist.name == "Various"
+    token = _RERAISE_INVALID_NFO_TARGET.set(("Music", "album"))
+    try:
+        provider._folder_sidecars = AsyncMock(return_value=[_file("Music/artist.nfo")])
+        # resolving the album artist parses the malformed artist.nfo, but the target is the album,
+        # so it degrades to tag-only and never blocks the album refresh
+        artist = await provider._parse_artist("Various", artist_path="Music")
+        assert artist.name == "Various"
+    finally:
+        _RERAISE_INVALID_NFO_TARGET.reset(token)
 
 
 async def test_local_walk_collects_sidecars_track_dirs_and_skips_strays() -> None:

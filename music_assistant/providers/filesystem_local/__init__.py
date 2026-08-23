@@ -10,6 +10,7 @@ import os.path
 import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Sequence
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -68,6 +69,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.music.media.base import FULL_REPLACE_UPDATE
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
@@ -169,6 +171,14 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
 }
 
+# (path, media_type) of the item currently being refreshed. Task-local so a concurrent on-demand
+# parse never observes another task's marker: while set for the current task, a malformed NFO for
+# that exact item propagates (keeping its prior metadata) instead of degrading to tag-only. The
+# media type disambiguates an album and artist that map to the same folder.
+_RERAISE_INVALID_NFO_TARGET: ContextVar[tuple[str, str] | None] = ContextVar(
+    "reraise_invalid_nfo_target", default=None
+)
+
 
 def _nfo_snapshot(
     metadata: MediaItemMetadata, external_ids: Iterable[tuple[ExternalID, str]]
@@ -256,11 +266,6 @@ class LocalFileSystemProvider(MusicProvider):
         # cannot hide a sidecar that was removed in the same sync
         self._pre_scan_album_details: dict[str, str | None] = {}
         self._pre_scan_artist_details: dict[str, str | None] = {}
-        # (path, media_type) of the item currently being refreshed; while set, a malformed NFO for
-        # that exact item propagates (keeping its prior metadata) instead of degrading to tag-only.
-        # The media type disambiguates an album and artist that map to the same folder, so an
-        # unrelated malformed artist.nfo never blocks a valid album refresh in that folder
-        self._reraise_invalid_nfo_target: tuple[str, str] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -2032,7 +2037,7 @@ class LocalFileSystemProvider(MusicProvider):
             # on demand there is no baseline to protect, so degrade to the tag-only artist
             return artist
         except SidecarInvalidError as err:
-            if self._reraise_invalid_nfo_target == (artist_path, "artist"):
+            if _RERAISE_INVALID_NFO_TARGET.get() == (artist_path, "artist"):
                 # a refresh of this exact artist must not degrade it to tag-only on a malformed NFO;
                 # propagate so the refresh keeps the prior metadata and retries. An unrelated
                 # artist's NFO parsed in the same reparse still degrades and never blocks this one.
@@ -2553,7 +2558,7 @@ class LocalFileSystemProvider(MusicProvider):
             # on demand there is no baseline to protect, so degrade to the tag-only album
             return album
         except SidecarInvalidError as err:
-            if self._reraise_invalid_nfo_target == (album_dir, "album"):
+            if _RERAISE_INVALID_NFO_TARGET.get() == (album_dir, "album"):
                 # a refresh of this exact album must not degrade it to tag-only on a malformed NFO;
                 # propagate so the refresh keeps the prior metadata and retries. An unrelated
                 # album's NFO parsed in the same reparse still degrades and never blocks this one.
@@ -3267,7 +3272,7 @@ class LocalFileSystemProvider(MusicProvider):
             # present-but-malformed album.nfo then raises instead of degrading, so a
             # valid->malformed edit keeps the prior metadata and retries rather than being
             # reconciled as a removal (no read-then-reparse TOCTOU)
-            self._reraise_invalid_nfo_target = (album_dir, "album")
+            token = _RERAISE_INVALID_NFO_TARGET.set((album_dir, "album"))
             try:
                 fresh = await self._reparse_album_from_track(stored.item_id, album_dir)
             except SidecarReadError as err:
@@ -3279,7 +3284,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return False
             finally:
-                self._reraise_invalid_nfo_target = None
+                _RERAISE_INVALID_NFO_TARGET.reset(token)
             if fresh is not None:
                 fresh_details = self._parse_sidecar_details(self._mapping_details(fresh))
                 new_snapshot = fresh_details[2] if fresh_details else {}
@@ -3319,9 +3324,13 @@ class LocalFileSystemProvider(MusicProvider):
         )
         # with a provenance baseline the reconciliation is authoritative and may clear values the
         # NFO no longer provides; without one it only adds, so never destructively clear
-        await self.mass.music.albums.update_item_in_library(
-            stored.item_id, stored, overwrite=True, full_replace=prev is not None
-        )
+        replace_token = FULL_REPLACE_UPDATE.set(prev is not None)
+        try:
+            await self.mass.music.albums.update_item_in_library(
+                stored.item_id, stored, overwrite=True
+            )
+        finally:
+            FULL_REPLACE_UPDATE.reset(replace_token)
         return True
 
     async def _refresh_artist_sidecars(
@@ -3354,7 +3363,7 @@ class LocalFileSystemProvider(MusicProvider):
             # reparse once with invalid-NFO propagation scoped to this exact artist (see
             # _refresh_album_sidecars): a present-but-malformed artist.nfo raises instead of
             # degrading, so a valid->malformed edit keeps the prior metadata and retries
-            self._reraise_invalid_nfo_target = (artist_path, "artist")
+            token = _RERAISE_INVALID_NFO_TARGET.set((artist_path, "artist"))
             try:
                 fresh = await self._reparse_artist_from_track(stored.item_id, artist_path)
             except SidecarReadError as err:
@@ -3368,7 +3377,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return False
             finally:
-                self._reraise_invalid_nfo_target = None
+                _RERAISE_INVALID_NFO_TARGET.reset(token)
             if fresh is not None:
                 fresh_details = self._parse_sidecar_details(self._mapping_details(fresh))
                 new_snapshot = fresh_details[2] if fresh_details else {}
@@ -3405,9 +3414,13 @@ class LocalFileSystemProvider(MusicProvider):
         self._set_mapping_details(
             stored, self._build_sidecar_details(nfo_sig, img_sig, new_snapshot), item_id=artist_path
         )
-        await self.mass.music.artists.update_item_in_library(
-            stored.item_id, stored, overwrite=True, full_replace=prev is not None
-        )
+        replace_token = FULL_REPLACE_UPDATE.set(prev is not None)
+        try:
+            await self.mass.music.artists.update_item_in_library(
+                stored.item_id, stored, overwrite=True
+            )
+        finally:
+            FULL_REPLACE_UPDATE.reset(replace_token)
         return True
 
     async def _collect_album_images(self, album_dir: str) -> UniqueList[MediaItemImage]:
