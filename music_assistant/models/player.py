@@ -322,7 +322,18 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
         "options": tuple((o.key, o.value, o.read_only) for o in state.options),
         "source_list": tuple(
-            (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+            (
+                s.id,
+                s.name,
+                s.passive,
+                s.can_play_pause,
+                s.can_seek,
+                s.can_next_previous,
+                s.can_shuffle,
+                s.can_repeat,
+                s.shuffle_enabled,
+                s.repeat_mode,
+            )
             for s in state.source_list
         ),
         "output_protocols": tuple(
@@ -2413,7 +2424,18 @@ class Player(ABC):
                 tuple(sorted(device_info.identifiers.items())),
             ),
             "source_list": tuple(
-                (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+                (
+                    s.id,
+                    s.name,
+                    s.passive,
+                    s.can_play_pause,
+                    s.can_seek,
+                    s.can_next_previous,
+                    s.can_shuffle,
+                    s.can_repeat,
+                    s.shuffle_enabled,
+                    s.repeat_mode,
+                )
                 for s in self.source_list
             ),
             "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
@@ -3013,6 +3035,12 @@ class Player(ABC):
                     can_play_pause=session.source.can_play_pause,
                     can_seek=session.source.can_seek,
                     can_next_previous=session.source.can_next_previous,
+                    can_shuffle=session.source.can_shuffle,
+                    can_repeat=session.source.can_repeat,
+                    # the ordering the session reports, so a client can render it
+                    # without a queue to read it from
+                    shuffle_enabled=session.shuffle_enabled,
+                    repeat_mode=session.repeat_mode,
                 )
             )
         return sources

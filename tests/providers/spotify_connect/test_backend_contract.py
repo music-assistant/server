@@ -707,40 +707,30 @@ async def test_queue_changed_event_is_ignored_for_now() -> None:
     assert provider._last_context_uri == "spotify:playlist:ctx"
 
 
-def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
-    """A queue-control backend makes the AudioSource declare its queue capabilities."""
+def test_audio_source_declares_ordering_with_queue_control() -> None:
+    """A queue-control backend makes the AudioSource declare it orders its session."""
     backend = QueueControlFakeBackend()
     provider, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
     source = provider._build_audio_source()
 
-    caps = source.queue_capabilities
-    assert caps is not None
-    assert caps.provider_domain == "spotify"
-    assert caps.can_shuffle is True
-    assert caps.can_repeat is True
-    # the queue-view mirror and the play/enqueue redirect are not built yet,
-    # so those capabilities are not declared
-    assert caps.provides_queue_view is False
-    assert caps.playable_media_types == []
-    assert caps.enqueueable_media_types == []
-    assert caps.native_autoplay is False
-    assert caps.native_crossfade is False
-    assert caps.native_volume_normalization is False
+    assert source.can_shuffle is True
+    assert source.can_repeat is True
     # account verification arrives with the play redirect
     assert source.account_id is None
 
 
 def test_audio_source_stays_transport_only_without_queue_control() -> None:
-    """A transport-only backend leaves the AudioSource without queue capabilities."""
+    """A transport-only backend leaves the AudioSource unable to order itself."""
     backend = FakeBackend()
     provider, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
     source = provider._build_audio_source()
 
-    assert source.queue_capabilities is None
+    assert source.can_shuffle is False
+    assert source.can_repeat is False
 
 
 async def test_source_selected_takes_playback_back_via_backend() -> None:

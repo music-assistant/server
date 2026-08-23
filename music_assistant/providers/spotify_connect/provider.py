@@ -27,7 +27,6 @@ from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFound
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
-    SourceQueueCapabilities,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -621,20 +620,9 @@ class SpotifyConnectProvider(PluginProvider):
         Backends provide a full control surface, so play / pause / seek /
         next / previous are always available while a session is active — the
         capability flags are static (no dependency on the Spotify Web API).
-        Backends implementing the queue-session verbs additionally declare
-        queue capabilities, so the queue controller delegates queue commands
-        to this plugin while the source is playing.
+        Ordering the session is only offered by backends implementing the
+        queue-session verbs.
         """
-        queue_capabilities: SourceQueueCapabilities | None = None
-        if self._backend.supports_queue_control:
-            # only what is consumed today is declared; the remaining declarations
-            # (queue view, enqueue/play media types, native_* flags) arrive with
-            # the queue-view mirror and the play-redirect
-            queue_capabilities = SourceQueueCapabilities(
-                provider_domain="spotify",
-                can_shuffle=True,
-                can_repeat=True,
-            )
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -650,13 +638,14 @@ class SpotifyConnectProvider(PluginProvider):
             can_play_pause=True,
             can_seek=True,
             can_next_previous=True,
+            can_shuffle=self._backend.supports_queue_control,
+            can_repeat=self._backend.supports_queue_control,
             exclusive=True,
             allow_external_trigger=True,
             # Browsable/startable from MA: playback resumes the last known
             # Spotify context (claiming active device status). Without any
             # prior context a localized error points the user to the app.
             can_initiate=True,
-            queue_capabilities=queue_capabilities,
         )
 
     def _get_target_player_id(self) -> str | None:

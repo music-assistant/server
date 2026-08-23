@@ -171,11 +171,14 @@ class PluginProvider(Provider):
         Handle a playback control command for an active AudioSource.
 
         Called when the user (or an automation) issues a control command while
-        the active queue item is an AudioSource that supports the action:
-        PLAY/PAUSE dispatch from the player controller (gated on
-        ``can_play_pause``), NEXT/PREVIOUS/SEEK from the queue controller
-        (gated on ``can_next_previous`` / ``can_seek``) and SHUFFLE/REPEAT
-        from the queue controller for sources declaring ``queue_capabilities``.
+        this AudioSource is the live source on a player. The player controller
+        gates the transport actions on the flag the source declares for each:
+        ``can_play_pause`` for PLAY/PAUSE, ``can_seek`` for SEEK and
+        ``can_next_previous`` for NEXT/PREVIOUS. SHUFFLE/REPEAT are forwarded
+        whatever ``can_shuffle`` / ``can_repeat`` say, because only the session
+        knows whether its current content can be reordered — those flags tell
+        clients what to offer, and a source declaring them is expected to report
+        the resulting state back via ``mass.players.update_source_options``.
 
         :param source_id: The AudioSource.item_id the command applies to.
         :param action: The control action to perform.
