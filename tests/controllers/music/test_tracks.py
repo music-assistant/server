@@ -23,6 +23,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.tracks import (
     TrackProviderMatch,
     TrackProviderMatchResult,
+    TracksController,
 )
 from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
@@ -309,6 +310,28 @@ async def test_match_confidence_hydrates_album_after_initial_no_match(
     assert confidence == TrackMatchConfidence.EXACT
 
 
+async def test_full_track_album_falls_back_after_transient_failure(
+    music: MusicController,
+) -> None:
+    """Optional album evidence falls back to the mapping after a provider timeout."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        item_id="album",
+        provider="spotify_1",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+
+    with patch.object(
+        music.albums,
+        "get",
+        AsyncMock(side_effect=TimeoutError),
+    ):
+        result = await music.tracks._get_full_track_album(track)
+
+    assert result is track.album
+
+
 async def test_find_provider_match_classifies_library_mapping_against_source(
     music: MusicController,
 ) -> None:
@@ -568,6 +591,25 @@ async def test_find_provider_match_reports_ambiguous_loose_candidates(
 
     assert result.match is None
     assert result.ambiguous is True
+
+
+def test_tied_loose_matches_require_pairwise_compatibility() -> None:
+    """A middle-duration candidate can not make incompatible outer candidates look equivalent."""
+    tracks = [
+        create_track("qobuz_1", "middle", duration=103, isrc="MIDDLE"),
+        create_track("qobuz_1", "short", duration=100, isrc="SHORT"),
+        create_track("qobuz_1", "long", duration=106, isrc="LONG"),
+    ]
+    matches = [
+        TrackProviderMatch(
+            track=track,
+            mapping=next(iter(track.provider_mappings)),
+            confidence=TrackMatchConfidence.LOOSE,
+        )
+        for track in tracks
+    ]
+
+    assert TracksController._matches_are_compatible(matches) is False
 
 
 async def test_enrich_provider_mappings_uses_library_without_mutating_it(

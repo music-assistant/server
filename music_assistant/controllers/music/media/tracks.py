@@ -1097,7 +1097,14 @@ class TracksController(MediaControllerBase[Track]):
                 track.album.provider,
                 allow_update_metadata=False,
             )
-        except (InvalidDataError, MediaNotFoundError, ProviderUnavailableError) as err:
+        except (
+            InvalidDataError,
+            MediaNotFoundError,
+            ProviderUnavailableError,
+            ClientError,
+            OSError,
+            TimeoutError,
+        ) as err:
             self.logger.debug(
                 "Could not load album details for track %s: %s",
                 track.name,
@@ -1108,10 +1115,11 @@ class TracksController(MediaControllerBase[Track]):
     @staticmethod
     def _matches_are_compatible(matches: list[TrackProviderMatch]) -> bool:
         """Return whether tied loose matches identify the same recording."""
-        first_match = matches[0]
         return all(
-            compare_track_evidence(first_match.track, match.track) >= TrackMatchConfidence.LIKELY
-            for match in matches[1:]
+            compare_track_evidence(base_match.track, compare_match.track)
+            >= TrackMatchConfidence.LIKELY
+            for index, base_match in enumerate(matches)
+            for compare_match in matches[index + 1 :]
         )
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
