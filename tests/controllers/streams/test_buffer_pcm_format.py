@@ -1,8 +1,11 @@
-"""Test that the buffer's PCM format follows the arriving audio, not the advertised source."""
+"""Test that PCM formats follow the arriving audio, not the advertised source."""
 
 from __future__ import annotations
 
-from music_assistant_models.enums import ContentType, MediaType
+from types import SimpleNamespace
+from typing import cast
+
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -79,3 +82,41 @@ def test_a_surround_source_is_folded_to_stereo() -> None:
     )
     advertised = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=24)
     assert _buffer_pcm_format(_streamdetails(advertised, arriving)).channels == 2
+
+
+def test_the_flow_depth_follows_the_arriving_audio() -> None:
+    """
+    The flow must not narrow a stream to a depth its audio never had.
+
+    Reusing the source's native depth is a passthrough optimisation, so it has
+    to read the depth the bytes arrive in - a provider that decoded for us may
+    advertise something narrower purely for display.
+    """
+    from music_assistant.controllers.streams.audio import StreamsAudio  # noqa: PLC0415
+
+    advertised = AudioFormat(
+        content_type=ContentType.FLAC,
+        codec_type=ContentType.FLAC,
+        sample_rate=44100,
+        bit_depth=24,
+        channels=2,
+    )
+    arriving = AudioFormat(
+        content_type=ContentType.PCM_S32LE,
+        codec_type=ContentType.PCM_S32LE,
+        sample_rate=44100,
+        bit_depth=32,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, arriving)
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+
+    content_type, bit_depth = StreamsAudio._pick_pcm_bit_depth(
+        cast("StreamsAudio", SimpleNamespace()),
+        players=(),
+        streamdetails=streamdetails,
+        crossfade_enabled=False,
+    )
+
+    assert bit_depth == 32
+    assert content_type == ContentType.PCM_S32LE

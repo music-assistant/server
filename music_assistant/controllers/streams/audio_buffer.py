@@ -37,6 +37,7 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.helpers.audio import arriving_audio_format, pcm_formats_match
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 
@@ -282,7 +283,9 @@ class AudioBuffer:
         :param filter_params: FFmpeg filter parameters to apply.
         :param exact_seek: Preserve millisecond precision for the input buffer position.
         """
-        needs_ffmpeg = bool(filter_params) or self.pcm_format != output_format
+        # not `!=`: that compares equal for integer and float PCM of the same
+        # depth, and passing one through as the other reinterprets every sample
+        needs_ffmpeg = bool(filter_params) or not pcm_formats_match(self.pcm_format, output_format)
 
         if not needs_ffmpeg:
             async for chunk in self.get_raw_stream(
@@ -810,7 +813,7 @@ def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
 
     :param streamdetails: The stream the buffer is for.
     """
-    arriving = streamdetails.decoded_audio_format or streamdetails.audio_format
+    arriving = arriving_audio_format(streamdetails)
     return AudioFormat(
         content_type=ContentType.from_bit_depth(arriving.bit_depth),
         sample_rate=arriving.sample_rate,

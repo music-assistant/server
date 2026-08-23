@@ -120,6 +120,7 @@ from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
+    arriving_audio_format,
     build_concat_filelist,
     calculate_content_length,
     get_bit_rate,
@@ -128,6 +129,7 @@ from music_assistant.helpers.audio import (
     is_grouping_preventing_dsp,
     iter_pcm_slices,
     parse_extinf_metadata,
+    pcm_formats_match,
     realtime_pcm_pacer,
     resample_pcm_audio,
     resolve_output_player_ids,
@@ -226,16 +228,6 @@ def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) ->
         return target
     lower = [r for r in supported_sample_rates if r < target]
     return max(lower) if lower else min(supported_sample_rates)
-
-
-def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
-    """Return True if two PCM formats describe identical raw bytes."""
-    return (
-        a.content_type == b.content_type
-        and a.sample_rate == b.sample_rate
-        and a.bit_depth == b.bit_depth
-        and a.channels == b.channels
-    )
 
 
 def overlay_active(queue: PlayerQueue) -> bool:
@@ -3533,11 +3525,7 @@ class StreamsAudio:
         cancelled = False
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
-        # AirPlay receivers piping PCM after their own decode), audio_format is
-        # the original source format meant for display while decoded_audio_format
-        # is what ffmpeg actually needs to read off the wire.
-        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
+        ffmpeg_input_format = arriving_audio_format(streamdetails)
         ffmpeg_proc = FFMpeg(
             audio_input=audio_source,
             input_format=ffmpeg_input_format,
@@ -3850,7 +3838,7 @@ class StreamsAudio:
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes]:
         """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
-        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
+        if pcm_formats_match(arriving_audio_format(streamdetails), pcm_format):
             source_gen = self._open_audio_source_generator(streamdetails)
             async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
                 yield chunk
@@ -4172,7 +4160,10 @@ class StreamsAudio:
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
-        bit_depth = streamdetails.audio_format.bit_depth
+        # the depth the audio arrives in, not the one the source claims: a
+        # provider that decoded on our behalf may advertise a narrower format
+        # for display, and narrowing the stream to that would truncate it
+        bit_depth = arriving_audio_format(streamdetails).bit_depth
         return ContentType.from_bit_depth(bit_depth), bit_depth
 
     def _select_audio_source_pcm_format(
