@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -1689,8 +1689,17 @@ class StreamsController(CoreController):
             session.source_id,
             session.player_id,
         )
-        with suppress(Exception):
+        try:
             await self.mass.players.deselect_source(session.player_id)
+        except Exception:
+            # deselect_source already absorbs the expected stop failures, so anything
+            # arriving here is a defect worth a trail rather than a silent half-cleanup
+            self.logger.warning(
+                "Failed to release AudioSource %s on player %s",
+                session.source_id,
+                session.player_id,
+                exc_info=True,
+            )
 
     async def _serve_audio_source_head(
         self, request: web.Request, session: AudioSourceSession
