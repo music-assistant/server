@@ -58,7 +58,7 @@ from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_LOSSLESS,
     AUDIO_QUALITY_OPTIONS,
@@ -995,6 +995,11 @@ class SpotifyProvider(MusicProvider):
                         chunk_count += 1
                     if chunk_count > 0:
                         consecutive_failures = 0
+                except ProviderStreamLimitError:
+                    # capacity, not a broken chapter: skipping ahead would burn
+                    # chapters and end as a plain error, which costs the item its
+                    # availability and the caller its chance to wait or reselect
+                    raise
                 except Exception as e:
                     self.logger.warning("Chapter %s streaming failed", i + 1)
                     consecutive_failures += 1

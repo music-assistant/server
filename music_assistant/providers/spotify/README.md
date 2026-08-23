@@ -78,16 +78,21 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   advertises itself as a Connect device and offers no way to suppress that, so the
   device is listed in the user's Spotify apps for as long as Music Assistant is
   playing — named `SOLOIST_DEVICE_NAME`, deliberately *not* the plain "Music
-  Assistant" the Spotify Connect provider advertises by default, so the two are
-  told apart. Three things the user can do there are handled:
+  Assistant" the Spotify Connect provider advertises by default, so the two do
+  not arrive under one name. Three things the user can do there are handled:
   - **Move playback to another device**, which shows up as `is_active` going false
     on `device_changed`/`auth_state` (`playback_state.is_active` is optional and
     rides on deltas, so it is ignored). Only a loss of the active status the session
     itself claimed counts — a daemon is inactive until `_play` activates it.
-  - **Start something else on this device**, which shows up as the engine reporting
-    an item nobody fed it while the current one is still part-way through
-    (`_ItemAudio.mid_play`). The engine's own autoplay and the item it restores at
-    startup both fail that test, which is what keeps them out of it.
+  - **Start something else on this device**, which shows up as the engine moving
+    somewhere it was never sent while the current item is still part-way through
+    (`_ItemAudio.mid_play`). Only the item fed behind the current one is exempt —
+    a skip in the app lands there, which is also where the queue goes next, so the
+    two stay in step. The engine's own autoplay and the item it restores at startup
+    both fail the `mid_play` test, which is what keeps them out of it. Note the
+    last `crossfade + 10s` of an item is a blind spot by design: judging a boundary
+    needs that allowance, so a takeover inside it is missed rather than risking a
+    false one on every track.
   - **Pause**, which is put back a couple of times (an accidental tap) and then
     taken at face value.
 

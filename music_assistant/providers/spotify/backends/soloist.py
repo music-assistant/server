@@ -478,19 +478,6 @@ class SoloistBackend(SpotifyPlaybackBackend):
             if self._session is session:
                 self._session = None
 
-    def note_app_control(self, reason: SoloistAppControl) -> None:
-        """
-        Record that the Spotify app took control, holding off a replacement session.
-
-        Starting one right away would claim the Connect device back off whatever
-        the user just moved playback to, so the items that follow are refused for
-        a while instead.
-
-        :param reason: What the Spotify app did.
-        """
-        self._app_control = reason
-        self._app_control_until = time.monotonic() + _APP_CONTROL_COOLDOWN_S
-
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostic details about the backend (never any secret)."""
         session = self._session
@@ -603,10 +590,23 @@ class SoloistBackend(SpotifyPlaybackBackend):
             item.claim()
             return session, item
 
+    def _note_app_control(self, reason: SoloistAppControl) -> None:
+        """
+        Record that the Spotify app took control, holding off a replacement session.
+
+        Starting one right away would claim the Connect device back off whatever
+        the user just moved playback to, so the items that follow are refused for
+        a while instead.
+
+        :param reason: What the Spotify app did.
+        """
+        self._app_control = reason
+        self._app_control_until = time.monotonic() + _APP_CONTROL_COOLDOWN_S
+
     def _held_by_app(self) -> SoloistAppControl | None:
         """Return what the Spotify app did, for as long as that holds off a new session."""
-        if self._app_control is not None and time.monotonic() >= self._app_control_until:
-            self._app_control = None
+        if self._app_control is None or time.monotonic() >= self._app_control_until:
+            return None
         return self._app_control
 
     def _raise_if_app_controlled(self) -> None:
@@ -1472,6 +1472,8 @@ class _SoloistSession:
         # recorded before the branches below: a drain returns early, and the sink
         # still has to learn that the engine is no longer producing
         was_playing = self._engine_playing
+        # both read before _apply_sink_state below rewrites them
+        was_backpressured = self._backpressured
         self._engine_playing = playing
         if playing:
             # the engine picked the item back up: it was only rebuffering after all
@@ -1483,7 +1485,7 @@ class _SoloistSession:
             self._drain_last_item(item)
             return
         await self._apply_sink_state(engine_playing=playing)
-        if data.status == "paused" and not item.draining and not self._backpressured:
+        if data.status == "paused" and not item.draining and not was_backpressured:
             await self._undo_app_pause(was_playing=was_playing)
 
     async def _undo_app_pause(self, *, was_playing: bool) -> None:
@@ -1497,10 +1499,11 @@ class _SoloistSession:
         :param was_playing: Whether the engine was playing before this snapshot,
             so a repeated report of the same pause is not counted as a new one.
         """
-        if not self._was_active:
-            # A bare resume no longer reaches the Spotify apps once this daemon
-            # has lost the Connect device: it would start local playback beside
-            # whatever took the session over, on an account allowing one stream.
+        if not self.usable or not self._was_active:
+            # A session on its way out pauses the daemon itself, and a bare
+            # resume no longer reaches the Spotify apps once this one has lost
+            # the Connect device: it would start local playback beside whatever
+            # took the session over, on an account allowing one stream.
             return
         if was_playing:
             self._app_pauses += 1
@@ -1717,16 +1720,14 @@ class _SoloistSession:
 
         The engine advertises itself as a Connect device and cannot be told not
         to, so the user can move playback to another one from their Spotify app.
-        Only losing an active status this session established counts: a daemon is
-        inactive until :meth:`_play` claims it, and what it reports before that
-        is startup state rather than a takeover.
+        Only losing the active status :meth:`_play` claimed counts — a respawned
+        daemon can report itself active from the session Spotify still has on
+        the account, and arming the detector on that would fail the very first
+        item of a fresh session.
 
         :param is_active: Whether the engine reports being the active device.
         """
-        if is_active:
-            self._was_active = True
-            return
-        if not self._was_active:
+        if is_active or not self._was_active:
             return
         self._was_active = False
         self._end_on_app_control(SoloistAppControl.TOOK_OVER)
@@ -1745,7 +1746,7 @@ class _SoloistSession:
         self._app_control = reason
         message = _APP_CONTROL_MESSAGES[reason].format(self.backend.provider.name)
         self.logger.info("%s; ending the playback session", message)
-        self.backend.note_app_control(reason)
+        self.backend._note_app_control(reason)
         self._fail(message)
 
     def _session_error(self) -> AudioError:
@@ -1853,7 +1854,9 @@ class _ItemAudio:
         Return whether the engine reported this item played (nearly) to its end.
 
         Tells a run that genuinely finished apart from someone pausing in the
-        Spotify app part-way through the last track.
+        Spotify app part-way through the last track. No crossfade allowance:
+        this judges the run's *last* item, which crossfades into nothing (see
+        ``mid_play``, which judges a boundary and therefore needs one).
         """
         if self.duration_ms is None or self.last_position_ms is None:
             # nothing to judge by: treat a stop as the end rather than hanging
@@ -1875,6 +1878,10 @@ class _ItemAudio:
             return False
         if self.duration_ms is None or self.last_position_ms is None:
             return False
+        # Uncapped on purpose, unlike validate_item's half-duration clamp: on an
+        # item shorter than the allowance this answers False throughout, so a
+        # takeover there is missed rather than every crossfade boundary on it
+        # being called one.
         end_of_item_ms = self.session.crossfade_ms + _INCOMPLETE_TOLERANCE_MS
         return self.last_position_ms + end_of_item_ms < self.duration_ms
 

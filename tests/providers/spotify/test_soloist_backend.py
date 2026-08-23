@@ -226,10 +226,11 @@ async def test_the_first_logged_out_snapshot_is_not_a_lost_pairing(tmp_path: Pat
     """A daemon reports logged_in=False until it has restored its session."""
     session = _make_session(tmp_path)
     session._logged_in = None
-    await session._handle_event(_auth_event(logged_in=False))
+    session._was_active = False
+    await session._handle_event(_auth_event(logged_in=False, is_active=False))
     # failing here would break every playback on a perfectly good pairing
     assert session.usable is True
-    await session._handle_event(_auth_event(logged_in=True))
+    await session._handle_event(_auth_event(logged_in=True, is_active=False))
     assert session.usable is True
 
 
@@ -867,9 +868,47 @@ async def test_an_inactive_device_before_activation_is_not_a_takeover(tmp_path: 
     await session._handle_event(_auth_event(logged_in=True, is_active=False))
     assert session.usable is True
 
+    # nor does a respawned daemon reporting the session Spotify still has for
+    # the account: only the status _play claimed is followed
     await session._handle_event(_device_event(is_active=True))
     await session._handle_event(_device_event(is_active=False))
-    assert session.usable is False
+    assert session.usable is True
+
+
+async def test_a_reconnect_snapshot_keeps_an_active_session_alive(tmp_path: Path) -> None:
+    """The events connection re-snapshots after a drop; that is not a device change."""
+    session = _make_session(tmp_path)
+    await session._handle_event(_auth_event(logged_in=True, is_active=True))
+    await session._handle_event(_device_event(is_active=True))
+    assert session.usable is True
+
+
+async def test_the_playback_snapshots_active_flag_is_ignored(tmp_path: Path) -> None:
+    """It is optional and rides on deltas, so only the dedicated reports are followed."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    await session._handle_event(
+        SoloistEvent(
+            type="playback_changed",
+            data=SoloistPlaybackState(status="playing", is_active=False),
+            raw={},
+        )
+    )
+    assert session.usable is True
+
+
+async def test_backpressure_does_not_spend_the_pause_budget(tmp_path: Path) -> None:
+    """A sink suspended to cap the cushion is our doing, not the user pausing."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._backpressured = True
+    session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    session._pending.append(TRACK_B)
+    await session._handle_event(_playback_event("paused"))
+    _client_of(session).resume.assert_not_awaited()
+    assert session._app_pauses == 0
 
 
 async def test_a_lost_login_is_not_reported_as_a_takeover(tmp_path: Path) -> None:
@@ -976,12 +1015,13 @@ async def test_a_session_being_torn_down_does_not_hold_off_the_next_one(tmp_path
         await session._handle_event(_playback_event("paused"))
     await session._handle_event(_device_event(is_active=False))
     session.backend._raise_if_app_controlled()
+    _client_of(session).resume.assert_not_awaited()
 
 
 async def test_no_session_is_started_while_the_app_holds_the_last_one(tmp_path: Path) -> None:
     """A replacement would claim the Connect device straight back off the user."""
     backend = _make_backend(tmp_path)
-    backend.note_app_control(SoloistAppControl.TOOK_OVER)
+    backend._note_app_control(SoloistAppControl.TOOK_OVER)
     with pytest.raises(SoloistAppControlError):
         await backend._acquire(TRACK_A, 0, "player1")
 
@@ -989,10 +1029,10 @@ async def test_no_session_is_started_while_the_app_holds_the_last_one(tmp_path: 
 async def test_the_hold_on_a_new_session_expires(tmp_path: Path) -> None:
     """Coming back to Music Assistant later plays again without any fuss."""
     backend = _make_backend(tmp_path)
-    backend.note_app_control(SoloistAppControl.TOOK_OVER)
+    backend._note_app_control(SoloistAppControl.TOOK_OVER)
     backend._app_control_until = time.monotonic() - 1
     backend._raise_if_app_controlled()
-    assert backend._app_control is None
+    assert backend._held_by_app() is None
 
 
 def test_the_playback_device_is_named_apart_from_the_connect_one() -> None:
