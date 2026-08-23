@@ -786,7 +786,6 @@ class _SoloistSession:
             self._transport.close()
             self._transport = None
         if (proc := self._proc) is not None:
-            self._proc = None
             # the log reader stays alive across this wait: nothing else drains
             # the daemon's stdout, and a full pipe would keep it from exiting
             with suppress(TimeoutError):
@@ -795,13 +794,17 @@ class _SoloistSession:
             # a forced close must never be judged by its exit code
             with suppress(Exception):
                 await proc.close()
+            # dropped only now: a cancellation during the awaits above must leave
+            # the retry something to close, or the daemon keeps the data
+            # directory and every later session is refused
+            self._proc = None
         if self._log_task is not None:
             await _cancel_and_join([self._log_task])
             self._log_task = None
         if (sink := self._sink) is not None:
-            self._sink = None
             with suppress(Exception):
                 await sink.unload()
+            self._sink = None
         self._teardown_done = True
 
     def _spawn_task(self, coro: object) -> None:

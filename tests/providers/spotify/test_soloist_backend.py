@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -1071,6 +1072,41 @@ def test_a_session_being_read_never_expires(tmp_path: Path) -> None:
     session._idle_since = time.monotonic() - _IDLE_TIMEOUT_S * 10
     session._expire_idle()
     assert session.usable is True
+
+
+async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> None:
+    """
+    A cancelled teardown must leave the retry something to close.
+
+    Dropping the references first is how a daemon survives to hold the data
+    directory, which every later session is then refused for.
+    """
+    session = _make_session(tmp_path)
+    proc = session._proc
+    sink = session._sink
+    assert proc is not None
+
+    async def _never_returns() -> None:
+        await asyncio.Event().wait()
+
+    proc.wait = _never_returns
+    proc.close = AsyncMock()
+    task = asyncio.create_task(session.stop())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    # the teardown did not finish, so nothing was dropped and it can be redone
+    assert session._teardown_done is False
+    assert session._proc is proc
+    assert session._sink is sink
+    proc.wait = AsyncMock()
+    await session.stop()
+    assert session._teardown_done is True
+    assert session._proc is None
+    assert session._sink is None
+    cast("AsyncMock", proc.close).assert_awaited()
+    cast("AsyncMock", sink).unload.assert_awaited()
 
 
 def test_a_failed_session_is_torn_down(tmp_path: Path) -> None:
