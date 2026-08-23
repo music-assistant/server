@@ -1025,10 +1025,7 @@ class TracksController(MediaControllerBase[Track]):
             base_album=base_album,
             allow_item_id_match=allow_item_id_match,
         )
-        if confidence not in (
-            TrackMatchConfidence.LOOSE,
-            TrackMatchConfidence.LIKELY,
-        ):
+        if confidence == TrackMatchConfidence.EXACT:
             return confidence, base_album
         if base_album is None:
             base_album = await self._get_full_track_album(base_track)

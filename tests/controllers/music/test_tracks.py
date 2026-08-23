@@ -12,6 +12,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
+    ItemMapping,
     ProviderMapping,
     SearchResults,
     Track,
@@ -27,7 +28,7 @@ from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
-from .helpers import create_track
+from .helpers import create_album, create_track
 
 
 @pytest.fixture
@@ -269,6 +270,43 @@ async def test_find_provider_match_revalidates_untrusted_source_mapping(
     assert exact_result.match is None
     assert likely_result.match is not None
     assert likely_result.match.confidence == TrackMatchConfidence.LIKELY
+
+
+async def test_match_confidence_hydrates_album_after_initial_no_match(
+    music: MusicController,
+) -> None:
+    """Full release evidence can resolve a duration-based first-pass rejection."""
+    base = create_track("spotify_1", "base", duration=200)
+    candidate = create_track("qobuz_1", "candidate", duration=210)
+    base.disc_number = candidate.disc_number = 1
+    base.track_number = candidate.track_number = 1
+    base_album = create_album("spotify_1", "base-album", name="Album")
+    candidate_album = create_album("qobuz_1", "candidate-album", name="Album")
+    base.album = ItemMapping(
+        item_id=base_album.item_id,
+        provider=base_album.provider,
+        name=base_album.name,
+        media_type=MediaType.ALBUM,
+    )
+    candidate.album = ItemMapping(
+        item_id=candidate_album.item_id,
+        provider=candidate_album.provider,
+        name=candidate_album.name,
+        media_type=MediaType.ALBUM,
+    )
+
+    with patch.object(
+        music.tracks,
+        "_get_full_track_album",
+        AsyncMock(side_effect=(base_album, candidate_album)),
+    ):
+        confidence, _ = await music.tracks._get_match_confidence(
+            base,
+            candidate,
+            None,
+        )
+
+    assert confidence == TrackMatchConfidence.EXACT
 
 
 async def test_find_provider_match_classifies_library_mapping_against_source(

@@ -711,31 +711,44 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 target_ids,
             )
             update_current_task_progress(95, "Verifying destination playlist")
-            actual_target_ids = [
-                item.item_id
-                async for item in self.tracks(
-                    playlist_item_id,
-                    provider.instance_id,
-                    force_refresh=True,
+            try:
+                actual_target_ids = [
+                    item.item_id
+                    async for item in self.tracks(
+                        playlist_item_id,
+                        provider.instance_id,
+                        force_refresh=True,
+                    )
+                ]
+            except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
+                migrated_count = len(target_results)
+                issue = f"Could not verify destination playlist: {err}"
+                self.logger.warning(
+                    "Could not verify migrated playlist %s on provider %s: %s",
+                    destination_playlist.name,
+                    provider.name,
+                    err,
                 )
-            ]
-            missing_results = self._reconcile_migration_results(
-                actual_target_ids,
-                target_results,
-            )
-            migrated_count = len(target_results) - len(missing_results)
-            for track, result in missing_results:
-                reason = f"{provider.name} did not add this track"
-                counts["skipped"] += 1
-                self._adjust_migration_match_count(
-                    counts,
-                    result.confidence,
-                    -1,
+                report_current_task_failure(issue)
+                provider_issues.append(("Destination playlist", issue))
+            else:
+                missing_results = self._reconcile_migration_results(
+                    actual_target_ids,
+                    target_results,
                 )
-                report_current_task_failure(
-                    f"{self._migration_track_label(track)}: {reason.lower()}"
-                )
-                skipped_tracks.append((self._migration_track_label(track), reason))
+                migrated_count = len(target_results) - len(missing_results)
+                for track, result in missing_results:
+                    reason = f"{provider.name} did not add this track"
+                    counts["skipped"] += 1
+                    self._adjust_migration_match_count(
+                        counts,
+                        result.confidence,
+                        -1,
+                    )
+                    report_current_task_failure(
+                        f"{self._migration_track_label(track)}: {reason.lower()}"
+                    )
+                    skipped_tracks.append((self._migration_track_label(track), reason))
             destination_playlist.metadata.last_refresh = None
             await self.update_item_in_library(
                 destination_playlist.item_id,

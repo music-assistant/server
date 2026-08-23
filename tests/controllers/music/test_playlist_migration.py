@@ -304,13 +304,19 @@ async def test_migrate_playlist_rejects_dynamic_source(
             ["tidal-one", "tidal-one"],
             2,
         ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            None,
+            2,
+        ),
     ],
 )
 async def test_streaming_migration_handles_provider_duplicate_policy(
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
-    actual_target_ids: list[str],
+    actual_target_ids: list[str] | None,
     expected_failure_count: int,
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -344,6 +350,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
                 source_missing,
             )
         else:
+            if actual_target_ids is None:
+                raise ResourceTemporarilyUnavailable("Verification timed out")
             target_tracks = {
                 "tidal-one": target_one,
                 "tidal-two": target_two,
@@ -433,8 +441,12 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         expected_failures.append(
             call("Test Artist - Test Track: tidal does not support duplicate playlist entries")
         )
-    if "tidal-two" not in actual_target_ids:
+    if actual_target_ids is not None and "tidal-two" not in actual_target_ids:
         expected_failures.append(call("Test Artist - Test Track: tidal did not add this track"))
+    if actual_target_ids is None:
+        expected_failures.append(
+            call("Could not verify destination playlist: Verification timed out")
+        )
     assert report_failure.call_args_list == expected_failures
     assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
