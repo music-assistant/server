@@ -529,6 +529,39 @@ async def test_a_second_player_does_not_steal_a_session_in_use(tmp_path: Path) -
     assert session.usable is True
 
 
+async def test_a_replacement_waits_for_the_old_daemon_to_be_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine refuses to start while another daemon still holds its data dir."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    order: list[str] = []
+
+    async def _slow_stop() -> None:
+        order.append("stop-start")
+        await asyncio.sleep(0.05)
+        order.append("stop-done")
+
+    monkeypatch.setattr(session, "stop", _slow_stop)
+    _install_fake_binary_manager(monkeypatch)
+
+    async def _spawn(_self: Any, _uri: str, _seek: int) -> None:
+        order.append("spawn")
+        raise AudioError("spawn")
+
+    monkeypatch.setattr(soloist_backend._SoloistSession, "start", _spawn)
+    # the session failed, so its teardown is under way when the next item arrives
+    discard = asyncio.create_task(backend.discard_session(session))
+    await asyncio.sleep(0)
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(TRACK_B, 0, "player1")
+    await discard
+    assert order == ["stop-start", "stop-done", "spawn"]
+
+
 async def test_an_idle_session_is_taken_over(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

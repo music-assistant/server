@@ -185,6 +185,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param provider: The owning Spotify provider instance.
         """
         super().__init__(provider)
+        # Guards every read and write of _session AND every session teardown.
+        # The engine allows one daemon per data directory, so a replacement can
+        # only be spawned once the previous one is gone — holding this across
+        # the teardown is what sequences that.
         self._session_lock = asyncio.Lock()
 
     @property
@@ -289,12 +293,16 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         Stop a session for good, dropping it if it is still the current one.
 
+        The teardown happens under the session lock, not after it: the engine
+        refuses to start while another daemon still holds its data directory, so
+        a replacement must not be spawned until this one is gone.
+
         :param session: The session to tear down.
         """
         async with self._session_lock:
             if self._session is session:
                 self._session = None
-        await session.stop()
+            await session.stop()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostic details about the backend (never any secret)."""
