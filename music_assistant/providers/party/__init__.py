@@ -513,10 +513,10 @@ class PartyPlugin(PluginProvider):
 
         :returns: The queue ID for party, or None if no player available.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
         if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            # remote mode plays on the guest session's virtual player, which needs guest access
+            if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+                return None
             session = await self._get_session()
             return session.queue_id if session else None
 
