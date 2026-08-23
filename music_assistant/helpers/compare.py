@@ -1094,6 +1094,7 @@ def _track_artist_credit_keys(track: Track) -> set[str]:
     """Return normalized structured and title-embedded artist credits."""
     artist_credits = {_artist_credit_key(artist.name) for artist in track.artists}
     for featured_artists in _FEATURED_ARTISTS_PATTERN.findall(track.name):
+        artist_credits.add(_artist_credit_key(featured_artists))
         artist_credits.update(
             _artist_credit_key(artist_name)
             for artist_name in _FEATURED_ARTIST_SPLITTER.split(featured_artists)

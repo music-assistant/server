@@ -459,17 +459,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise InvalidDataError(f"{destination_name} is not a valid Playlist name")
 
         user = get_current_user()
+        source_provider, source_item_id = self._select_provider_id(source_playlist)
+        allowed_provider_instances = {item.instance_id for item in self.mass.music.providers}
+        allowed_provider_instances.update(
+            (source_provider, provider.instance_id),
+        )
         return self.mass.tasks.run_background_task(
-            task_id=(
-                f"playlist_migration.{source_playlist.item_id}."
-                f"{provider.instance_id}.{match_policy.value}"
-            ),
             name=f"Migrate playlist {source_playlist.name}",
             handler=lambda: self._handle_migrate_playlist(
                 source_playlist.item_id,
+                source_item_id,
+                source_provider,
                 provider.instance_id,
                 destination_name,
                 match_policy,
+                tuple(sorted(allowed_provider_instances)),
             ),
             user_id=user.user_id if user else None,
             metadata={
@@ -487,9 +491,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _handle_migrate_playlist(
         self,
         source_playlist_id: str,
+        source_playlist_item_id: str,
+        source_provider: str,
         destination_provider: str,
         destination_name: str,
         match_policy: PlaylistMigrationMatchPolicy,
+        allowed_provider_instances: tuple[str, ...],
     ) -> None:
         """Resolve and copy a playlist inside a managed task."""
         source_playlist = await self.get_library_item(source_playlist_id)
@@ -498,7 +505,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
-        async for item in self.tracks(source_playlist.item_id, "library"):
+        async for item in self.tracks(source_playlist_item_id, source_provider):
             if isinstance(item, Track):
                 source_tracks.append(item)
                 continue
@@ -522,6 +529,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     track,
                     provider,
                     minimum_confidence,
+                    set(allowed_provider_instances),
                 )
             completed += 1
             _update_stage_progress(
@@ -695,6 +703,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         track: Track,
         provider: MusicProvider,
         minimum_confidence: TrackMatchConfidence,
+        allowed_provider_instances: set[str],
     ) -> _PlaylistMigrationTrackResult:
         """Resolve one source track for a migration destination."""
         try:
@@ -702,6 +711,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 enrichment = await self.mass.music.tracks.enrich_provider_mappings(
                     track,
                     minimum_confidence=minimum_confidence,
+                    provider_instance_ids=allowed_provider_instances,
                 )
                 return _PlaylistMigrationTrackResult(
                     track=enrichment.track,
@@ -711,11 +721,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     used_library_item=enrichment.used_library_item,
                 )
             library_track = await self.mass.music.tracks.get_library_match(track)
-            base_track = library_track or track
             result = await self.mass.music.tracks.find_provider_match(
-                base_track,
+                track,
                 provider,
                 minimum_confidence=minimum_confidence,
+                mapping_source=library_track,
+                allowed_provider_instances=allowed_provider_instances,
             )
             if not result.match:
                 return _PlaylistMigrationTrackResult(

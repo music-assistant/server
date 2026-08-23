@@ -146,6 +146,11 @@ async def test_migrate_playlist_queues_validated_task(
             tasks,
             create=True,
         ),
+        patch.object(
+            music.playlists,
+            "_handle_migrate_playlist",
+            AsyncMock(),
+        ) as handle_migration,
     ):
         result = await music.playlists.migrate_playlist(
             source_playlist.item_id,
@@ -153,12 +158,20 @@ async def test_migrate_playlist_queues_validated_task(
             name="Migrated",
             match_policy=PlaylistMigrationMatchPolicy.BEST_EFFORT,
         )
+        await tasks.run_background_task.call_args.kwargs["handler"]()
 
     assert result is queued_task
-    assert tasks.run_background_task.call_args.kwargs["task_id"] == (
-        "playlist_migration.1.tidal_1.best_effort"
-    )
+    assert "task_id" not in tasks.run_background_task.call_args.kwargs
     assert tasks.run_background_task.call_args.kwargs["metadata"]["match_policy"] == "best_effort"
+    handle_migration.assert_awaited_once_with(
+        "1",
+        "source",
+        "spotify_1",
+        "tidal_1",
+        "Migrated",
+        PlaylistMigrationMatchPolicy.BEST_EFFORT,
+        ("spotify_1", "tidal_1"),
+    )
 
 
 async def test_migrate_playlist_rejects_dynamic_source(
@@ -251,9 +264,12 @@ async def test_streaming_migration_preserves_order_and_duplicates(
     ):
         await music.playlists._handle_migrate_playlist(
             source_playlist.item_id,
+            "source",
+            "spotify_1",
             target_provider.instance_id,
             "Migrated",
             PlaylistMigrationMatchPolicy.SAME_RECORDING,
+            ("spotify_1", "tidal_1"),
         )
 
     create_playlist.assert_awaited_once()
@@ -262,6 +278,10 @@ async def test_streaming_migration_preserves_order_and_duplicates(
         ["tidal-one", "tidal-two", "tidal-one"],
     )
     assert find_match.await_count == 3
+    assert all(
+        call.kwargs["allowed_provider_instances"] == {"spotify_1", "tidal_1"}
+        for call in find_match.await_args_list
+    )
     report_failure.assert_called_once_with("Test Artist - Test Track: no acceptable match")
     assert set_report.call_count == 2
     assert "### Skipped tracks" in set_report.call_args.args[0]
@@ -321,12 +341,19 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
     ):
         await music.playlists._handle_migrate_playlist(
             source_playlist.item_id,
+            "source",
+            "spotify_1",
             builtin_provider.instance_id,
             "Migrated",
             PlaylistMigrationMatchPolicy.BEST_EFFORT,
+            ("builtin", "spotify_1"),
         )
 
-    assert enrich.await_count == 1
+    enrich.assert_awaited_once_with(
+        source,
+        minimum_confidence=TrackMatchConfidence.LOOSE,
+        provider_instance_ids={"builtin", "spotify_1"},
+    )
     assert create_builtin.await_args is not None
     entries = create_builtin.await_args.args[1]
     assert len(entries) == 2

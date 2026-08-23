@@ -651,6 +651,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         provider_instance_id_or_domain: str,
         media_types: list[MediaType],
         limit: int = 10,
+        allowed_provider_instances: set[str] | None = None,
     ) -> SearchResults:
         """
         Search one available provider through the cached, timeout-bounded path.
@@ -659,12 +660,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param provider_instance_id_or_domain: Provider instance ID or domain.
         :param media_types: Media types to include.
         :param limit: Maximum results per media type.
+        :param allowed_provider_instances: Explicit provider scope for deferred work.
         """
         provider = self.mass.get_provider(
             provider_instance_id_or_domain,
             provider_type=MusicProvider,
         )
-        if not provider or not self._apply_user_provider_filter([provider]):
+        if not provider:
+            return SearchResults()
+        if allowed_provider_instances is not None:
+            if provider.instance_id not in allowed_provider_instances:
+                return SearchResults()
+        elif not self._apply_user_provider_filter([provider]):
             return SearchResults()
         return (
             await self._search_provider(

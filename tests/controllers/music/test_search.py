@@ -138,7 +138,7 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
     provider = _make_search_provider("prov_a")
     controller = _make_controller([provider])
     expected = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
-    controller._apply_user_provider_filter = Mock(return_value=[provider])  # type: ignore[method-assign]
+    controller._apply_user_provider_filter = Mock(return_value=[])  # type: ignore[method-assign]
     controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
 
     result = await controller.search_provider(
@@ -146,6 +146,7 @@ async def test_search_provider_uses_centralized_provider_search() -> None:
         provider.instance_id,
         [MediaType.TRACK],
         limit=5,
+        allowed_provider_instances={"prov_a"},
     )
 
     assert result == expected

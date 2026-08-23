@@ -1370,6 +1370,27 @@ def test_compare_track_evidence_rejects_conflicting_featured_artists() -> None:
     assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
 
 
+def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
+    """A separator inside one featured artist name is not treated as conflicting credits."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Simon & Garfunkel)",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Simon & Garfunkel"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
 def test_compare_track_evidence_ranks_recording_identifiers() -> None:
     """Release-track IDs are exact while recording IDs identify alternate releases."""
     mb_track = (
