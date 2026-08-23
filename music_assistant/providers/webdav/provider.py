@@ -20,6 +20,7 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    ALBUM_CONTENT_EXTENSIONS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
@@ -353,6 +354,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue
+                if sidecar_index is not None and item.ext in ALBUM_CONTENT_EXTENSIONS:
+                    sidecar_index.record_track_dir(item.relative_parent_path)
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
                     update_current_task_progress_text(f"Scanning files: {scanned[0]} found")

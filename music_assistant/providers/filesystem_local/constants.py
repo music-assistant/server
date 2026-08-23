@@ -146,6 +146,8 @@ TRACK_EXTENSIONS = {
 }
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 CUE_EXTENSIONS = {"cue"}
+# folders holding any of these are treated as album track folders (for disc-artwork detection)
+ALBUM_CONTENT_EXTENSIONS = TRACK_EXTENSIONS | CUE_EXTENSIONS
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
@@ -183,9 +185,6 @@ CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
-# persisted per-provider sidecar state (per-item nfo/image signatures + scalar snapshots)
-# used to detect sidecar changes across syncs and reconcile removals
-CACHE_CATEGORY_SIDECAR_STATE: Final[int] = 9
 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this

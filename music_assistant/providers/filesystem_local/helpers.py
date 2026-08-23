@@ -7,7 +7,7 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Hashable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ScalarT = TypeVar("_ScalarT")
+_HashableT = TypeVar("_HashableT", bound=Hashable)
 
 # number of consecutive unreadable directories that marks the storage itself as gone
 MAX_CONSECUTIVE_SCAN_ERRORS = 10
@@ -251,16 +252,18 @@ def is_sidecar_file(item: FileSystemItem) -> bool:
 @dataclass
 class SidecarIndex:
     """
-    Recognized metadata sidecars (``album.nfo``, ``artist.nfo``, folder images) per directory.
+    Recognized metadata sidecars and track-containing directories gathered during a music sync.
 
-    Populated during the music sync walk from the directory listings it already produces, so
-    sidecar add/edit/remove is detectable without any extra filesystem probes. Album ``album.nfo``
-    is only ever read from the album's own mapping directory (Kodi layout); disc-subfolder
-    ``album.nfo`` is deliberately excluded from album signatures, while disc images still count
-    towards the album's artwork.
+    Populated from the directory listings the walk already produces, so sidecar add/edit/remove is
+    detectable without extra probes. ``album.nfo`` is only read from the album's own mapping
+    directory (Kodi layout); an album's artwork spans its folder plus the immediate subfolders that
+    actually contain its tracks (disc folders), excluding subfolders that are themselves mapped
+    albums.
     """
 
     files_by_dir: dict[str, list[FileSystemItem]] = field(default_factory=dict)
+    track_dirs: set[str] = field(default_factory=set)
+    _track_children: dict[str, list[str]] | None = field(default=None, init=False, repr=False)
 
     def record(self, item: FileSystemItem) -> bool:
         """
@@ -273,6 +276,12 @@ class SidecarIndex:
         self.files_by_dir.setdefault(item.relative_parent_path, []).append(item)
         return True
 
+    def record_track_dir(self, folder: str) -> None:
+        """Record a directory that holds scanned audio/CUE content (a track or disc folder)."""
+        if folder not in self.track_dirs:
+            self.track_dirs.add(folder)
+            self._track_children = None
+
     def image_items(self, folder: str) -> list[FileSystemItem]:
         """Return the recognized image sidecars recorded directly inside folder."""
         return [item for item in self.files_by_dir.get(folder, ()) if _is_image_sidecar(item)]
@@ -280,10 +289,6 @@ class SidecarIndex:
     def files(self, folder: str) -> list[FileSystemItem]:
         """Return all recognized sidecars recorded directly inside folder."""
         return list(self.files_by_dir.get(folder, ()))
-
-    def child_dirs(self, parent: str) -> list[str]:
-        """Return recorded directories that are an immediate child of parent."""
-        return [d for d in self.files_by_dir if d != parent and os.path.dirname(d) == parent]
 
     def nfo_item(self, folder: str, name: str) -> FileSystemItem | None:
         """Return the named NFO sidecar recorded directly inside folder, if present."""
@@ -293,19 +298,33 @@ class SidecarIndex:
                 return item
         return None
 
-    def album_signatures(self, album_dir: str) -> tuple[str, str]:
+    def album_image_dirs(self, album_dir: str, mapped_album_dirs: set[str]) -> list[str]:
+        """
+        Return the folders an album draws artwork from.
+
+        This is its own folder plus the immediate subfolders that hold its tracks, minus any that
+        are themselves mapped albums.
+
+        :param album_dir: The album's mapping directory.
+        :param mapped_album_dirs: Directories that are known album mappings (excluded as discs).
+        """
+        dirs = [album_dir]
+        dirs.extend(
+            child for child in self._child_track_dirs(album_dir) if child not in mapped_album_dirs
+        )
+        return dirs
+
+    def album_signatures(self, album_dir: str, mapped_album_dirs: set[str]) -> tuple[str, str]:
         """
         Return the ``(nfo_signature, image_signature)`` for an album mapped at album_dir.
 
-        ``album.nfo`` is taken from album_dir only; images from album_dir and its immediate
-        disc subfolders.
-
         :param album_dir: The album's mapping directory.
+        :param mapped_album_dirs: Directories that are known album mappings (excluded as discs).
         """
         nfo_item = self.nfo_item(album_dir, "album.nfo")
-        images = list(self.image_items(album_dir))
-        for sub in self.child_dirs(album_dir):
-            images.extend(self.image_items(sub))
+        images: list[FileSystemItem] = []
+        for folder in self.album_image_dirs(album_dir, mapped_album_dirs):
+            images.extend(self.image_items(folder))
         return (
             get_folder_signature([nfo_item] if nfo_item else []),
             get_folder_signature(images),
@@ -322,6 +341,19 @@ class SidecarIndex:
             get_folder_signature([nfo_item] if nfo_item else []),
             get_folder_signature(list(self.image_items(artist_path))),
         )
+
+    def _child_track_dirs(self, parent: str) -> list[str]:
+        """Return the immediate child directories of parent that hold tracks (memoized, O(1))."""
+        if self._track_children is None:
+            children: dict[str, list[str]] = {}
+            for track_dir in self.track_dirs:
+                children.setdefault(os.path.dirname(track_dir), []).append(track_dir)
+            self._track_children = children
+        return self._track_children.get(parent, [])
+
+
+class SidecarReadError(Exception):
+    """Raised when a sidecar or representative track cannot be read due to a transient failure."""
 
 
 def reconcile_scalar(
@@ -343,6 +375,25 @@ def reconcile_scalar(
     if previous is not None and stored == previous:
         return None
     return stored
+
+
+def reconcile_provenance_set(
+    stored: Iterable[_HashableT] | None,
+    fresh_nfo: Iterable[_HashableT] | None,
+    previous_nfo: Iterable[_HashableT] | None,
+) -> set[_HashableT]:
+    """
+    Reconcile a set the sidecar contributes to (genres, external ids) by provenance.
+
+    Removes exactly what this provider's NFO previously contributed and adds what it contributes
+    now, leaving values from the audio tags or other providers untouched. Removing one NFO value
+    therefore keeps the rest.
+
+    :param stored: The set currently held by the library item.
+    :param fresh_nfo: The values this NFO contributes now (empty when the NFO is gone).
+    :param previous_nfo: The values this NFO contributed last time.
+    """
+    return (set(stored or ()) - set(previous_nfo or ())) | set(fresh_nfo or ())
 
 
 def reconcile_images(

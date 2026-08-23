@@ -52,13 +52,8 @@ def _create_provider() -> LocalFileSystemProvider:
     provider._set_available = MagicMock()  # type: ignore[method-assign]
     # the sidecar reconciliation is exercised by its own tests; stub it here so these
     # resilience tests stay focused on the scan-error/deletion safeguards
-    provider._load_sidecar_state = AsyncMock(  # type: ignore[method-assign]
-        return_value={"albums": {}, "artists": {}, "album_scalars": {}, "artist_scalars": {}}
-    )
-    provider._refresh_changed_sidecars = AsyncMock(  # type: ignore[method-assign]
-        return_value={"albums": {}, "artists": {}}
-    )
-    provider._save_sidecar_state = AsyncMock()  # type: ignore[method-assign]
+    provider._query_mapping_details = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
+    provider._refresh_changed_sidecars = AsyncMock()  # type: ignore[method-assign]
     return provider
 
 

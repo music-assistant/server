@@ -5,36 +5,24 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import ImageType
-from music_assistant_models.media_items import Album, MediaItemImage, UniqueList
+from music_assistant_models.enums import ExternalID, ImageType
+from music_assistant_models.media_items import (
+    Album,
+    MediaItemImage,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.helpers import (
     FileSystemItem,
     SidecarIndex,
+    SidecarReadError,
     get_folder_signature,
 )
 
 INSTANCE_ID = "filesystem_local--test"
-
-
-def _file(relative_path: str, checksum: str = "1") -> FileSystemItem:
-    """Build a minimal file FileSystemItem."""
-    return FileSystemItem(
-        filename=relative_path.rsplit("/", 1)[-1],
-        relative_path=relative_path,
-        absolute_path=f"/media/{relative_path}",
-        is_dir=False,
-        checksum=checksum,
-        file_size=10,
-    )
-
-
-def _image(provider: str, path: str) -> MediaItemImage:
-    """Build a thumbnail image with the given provenance."""
-    return MediaItemImage(
-        type=ImageType.THUMB, path=path, provider=provider, remotely_accessible=False
-    )
+EMPTY = get_folder_signature([])
 
 
 def _provider() -> Any:
@@ -45,238 +33,200 @@ def _provider() -> Any:
     provider.mass = MagicMock()
     provider.config = MagicMock(instance_id=INSTANCE_ID)
     provider._active_sidecar_index = SidecarIndex()
-    provider._sync_touched_items = set()
-    provider._sync_album_scalars = {}
-    provider._sync_artist_scalars = {}
+    provider._sync_mapped_album_dirs = set()
     return provider
 
 
-def _stored_album() -> Album:
-    """Return a library album enriched by another metadata provider."""
-    album = Album(item_id="5", provider="library", name="Old Name", provider_mappings=set())
+def _image(provider: str, path: str) -> MediaItemImage:
+    """Build a thumbnail image with the given provenance."""
+    return MediaItemImage(
+        type=ImageType.THUMB, path=path, provider=provider, remotely_accessible=False
+    )
+
+
+def _fs_mapping(item_id: str, details: str | None = None) -> ProviderMapping:
+    """Build this provider's mapping for an item, optionally carrying sidecar details."""
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain="filesystem_local",
+        provider_instance=INSTANCE_ID,
+        details=details,
+    )
+
+
+def _stored_album(details: str | None) -> Album:
+    """Build a library album enriched by another provider, carrying our mapping details."""
+    album = Album(
+        item_id="5",
+        provider="library",
+        name="Old Name",
+        provider_mappings={_fs_mapping("Artist/Album", details)},
+    )
     album.metadata.description = "theaudiodb biography"
+    album.metadata.genres = {"Rock", "Electronic"}
+    album.external_ids = {(ExternalID.MB_ALBUM, "old-nfo-mbid"), (ExternalID.BARCODE, "123")}
     album.metadata.images = UniqueList([_image("theaudiodb", "remote/art.jpg")])
     return album
 
 
-# --- change classification -------------------------------------------------
+def _fresh_album(
+    provider: Any, snapshot: dict[str, Any], external_ids: set[tuple[ExternalID, str]]
+) -> Album:
+    """Build a freshly reparsed provider album carrying its current details snapshot."""
+    album = Album(
+        item_id="Artist/Album",
+        provider=INSTANCE_ID,
+        name="Tag Name",
+        version="",
+        provider_mappings={_fs_mapping("Artist/Album")},
+    )
+    album.year = 1999
+    album.sort_name = "Tag Name"
+    album.external_ids = external_ids
+    provider._set_mapping_details(album, provider._build_sidecar_details("nfo2", "img2", snapshot))
+    return album
+
+
+# --- classification ---------------------------------------------------------
 
 
 def test_classify_detects_nfo_and_image_changes() -> None:
     """The classifier distinguishes NFO changes, image-only changes and no change."""
     classify = LocalFileSystemProvider._classify_sidecar_change
-    empty = get_folder_signature([])
-    assert classify({"nfo": "a", "img": "x"}, "b", "x") is True  # nfo changed
-    assert classify({"nfo": "a", "img": "x"}, "a", "y") is False  # image only
-    assert classify({"nfo": "a", "img": "x"}, "a", "x") is None  # unchanged
-    # missing baseline: refresh once when sidecars exist, otherwise skip
-    assert classify(None, "a", empty) is True
-    assert classify(None, empty, "x") is False
-    assert classify(None, empty, empty) is None
+    assert classify(("a", "x", {}), "b", "x") is True  # nfo changed
+    assert classify(("a", "x", {}), "a", "y") is False  # image only
+    assert classify(("a", "x", {}), "a", "x") is None  # unchanged
+    assert classify(None, "a", EMPTY) is True  # no baseline, nfo exists
+    assert classify(None, EMPTY, "x") is False  # no baseline, image only
+    assert classify(None, EMPTY, EMPTY) is None  # no baseline, no sidecars
 
 
-# --- detection / dedup ------------------------------------------------------
-
-
-async def test_refresh_targets_only_changed_items() -> None:
-    """Only the album whose sidecar signature changed is refreshed; others are left alone."""
+def test_sidecar_details_round_trip() -> None:
+    """Details serialize to JSON and back, and collapse to None when there are no sidecars."""
     provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/album.nfo", checksum="2"))
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album", "Artist/Other"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    changed_nfo = provider._active_sidecar_index.album_signatures("Artist/Album")[0]
-    prev_state = {
-        "albums": {
-            "Artist/Album": {"nfo": "old", "img": get_folder_signature([])},
-            "Artist/Other": {"nfo": get_folder_signature([]), "img": get_folder_signature([])},
-        },
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    new_signatures = await provider._refresh_changed_sidecars(
-        provider._active_sidecar_index, prev_state
-    )
-
-    provider._refresh_album_sidecars.assert_awaited_once_with("Artist/Album", True, prev_state)
-    assert new_signatures["albums"]["Artist/Album"]["nfo"] == changed_nfo
-
-
-async def test_unchanged_scan_refreshes_nothing() -> None:
-    """A rescan with identical sidecar signatures performs no refresh."""
-    provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/album.nfo", checksum="2"))
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    nfo_sig, img_sig = provider._active_sidecar_index.album_signatures("Artist/Album")
-    prev_state = {
-        "albums": {"Artist/Album": {"nfo": nfo_sig, "img": img_sig}},
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    await provider._refresh_changed_sidecars(provider._active_sidecar_index, prev_state)
-    provider._refresh_album_sidecars.assert_not_awaited()
-
-
-async def test_disc_folder_nfo_does_not_trigger_metadata_refresh() -> None:
-    """album.nfo inside a disc folder is ignored, so it never triggers an album refresh."""
-    provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/Disc 1/album.nfo", checksum="2"))
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    empty = get_folder_signature([])
-    prev_state = {
-        "albums": {"Artist/Album": {"nfo": empty, "img": empty}},
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    await provider._refresh_changed_sidecars(provider._active_sidecar_index, prev_state)
-    provider._refresh_album_sidecars.assert_not_awaited()
-
-
-async def test_disc_folder_image_refreshes_parent_album_images_only() -> None:
-    """A disc-folder image change refreshes the parent album as an image-only change."""
-    provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/Disc 1/cover.jpg", checksum="7"))
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    empty = get_folder_signature([])
-    prev_state = {
-        "albums": {"Artist/Album": {"nfo": empty, "img": empty}},
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    await provider._refresh_changed_sidecars(provider._active_sidecar_index, prev_state)
-    provider._refresh_album_sidecars.assert_awaited_once_with("Artist/Album", False, prev_state)
-
-
-async def test_touched_items_are_skipped() -> None:
-    """An album already rebuilt by track processing this sync is not refreshed again."""
-    provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/album.nfo", checksum="2"))
-    provider._sync_touched_items.add("Artist/Album")
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    prev_state: dict[str, Any] = {
-        "albums": {},
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    await provider._refresh_changed_sidecars(provider._active_sidecar_index, prev_state)
-    provider._refresh_album_sidecars.assert_not_awaited()
-
-
-async def test_missing_state_refreshes_only_items_with_sidecars() -> None:
-    """With no saved baseline, only mapped items that actually have sidecars refresh once."""
-    provider = _provider()
-    provider._active_sidecar_index.record(_file("Artist/Album/album.nfo", checksum="2"))
-    provider._load_mapped_dirs = AsyncMock(return_value=(["Artist/Album", "Artist/NoSidecar"], []))
-    provider._refresh_album_sidecars = AsyncMock()
-    provider._refresh_artist_sidecars = AsyncMock()
-
-    prev_state: dict[str, Any] = {
-        "albums": {},
-        "artists": {},
-        "album_scalars": {},
-        "artist_scalars": {},
-    }
-    await provider._refresh_changed_sidecars(provider._active_sidecar_index, prev_state)
-    provider._refresh_album_sidecars.assert_awaited_once_with("Artist/Album", True, prev_state)
+    snap = {"description": "bio", "genres": ["Rock"], "external_ids": [["barcode", "1"]]}
+    details = provider._build_sidecar_details("nfo1", "img1", snap)
+    assert provider._parse_sidecar_details(details) == ("nfo1", "img1", snap)
+    assert provider._build_sidecar_details(EMPTY, EMPTY, None) is None
+    assert provider._parse_sidecar_details(None) is None
+    assert provider._parse_sidecar_details("not json") is None
 
 
 # --- reconciliation ---------------------------------------------------------
 
 
-async def test_edited_nfo_applies_metadata_and_keeps_other_provider_image() -> None:
-    """An edited album.nfo updates identity/description and keeps another provider's image."""
+async def test_edited_nfo_reconciles_scalars_and_keeps_other_providers() -> None:
+    """An edited album.nfo swaps its own genre/mbid/description while others' data survives."""
     provider = _provider()
-    stored = _stored_album()
+    prev_snap = {
+        "description": None,
+        "genres": ["Rock"],
+        "external_ids": [["musicbrainz_albumid", "old-nfo-mbid"]],
+    }
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
-
-    fresh = Album(item_id="p", provider=INSTANCE_ID, name="New Name", provider_mappings=set())
-    fresh.metadata.description = "nfo review text"
-    fresh.metadata.images = UniqueList([_image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=2")])
+    provider._collect_album_images = AsyncMock(
+        return_value=UniqueList([_image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=2")])
+    )
+    new_snap = {
+        "description": "new nfo bio",
+        "genres": ["Metal"],
+        "external_ids": [["musicbrainz_albumid", "new-nfo-mbid"]],
+    }
+    fresh = _fresh_album(
+        provider, new_snap, {(ExternalID.MB_ALBUM, "new-nfo-mbid"), (ExternalID.BARCODE, "123")}
+    )
     provider._reparse_album_from_track = AsyncMock(return_value=fresh)
 
-    prev_state: dict[str, Any] = {"album_scalars": {}}
-    await provider._refresh_album_sidecars("Artist/Album", True, prev_state)
-
-    provider.mass.music.albums.update_item_in_library.assert_awaited_once()
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
-    assert saved.name == "New Name"
-    assert saved.metadata.description == "nfo review text"
+    assert saved.name == "Tag Name"  # identity reconstructed from the fresh parse
+    assert saved.metadata.description == "new nfo bio"
+    assert saved.metadata.genres == {"Electronic", "Metal"}  # Rock (ours) dropped, Electronic kept
+    assert saved.external_ids == {
+        (ExternalID.MB_ALBUM, "new-nfo-mbid"),
+        (ExternalID.BARCODE, "123"),
+    }
     assert {img.path for img in saved.metadata.images} == {
         "remote/art.jpg",
         "Artist/Album/folder.jpg?cs=2",
     }
-
-
-async def test_removed_nfo_reverts_identity_and_clears_our_description() -> None:
-    """Removing album.nfo reverts the tag baseline and clears the description we contributed."""
-    provider = _provider()
-    stored = _stored_album()
-    stored.name = "NFO Title"
-    stored.metadata.description = "our old nfo review"
-    stored.metadata.images = UniqueList(
-        [
-            _image("theaudiodb", "remote/art.jpg"),
-            _image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=1"),
-        ]
+    # details advanced to the fresh signature/snapshot
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo2",
+        "img2",
+        new_snap,
     )
+
+
+async def test_removed_nfo_reverts_identity_and_clears_only_our_values() -> None:
+    """Removing album.nfo reverts tag identity and clears only what the NFO had contributed."""
+    provider = _provider()
+    prev_snap = {
+        "description": "our old nfo bio",
+        "genres": ["Rock"],
+        "external_ids": [["musicbrainz_albumid", "old-nfo-mbid"]],
+    }
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.name = "NFO Title"
+    stored.metadata.description = "our old nfo bio"
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    # NFO gone: fresh reflects tags only (no description/genres/nfo mbid)
+    empty_snap: dict[str, Any] = {"description": None, "genres": [], "external_ids": []}
+    fresh = _fresh_album(provider, empty_snap, {(ExternalID.BARCODE, "123")})
+    provider._reparse_album_from_track = AsyncMock(return_value=fresh)
 
-    # representative track rebuild: tag-derived name, no NFO description or image
-    reverted = Album(item_id="p", provider=INSTANCE_ID, name="Tag Title", provider_mappings=set())
-    provider._reparse_album_from_track = AsyncMock(return_value=reverted)
-
-    prev_state = {"album_scalars": {"Artist/Album": {"description": "our old nfo review"}}}
-    await provider._refresh_album_sidecars("Artist/Album", True, prev_state)
-
+    await provider._refresh_album_sidecars(
+        "Artist/Album", True, EMPTY, "img2", ("nfo1", "img1", prev_snap)
+    )
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
-    assert saved.name == "Tag Title"
-    assert saved.metadata.description is None  # was ours and is gone -> cleared
-    assert [img.path for img in saved.metadata.images] == ["remote/art.jpg"]  # our image dropped
+    assert saved.name == "Tag Name"  # reverted to the tag baseline
+    assert saved.year == 1999
+    assert saved.metadata.description is None  # was ours, now cleared
+    assert saved.metadata.genres == {"Electronic"}  # our Rock dropped, other provider's kept
+    assert saved.external_ids == {(ExternalID.BARCODE, "123")}  # nfo mbid removed, tag barcode kept
 
 
 async def test_removed_nfo_keeps_other_providers_description() -> None:
-    """Removing album.nfo does not erase a description another provider set."""
+    """A description that came from another provider (never from our NFO) is not cleared."""
     provider = _provider()
-    stored = _stored_album()  # description = "theaudiodb biography"
+    prev_snap: dict[str, Any] = {
+        "description": None,
+        "genres": [],
+        "external_ids": [],
+    }  # NFO never set a description
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
-    reverted = Album(item_id="p", provider=INSTANCE_ID, name="Tag Title", provider_mappings=set())
-    provider._reparse_album_from_track = AsyncMock(return_value=reverted)
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    fresh = _fresh_album(
+        provider,
+        {"description": None, "genres": [], "external_ids": []},
+        {(ExternalID.BARCODE, "123")},
+    )
+    provider._reparse_album_from_track = AsyncMock(return_value=fresh)
 
-    prev_state = {"album_scalars": {"Artist/Album": {"description": "our old nfo review"}}}
-    await provider._refresh_album_sidecars("Artist/Album", True, prev_state)
-
+    await provider._refresh_album_sidecars(
+        "Artist/Album", True, EMPTY, "img2", ("nfo1", "img1", prev_snap)
+    )
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
     assert saved.metadata.description == "theaudiodb biography"
 
 
 async def test_image_only_refresh_leaves_scalars_untouched() -> None:
-    """An image-only refresh updates artwork but does not touch NFO-derived scalar metadata."""
+    """An image-only change refreshes artwork but never reparses a track or touches scalars."""
     provider = _provider()
-    stored = _stored_album()
+    prev_snap = {"description": None, "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
@@ -285,16 +235,39 @@ async def test_image_only_refresh_leaves_scalars_untouched() -> None:
         return_value=UniqueList([_image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=9")])
     )
 
-    prev_state: dict[str, Any] = {"album_scalars": {}}
-    await provider._refresh_album_sidecars("Artist/Album", False, prev_state)
-
+    await provider._refresh_album_sidecars(
+        "Artist/Album", False, "nfo1", "img2", ("nfo1", "img1", prev_snap)
+    )
     provider._reparse_album_from_track.assert_not_awaited()
     saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
-    assert saved.metadata.description == "theaudiodb biography"  # untouched
+    assert saved.metadata.description == "theaudiodb biography"
+    assert saved.metadata.genres == {"Rock", "Electronic"}
     assert {img.path for img in saved.metadata.images} == {
         "remote/art.jpg",
         "Artist/Album/folder.jpg?cs=9",
     }
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo1",
+        "img2",
+        prev_snap,
+    )
+
+
+async def test_transient_read_failure_defers_without_advancing_details() -> None:
+    """A transient reparse failure leaves the item unchanged so it is retried next sync."""
+    provider = _provider()
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", {}))
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())
+    provider._reparse_album_from_track = AsyncMock(side_effect=SidecarReadError("network blip"))
+
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", {})
+    )
+    assert ok is False
+    provider.mass.music.albums.update_item_in_library.assert_not_awaited()
 
 
 async def test_refresh_skips_unknown_library_item() -> None:
@@ -303,31 +276,51 @@ async def test_refresh_skips_unknown_library_item() -> None:
     provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
     provider.mass.music.albums.update_item_in_library = AsyncMock()
     provider._invalidate_album_caches = AsyncMock()
-    await provider._refresh_album_sidecars("Artist/Album", True, {"album_scalars": {}})
+    ok = await provider._refresh_album_sidecars("Artist/Album", True, "nfo2", "img1", None)
+    assert ok is True
     provider.mass.music.albums.update_item_in_library.assert_not_awaited()
 
 
-# --- persisted state --------------------------------------------------------
+# --- detection over the whole library --------------------------------------
 
 
-async def test_load_sidecar_state_is_safe_when_cache_is_empty() -> None:
-    """A missing or malformed persisted state loads as a well-formed empty structure."""
+async def test_refresh_changed_sidecars_targets_only_changed_items() -> None:
+    """Only items whose stored details differ from the current signature are refreshed."""
     provider = _provider()
-    provider.mass.cache.get = AsyncMock(return_value=None)
-    state = await provider._load_sidecar_state()
-    assert state == {"albums": {}, "artists": {}, "album_scalars": {}, "artist_scalars": {}}
+    index = provider._active_sidecar_index
+    index.record(_fs_file("Artist/Changed/album.nfo", "22"))
+    index.record_track_dir("Artist/Changed")
+    index.record(_fs_file("Artist/Same/album.nfo", "1"))
+    index.record_track_dir("Artist/Same")
+    provider._sync_mapped_album_dirs = {"Artist/Changed", "Artist/Same"}
 
-    provider.mass.cache.get = AsyncMock(return_value={"albums": {"a": {"nfo": "x", "img": "y"}}})
-    state = await provider._load_sidecar_state()
-    assert state["albums"] == {"a": {"nfo": "x", "img": "y"}}
-    assert state["artists"] == {}
-    assert state["album_scalars"] == {}
+    same_nfo, same_img = index.album_signatures("Artist/Same", provider._sync_mapped_album_dirs)
+    same_details = provider._build_sidecar_details(same_nfo, same_img, {})
+    provider._query_mapping_details = AsyncMock(
+        return_value=(
+            {
+                "Artist/Changed": provider._build_sidecar_details("stale", same_img, {}),
+                "Artist/Same": same_details,
+            },
+            {},
+        )
+    )
+    provider._refresh_album_sidecars = AsyncMock(return_value=True)
+    provider._refresh_artist_sidecars = AsyncMock(return_value=True)
+
+    await provider._refresh_changed_sidecars(index)
+    provider._refresh_album_sidecars.assert_awaited_once()
+    assert provider._refresh_album_sidecars.await_args.args[0] == "Artist/Changed"
+    assert provider._refresh_album_sidecars.await_args.args[1] is True  # nfo changed
 
 
-def test_merge_scalars_keeps_current_over_previous_and_drops_gone_items() -> None:
-    """Persisted scalars keep the latest snapshot per still-known dir and drop removed items."""
-    known = {"Artist/Album": {"nfo": "x", "img": "y"}}
-    current = {"Artist/Album": {"description": "new"}}
-    previous = {"Artist/Album": {"description": "old"}, "Artist/Gone": {"description": "stale"}}
-    merged = LocalFileSystemProvider._merge_scalars(known, current, previous)
-    assert merged == {"Artist/Album": {"description": "new"}}
+def _fs_file(relative_path: str, checksum: str) -> Any:
+    """Build a FileSystemItem for the index."""
+    return FileSystemItem(
+        filename=relative_path.rsplit("/", 1)[-1],
+        relative_path=relative_path,
+        absolute_path=f"/media/{relative_path}",
+        is_dir=False,
+        checksum=checksum,
+        file_size=10,
+    )
