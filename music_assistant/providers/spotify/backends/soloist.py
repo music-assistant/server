@@ -164,6 +164,12 @@ _RESUME_RETAINED_S: Final[float] = 10.0
 _DRAIN_POLL_S: Final[float] = 0.1
 # the engine's "no repeat" value for its playback options
 _REPEAT_OFF: Final[str] = "off"
+# The engine allows one daemon per data directory and refuses to start otherwise,
+# exiting with a plain code 1 - its message is the only way to tell that case
+# apart from any other startup failure.
+_DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
+# how long the log reader is given to catch up on a daemon's parting words
+_LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 
 
 class SoloistBackend(SpotifyPlaybackBackend):
@@ -530,6 +536,7 @@ class _SoloistSession:
         self._stopped = False
         # None until the engine reports its login state for the first time
         self._logged_in: bool | None = None
+        self._data_dir_busy = False
         self._pin_in_flight = False
         self._options_pin_in_flight = False
         self._demand_started = False
@@ -867,10 +874,21 @@ class _SoloistSession:
         except TimeoutError:
             self._raise_startup_error("timed out waiting for playback to start", item.uri)
         if self._error or not item.started.is_set():
+            if proc.returncode is not None:
+                # let the log reader catch up, so the daemon's own complaint can
+                # be reported instead of a generic startup failure
+                await self._drain_log()
             if proc.returncode == EXIT_CODE_BUILD_EXPIRED:
                 # an expired build exits with code 10 right at spawn
                 await self._handle_expired_build()
             self._raise_startup_error("exited before playback started", item.uri)
+
+    async def _drain_log(self) -> None:
+        """Give the daemon's log reader a moment to catch up on its last lines."""
+        if (log_task := self._log_task) is None:
+            return
+        with suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(log_task), _LOG_DRAIN_TIMEOUT_S)
 
     async def _handle_expired_build(self) -> NoReturn:
         """Replace the expired soloist build and fail the item with an accurate message."""
@@ -903,6 +921,13 @@ class _SoloistSession:
             if provider.available:
                 provider.unload_with_error(error)
             raise error
+        if self._data_dir_busy:
+            # a daemon from an earlier Music Assistant process is still holding
+            # this provider's data directory; nothing here can reach it
+            raise AudioError(
+                "Another Spotify Soloist session is still running for this provider "
+                "and has to be stopped first (restarting Music Assistant clears it)"
+            )
         if self._error:
             raise AudioError(f"Spotify Soloist: {self._error}")
         raise AudioError(f"Spotify Soloist {detail} for {spotify_uri}")
@@ -936,6 +961,8 @@ class _SoloistSession:
             # the third-party binary's own output may echo argv (which carries
             # the api key), so redact it before logging
             text = line.replace(api_key, "<redacted>") if api_key else line
+            if _DATA_DIR_BUSY_MARKER in text:
+                self._data_dir_busy = True
             self.logger.debug("[soloist] %s", text)
 
     async def _read_capture(self) -> None:

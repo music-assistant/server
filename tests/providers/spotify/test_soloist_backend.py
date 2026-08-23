@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -416,6 +416,33 @@ async def test_repeat_turned_on_from_the_app_is_pinned_back_off(tmp_path: Path) 
         )
     )
     client.set_shuffle.assert_not_awaited()
+
+
+async def test_a_busy_data_directory_is_reported_as_such(tmp_path: Path) -> None:
+    """A daemon left over from an earlier run is named, not reported as a generic failure."""
+    session = _make_session(tmp_path)
+    # the daemon's own parting complaint, which is all it gives (it exits with 1)
+    session._data_dir_busy = True
+    with pytest.raises(AudioError, match="Another Spotify Soloist session is still running"):
+        session._raise_startup_error("exited before playback started", TRACK_A)
+
+
+async def test_the_busy_marker_is_picked_up_from_the_daemon_output(tmp_path: Path) -> None:
+    """The marker is read off the daemon's stdout, with the API key still redacted."""
+    session = _make_session(tmp_path)
+    proc = MagicMock()
+    lines = [
+        'Error: another session is running for data directory "/data/x/soloist-data".',
+        "Stop the running session before starting soloist again.",
+    ]
+
+    async def _iter_stdout() -> AsyncGenerator[str]:
+        for line in lines:
+            yield line
+
+    proc.iter_stdout = _iter_stdout
+    await session._log_output(proc)
+    assert session._data_dir_busy is True
 
 
 async def test_a_pairing_that_never_logs_in_routes_through_setup(
