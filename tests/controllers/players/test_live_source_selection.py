@@ -405,7 +405,7 @@ async def test_the_reported_media_can_be_handed_back_to_the_player() -> None:
     assert session is not None
 
     media = controller._handle_play_media.await_args.args[1]
-    reported = Player._Player__audio_source_media(_player, session)
+    reported = Player._Player__audio_source_media(_player, session)  # type: ignore[attr-defined]
 
     assert reported.queue_session_id == session.playback_session_id
     assert reported.source_id == media.source_id
