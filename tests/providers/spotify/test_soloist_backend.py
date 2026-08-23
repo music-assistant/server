@@ -172,6 +172,23 @@ async def test_the_engines_restored_state_does_not_cut_a_pending_item(
     assert b"".join([chunk async for chunk in requested.read()]) == b"\x01" * 32
 
 
+async def test_leaving_the_engines_restored_item_is_not_a_takeover(tmp_path: Path) -> None:
+    """The restored item is part-way through a track, and we are about to leave it."""
+    session = _make_session(tmp_path)
+    # as _play leaves it: the channel exists, its stream is not reading it yet
+    requested = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    session._current = requested
+    await session._observe_current("spotify:track:restored", 152_000)
+    restored = session.current
+    assert restored is not None
+    restored.observe_position(20_000)
+
+    # our own play() lands and the engine leaves the restored item for ours
+    await session._observe_current(TRACK_A, 200_000)
+    assert session.usable is True
+    assert session.current is requested
+
+
 async def test_audio_read_before_the_stream_opens_is_kept(tmp_path: Path) -> None:
     """Audio captured before an item's stream opens is buffered, not dropped."""
     session = _make_session(tmp_path)
@@ -418,6 +435,23 @@ async def test_startup_activates_before_it_plays(
     assert item.uri == TRACK_A
     client.activate.assert_awaited_once_with(await_result=True)
     client.play.assert_awaited_once_with(TRACK_A)
+
+
+async def test_a_takeover_between_activate_and_play_stops_the_start(tmp_path: Path) -> None:
+    """Playing here would claim the device straight back off wherever the user moved to."""
+    session = _make_session(tmp_path)
+    session._was_active = False
+    client = _client_of(session)
+
+    async def _take_over(*_args: Any, **_kwargs: Any) -> None:
+        session._observe_active_device(is_active=False)
+
+    client.set_repeat_track.side_effect = _take_over
+    ready = asyncio.Event()
+    ready.set()
+    with pytest.raises(SoloistAppControlError):
+        await session._play(TRACK_A, 0, ready)
+    client.play.assert_not_awaited()
 
 
 async def test_a_refused_start_command_reports_soloist(tmp_path: Path) -> None:

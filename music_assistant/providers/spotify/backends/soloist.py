@@ -1179,6 +1179,10 @@ class _SoloistSession:
             await client.set_shuffle(False)
             await client.set_repeat_context(False)
             await client.set_repeat_track(False)
+            if self._error:
+                # the device was taken while those went out; play() would claim
+                # it straight back off wherever the user moved to
+                raise self._session_error()
             await client.play(spotify_uri)
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
             # a bare TimeoutError stringifies to nothing, so name the type too
@@ -1636,12 +1640,12 @@ class _SoloistSession:
             current.started.set()
             return
         item = self._items.get(uri)
-        if uri not in self._pending and current is not None and current.mid_play:
+        if (item is None or item.spent) and current is not None and current.mid_play:
             # The engine left an item Music Assistant is part-way through for
             # somewhere it was never sent: the user is driving from the Spotify
-            # app. The session's own moves never land here — the item fed behind
-            # this one is pending (which is also where a skip goes), and an item
-            # played to its end is not mid_play.
+            # app. Every channel this session opened deliberately — the item
+            # asked for and the one fed behind it — is unspent until its stream
+            # takes it, so the session's own moves never land here.
             self._end_on_app_control(SoloistAppControl.TOOK_OVER)
             return
         if item is None:
