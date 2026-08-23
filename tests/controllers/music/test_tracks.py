@@ -310,10 +310,15 @@ async def test_match_confidence_hydrates_album_after_initial_no_match(
     assert confidence == TrackMatchConfidence.EXACT
 
 
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError(), ResourceTemporarilyUnavailable("Provider temporarily unavailable")],
+)
 async def test_full_track_album_falls_back_after_transient_failure(
     music: MusicController,
+    error: Exception,
 ) -> None:
-    """Optional album evidence falls back to the mapping after a provider timeout."""
+    """Optional album evidence falls back to the mapping after a transient provider failure."""
     track = create_track("spotify_1", "track")
     track.album = ItemMapping(
         item_id="album",
@@ -325,7 +330,7 @@ async def test_full_track_album_falls_back_after_transient_failure(
     with patch.object(
         music.albums,
         "get",
-        AsyncMock(side_effect=TimeoutError),
+        AsyncMock(side_effect=error),
     ):
         result = await music.tracks._get_full_track_album(track)
 

@@ -1105,6 +1105,7 @@ class TracksController(MediaControllerBase[Track]):
             InvalidDataError,
             MediaNotFoundError,
             ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
             ClientError,
             OSError,
             TimeoutError,
