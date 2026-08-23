@@ -97,6 +97,8 @@ def _flow_audio(
     mass.player_queues.get.return_value = queue
     mass.player_queues.get_next_item.return_value = next_item
     mass.streams.get_crossfade_mode.return_value = crossfade_mode
+    # these items are ours to mix, so no source claims their boundaries
+    mass.streams.get_source_crossfade_mode.return_value = CrossfadeMode.DISABLED
     mass.config.get_raw_core_config_value.return_value = STANDARD_CROSSFADE_DURATION
     mass.streams.audio_processing.update_item_context = MagicMock()
     player = MagicMock()

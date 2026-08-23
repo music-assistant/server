@@ -4,19 +4,45 @@ Tests for skipping volume normalization when the source already did it.
 A provider that hands over audio at a loudness target of its own declares that
 with ``MusicProvider.delivers_normalized_audio``; correcting such a level again
 would mean normalizing twice, the second time against a measurement of the
-source's own output. Also verified: the loudness analyzer declines to measure a
-stream whose normalization is disabled, so no measurement is stored for it.
+source's own output. That outcome is reported as ``SOURCE`` rather than
+``DISABLED`` - the audio is levelled, just not by us - so the gates that mean
+"Music Assistant applies nothing" have to accept both. Also verified: the
+loudness analyzer declines such a stream, so no measurement is stored for it.
 """
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+from music_assistant_models.audio_processing import AudioNormalizationMeasurementSource
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio_processing import get_normalization_details
+from music_assistant.controllers.streams.constants import (
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
+)
+from music_assistant.controllers.streams.controller import (
+    StreamsController,
+    _volume_normalization_preference_options,
+)
 from music_assistant.helpers.audio import get_normalization_mode
+from music_assistant.models.music_provider import MusicProvider
+
+
+class _NormalizingProvider(MusicProvider):
+    """A music provider that hands over audio it already levelled."""
+
+    @property
+    def delivers_normalized_audio(self) -> bool:
+        """Declare the source normalization."""
+        return True
+
 
 PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -34,7 +60,7 @@ def test_a_normalized_source_is_left_alone() -> None:
         get_normalization_mode(
             VolumeNormalizationMode.FALLBACK_DYNAMIC, True, streamdetails, source_normalized=True
         )
-        == VolumeNormalizationMode.DISABLED
+        == VolumeNormalizationMode.SOURCE
     )
 
 
@@ -58,7 +84,7 @@ def test_a_stored_measurement_does_not_override_a_normalized_source() -> None:
         get_normalization_mode(
             VolumeNormalizationMode.FALLBACK_DYNAMIC, True, streamdetails, source_normalized=True
         )
-        == VolumeNormalizationMode.DISABLED
+        == VolumeNormalizationMode.SOURCE
     )
     assert (
         get_normalization_mode(
@@ -81,18 +107,19 @@ def test_the_queue_setting_still_wins() -> None:
 
 def test_a_music_provider_declares_nothing_by_default() -> None:
     """The declaration is opt-in: nothing downstream verifies it."""
-    from music_assistant.models.music_provider import MusicProvider  # noqa: PLC0415
-
-    provider = object.__new__(MusicProvider)
-    assert provider.delivers_normalized_audio is False
+    assert object.__new__(MusicProvider).delivers_normalized_audio is False
 
 
-async def test_the_analyzer_declines_a_stream_it_must_not_measure() -> None:
+@pytest.mark.parametrize("mode", [VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE])
+async def test_the_analyzer_declines_a_stream_it_must_not_measure(
+    mode: VolumeNormalizationMode,
+) -> None:
     """
-    A disabled stream is not measured, so a normalized source stores no loudness.
+    A stream we do not normalize is not measured either, so no loudness is stored.
 
     That is what keeps a value measured on one backend's output from being applied
-    to the other's, without any erase step.
+    to the other's, without any erase step. SOURCE has to decline for a second
+    reason: measuring there would record the source's own level as the track's.
     """
     from music_assistant.providers.loudness_analysis.provider import (  # noqa: PLC0415
         LoudnessAnalysisProvider,
@@ -101,8 +128,113 @@ async def test_the_analyzer_declines_a_stream_it_must_not_measure() -> None:
     provider = object.__new__(LoudnessAnalysisProvider)
     provider.logger = MagicMock()
     streamdetails = _streamdetails()
-    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+    streamdetails.volume_normalization_mode = mode
     assert await provider._start_analysis("session-1", streamdetails, PCM_FORMAT) is False
+
+
+@pytest.mark.parametrize("mode", [VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE])
+def test_no_headroom_is_reserved_for_normalization_we_do_not_apply(
+    mode: VolumeNormalizationMode,
+) -> None:
+    """
+    F32 headroom is only paid for when Music Assistant itself touches the level.
+
+    A source-normalized stream keeps its native depth, exactly as a disabled one does.
+    """
+    audio = object.__new__(StreamsAudio)
+    streamdetails = _streamdetails()
+    streamdetails.volume_normalization_mode = mode
+
+    content_type, bit_depth = audio._pick_pcm_bit_depth(
+        [],
+        streamdetails,
+        crossfade_enabled=False,
+        overlay_active=False,
+    )
+
+    assert bit_depth == 16
+    assert content_type == ContentType.PCM_S16LE
+
+
+def test_source_normalized_audio_reports_a_mode_without_a_measurement() -> None:
+    """
+    A source-normalized stream reports who levelled it and nothing more.
+
+    The target and the measurement are ours, and neither describes what the source
+    did - a stale library measurement in particular must not be presented as the
+    level this audio was corrected against.
+    """
+    streamdetails = _streamdetails()
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.SOURCE
+    streamdetails.loudness = -7.2
+
+    details = get_normalization_details(streamdetails, None)
+
+    assert details is not None
+    assert details.mode == VolumeNormalizationMode.SOURCE
+    assert details.measurement_source == AudioNormalizationMeasurementSource.UNKNOWN
+    assert details.target_lufs is None
+    assert details.measured_lufs is None
+    assert details.applied_gain_db is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        (object.__new__(_NormalizingProvider), True),
+        (object.__new__(MusicProvider), False),
+        # a plugin provider, which never declares it
+        (MagicMock(), False),
+    ],
+)
+def test_only_a_music_provider_can_claim_it_levelled_the_audio(
+    provider: object, expected: bool
+) -> None:
+    """
+    A plugin provider serves playable items too, but never answers this.
+
+    Its live audio is taken out of the loudness path by its media type instead.
+    """
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = MagicMock()
+    controller.mass.get_provider.return_value = provider
+
+    assert controller.source_normalizes_audio(_streamdetails()) is expected
+
+
+def test_an_outcome_only_mode_is_not_offered_as_a_preference() -> None:
+    """
+    The setting says what Music Assistant should do, so outcomes are not choices.
+
+    SOURCE is set by a source that levels its own audio and UNKNOWN is what an
+    unrecognised value deserializes to; neither is something to ask a user for.
+    """
+    offered = {option.value for option in _volume_normalization_preference_options()}
+
+    assert offered == {
+        mode.value
+        for mode in VolumeNormalizationMode
+        if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
+    }
+
+
+@pytest.mark.parametrize("stored", OUTCOME_ONLY_NORMALIZATION_MODES)
+def test_an_outcome_only_mode_stored_as_a_preference_is_not_honoured(
+    stored: VolumeNormalizationMode,
+) -> None:
+    """
+    Hiding an option does not make it unacceptable: nothing validates a saved value.
+
+    Handed back as the preference it would be applied as the mode, which for SOURCE
+    also means reporting that a source levelled audio nobody levelled.
+    """
+    audio = object.__new__(StreamsAudio)
+    audio.mass = MagicMock()
+    audio.mass.streams.get_config_value.return_value = stored.value
+
+    preference = audio._get_volume_normalization_preference(_streamdetails())
+
+    assert preference == DEFAULT_VOLUME_NORMALIZATION_MODE
 
 
 def _streamdetails() -> StreamDetails:

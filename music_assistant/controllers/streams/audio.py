@@ -102,6 +102,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
@@ -611,7 +613,7 @@ class StreamsAudio:
             self._get_volume_normalization_preference(streamdetails),
             volume_normalization_enabled,
             streamdetails,
-            self._source_delivers_normalized_audio(streamdetails),
+            self.mass.streams.source_normalizes_audio(streamdetails),
         )
 
         self.logger.debug(
@@ -1560,7 +1562,7 @@ class StreamsAudio:
                     self._get_volume_normalization_preference(streamdetails),
                     volume_normalization_enabled,
                     streamdetails,
-                    self._source_delivers_normalized_audio(streamdetails),
+                    self.mass.streams.source_normalizes_audio(streamdetails),
                 )
 
         # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
@@ -2297,11 +2299,15 @@ class StreamsAudio:
                     )
                     continue
                 # a realtime source delivers at playback pace, so it has no audio to spare
-                # for an overlap in either direction
+                # for an overlap in either direction - but one that crossfades its own
+                # playback still does that boundary itself, inside the audio it hands over
                 item_crossfade_mode = (
                     CrossfadeMode.DISABLED
                     if queue_track.streamdetails.is_realtime
                     else crossfade_mode
+                )
+                item_source_crossfade_mode = self.mass.streams.get_source_crossfade_mode(
+                    queue, queue_track
                 )
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
@@ -2426,12 +2432,13 @@ class StreamsAudio:
                             + (timing_info.fadein_trimmed_duration + timing_info.crossfade_duration)
                             * track_playback_speed
                         )
-                # no fade is credited to this track until one is really rendered below
+                # no fade is credited to this track until one is really rendered below,
+                # unless its own source is the one applying it
                 self._report_crossfade_mode(
                     queue.queue_id,
                     queue_track,
                     pcm_format,
-                    CrossfadeMode.DISABLED,
+                    item_source_crossfade_mode,
                     flow_session_id,
                     overlay_enabled=overlay_active(queue),
                 )
@@ -2995,17 +3002,6 @@ class StreamsAudio:
         music_prov = cast("MusicProvider", provider)
         self.mass.create_task(music_prov.on_streamed(streamdetails))
 
-    def _source_delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
-        """
-        Return whether the provider already normalized this audio on the way out.
-
-        :param streamdetails: The stream to evaluate.
-        """
-        # plugin providers serve playable items too, and only a music provider
-        # declares this (a plugin's live audio is handled by the media type)
-        provider = self.mass.get_provider(streamdetails.provider)
-        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
-
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
     ) -> VolumeNormalizationMode:
@@ -3015,9 +3011,14 @@ class StreamsAudio:
             if streamdetails.media_type == MediaType.RADIO
             else CONF_VOLUME_NORMALIZATION_TRACKS
         )
-        return VolumeNormalizationMode(
+        preference = VolumeNormalizationMode(
             self.mass.streams.get_config_value(conf_key, return_type=str)
         )
+        # a stored value the options never offered is not a preference: nothing
+        # validates a saved config value against them
+        if preference in OUTCOME_ONLY_NORMALIZATION_MODES:
+            return DEFAULT_VOLUME_NORMALIZATION_MODE
+        return preference
 
     def _update_radio_stream_metadata(
         self,
@@ -3685,7 +3686,8 @@ class StreamsAudio:
         :param queue_id: Queue the item is streamed from.
         :param queue_item: Queue item the fade touches.
         :param pcm_format: Shared PCM format leaving queue processing.
-        :param crossfade_mode: Mode of the applied fade, or DISABLED when none is applied.
+        :param crossfade_mode: Mode of the applied fade, SOURCE when the item's own
+            source applies it, or DISABLED when none is applied.
         :param session_id: Queue session that owns processing-detail updates.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         """
@@ -4157,7 +4159,8 @@ class StreamsAudio:
         needs_headroom = (
             crossfade_enabled
             or overlay_active
-            or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
+            or streamdetails.volume_normalization_mode
+            not in (VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE)
             or any(self._resolve_player_dsp_config(player).enabled for player in players)
         )
         if needs_headroom:

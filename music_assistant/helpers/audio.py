@@ -855,8 +855,9 @@ def get_normalization_mode(
         return VolumeNormalizationMode.DISABLED
     if source_normalized:
         # the source owns loudness here too: correcting a level it already set would
-        # mean normalizing twice, against a measurement of its own output
-        return VolumeNormalizationMode.DISABLED
+        # mean normalizing twice, against a measurement of its own output. SOURCE says
+        # that out loud - the audio is levelled, just not by us
+        return VolumeNormalizationMode.SOURCE
     if streamdetails.media_type == MediaType.SOUND_EFFECT:
         # never measured, and the dynamic fallback compresses short clips
         return VolumeNormalizationMode.DISABLED

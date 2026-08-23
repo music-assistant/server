@@ -236,7 +236,7 @@ class SpotifyProvider(MusicProvider):
         Only the soloist backend can: librespot hands over Spotify's file
         untouched, so its audio arrives at the master's own level.
         """
-        return isinstance(getattr(self, "backend", None), SoloistBackend) and bool(
+        return self._soloist_backend is not None and bool(
             # the default is stated here too: get_value answers with the argument,
             # not the entry's default, if the key was never parsed into the config
             self.config.get_value(CONF_SPOTIFY_NORMALIZATION, True)
@@ -252,10 +252,25 @@ class SpotifyProvider(MusicProvider):
         core normalize on top of what the engine is still doing - it takes effect
         on the next playback instead.
         """
-        backend = getattr(self, "backend", None)
-        if isinstance(backend, SoloistBackend) and (live := backend.session_normalizes) is not None:
+        backend = self._soloist_backend
+        if backend is not None and (live := backend.session_normalizes) is not None:
             return live
         return self.spotify_normalization_configured
+
+    @property
+    def delivers_crossfaded_audio(self) -> bool | None:
+        """
+        Return whether Spotify's own engine crossfades this playback.
+
+        Only the soloist backend can: it keeps one session across items and is handed
+        the queue's crossfade duration when that session starts, so the overlap lives
+        in the audio it delivers. librespot fetches every track on its own. A running
+        session answers for itself, because it read that duration once - a setting
+        changed mid-playback applies to the next session, not to the audio this one
+        is still serving.
+        """
+        backend = self._soloist_backend
+        return backend.session_crossfades if backend is not None else False
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -1244,6 +1259,12 @@ class SpotifyProvider(MusicProvider):
                 self.logger.warning("Failed to remove %s: %s", failed, err)
 
         shutil.rmtree(path, onexc=_report)
+
+    @property
+    def _soloist_backend(self) -> SoloistBackend | None:
+        """Return the playback backend when the soloist one is in use, else None."""
+        backend = getattr(self, "backend", None)
+        return backend if isinstance(backend, SoloistBackend) else None
 
     @property
     def _instance_storage_dir(self) -> Path:

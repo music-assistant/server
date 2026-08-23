@@ -523,6 +523,10 @@ def get_normalization_details(
     if mode in (None, VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.UNKNOWN):
         return None
     assert mode is not None
+    if mode == VolumeNormalizationMode.SOURCE:
+        # the source set the level without saying to what, and a measurement of our
+        # own would describe audio it already levelled, so only the mode is known
+        return AudioNormalizationDetails(mode=mode)
     measurement_source = AudioNormalizationMeasurementSource.UNKNOWN
     measured_lufs: float | None = None
     if mode == VolumeNormalizationMode.DYNAMIC:
@@ -599,10 +603,14 @@ def _is_bit_perfect(
         for audio_format in formats
     ):
         return False
+    # a step the source performed is reported for context but leaves our path untouched
     if (
-        queue_processing.normalization is not None
+        (
+            queue_processing.normalization is not None
+            and queue_processing.normalization.mode != VolumeNormalizationMode.SOURCE
+        )
         or queue_processing.playback_speed != 1.0
-        or queue_processing.crossfade_mode != CrossfadeMode.DISABLED
+        or queue_processing.crossfade_mode not in (CrossfadeMode.DISABLED, CrossfadeMode.SOURCE)
         or queue_processing.overlay_active
     ):
         return False

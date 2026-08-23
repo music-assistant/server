@@ -34,6 +34,7 @@ from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.models.music_provider import MusicProvider
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -924,10 +925,17 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
     build.assert_not_awaited()
 
 
-async def test_flow_reports_no_crossfade_for_a_realtime_item(
+@pytest.mark.parametrize("source_crossfade_mode", [CrossfadeMode.DISABLED, CrossfadeMode.SOURCE])
+async def test_flow_reports_the_crossfade_a_realtime_item_really_gets(
     monkeypatch: pytest.MonkeyPatch,
+    source_crossfade_mode: CrossfadeMode,
 ) -> None:
-    """The audio pipeline shown for a realtime item reports that no crossfade is applied."""
+    """
+    A realtime item is credited with its source's fade, never one of ours.
+
+    Music Assistant has no audio to spare for an overlap on either side of such an
+    item, so the only fade it can report is the one the source applies itself.
+    """
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE,
         sample_rate=8000,
@@ -969,6 +977,7 @@ async def test_flow_reports_no_crossfade_for_a_realtime_item(
     mass.player_queues.load_next_queue_item = AsyncMock(side_effect=QueueEmpty)
     mass.player_queues.get.return_value = queue
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.SMART_CROSSFADE
+    mass.streams.get_source_crossfade_mode.return_value = source_crossfade_mode
     mass.config.get_raw_core_config_value.return_value = 8
     update_item_context = MagicMock()
     mass.streams.audio_processing.update_item_context = update_item_context
@@ -992,7 +1001,7 @@ async def test_flow_reports_no_crossfade_for_a_realtime_item(
 
     update_item_context.assert_called()
     reported = update_item_context.call_args.kwargs["queue_processing"]
-    assert reported.crossfade_mode == CrossfadeMode.DISABLED
+    assert reported.crossfade_mode == source_crossfade_mode
 
 
 async def test_flow_standard_fade_only_holds_back_its_overlap(
@@ -1192,6 +1201,276 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
     assert seen["crossfade_enabled"] is True
     controller.get_crossfade_mode.assert_called_once()
+
+
+# -- StreamsController.get_source_crossfade_mode --
+
+
+class _CrossfadingProvider(MusicProvider):
+    """A music provider whose running source crossfades its own playback."""
+
+    @property
+    def delivers_crossfaded_audio(self) -> bool | None:
+        """Declare the source fade."""
+        return True
+
+
+class _UndecidedCrossfadingProvider(MusicProvider):
+    """A music provider that can crossfade its own playback but serves nothing yet."""
+
+    @property
+    def delivers_crossfaded_audio(self) -> bool | None:
+        """Leave the answer to the queue's own setting."""
+        return None
+
+
+@pytest.mark.parametrize(
+    ("queue_crossfade_mode", "provider", "expected"),
+    [
+        # with no session running the queue preference is all there is to go on
+        (
+            CrossfadeMode.DISABLED,
+            object.__new__(_UndecidedCrossfadingProvider),
+            CrossfadeMode.DISABLED,
+        ),
+        (
+            CrossfadeMode.SMART_CROSSFADE,
+            object.__new__(_UndecidedCrossfadingProvider),
+            CrossfadeMode.SOURCE,
+        ),
+        # a running source answers for itself, whatever the setting says now
+        (
+            CrossfadeMode.DISABLED,
+            object.__new__(_CrossfadingProvider),
+            CrossfadeMode.SOURCE,
+        ),
+        # a provider that does not fade its own playback, and a plugin-served item
+        (CrossfadeMode.SMART_CROSSFADE, object.__new__(MusicProvider), CrossfadeMode.DISABLED),
+        (CrossfadeMode.SMART_CROSSFADE, None, CrossfadeMode.DISABLED),
+    ],
+)
+def test_only_a_declared_source_fade_is_reported_as_such(
+    queue_crossfade_mode: CrossfadeMode,
+    provider: Any,
+    expected: CrossfadeMode,
+) -> None:
+    """Only a provider that says it crossfades its own playback is credited with one."""
+    controller = _source_crossfade_controller(provider, queue_crossfade_mode)
+
+    assert controller.get_source_crossfade_mode(MagicMock(), _realtime_track()) == expected
+
+
+@pytest.mark.parametrize(
+    ("media_type", "is_realtime"),
+    [
+        # our own mixer owns both of these, so the source's fade is not in play
+        (MediaType.TRACK, False),
+        (MediaType.AUDIOBOOK, True),
+    ],
+)
+def test_no_source_fade_for_audio_we_mix_ourselves(
+    media_type: MediaType, is_realtime: bool
+) -> None:
+    """A source fade is only reported for audio Music Assistant does not mix."""
+    controller = _source_crossfade_controller(
+        object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
+    )
+    controller.mass.player_queues.get_next_item.return_value = _follower("same-provider")
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        media_type=media_type,
+        streamdetails=_make_stream_details(media_type, is_realtime=is_realtime),
+    )
+
+    assert controller.get_source_crossfade_mode(MagicMock(), queue_item) == CrossfadeMode.DISABLED
+
+
+@pytest.mark.parametrize(
+    ("neighbour_kind", "expected"),
+    [
+        # a boundary the source owns both sides of, as a provider item and as a
+        # library item that carries the source in its mappings instead
+        ("same-provider", CrossfadeMode.SOURCE),
+        ("library-mapped", CrossfadeMode.SOURCE),
+        # nothing next to it, so there is no boundary at all
+        ("none", CrossfadeMode.DISABLED),
+        # the source plays the current item out at any of these, so the cut is hard
+        ("other-provider", CrossfadeMode.DISABLED),
+        ("not-a-track", CrossfadeMode.DISABLED),
+        ("unresolvable", CrossfadeMode.DISABLED),
+    ],
+)
+@pytest.mark.parametrize("side", ["follower", "predecessor"])
+def test_a_source_fade_needs_a_boundary_the_source_owns(
+    neighbour_kind: str, side: str, expected: CrossfadeMode
+) -> None:
+    """
+    Only a boundary between two items of the same source is credited with its fade.
+
+    Either side counts: the last track of a queue has no follower but was still the
+    side faded into. Reporting one anywhere else would describe an overlap nobody
+    rendered - we do not mix a realtime item's boundaries either, so it is a hard cut.
+    """
+    controller = _source_crossfade_controller(
+        object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
+    )
+    queues = controller.mass.player_queues
+    neighbour = _follower(neighbour_kind)
+    if side == "follower":
+        queues.get_next_item.return_value = neighbour
+    else:
+        queues.get_next_item.return_value = None
+        queues.index_by_id.return_value = 1
+        queues.get_item.return_value = neighbour
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        media_type=MediaType.TRACK,
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+    )
+
+    assert controller.get_source_crossfade_mode(MagicMock(), queue_item) == expected
+
+
+def test_the_raw_pcm_path_reports_a_source_fade_too() -> None:
+    """
+    A source fade reaches the processing details on the raw-PCM entry point as well.
+
+    Gapless players are served per item straight from ``get_stream`` rather than over
+    the http route, so leaving it out there would report nothing for most players.
+    """
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="Track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+        extra_attributes={},
+        image=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        crossfade_enabled=True,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = MagicMock()
+    controller.mass.player_queues.get.return_value = queue
+    controller.mass.player_queues.get_item.return_value = queue_item
+    controller.mass.players.get_player.return_value = None
+    controller.logger = MagicMock()
+    controller.audio = MagicMock()
+    controller._update_audio_processing_context = MagicMock()
+    controller.get_source_crossfade_mode = MagicMock(return_value=CrossfadeMode.SOURCE)
+    media = SimpleNamespace(
+        media_type=MediaType.TRACK,
+        source_id="queue-1",
+        queue_item_id="item-1",
+        queue_session_id="session-1",
+        uri="",
+    )
+
+    controller.get_stream(cast("Any", media), TEST_PCM_FORMAT)
+
+    assert (
+        controller._update_audio_processing_context.call_args.kwargs["source_crossfade_mode"]
+        == CrossfadeMode.SOURCE
+    )
+
+
+def test_a_music_provider_declares_no_source_fade_by_default() -> None:
+    """The declaration is opt-in: nothing downstream verifies it."""
+    assert object.__new__(MusicProvider).delivers_crossfaded_audio is False
+
+
+def _source_crossfade_controller(provider: Any, queue_crossfade_mode: CrossfadeMode) -> Any:
+    """
+    Return a controller resolving source fades against one provider and setting.
+
+    The queue follows on with another item of the same source, so only the provider
+    and the setting decide; the boundary cases are covered on their own.
+    """
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = MagicMock()
+    controller.mass.get_provider.return_value = provider
+    controller.mass.player_queues.get_next_item.return_value = _follower("same-provider")
+    # first in the queue, so nothing precedes it and only the follower decides
+    controller.mass.player_queues.index_by_id.return_value = 0
+    controller.get_crossfade_mode = MagicMock(return_value=queue_crossfade_mode)
+    return controller
+
+
+def _follower(kind: str) -> Any:
+    """Return the queue item that follows, in each shape the resolver has to handle."""
+    if kind == "none":
+        return None
+    if kind == "not-a-track":
+        return SimpleNamespace(media_type=MediaType.AUDIOBOOK, streamdetails=None, media_item=None)
+    if kind == "same-provider":
+        # already resolved to the provider that will serve it
+        return SimpleNamespace(
+            media_type=MediaType.TRACK,
+            streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+            media_item=None,
+        )
+    if kind == "other-provider":
+        other = _make_stream_details(MediaType.TRACK, is_realtime=True)
+        other.provider = "other--1"
+        return SimpleNamespace(media_type=MediaType.TRACK, streamdetails=other, media_item=None)
+    if kind == "library-mapped":
+        return SimpleNamespace(
+            media_type=MediaType.TRACK,
+            streamdetails=None,
+            media_item=SimpleNamespace(
+                provider="library",
+                provider_mappings=[SimpleNamespace(provider_instance="builtin")],
+            ),
+        )
+    # nothing to resolve it with at all
+    return SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, media_item=None)
+
+
+def _realtime_track() -> Any:
+    """Return a queue item whose track arrives at playback pace."""
+    return SimpleNamespace(
+        queue_item_id="item-1",
+        media_type=MediaType.TRACK,
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+    )
+
+
+def test_the_context_update_carries_a_source_fade_the_audio_layer_never_sees() -> None:
+    """
+    A crossfade performed by the source is published with the item's context.
+
+    Our own mixer reports the fades it renders, but it renders none here, so this is
+    the only place the source's fade can reach the processing details.
+    """
+    controller = cast("Any", object.__new__(StreamsController))
+    controller.mass = MagicMock()
+    controller.mass.player_queues.queue_data_or_none.return_value = SimpleNamespace(
+        session_id="session-1"
+    )
+    controller.audio_processing = MagicMock()
+    queue_item = SimpleNamespace(
+        queue_item_id="item-1",
+        streamdetails=_make_stream_details(MediaType.TRACK, is_realtime=True),
+        extra_attributes={},
+    )
+
+    controller._update_audio_processing_context(
+        queue=SimpleNamespace(queue_id="queue-1"),
+        queue_item=queue_item,
+        pcm_format=TEST_PCM_FORMAT,
+        overlay_enabled=False,
+        session_id="session-1",
+        source_crossfade_mode=CrossfadeMode.SOURCE,
+    )
+
+    reported = controller.audio_processing.update_item_context.call_args.kwargs["queue_processing"]
+    assert reported.crossfade_mode == CrossfadeMode.SOURCE
 
 
 # -- StreamsAudio.get_stream_details --
