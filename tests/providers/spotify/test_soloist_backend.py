@@ -21,8 +21,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError, LoginFailed
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.models.music_provider import ProviderStreamLimitError
@@ -1437,19 +1439,23 @@ def test_a_running_session_answers_for_what_the_engine_is_doing(tmp_path: Path) 
     """
     backend = _make_backend(tmp_path)
     provider = backend.provider
+    streamdetails = _streamdetails_for(queue_id="player1")
     # nothing playing yet: the configuration is all there is to go on
-    before_any_session = backend.session_normalizes
+    before_any_session = backend.session_normalizes(streamdetails)
     session = _SoloistSession(backend, "player1")
     session.engine_normalizes = True
     backend._session = session
-    while_playing = backend.session_normalizes
+    while_playing = backend.session_normalizes(streamdetails)
     # ... and a session that has been torn down no longer speaks for the engine
     session._stopped = True
-    after_teardown = backend.session_normalizes
+    after_teardown = backend.session_normalizes(streamdetails)
     assert before_any_session is None
     assert while_playing is True
     assert after_teardown is None
-    assert provider.delivers_normalized_audio is provider.spotify_normalization_configured
+    assert (
+        provider.delivers_normalized_audio(streamdetails)
+        is provider.spotify_normalization_configured
+    )
 
 
 def test_crossfade_comes_from_the_queue_preference(tmp_path: Path) -> None:
@@ -1471,6 +1477,110 @@ def test_no_queue_means_no_crossfade(tmp_path: Path) -> None:
     """Without a queue to read the preference from, the engine gets no crossfade."""
     session = _make_session(tmp_path, queue_id=None)
     assert session._queue_crossfade_ms() == 0
+
+
+async def test_a_fed_boundary_the_engine_played_across_is_reported(tmp_path: Path) -> None:
+    """The engine playing on into a fed item is what puts the overlap in its audio."""
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    streamdetails = _streamdetails_for(uri=TRACK_B)
+    session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.return_value = None
+
+    # fed but not reached, so MA arriving here now means a jump - not a fade
+    assert session.fades_a_boundary_of(streamdetails) is False
+
+    await session._observe_current(TRACK_B, 200_000)
+
+    assert session._items[TRACK_B].faded_in is True
+    assert session.fades_a_boundary_of(streamdetails) is True
+
+
+async def test_a_jumped_to_item_opens_on_a_hard_cut(tmp_path: Path) -> None:
+    """A skip discards the overlap the engine rendered, so no fade reaches the item."""
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    session._pending.append(TRACK_B)
+    session._discard_until = TRACK_B
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.return_value = None
+
+    await session._observe_current(TRACK_B, 200_000)
+
+    assert session._items[TRACK_B].faded_in is False
+    assert session.fades_a_boundary_of(_streamdetails_for(uri=TRACK_B)) is False
+
+
+async def test_a_fresh_sessions_first_item_rests_on_its_own_follower(tmp_path: Path) -> None:
+    """
+    Nothing was faded into the item a session starts on, so only its end can be faded.
+
+    A single-track play from the middle of a list is exactly this: the item before it
+    never played, so crediting that boundary would report an overlap nobody rendered.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    streamdetails = _streamdetails_for(uri=TRACK_A)
+    playing = _queue_item(TRACK_A, streamdetails=streamdetails)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
+
+    queues.get_next_item.return_value = None
+    assert session.fades_a_boundary_of(streamdetails) is False
+
+    queues.get_next_item.return_value = _queue_item(TRACK_B)
+    assert session.fades_a_boundary_of(streamdetails) is True
+
+
+@pytest.mark.parametrize(
+    ("crossfade_ms", "feed_fails", "expected"),
+    [
+        (8000, False, True),
+        # a feed that did not land costs the crossfade at exactly that boundary
+        (8000, True, False),
+        # and an engine started without crossfade cuts hard whatever it was fed
+        (0, False, False),
+    ],
+)
+async def test_feeding_the_follower_settles_the_boundary_at_the_items_end(
+    tmp_path: Path, crossfade_ms: int, feed_fails: bool, expected: bool
+) -> None:
+    """Once the feed has been attempted, its outcome is what the boundary rests on."""
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = crossfade_ms
+    streamdetails = _streamdetails_for(uri=TRACK_A)
+    playing = _queue_item(TRACK_A, streamdetails=streamdetails)
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    session._current = item
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
+    queues.get_next_item.return_value = _queue_item(TRACK_B)
+    if feed_fails:
+        _client_of(session).add_to_queue.side_effect = TimeoutError
+
+    await session.feed_after(streamdetails, TRACK_A)
+
+    assert item.fades_out is expected
+    assert session.fades_a_boundary_of(streamdetails) is expected
+
+
+async def test_only_a_track_can_carry_a_source_fade(tmp_path: Path) -> None:
+    """A podcast episode is never stitched, so both of its boundaries are hard cuts."""
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    episode = _streamdetails_for(uri="spotify:episode:xyz", media_type=MediaType.PODCAST_EPISODE)
+
+    assert session.fades_a_boundary_of(episode) is False
 
 
 async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
@@ -1953,6 +2063,22 @@ def _make_session(tmp_path: Path, queue_id: str | None = "player1") -> _SoloistS
     session._logged_in = True
     session._was_active = True
     return session
+
+
+def _streamdetails_for(
+    *,
+    queue_id: str | None = "player1",
+    uri: str = TRACK_A,
+    media_type: MediaType = MediaType.TRACK,
+) -> StreamDetails:
+    """Return stream details for a Spotify item served by the test instance."""
+    return StreamDetails(
+        provider="spotify--test",
+        item_id=uri.rsplit(":", 1)[1],
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        media_type=media_type,
+        queue_id=queue_id,
+    )
 
 
 def _make_item(tmp_path: Path, uri: str) -> _ItemAudio:

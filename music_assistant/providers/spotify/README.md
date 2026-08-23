@@ -112,8 +112,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   before every spawn. Its unit is milliseconds and sub-second values silently disable
   crossfade, which the seconds-based queue setting can never produce. Changing the
   setting mid-playback takes effect on the next playback, which is also why
-  `delivers_crossfaded_audio` reports the running session's captured value rather
-  than the current setting.
+  `delivers_crossfaded_audio(streamdetails)` reports the captured value of the session
+  serving *that item's* queue rather than the current setting. It answers per boundary:
+  a fade is only reported where the engine plays across the cut, so an item the session
+  was jumped to, one it was handed but has not reached, and the item a fresh session
+  starts on are all reported as hard cuts.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the session runs
@@ -144,10 +147,12 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   Exit code 10 (expired build) triggers a forced binary refresh.
 - **Normalization**: exactly one of the two normalizes, and a provider option decides
   which. On (the default) the engine's own normalizer is enabled and the provider
-  declares `delivers_normalized_audio`, which makes the streams core skip normalization
-  for these items — Spotify uses values computed over its whole catalogue and will not
-  push a quiet track past its remaining headroom, and MA correcting that again would be
-  normalizing twice, the second time against a measurement of Spotify's own output.
+  declares `delivers_normalized_audio(streamdetails)` for the queue that session serves,
+  which makes the streams core skip normalization for those items — another queue gets
+  the configured answer instead, since the running session says nothing about it.
+  Spotify uses values computed over its whole catalogue and will not push a quiet track
+  past its remaining headroom, and MA correcting that again would be normalizing twice,
+  the second time against a measurement of Spotify's own output.
   Skipping also means the loudness analyzer declines the stream, so no measurement is
   stored: a value measured on one backend's output can never be applied to the other's,
   with no erase step needed. Off, `audio.normalize_v2=false` is written and MA measures

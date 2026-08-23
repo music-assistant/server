@@ -14,6 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.backends.soloist import SoloistBackend
@@ -91,10 +93,10 @@ def test_only_the_soloist_backend_declares_normalized_audio() -> None:
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     cast("MagicMock", prov.config).get_value = MagicMock(return_value=True)
     prov.backend = SoloistBackend(prov)
-    assert prov.delivers_normalized_audio is True
+    assert prov.delivers_normalized_audio(_streamdetails()) is True
     # the same setting on librespot declares nothing: its audio is the raw master
     prov.backend = LibrespotBackend(prov)
-    assert prov.delivers_normalized_audio is False
+    assert prov.delivers_normalized_audio(_streamdetails()) is False
 
 
 def test_only_the_soloist_backend_can_declare_crossfaded_audio() -> None:
@@ -106,14 +108,14 @@ def test_only_the_soloist_backend_can_declare_crossfaded_audio() -> None:
     """
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     prov.backend = SoloistBackend(prov)
-    assert prov.delivers_crossfaded_audio is None
+    assert prov.delivers_crossfaded_audio(_streamdetails()) is None
     prov.backend = LibrespotBackend(prov)
-    assert prov.delivers_crossfaded_audio is False
+    assert prov.delivers_crossfaded_audio(_streamdetails()) is False
 
 
-@pytest.mark.parametrize(("crossfade_ms", "expected"), [(8000, True), (0, False)])
-def test_a_running_session_reports_the_crossfade_it_was_started_with(
-    crossfade_ms: int, expected: bool
+@pytest.mark.parametrize("expected", [True, False])
+def test_a_running_session_answers_for_the_boundary_it_is_asked_about(
+    expected: bool,
 ) -> None:
     """
     The engine reads the crossfade once, at spawn, so the session answers for itself.
@@ -124,13 +126,34 @@ def test_a_running_session_reports_the_crossfade_it_was_started_with(
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     backend = SoloistBackend(prov)
     prov.backend = backend
-    session = MagicMock()
-    session.usable = True
-    session.crossfade_ms = crossfade_ms
-    backend._session = session
+    streamdetails = _streamdetails(queue_id="queue-1")
+    backend._session = _session(queue_id="queue-1", fades=expected)
 
-    assert backend.session_crossfades is expected
-    assert prov.delivers_crossfaded_audio is expected
+    assert backend.session_crossfades(streamdetails) is expected
+    assert prov.delivers_crossfaded_audio(streamdetails) is expected
+
+
+@pytest.mark.parametrize("normalizes", [True, False])
+def test_another_queues_session_answers_for_neither_hook(normalizes: bool) -> None:
+    """
+    A session serves one queue, so it says nothing about an item played on another.
+
+    Reading it anyway would hand the asking queue the other one's answers: MA
+    normalization applied on top of the engine's, or skipped when nobody applies it.
+    """
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=normalizes)
+    backend = SoloistBackend(prov)
+    prov.backend = backend
+    backend._session = _session(queue_id="queue-1", fades=True, normalizes=not normalizes)
+    other_queue = _streamdetails(queue_id="queue-2")
+
+    assert backend.session_normalizes(other_queue) is None
+    assert backend.session_crossfades(other_queue) is None
+    # so the configuration answers for normalization, and the queue's own setting
+    # (resolved by the streams core) for the crossfade
+    assert prov.delivers_normalized_audio(other_queue) is normalizes
+    assert prov.delivers_crossfaded_audio(other_queue) is None
 
 
 def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
@@ -138,7 +161,7 @@ def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     cast("MagicMock", prov.config).get_value = MagicMock(return_value=False)
     prov.backend = SoloistBackend(prov)
-    assert prov.delivers_normalized_audio is False
+    assert prov.delivers_normalized_audio(_streamdetails()) is False
 
 
 @pytest.mark.parametrize("normalize", [True, False])
@@ -235,6 +258,27 @@ async def test_librespot_seek_adds_start_position(
         pass
     args = captured[0]
     assert args[args.index("--start-position") + 1] == "42"
+
+
+def _streamdetails(*, queue_id: str | None = None, item_id: str = "track-1") -> StreamDetails:
+    """Return minimal stream details for the source-treatment hooks to answer about."""
+    return StreamDetails(
+        provider="spotify--test",
+        item_id=item_id,
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        media_type=MediaType.TRACK,
+        queue_id=queue_id,
+    )
+
+
+def _session(*, queue_id: str, fades: bool, normalizes: bool = True) -> MagicMock:
+    """Return a stand-in for a running soloist session serving one queue."""
+    session = MagicMock()
+    session.usable = True
+    session.queue_id = queue_id
+    session.engine_normalizes = normalizes
+    session.fades_a_boundary_of = MagicMock(return_value=fades)
+    return session
 
 
 def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
