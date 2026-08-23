@@ -1286,13 +1286,13 @@ def test_no_source_fade_for_audio_we_mix_ourselves(
 
 
 @pytest.mark.parametrize(
-    ("follower_kind", "expected"),
+    ("neighbour_kind", "expected"),
     [
         # a boundary the source owns both sides of, as a provider item and as a
         # library item that carries the source in its mappings instead
         ("same-provider", CrossfadeMode.SOURCE),
         ("library-mapped", CrossfadeMode.SOURCE),
-        # nothing queued after it, so there is no boundary at all
+        # nothing next to it, so there is no boundary at all
         ("none", CrossfadeMode.DISABLED),
         # the source plays the current item out at any of these, so the cut is hard
         ("other-provider", CrossfadeMode.DISABLED),
@@ -1300,19 +1300,28 @@ def test_no_source_fade_for_audio_we_mix_ourselves(
         ("unresolvable", CrossfadeMode.DISABLED),
     ],
 )
+@pytest.mark.parametrize("side", ["follower", "predecessor"])
 def test_a_source_fade_needs_a_boundary_the_source_owns(
-    follower_kind: str, expected: CrossfadeMode
+    neighbour_kind: str, side: str, expected: CrossfadeMode
 ) -> None:
     """
     Only a boundary between two items of the same source is credited with its fade.
 
-    Reporting one anywhere else would describe an overlap nobody rendered: we do not
-    mix a realtime item's boundaries either, so what plays there is a hard cut.
+    Either side counts: the last track of a queue has no follower but was still the
+    side faded into. Reporting one anywhere else would describe an overlap nobody
+    rendered - we do not mix a realtime item's boundaries either, so it is a hard cut.
     """
     controller = _source_crossfade_controller(
         object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
     )
-    controller.mass.player_queues.get_next_item.return_value = _follower(follower_kind)
+    queues = controller.mass.player_queues
+    neighbour = _follower(neighbour_kind)
+    if side == "follower":
+        queues.get_next_item.return_value = neighbour
+    else:
+        queues.get_next_item.return_value = None
+        queues.index_by_id.return_value = 1
+        queues.get_item.return_value = neighbour
     queue_item = SimpleNamespace(
         queue_item_id="item-1",
         media_type=MediaType.TRACK,
@@ -1387,6 +1396,8 @@ def _source_crossfade_controller(provider: Any, queue_crossfade_mode: CrossfadeM
     controller.mass = MagicMock()
     controller.mass.get_provider.return_value = provider
     controller.mass.player_queues.get_next_item.return_value = _follower("same-provider")
+    # first in the queue, so nothing precedes it and only the follower decides
+    controller.mass.player_queues.index_by_id.return_value = 0
     controller.get_crossfade_mode = MagicMock(return_value=queue_crossfade_mode)
     return controller
 

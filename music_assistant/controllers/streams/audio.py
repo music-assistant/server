@@ -102,6 +102,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
@@ -3009,9 +3011,14 @@ class StreamsAudio:
             if streamdetails.media_type == MediaType.RADIO
             else CONF_VOLUME_NORMALIZATION_TRACKS
         )
-        return VolumeNormalizationMode(
+        preference = VolumeNormalizationMode(
             self.mass.streams.get_config_value(conf_key, return_type=str)
         )
+        # a stored value the options never offered is not a preference: nothing
+        # validates a saved config value against them
+        if preference in OUTCOME_ONLY_NORMALIZATION_MODES:
+            return DEFAULT_VOLUME_NORMALIZATION_MODE
+        return preference
 
     def _update_radio_stream_metadata(
         self,

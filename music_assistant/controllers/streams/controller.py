@@ -83,7 +83,9 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
     SINGLE_ITEM_READRATE,
     SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
@@ -138,17 +140,11 @@ isfile = wrap(os.path.isfile)
 
 
 def _volume_normalization_preference_options() -> list[ConfigValueOption]:
-    """
-    Return the normalization modes that can be picked as a preference.
-
-    The preference says what Music Assistant should do, so the two modes that only
-    ever come back as an outcome are left out: SOURCE is set by a source that levels
-    its own audio, UNKNOWN is what an unrecognised value deserializes to.
-    """
+    """Return the normalization modes that can be picked as a preference."""
     return [
         ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
         for mode in VolumeNormalizationMode
-        if mode not in (VolumeNormalizationMode.SOURCE, VolumeNormalizationMode.UNKNOWN)
+        if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     ]
 
 
@@ -383,8 +379,8 @@ class StreamsController(CoreController):
         A source that crossfades its own playback is handed the queue's crossfade
         setting instead of Music Assistant mixing the overlap. This only answers for
         audio we do not mix ourselves, and the same two limits apply as to a fade of
-        our own: only tracks are faded, and an item with nothing queued after it has
-        no boundary the same source owns both sides of.
+        our own: only tracks are faded, and an item needs a boundary the same source
+        owns both sides of.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item to report the fade for.
@@ -404,7 +400,7 @@ class StreamsController(CoreController):
             source_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
         if not source_fades:
             return CrossfadeMode.DISABLED
-        if not self._source_serves_next_item(queue, queue_item):
+        if not self._source_fades_an_adjacent_item(queue, queue_item):
             return CrossfadeMode.DISABLED
         return CrossfadeMode.SOURCE
 
@@ -429,14 +425,14 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
                 type=ConfigEntryType.STRING,
-                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
+                default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
                 category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
                 type=ConfigEntryType.STRING,
-                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
+                default_value=DEFAULT_VOLUME_NORMALIZATION_MODE,
                 options=_volume_normalization_preference_options(),
                 category="playback",
             ),
@@ -1979,25 +1975,43 @@ class StreamsController(CoreController):
                     queue_id,
                 )
 
-    def _source_serves_next_item(self, queue: PlayerQueue, queue_item: QueueItem) -> bool:
+    def _source_fades_an_adjacent_item(self, queue: PlayerQueue, queue_item: QueueItem) -> bool:
         """
-        Return whether the item that follows comes from the same source.
+        Return whether the same source serves an item next to this one.
 
         A source can only fade across a boundary it owns both sides of: with anything
-        else queued next it plays the current item out and the cut is a hard one.
+        else next to this item it plays the item out and the cut is a hard one. Both
+        neighbours count, the same way one of our own fades credits both of its sides -
+        the last track of a queue is still the side that was faded into.
 
         :param queue: Queue the item is played from.
-        :param queue_item: Queue item whose follower to check.
+        :param queue_item: Queue item whose neighbours to check.
         """
-        follower = self.mass.player_queues.get_next_item(queue.queue_id, queue_item.queue_item_id)
-        if follower is None or follower.media_type != MediaType.TRACK:
-            return False
         assert queue_item.streamdetails is not None  # guaranteed by the caller
-        provider_instance = queue_item.streamdetails.provider
-        if (follower_details := follower.streamdetails) is not None:
+        controller = self.mass.player_queues
+        queue_id = queue.queue_id
+        neighbours = [controller.get_next_item(queue_id, queue_item.queue_item_id)]
+        index = controller.index_by_id(queue_id, queue_item.queue_item_id)
+        if index is not None and index > 0:
+            neighbours.append(controller.get_item(queue_id, index - 1))
+        return any(
+            self._served_by(neighbour, queue_item.streamdetails.provider)
+            for neighbour in neighbours
+        )
+
+    def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
+        """
+        Return whether a queue item is a track the given provider instance serves.
+
+        :param queue_item: Queue item to check, or None when there is none.
+        :param provider_instance: Instance id of the provider to match.
+        """
+        if queue_item is None or queue_item.media_type != MediaType.TRACK:
+            return False
+        if (streamdetails := queue_item.streamdetails) is not None:
             # already resolved, so this is the provider that will really serve it
-            return follower_details.provider == provider_instance
-        if (media_item := follower.media_item) is None:
+            return streamdetails.provider == provider_instance
+        if (media_item := queue_item.media_item) is None:
             return False
         return media_item.provider == provider_instance or any(
             mapping.provider_instance == provider_instance

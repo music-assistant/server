@@ -23,6 +23,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import get_normalization_details
+from music_assistant.controllers.streams.constants import (
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
+)
 from music_assistant.controllers.streams.controller import (
     StreamsController,
     _volume_normalization_preference_options,
@@ -207,13 +211,30 @@ def test_an_outcome_only_mode_is_not_offered_as_a_preference() -> None:
     """
     offered = {option.value for option in _volume_normalization_preference_options()}
 
-    assert VolumeNormalizationMode.SOURCE.value not in offered
-    assert VolumeNormalizationMode.UNKNOWN.value not in offered
     assert offered == {
         mode.value
         for mode in VolumeNormalizationMode
-        if mode not in (VolumeNormalizationMode.SOURCE, VolumeNormalizationMode.UNKNOWN)
+        if mode not in OUTCOME_ONLY_NORMALIZATION_MODES
     }
+
+
+@pytest.mark.parametrize("stored", OUTCOME_ONLY_NORMALIZATION_MODES)
+def test_an_outcome_only_mode_stored_as_a_preference_is_not_honoured(
+    stored: VolumeNormalizationMode,
+) -> None:
+    """
+    Hiding an option does not make it unacceptable: nothing validates a saved value.
+
+    Handed back as the preference it would be applied as the mode, which for SOURCE
+    also means reporting that a source levelled audio nobody levelled.
+    """
+    audio = object.__new__(StreamsAudio)
+    audio.mass = MagicMock()
+    audio.mass.streams.get_config_value.return_value = stored.value
+
+    preference = audio._get_volume_normalization_preference(_streamdetails())
+
+    assert preference == DEFAULT_VOLUME_NORMALIZATION_MODE
 
 
 def _streamdetails() -> StreamDetails:
