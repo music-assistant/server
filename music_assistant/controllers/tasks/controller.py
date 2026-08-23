@@ -501,10 +501,7 @@ class TasksController(CoreController):
             return
         if not (managed := self._tasks.get(task_id)):
             return
-        managed.task_info.report = markdown
-        managed.task_info.updated_at = utcnow()
-        self._persist_scheduled_task_state(managed)
-        self._schedule_task_update()
+        self._update_task_report(managed, markdown)
 
     def set_current_task_report(self, markdown: str | None) -> None:
         """
@@ -512,9 +509,8 @@ class TasksController(CoreController):
 
         :param markdown: Markdown report content or None to clear.
         """
-        if not (task_id := ACTIVE_TASK_ID.get()):
-            return
-        self.set_task_report(task_id, markdown)
+        if task_context := ACTIVE_TASK_CONTEXT.get():
+            task_context.set_report(markdown)
 
     def add_task_failure(self, task_id: str, message: str) -> None:
         """
@@ -607,6 +603,37 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
+    def _set_task_report_for_run(
+        self,
+        task_id: str,
+        markdown: str | None,
+        *,
+        run_id: int,
+    ) -> None:
+        """Set a task report only while its originating run is active."""
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(
+                partial(
+                    self._set_task_report_for_run,
+                    task_id,
+                    markdown,
+                    run_id=run_id,
+                )
+            )
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        if managed.run_id != run_id or managed.task_info.status != TaskStatus.RUNNING:
+            return
+        self._update_task_report(managed, markdown)
+
+    def _update_task_report(self, managed: ManagedTask, markdown: str | None) -> None:
+        """Update a managed task report and notify task consumers."""
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
+        self._schedule_task_update()
+
     def _append_task_lifecycle_log(
         self,
         task_id: str,
@@ -672,6 +699,7 @@ class TasksController(CoreController):
         if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
+        managed.run_id += 1
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -686,6 +714,7 @@ class TasksController(CoreController):
         managed.task_info.started_at = None
         managed.task_info.next_run = None
         managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
             if managed.priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
@@ -721,7 +750,7 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
-            update_report=self.set_task_report,
+            update_report=partial(self._set_task_report_for_run, run_id=managed.run_id),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
