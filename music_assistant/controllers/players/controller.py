@@ -4224,7 +4224,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return None
         try:
             item = await self.mass.music.get_item_by_uri(source)
-        except MusicAssistantError:
+        except MusicAssistantError as err:
+            # not resolvable as media, so it is something else (a queue id, a
+            # player-native source) — logged because a provider being unavailable
+            # or unauthenticated also lands here
+            self.logger.debug("Could not resolve %s as an audio source: %s", source, err)
             return None
         if not isinstance(item, AudioSource):
             return None
