@@ -1012,7 +1012,7 @@ class TracksController(MediaControllerBase[Track]):
                 try:
                     candidate = await self.get_provider_item(
                         search_result.item_id,
-                        search_result.provider,
+                        provider.instance_id,
                         allow_fallback=False,
                     )
                 except MediaNotFoundError:

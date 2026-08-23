@@ -461,6 +461,7 @@ async def test_find_provider_match_prefers_exact_candidate(
     loose.version = "Deluxe"
     stale = create_track("qobuz_1", "stale", isrc="STALE")
     exact = create_track("qobuz_1", "exact", isrc="USRC17607839")
+    exact.provider = "qobuz"
     exact.external_ids.add(mb_track)
     provider = MagicMock()
     provider.instance_id = "qobuz_1"
@@ -473,6 +474,7 @@ async def test_find_provider_match_prefers_exact_candidate(
             raise MediaNotFoundError("Stale search result")
         return {"loose": loose, "exact": exact}[item_id]
 
+    get_provider_item_mock = AsyncMock(side_effect=get_provider_item)
     with (
         patch.object(
             music,
@@ -482,7 +484,7 @@ async def test_find_provider_match_prefers_exact_candidate(
         patch.object(
             music.tracks,
             "get_provider_item",
-            AsyncMock(side_effect=get_provider_item),
+            get_provider_item_mock,
         ),
         patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
     ):
@@ -495,6 +497,9 @@ async def test_find_provider_match_prefers_exact_candidate(
     assert result.match is not None
     assert result.match.track.item_id == "exact"
     assert result.match.confidence == TrackMatchConfidence.EXACT
+    assert all(
+        call.args[1] == provider.instance_id for call in get_provider_item_mock.await_args_list
+    )
 
 
 async def test_find_provider_match_keeps_fallback_after_later_timeout(
