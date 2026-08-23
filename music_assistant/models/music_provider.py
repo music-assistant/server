@@ -163,6 +163,8 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
+    playlist_duplicates_supported = True
+
     def __init__(
         self,
         mass: MusicAssistant,

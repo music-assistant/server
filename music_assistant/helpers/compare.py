@@ -1092,15 +1092,24 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
 
 def _track_artist_credit_keys(track: Track) -> set[str]:
     """Return normalized structured and title-embedded artist credits."""
-    artist_credits = {_artist_credit_key(artist.name) for artist in track.artists}
+    artist_credits: set[str] = set()
+    for artist in track.artists:
+        artist_credits.update(_artist_credit_variants(artist.name))
     for featured_artists in _FEATURED_ARTISTS_PATTERN.findall(track.name):
-        artist_credits.add(_artist_credit_key(featured_artists))
-        artist_credits.update(
-            _artist_credit_key(artist_name)
-            for artist_name in _FEATURED_ARTIST_SPLITTER.split(featured_artists)
-            if artist_name
-        )
+        artist_credits.update(_artist_credit_variants(featured_artists))
     return artist_credits
+
+
+def _artist_credit_variants(name: str) -> set[str]:
+    """Return equivalent keys for a single or combined artist credit."""
+    split_credits = {
+        _artist_credit_key(artist_name)
+        for artist_name in _FEATURED_ARTIST_SPLITTER.split(name)
+        if artist_name
+    }
+    if len(split_credits) <= 1:
+        return {_artist_credit_key(name)}
+    return {*split_credits, "".join(sorted(split_credits))}
 
 
 def _artist_credit_key(name: str) -> str:

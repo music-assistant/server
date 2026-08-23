@@ -832,7 +832,6 @@ class TracksController(MediaControllerBase[Track]):
         matches: list[TrackProviderMatch] = []
         ambiguous_providers: list[str] = []
         failed_providers: list[str] = []
-        processed_domains: set[str] = set()
         providers = (
             [
                 provider
@@ -846,9 +845,8 @@ class TracksController(MediaControllerBase[Track]):
             else self.mass.music.providers
         )
         for provider in providers:
-            if provider.domain in processed_domains or provider.domain in existing_domains:
+            if provider.domain in existing_domains:
                 continue
-            processed_domains.add(provider.domain)
             if not provider.is_streaming_provider and not (
                 library_track and self._get_provider_mapping(library_track, provider)
             ):

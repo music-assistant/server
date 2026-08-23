@@ -1375,7 +1375,7 @@ def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
     title_credit = _provider_track(
         "base",
         "provider_a",
-        name="Track (feat. Simon & Garfunkel)",
+        name="Track (feat. Simon and Garfunkel)",
         album_name="Original",
     )
     structured_credit = _provider_track(

@@ -22,6 +22,7 @@ from music_assistant.controllers.music.media.tracks import (
 )
 from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import create_track
 
@@ -417,6 +418,70 @@ async def test_enrich_provider_mappings_uses_library_without_mutating_it(
     }
     assert library_track.provider_mappings == original_mappings
     assert result.matches == (qobuz_match, tidal_match)
+
+
+async def test_enrich_provider_mappings_tries_next_instance_after_miss(
+    music: MusicController,
+) -> None:
+    """A miss on one account does not suppress another account of the same service."""
+    source = create_track("spotify_1", "source")
+    qobuz_track = create_track("qobuz_2", "qobuz-track")
+    qobuz_mapping = next(iter(qobuz_track.provider_mappings))
+    first_provider = MagicMock(spec=MusicProvider)
+    first_provider.name = "Qobuz first"
+    first_provider.instance_id = "qobuz_1"
+    first_provider.domain = "qobuz"
+    first_provider.is_streaming_provider = True
+    second_provider = MagicMock(spec=MusicProvider)
+    second_provider.name = "Qobuz second"
+    second_provider.instance_id = "qobuz_2"
+    second_provider.domain = "qobuz"
+    second_provider.is_streaming_provider = True
+    match = TrackProviderMatch(
+        track=qobuz_track,
+        mapping=qobuz_mapping,
+        confidence=TrackMatchConfidence.LIKELY,
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(),
+        "qobuz_2": TrackProviderMatchResult(match=match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ) as find_match,
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id: {
+                "qobuz_1": first_provider,
+                "qobuz_2": second_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "qobuz_2"},
+        )
+
+    assert find_match.await_count == 2
+    assert qobuz_mapping in result.track.provider_mappings
+    assert result.matches == (match,)
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(

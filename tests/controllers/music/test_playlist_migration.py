@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from copy import deepcopy
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -192,10 +192,20 @@ async def test_migrate_playlist_rejects_dynamic_source(
         await music.playlists.migrate_playlist(source_playlist.item_id)
 
 
-async def test_streaming_migration_preserves_order_and_duplicates(
+@pytest.mark.parametrize(
+    ("duplicates_supported", "expected_target_ids", "expected_failure_count"),
+    [
+        (True, ["tidal-one", "tidal-two", "tidal-one"], 1),
+        (False, ["tidal-one", "tidal-two"], 2),
+    ],
+)
+async def test_streaming_migration_handles_provider_duplicate_policy(
     music: MusicController,
+    duplicates_supported: bool,
+    expected_target_ids: list[str],
+    expected_failure_count: int,
 ) -> None:
-    """A provider migration resolves unique tracks once and preserves source order."""
+    """A provider migration preserves supported duplicates and reports unsupported ones."""
     source_playlist = _playlist("1", "Source", "spotify_1", "source")
     source_one = create_track("spotify_1", "one")
     source_two = create_track("spotify_1", "two")
@@ -207,6 +217,7 @@ async def test_streaming_migration_preserves_order_and_duplicates(
     target_provider.instance_id = "tidal_1"
     target_provider.domain = "tidal"
     target_provider.name = "Tidal"
+    target_provider.playlist_duplicates_supported = duplicates_supported
     target_provider.add_playlist_tracks = AsyncMock()
 
     async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
@@ -275,14 +286,22 @@ async def test_streaming_migration_preserves_order_and_duplicates(
     create_playlist.assert_awaited_once()
     target_provider.add_playlist_tracks.assert_awaited_once_with(
         "target",
-        ["tidal-one", "tidal-two", "tidal-one"],
+        expected_target_ids,
     )
     assert find_match.await_count == 3
     assert all(
         call.kwargs["allowed_provider_instances"] == {"spotify_1", "tidal_1"}
         for call in find_match.await_args_list
     )
-    report_failure.assert_called_once_with("Test Artist - Test Track: no acceptable match")
+    expected_failures = [
+        call("Test Artist - Test Track: no acceptable match"),
+    ]
+    if not duplicates_supported:
+        expected_failures.append(
+            call("Test Artist - Test Track: tidal does not support duplicate playlist entries")
+        )
+    assert report_failure.call_args_list == expected_failures
+    assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
     assert "### Skipped tracks" in set_report.call_args.args[0]
 

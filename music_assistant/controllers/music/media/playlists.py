@@ -602,6 +602,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             report_current_task_failure(f"{track_label}: {reason}")
             skipped_tracks.append((track_label, reason.capitalize()))
 
+        seen_target_ids: set[str] = set()
         for track in source_tracks:
             result = resolved_tracks[self._migration_track_key(track)]
             if provider.domain == "builtin" and result.track:
@@ -612,6 +613,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if result.ambiguous:
                     counts["ambiguous"] += 1
                 continue
+            if (
+                not provider.playlist_duplicates_supported
+                and result.mapping.item_id in seen_target_ids
+            ):
+                reason = f"{provider.name} does not support duplicate playlist entries"
+                counts["skipped"] += 1
+                report_current_task_failure(
+                    f"{self._migration_track_label(track)}: {reason.lower()}"
+                )
+                skipped_tracks.append((self._migration_track_label(track), reason))
+                continue
+            seen_target_ids.add(result.mapping.item_id)
             target_ids.append(result.mapping.item_id)
             if result.confidence == TrackMatchConfidence.EXACT:
                 counts["exact"] += 1

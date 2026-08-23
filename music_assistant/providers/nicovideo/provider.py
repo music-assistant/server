@@ -54,6 +54,8 @@ class NicovideoMusicProvider(
 ):
     """Coordinator combining all nicovideo provider mixins."""
 
+    playlist_duplicates_supported = False
+
     @override
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
