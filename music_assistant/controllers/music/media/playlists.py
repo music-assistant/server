@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
@@ -51,6 +53,7 @@ from .radio import RadioController
 from .tracks import TrackProviderMatch, TracksController
 
 _PROVIDER_PLAYLIST_ADD_BATCH_SIZE = 100
+_MIGRATION_REPORT_DETAIL_LIMIT = 200
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -540,6 +543,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         minimum_confidence = self._minimum_match_confidence(match_policy)
         unique_tracks = {self._migration_track_key(track): track for track in source_tracks}
         semaphore = asyncio.Semaphore(5)
+        allowed_provider_instance_set = set(allowed_provider_instances)
+        failed_provider_instances: set[str] = set()
         completed = 0
 
         async def resolve_track(
@@ -551,8 +556,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     track,
                     provider,
                     minimum_confidence,
-                    set(allowed_provider_instances),
+                    allowed_provider_instance_set,
                     trust_source_mappings,
+                    failed_provider_instances,
                 )
             completed += 1
             _update_stage_progress(
@@ -570,6 +576,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         )
         target_ids: list[str] = []
+        target_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
         builtin_entries: list[PlaylistItem] = []
         counts = {
             "total": len(source_tracks),
@@ -649,20 +656,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             seen_target_ids.add(result.mapping.item_id)
             target_ids.append(result.mapping.item_id)
-            if result.confidence == TrackMatchConfidence.EXACT:
-                counts["exact"] += 1
-            elif result.confidence == TrackMatchConfidence.LIKELY:
-                counts["same_recording"] += 1
-            else:
-                counts["best_effort"] += 1
+            target_results.append((track, result))
+            self._adjust_migration_match_count(
+                counts,
+                result.confidence,
+                1,
+            )
 
-        migrated_count = len(builtin_entries) if provider.domain == "builtin" else len(target_ids)
+        prepared_count = (
+            len(builtin_entries) if provider.domain == "builtin" else len(target_results)
+        )
         set_current_task_report(
             self._build_migration_report(
                 source_playlist.name,
                 destination_name,
                 provider.name,
-                migrated_count,
+                prepared_count,
                 counts,
                 substitutions,
                 skipped_tracks,
@@ -671,7 +680,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 builtin_destination=provider.domain == "builtin",
             )
         )
-        if not migrated_count:
+        if not prepared_count:
             raise InvalidDataError("No tracks could be migrated")
         update_current_task_progress(85, "Creating destination playlist")
         if provider.domain == "builtin":
@@ -680,6 +689,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 builtin_entries,
                 source_playlist.image.path if source_playlist.image else None,
             )
+            migrated_count = prepared_count
         else:
             destination_playlist = await self.create_playlist(
                 destination_name,
@@ -700,6 +710,32 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 playlist_item_id,
                 target_ids,
             )
+            update_current_task_progress(95, "Verifying destination playlist")
+            actual_target_ids = [
+                item.item_id
+                async for item in self.tracks(
+                    playlist_item_id,
+                    provider.instance_id,
+                    force_refresh=True,
+                )
+            ]
+            missing_results = self._reconcile_migration_results(
+                actual_target_ids,
+                target_results,
+            )
+            migrated_count = len(target_results) - len(missing_results)
+            for track, result in missing_results:
+                reason = f"{provider.name} did not add this track"
+                counts["skipped"] += 1
+                self._adjust_migration_match_count(
+                    counts,
+                    result.confidence,
+                    -1,
+                )
+                report_current_task_failure(
+                    f"{self._migration_track_label(track)}: {reason.lower()}"
+                )
+                skipped_tracks.append((self._migration_track_label(track), reason))
             destination_playlist.metadata.last_refresh = None
             await self.update_item_in_library(
                 destination_playlist.item_id,
@@ -729,6 +765,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 builtin_destination=provider.domain == "builtin",
             )
         )
+        if not migrated_count:
+            raise InvalidDataError("The destination provider did not add any tracks")
         update_current_task_progress(
             100,
             f"Migrated {migrated_count} of {len(source_tracks)} tracks",
@@ -741,8 +779,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         minimum_confidence: TrackMatchConfidence,
         allowed_provider_instances: set[str],
         trust_source_mappings: bool,
+        failed_provider_instances: set[str],
     ) -> _PlaylistMigrationTrackResult:
         """Resolve one source track for a migration destination."""
+        if provider.domain != "builtin" and provider.instance_id in failed_provider_instances:
+            return _PlaylistMigrationTrackResult(
+                error=f"Matching unavailable on {provider.name} after an earlier failure"
+            )
         try:
             if provider.domain == "builtin":
                 enrichment = await self.mass.music.tracks.enrich_provider_mappings(
@@ -750,6 +793,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     minimum_confidence=minimum_confidence,
                     provider_instance_ids=allowed_provider_instances,
                     trust_track_mappings=trust_source_mappings,
+                    failed_provider_instances=failed_provider_instances,
                 )
                 return _PlaylistMigrationTrackResult(
                     track=enrichment.track if enrichment.track.provider_mappings else None,
@@ -778,9 +822,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 confidence=result.match.confidence,
                 used_library_item=library_track is not None,
             )
-        except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
+        except (
+            ResourceTemporarilyUnavailable,
+            ProviderUnavailableError,
+            ClientError,
+            OSError,
+            TimeoutError,
+        ) as err:
+            failed_provider_instances.add(provider.instance_id)
+            return _PlaylistMigrationTrackResult(error=str(err))
+        except MusicAssistantError as err:
             return _PlaylistMigrationTrackResult(
-                track=track if provider.domain == "builtin" else None,
                 error=str(err),
             )
 
@@ -799,6 +851,37 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for mapping in playlist.provider_mappings:
             mapping.in_library = True
         return await self.add_item_to_library(playlist, False)
+
+    @staticmethod
+    def _reconcile_migration_results(
+        actual_target_ids: list[str],
+        target_results: Sequence[tuple[Track, _PlaylistMigrationTrackResult]],
+    ) -> list[tuple[Track, _PlaylistMigrationTrackResult]]:
+        """Return requested tracks missing from the destination playlist."""
+        actual_id_counts = Counter(actual_target_ids)
+        missing_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
+        for track, result in target_results:
+            assert result.mapping is not None
+            if actual_id_counts[result.mapping.item_id]:
+                actual_id_counts[result.mapping.item_id] -= 1
+                continue
+            missing_results.append((track, result))
+        redirected_count = min(sum(actual_id_counts.values()), len(missing_results))
+        return missing_results[redirected_count:]
+
+    @staticmethod
+    def _adjust_migration_match_count(
+        counts: dict[str, int],
+        confidence: TrackMatchConfidence,
+        amount: int,
+    ) -> None:
+        """Adjust the aggregate count for a migration match confidence."""
+        count_key = {
+            TrackMatchConfidence.EXACT: "exact",
+            TrackMatchConfidence.LIKELY: "same_recording",
+            TrackMatchConfidence.LOOSE: "best_effort",
+        }[confidence]
+        counts[count_key] += amount
 
     @staticmethod
     def _minimum_match_confidence(
@@ -895,6 +978,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Append a Markdown report table when it has rows."""
         if not rows:
             return
+        visible_rows = rows[:_MIGRATION_REPORT_DETAIL_LIMIT]
         lines.extend(
             (
                 "",
@@ -906,8 +990,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         lines.extend(
             f"| {' | '.join(cls._escape_markdown(value, table=True) for value in row)} |"
-            for row in rows
+            for row in visible_rows
         )
+        if omitted_count := len(rows) - len(visible_rows):
+            lines.extend(
+                (
+                    "",
+                    f"_{omitted_count} additional rows omitted._",
+                )
+            )
 
     @staticmethod
     def _migration_track_label(track: Track) -> str:

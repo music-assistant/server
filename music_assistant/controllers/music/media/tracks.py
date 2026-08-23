@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -823,6 +824,7 @@ class TracksController(MediaControllerBase[Track]):
         minimum_confidence: TrackMatchConfidence = TrackMatchConfidence.LIKELY,
         provider_instance_ids: set[str] | None = None,
         trust_track_mappings: bool = True,
+        failed_provider_instances: set[str] | None = None,
     ) -> TrackProviderEnrichment:
         """
         Resolve missing streaming-provider mappings without updating the library.
@@ -831,6 +833,7 @@ class TracksController(MediaControllerBase[Track]):
         :param minimum_confidence: Lowest confidence that may be accepted.
         :param provider_instance_ids: Provider instances available to the initiating user.
         :param trust_track_mappings: Treat mappings attached to the source track as exact.
+        :param failed_provider_instances: Provider instances unavailable for the migration.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -867,6 +870,11 @@ class TracksController(MediaControllerBase[Track]):
         )
         mapping_source = library_track or track
         for provider in providers:
+            if (
+                failed_provider_instances is not None
+                and provider.instance_id in failed_provider_instances
+            ):
+                continue
             if provider.domain in existing_domains:
                 continue
             if not provider.is_streaming_provider and not (
@@ -883,7 +891,24 @@ class TracksController(MediaControllerBase[Track]):
                     allowed_provider_instances=provider_instance_ids,
                     trust_base_mapping=trust_track_mappings,
                 )
-            except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ) as err:
+                if failed_provider_instances is not None:
+                    failed_provider_instances.add(provider.instance_id)
+                self.logger.warning(
+                    "Failed to match %s on provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                )
+                failed_providers.append(provider.name)
+                continue
+            except MusicAssistantError as err:
                 self.logger.warning(
                     "Failed to match %s on provider %s: %s",
                     track.name,

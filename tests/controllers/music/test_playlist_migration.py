@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
 from music_assistant.controllers.music import MusicController
@@ -89,6 +93,36 @@ def test_migration_report_renders_substitutions_and_skips() -> None:
     assert "| Exact release | 1 |" in report
     assert "### Substitutions" in report
     assert "Artist - Missing" in report
+
+
+def test_migration_report_caps_detail_rows() -> None:
+    """Large migrations retain totals without creating unbounded task payloads."""
+    skipped_tracks = [(f"Artist - Track {index}", "No acceptable match") for index in range(201)]
+    report = PlaylistController._build_migration_report(
+        "Source",
+        "Migrated",
+        "Tidal",
+        0,
+        {
+            "total": 201,
+            "exact": 0,
+            "same_recording": 0,
+            "best_effort": 0,
+            "skipped": 201,
+            "ambiguous": 0,
+            "library_matches": 0,
+            "provider_matches": 0,
+        },
+        [],
+        skipped_tracks,
+        [],
+        completed=True,
+        builtin_destination=False,
+    )
+
+    assert "_1 additional rows omitted._" in report
+    assert "| Artist - Track 199 |" in report
+    assert "| Artist - Track 200 |" not in report
 
 
 async def test_provider_playlist_additions_are_batched_in_order() -> None:
@@ -245,16 +279,38 @@ async def test_migrate_playlist_rejects_dynamic_source(
 
 
 @pytest.mark.parametrize(
-    ("duplicates_supported", "expected_target_ids", "expected_failure_count"),
+    (
+        "duplicates_supported",
+        "expected_target_ids",
+        "actual_target_ids",
+        "expected_failure_count",
+    ),
     [
-        (True, ["tidal-one", "tidal-two", "tidal-one"], 1),
-        (False, ["tidal-one", "tidal-two"], 2),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            ["tidal-one", "tidal-two", "tidal-one"],
+            1,
+        ),
+        (
+            False,
+            ["tidal-one", "tidal-two"],
+            ["tidal-one", "tidal-two"],
+            2,
+        ),
+        (
+            True,
+            ["tidal-one", "tidal-two", "tidal-one"],
+            ["tidal-one", "tidal-one"],
+            2,
+        ),
     ],
 )
 async def test_streaming_migration_handles_provider_duplicate_policy(
     music: MusicController,
     duplicates_supported: bool,
     expected_target_ids: list[str],
+    actual_target_ids: list[str],
     expected_failure_count: int,
 ) -> None:
     """A provider migration preserves supported duplicates and reports unsupported ones."""
@@ -276,15 +332,24 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     source_provider.domain = "spotify"
     track_requests: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    async def iter_source_tracks(*args: object, **kwargs: object) -> AsyncGenerator[Track]:
+    async def iter_playlist_tracks(*args: object, **kwargs: object) -> AsyncGenerator[Track]:
         track_requests.append((args, kwargs))
-        for track in (
-            source_one,
-            source_two,
-            source_one,
-            source_missing,
-            source_missing,
-        ):
+        tracks: tuple[Track, ...]
+        if args == ("source", "spotify_1"):
+            tracks = (
+                source_one,
+                source_two,
+                source_one,
+                source_missing,
+                source_missing,
+            )
+        else:
+            target_tracks = {
+                "tidal-one": target_one,
+                "tidal-two": target_two,
+            }
+            tracks = tuple(target_tracks[item_id] for item_id in actual_target_ids)
+        for track in tracks:
             yield track
 
     matches = {
@@ -308,7 +373,7 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
 
     with (
         patch.object(music.playlists, "get_library_item", AsyncMock(return_value=source_playlist)),
-        patch.object(music.playlists, "tracks", iter_source_tracks),
+        patch.object(music.playlists, "tracks", iter_playlist_tracks),
         patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
         patch.object(music.tracks, "find_provider_match", find_match),
         patch.object(
@@ -348,7 +413,10 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         )
 
     create_playlist.assert_awaited_once()
-    assert track_requests == [(("source", "spotify_1"), {"force_refresh": True})]
+    assert track_requests == [
+        (("source", "spotify_1"), {"force_refresh": True}),
+        (("target", "tidal_1"), {"force_refresh": True}),
+    ]
     target_provider.add_playlist_tracks.assert_awaited_once_with(
         "target",
         expected_target_ids,
@@ -365,6 +433,8 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         expected_failures.append(
             call("Test Artist - Test Track: tidal does not support duplicate playlist entries")
         )
+    if "tidal-two" not in actual_target_ids:
+        expected_failures.append(call("Test Artist - Test Track: tidal did not add this track"))
     assert report_failure.call_args_list == expected_failures
     assert report_failure.call_count == expected_failure_count
     assert set_report.call_count == 2
@@ -448,6 +518,7 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
         minimum_confidence=TrackMatchConfidence.LOOSE,
         provider_instance_ids={"builtin", "spotify_1"},
         trust_track_mappings=True,
+        failed_provider_instances=set(),
     )
     assert create_builtin.await_args is not None
     entries = create_builtin.await_args.args[1]
@@ -456,3 +527,32 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
         {"spotify", "tidal"},
         {"spotify", "tidal"},
     ]
+
+
+async def test_builtin_resolution_does_not_return_unfiltered_track_on_failure(
+    music: MusicController,
+) -> None:
+    """A failed enrichment can not serialize the original out-of-scope mappings."""
+    source = create_track("spotify_1", "source")
+    builtin_provider = MagicMock(spec=MusicProvider)
+    builtin_provider.instance_id = "builtin"
+    builtin_provider.domain = "builtin"
+    builtin_provider.name = "Music Assistant"
+    failed_provider_instances: set[str] = set()
+
+    with patch.object(
+        music.tracks,
+        "enrich_provider_mappings",
+        AsyncMock(side_effect=ResourceTemporarilyUnavailable("Lookup failed")),
+    ):
+        result = await music.playlists._resolve_migration_track(
+            source,
+            builtin_provider,
+            TrackMatchConfidence.LIKELY,
+            {"builtin"},
+            False,
+            failed_provider_instances,
+        )
+
+    assert result.track is None
+    assert result.error == "Lookup failed"

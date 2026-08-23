@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     ProviderMapping,
@@ -702,6 +705,57 @@ async def test_enrich_provider_mappings_preserves_allowed_untrusted_fallback(
     assert result.track.provider_mappings == {source_mapping}
     assert find_match.await_args is not None
     assert find_match.await_args.kwargs["trust_base_mapping"] is False
+
+
+async def test_enrich_provider_mappings_stops_after_provider_failure(
+    music: MusicController,
+) -> None:
+    """A timed-out provider is not queried again for every remaining migration track."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.is_streaming_provider = True
+    failed_provider_instances: set[str] = set()
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(side_effect=ResourceTemporarilyUnavailable("Search timed out")),
+        ) as find_match,
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=provider,
+        ),
+    ):
+        first_result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            failed_provider_instances=failed_provider_instances,
+        )
+        second_result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            failed_provider_instances=failed_provider_instances,
+        )
+
+    assert failed_provider_instances == {"qobuz_1"}
+    assert find_match.await_count == 1
+    assert first_result.failed_providers == ("Qobuz",)
+    assert second_result.failed_providers == ()
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(
