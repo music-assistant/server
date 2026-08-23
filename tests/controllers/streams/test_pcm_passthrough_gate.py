@@ -68,3 +68,4 @@ def test_a_warm_airplay_replace_refuses_a_differently_encoded_source() -> None:
     session.pcm_format = _F32
     session.sync_clients = []
     assert session.can_replace([], _S32) is False
+    assert session.can_replace([], _F32) is True
