@@ -219,6 +219,39 @@ async def test_reconfigure_keeps_the_existing_paired_session(
     assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
 
 
+async def test_a_fresh_setup_preselects_librespot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh install lands on librespot: the short path, no consent or pairing."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}])
+    monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
+    await setup_flow._setup_playback(session, {}, "spotify-user")
+    entries = session.form.await_args_list[0].args[0]
+    assert entries[0].value == BACKEND_LIBRESPOT
+
+
+async def test_a_stored_choice_is_preselected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconfigure preselects whatever this instance already uses."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    await setup_flow._setup_playback(
+        session, {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}, "spotify-user"
+    )
+    entries = session.form.await_args_list[0].args[0]
+    assert entries[0].value == BACKEND_SOLOIST
+
+
 async def test_pairing_failure_exit_code_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

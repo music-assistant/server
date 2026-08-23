@@ -291,15 +291,12 @@ async def _setup_playback(
     :param setup_data: The setup data collected so far, updated in place.
     :param account_id: The signed-in Spotify user id, when known.
     """
-    stored_backend = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "")
-    if stored_backend:
-        preselect = stored_backend
-    elif session.context.instance_id:
-        # an instance predating the backend choice runs librespot; a routine
-        # reconfigure must not nudge it onto another playback path
-        preselect = BACKEND_LIBRESPOT
-    else:
-        preselect = _default_backend()
+    # The stored choice wins; everything else preselects librespot. It is the
+    # short path (no consent step, no API key, no pairing), and an instance
+    # predating the choice runs it already, so a routine reconfigure cannot nudge
+    # anyone onto another playback path. An account librespot cannot serve
+    # (created since late 2024) has to switch, which the choice step explains.
+    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or BACKEND_LIBRESPOT
     errors: dict[str, str] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
@@ -322,17 +319,6 @@ async def _setup_playback(
             setup_data[CONF_SOLOIST_SESSION_DIR] = None
         setup_data[CONF_PLAYBACK_BACKEND] = selected
         return
-
-
-def _default_backend() -> str:
-    """Return the backend to preselect for a fresh setup."""
-    try:
-        verify_platform_supported()
-    except UnsupportedPlatformError:
-        return BACKEND_LIBRESPOT
-    # Spotify's official client: the only option for accounts librespot cannot
-    # serve (created since late 2024), hence the recommended default
-    return BACKEND_SOLOIST
 
 
 async def _choose_playback_backend(
