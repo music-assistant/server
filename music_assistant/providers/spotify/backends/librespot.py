@@ -25,6 +25,7 @@ from .base import SpotifyPlaybackBackend
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.helpers.json import SerializableType
@@ -40,10 +41,24 @@ class LibrespotBackend(SpotifyPlaybackBackend):
 
     _librespot_bin: str | None = None
 
-    @property
-    def audio_format(self) -> AudioFormat:
-        """Return the audio format this backend delivers, for use in StreamDetails."""
-        return AudioFormat(content_type=ContentType.OGG, bit_rate=320)
+    def source_audio_format(self, media_type: MediaType) -> AudioFormat:
+        """
+        Return the format of the Spotify source.
+
+        librespot hands over Spotify's own file untouched, so this describes the
+        delivered bytes as well. It fetches the highest quality the account is
+        entitled to, which for a Premium account is 320 kbps Ogg Vorbis.
+
+        :param media_type: Unused: librespot fetches every item the same way.
+        """
+        return AudioFormat(
+            content_type=ContentType.OGG,
+            codec_type=ContentType.VORBIS,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+            bit_rate=320,
+        )
 
     @property
     def max_concurrent_streams(self) -> int:

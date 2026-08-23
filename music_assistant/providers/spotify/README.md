@@ -41,6 +41,13 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
 - **Streaming quality** is a provider option, shared with the Spotify Connect provider's
   tiers and defaulting to lossless. It is a ceiling: Spotify serves the best the account
   is entitled to below it. Hidden on librespot, which passes Spotify's own file through.
+- **Two formats per stream.** The engine decodes internally and never reports what it
+  fetched, so `audio_format` states the configured ceiling — FLAC 24-bit/44.1kHz for
+  music on the lossless tier, otherwise Ogg Vorbis at that tier's bitrate — which is
+  what the Spotify apps show too, and only music is ever lossless. What actually arrives
+  is the capture sink's PCM, declared as `decoded_audio_format`; that is the format the
+  streams core hands ffmpeg, while `audio_format` is for display. Note MA classifies
+  24-bit/44.1kHz as hi-res rather than lossless.
 - **One daemon per data directory**: the engine refuses to start while another
   session still holds it, so `_session_lock` covers the teardown as well as the
   bookkeeping — a replacement session is never spawned before the previous daemon

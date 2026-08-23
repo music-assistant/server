@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import ContentType, MediaType
 
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.backends.soloist import SoloistBackend
@@ -115,6 +116,54 @@ def test_the_engine_is_told_who_normalizes(tmp_path: Path, normalize: bool) -> N
     backend._prepare_data_dir(0, normalize=normalize)
     prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
     assert f"audio.normalize_v2={'true' if normalize else 'false'}" in prefs
+
+
+@pytest.mark.parametrize(
+    ("quality", "media_type", "codec", "bit_depth", "bit_rate"),
+    [
+        # only music is served losslessly
+        ("lossless", MediaType.TRACK, ContentType.FLAC, 24, None),
+        ("lossless", MediaType.PODCAST_EPISODE, ContentType.VORBIS, 16, 320),
+        ("lossless", MediaType.AUDIOBOOK, ContentType.VORBIS, 16, 320),
+        ("very_high", MediaType.TRACK, ContentType.VORBIS, 16, 320),
+        ("high", MediaType.TRACK, ContentType.VORBIS, 16, 160),
+        ("normal", MediaType.TRACK, ContentType.VORBIS, 16, 96),
+    ],
+)
+def test_the_reported_source_format_follows_the_quality_setting(
+    quality: str,
+    media_type: MediaType,
+    codec: ContentType,
+    bit_depth: int,
+    bit_rate: int | None,
+) -> None:
+    """The engine never reports what it fetched, so the configured ceiling is reported."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value=quality)
+    fmt = SoloistBackend(prov).source_audio_format(media_type)
+    assert fmt.codec_type == codec
+    assert fmt.bit_depth == bit_depth
+    assert fmt.sample_rate == 44100
+    assert fmt.bit_rate == bit_rate
+
+
+def test_the_delivered_format_is_always_the_capture_pcm() -> None:
+    """Whatever is reported, the bytes that arrive are the capture sink's PCM."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    handoff = SoloistBackend(prov).handoff_audio_format
+    assert handoff is not None
+    assert handoff.content_type == ContentType.PCM_S32LE
+    assert handoff.bit_depth == 32
+    assert handoff.sample_rate == 44100
+
+
+def test_librespot_hands_over_the_source_untouched() -> None:
+    """Librespot passes Spotify's own file through, so it reports no separate handoff."""
+    backend = LibrespotBackend(_make_provider({}))
+    assert backend.handoff_audio_format is None
+    fmt = backend.source_audio_format(MediaType.TRACK)
+    assert fmt.codec_type == ContentType.VORBIS
+    assert fmt.bit_rate == 320
 
 
 def test_the_backend_streams_at_the_configured_quality() -> None:

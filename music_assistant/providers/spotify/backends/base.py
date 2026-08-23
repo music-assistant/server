@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -35,10 +36,24 @@ class SpotifyPlaybackBackend(ABC):
         self.mass = provider.mass
         self.logger = provider.logger
 
-    @property
     @abstractmethod
-    def audio_format(self) -> AudioFormat:
-        """Return the audio format this backend delivers, for use in StreamDetails."""
+    def source_audio_format(self, media_type: MediaType) -> AudioFormat:
+        """
+        Return the format of the Spotify source, for StreamDetails and display.
+
+        :param media_type: What is being streamed; Spotify serves music and
+            spoken content at different qualities.
+        """
+
+    @property
+    def handoff_audio_format(self) -> AudioFormat | None:
+        """
+        Return the format this backend actually hands over, when it differs.
+
+        None means the source arrives untouched, so the source format describes
+        the bytes as well.
+        """
+        return None
 
     @property
     @abstractmethod

@@ -891,7 +891,10 @@ class SpotifyProvider(MusicProvider):
                 item_id=item_id,
                 provider=self.instance_id,
                 media_type=MediaType.AUDIOBOOK,
-                audio_format=self.backend.audio_format,
+                # what Spotify serves, for display; the bytes that actually
+                # arrive are described by decoded_audio_format
+                audio_format=self.backend.source_audio_format(MediaType.AUDIOBOOK),
+                decoded_audio_format=self.backend.handoff_audio_format,
                 stream_type=StreamType.CUSTOM,
                 is_realtime=self.backend.is_realtime,
                 allow_seek=True,
@@ -905,7 +908,8 @@ class SpotifyProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             media_type=media_type,
-            audio_format=self.backend.audio_format,
+            audio_format=self.backend.source_audio_format(media_type),
+            decoded_audio_format=self.backend.handoff_audio_format,
             stream_type=StreamType.CUSTOM,
             is_realtime=self.backend.is_realtime,
             allow_seek=True,
