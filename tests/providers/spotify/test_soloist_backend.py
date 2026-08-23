@@ -1082,9 +1082,8 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     directory, which every later session is then refused for.
     """
     session = _make_session(tmp_path)
-    proc = session._proc
-    sink = session._sink
-    assert proc is not None
+    proc = cast("MagicMock", session._proc)
+    sink = cast("AsyncMock", session._sink)
 
     async def _never_returns() -> None:
         await asyncio.Event().wait()
@@ -1097,16 +1096,19 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     with suppress(asyncio.CancelledError):
         await task
     # the teardown did not finish, so nothing was dropped and it can be redone
-    assert session._teardown_done is False
-    assert session._proc is proc
-    assert session._sink is sink
+    unfinished = session._teardown_done
+    kept_proc = session._proc
+    kept_sink = session._sink
     proc.wait = AsyncMock()
     await session.stop()
+    assert unfinished is False
+    assert kept_proc is proc
+    assert kept_sink is sink
     assert session._teardown_done is True
     assert session._proc is None
     assert session._sink is None
-    cast("AsyncMock", proc.close).assert_awaited()
-    cast("AsyncMock", sink).unload.assert_awaited()
+    proc.close.assert_awaited()
+    sink.unload.assert_awaited()
 
 
 def test_a_failed_session_is_torn_down(tmp_path: Path) -> None:
