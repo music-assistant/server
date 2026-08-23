@@ -749,7 +749,6 @@ class TracksController(MediaControllerBase[Track]):
             [(0, mapped_match)] if mapped_match else []
         )
         seen_candidates: set[tuple[str, str]] = set()
-        search_rank = len(candidates)
         for search_query in search_queries:
             search_results = await self.mass.music.search_provider(
                 search_query,
@@ -787,17 +786,19 @@ class TracksController(MediaControllerBase[Track]):
                     continue
                 if not (mapping := self._get_provider_mapping(candidate, provider)):
                     continue
+                candidate_match = TrackProviderMatch(
+                    track=candidate,
+                    mapping=mapping,
+                    confidence=confidence,
+                )
+                if confidence == TrackMatchConfidence.EXACT:
+                    return TrackProviderMatchResult(match=candidate_match)
                 candidates.append(
                     (
-                        search_rank,
-                        TrackProviderMatch(
-                            track=candidate,
-                            mapping=mapping,
-                            confidence=confidence,
-                        ),
+                        len(candidates),
+                        candidate_match,
                     )
                 )
-                search_rank += 1
 
         if not candidates:
             return TrackProviderMatchResult()

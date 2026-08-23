@@ -365,6 +365,14 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
     )
     source = create_track("spotify_1", "source")
     source.external_ids.add(mb_track)
+    source.artists.append(
+        ItemMapping(
+            item_id="other-artist",
+            provider="spotify_1",
+            name="Other Artist",
+            media_type=MediaType.ARTIST,
+        )
+    )
     library_track = create_track("spotify_1", "library")
     mapped_candidate = create_track("qobuz_1", "mapped")
     exact_candidate = create_track("qobuz_1", "exact")
@@ -389,8 +397,13 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
         patch.object(
             music,
             "search_provider",
-            AsyncMock(return_value=SearchResults(tracks=[exact_candidate])),
-        ),
+            AsyncMock(
+                side_effect=(
+                    SearchResults(tracks=[exact_candidate]),
+                    ResourceTemporarilyUnavailable("Later search timed out"),
+                )
+            ),
+        ) as search_provider,
         patch.object(
             music.tracks,
             "_get_full_track_album",
@@ -408,6 +421,7 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
     assert result.match is not None
     assert result.match.track.item_id == "exact"
     assert result.match.confidence == TrackMatchConfidence.EXACT
+    assert search_provider.await_count == 1
 
 
 async def test_find_provider_match_prefers_exact_candidate(
