@@ -1382,6 +1382,23 @@ def test_compare_track_evidence_rejects_recording_version_conflicts() -> None:
     assert compare.compare_track_evidence(base, remix) == compare.TrackMatchConfidence.NO_MATCH
 
 
+def test_compare_track_evidence_release_track_id_overrides_version_drift() -> None:
+    """A shared release-track ID overrides conflicting provider version metadata."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = _provider_track("base", "provider_a", external_ids={mb_track})
+    mislabeled = _provider_track(
+        "candidate",
+        "provider_b",
+        version="Club Remix",
+        external_ids={mb_track},
+    )
+
+    assert compare.compare_track_evidence(base, mislabeled) == compare.TrackMatchConfidence.EXACT
+
+
 def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
     """Featured credits may move between the title and structured artist list."""
     title_credit = _provider_track(

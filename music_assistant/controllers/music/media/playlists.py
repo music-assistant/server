@@ -429,12 +429,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
         source_playlist = await self.get_library_item(int(db_playlist_id))
         if source_playlist.is_dynamic:
             raise InvalidDataError("Dynamic playlists can not be migrated")
-        provider = self.mass.get_provider(destination_provider)
+        available_providers = self.mass.music.providers
+        provider = next(
+            (item for item in available_providers if item.instance_id == destination_provider),
+            None,
+        ) or next(
+            (item for item in available_providers if item.domain == destination_provider),
+            None,
+        )
+        if provider is None and destination_provider == "builtin":
+            provider = self.mass.get_provider(
+                "builtin",
+                provider_type=MusicProvider,
+            )
         if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
-        if provider.domain != "builtin" and provider.instance_id not in {
-            item.instance_id for item in self.mass.music.providers
-        }:
             raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
         if provider.domain != "builtin" and not provider.is_streaming_provider:
             raise InvalidDataError(
@@ -503,6 +511,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.get_provider(destination_provider)
         if not provider or not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
+        source_provider_obj = self.mass.get_provider(source_provider)
+        if not source_provider_obj or not isinstance(source_provider_obj, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+        trust_source_mappings = source_provider_obj.domain != "builtin"
         update_current_task_progress(0, "Loading source playlist")
         source_tracks: list[Track] = []
         async for item in self.tracks(source_playlist_item_id, source_provider):
@@ -530,6 +542,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     provider,
                     minimum_confidence,
                     set(allowed_provider_instances),
+                    trust_source_mappings,
                 )
             completed += 1
             _update_stage_progress(
@@ -717,6 +730,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider: MusicProvider,
         minimum_confidence: TrackMatchConfidence,
         allowed_provider_instances: set[str],
+        trust_source_mappings: bool,
     ) -> _PlaylistMigrationTrackResult:
         """Resolve one source track for a migration destination."""
         try:
@@ -725,6 +739,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     track,
                     minimum_confidence=minimum_confidence,
                     provider_instance_ids=allowed_provider_instances,
+                    trust_track_mappings=trust_source_mappings,
                 )
                 return _PlaylistMigrationTrackResult(
                     track=enrichment.track,
@@ -740,6 +755,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 minimum_confidence=minimum_confidence,
                 mapping_source=library_track,
                 allowed_provider_instances=allowed_provider_instances,
+                trust_base_mapping=trust_source_mappings,
             )
             if not result.match:
                 return _PlaylistMigrationTrackResult(

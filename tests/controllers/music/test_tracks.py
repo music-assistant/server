@@ -194,6 +194,48 @@ async def test_find_provider_match_reuses_domain_mapping_for_target_instance(
     search.assert_not_awaited()
 
 
+async def test_find_provider_match_revalidates_untrusted_source_mapping(
+    music: MusicController,
+) -> None:
+    """A mapping restored from a Music Assistant playlist is reclassified from metadata."""
+    source = create_track("qobuz_1", "source")
+    candidate = create_track("qobuz_1", "source")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = set()
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(return_value=candidate),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        exact_result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.EXACT,
+            trust_base_mapping=False,
+        )
+        likely_result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+            trust_base_mapping=False,
+        )
+
+    assert exact_result.match is None
+    assert likely_result.match is not None
+    assert likely_result.match.confidence == TrackMatchConfidence.LIKELY
+
+
 async def test_find_provider_match_classifies_library_mapping_against_source(
     music: MusicController,
 ) -> None:

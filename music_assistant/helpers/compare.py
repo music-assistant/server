@@ -476,6 +476,8 @@ def compare_track_evidence(
     compare_item: Track,
     base_album: Album | ItemMapping | None = None,
     compare_album_item: Album | ItemMapping | None = None,
+    *,
+    allow_item_id_match: bool = True,
 ) -> TrackMatchConfidence:
     """
     Return the confidence that two provider tracks represent the same recording.
@@ -484,12 +486,26 @@ def compare_track_evidence(
     :param compare_item: Candidate track.
     :param base_album: Optional full album for the reference track.
     :param compare_album_item: Optional full album for the candidate track.
+    :param allow_item_id_match: Trust shared provider item identity as exact evidence.
     """
-    if compare_item_ids(base_item, compare_item):
+    if allow_item_id_match and compare_item_ids(base_item, compare_item):
         return TrackMatchConfidence.EXACT
 
     base_album = base_album or base_item.album
     compare_album_item = compare_album_item or compare_item.album
+    mb_track_match = compare_external_ids(
+        base_item.external_ids, compare_item.external_ids, ExternalID.MB_TRACK
+    )
+    recording_id_match = False
+    for external_id_type in (ExternalID.MB_RECORDING, ExternalID.ACOUSTID):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, external_id_type
+        )
+        if external_id_match is False:
+            return TrackMatchConfidence.NO_MATCH
+        recording_id_match |= external_id_match is True
+    if mb_track_match is True:
+        return TrackMatchConfidence.EXACT
 
     base_version = _track_version(base_item)
     compare_version_value = _track_version(compare_item)
@@ -503,21 +519,6 @@ def compare_track_evidence(
         and base_explicit != compare_explicit_value
     ):
         return TrackMatchConfidence.NO_MATCH
-
-    mb_track_match = compare_external_ids(
-        base_item.external_ids, compare_item.external_ids, ExternalID.MB_TRACK
-    )
-
-    recording_id_match = False
-    for external_id_type in (ExternalID.MB_RECORDING, ExternalID.ACOUSTID):
-        external_id_match = compare_external_ids(
-            base_item.external_ids, compare_item.external_ids, external_id_type
-        )
-        if external_id_match is False:
-            return TrackMatchConfidence.NO_MATCH
-        recording_id_match |= external_id_match is True
-    if mb_track_match is True:
-        return TrackMatchConfidence.EXACT
 
     title_matches = compare_track_title(base_item.name, compare_item.name)
     artists_match = _track_artist_credits_match(base_item, compare_item)

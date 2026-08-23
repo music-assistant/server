@@ -681,6 +681,7 @@ class TracksController(MediaControllerBase[Track]):
         base_album: Album | ItemMapping | None = None,
         mapping_source: Track | None = None,
         allowed_provider_instances: set[str] | None = None,
+        trust_base_mapping: bool = True,
     ) -> TrackProviderMatchResult:
         """
         Find the best track match on a music provider.
@@ -691,12 +692,13 @@ class TracksController(MediaControllerBase[Track]):
         :param base_album: Optional full reference album for release evidence.
         :param mapping_source: Optional library track whose mappings may be reused as candidates.
         :param allowed_provider_instances: Provider instances available to the initiating user.
+        :param trust_base_mapping: Treat a direct base-track mapping as exact provider identity.
         """
         resolved_base_album = base_album
         mapped_match: TrackProviderMatch | None = None
         mapping_source = mapping_source or base_track
         if mapping := self._get_provider_mapping(mapping_source, provider):
-            if mapping_source is base_track:
+            if mapping_source is base_track and trust_base_mapping:
                 return TrackProviderMatchResult(
                     match=TrackProviderMatch(
                         track=base_track,
@@ -716,6 +718,7 @@ class TracksController(MediaControllerBase[Track]):
                     base_track,
                     mapped_candidate,
                     resolved_base_album,
+                    allow_item_id_match=trust_base_mapping,
                 )
                 if confidence >= minimum_confidence and (
                     candidate_mapping := self._get_provider_mapping(
@@ -775,6 +778,7 @@ class TracksController(MediaControllerBase[Track]):
                     base_track,
                     candidate,
                     resolved_base_album,
+                    allow_item_id_match=trust_base_mapping,
                 )
                 if confidence < minimum_confidence:
                     continue
@@ -816,6 +820,7 @@ class TracksController(MediaControllerBase[Track]):
         track: Track,
         minimum_confidence: TrackMatchConfidence = TrackMatchConfidence.LIKELY,
         provider_instance_ids: set[str] | None = None,
+        trust_track_mappings: bool = True,
     ) -> TrackProviderEnrichment:
         """
         Resolve missing streaming-provider mappings without updating the library.
@@ -823,6 +828,7 @@ class TracksController(MediaControllerBase[Track]):
         :param track: Provider track to enrich.
         :param minimum_confidence: Lowest confidence that may be accepted.
         :param provider_instance_ids: Provider instances available to the initiating user.
+        :param trust_track_mappings: Treat mappings attached to the source track as exact.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -832,6 +838,8 @@ class TracksController(MediaControllerBase[Track]):
                 for mapping in enriched_track.provider_mappings
                 if mapping.provider_instance in provider_instance_ids
             }
+        if not trust_track_mappings:
+            enriched_track.provider_mappings.clear()
         base_album = await self._get_full_track_album(track)
         existing_domains = {
             mapping.provider_domain
@@ -868,6 +876,7 @@ class TracksController(MediaControllerBase[Track]):
                     base_album=base_album,
                     mapping_source=library_track,
                     allowed_provider_instances=provider_instance_ids,
+                    trust_base_mapping=trust_track_mappings,
                 )
             except (MusicAssistantError, ClientError, OSError, TimeoutError) as err:
                 self.logger.warning(
@@ -975,12 +984,15 @@ class TracksController(MediaControllerBase[Track]):
         base_track: Track,
         candidate: Track,
         base_album: Album | ItemMapping | None,
+        *,
+        allow_item_id_match: bool = True,
     ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None]:
         """Return candidate confidence with full album evidence when needed."""
         confidence = compare_track_evidence(
             base_track,
             candidate,
             base_album=base_album,
+            allow_item_id_match=allow_item_id_match,
         )
         if confidence not in (
             TrackMatchConfidence.LOOSE,
@@ -996,6 +1008,7 @@ class TracksController(MediaControllerBase[Track]):
                 candidate,
                 base_album=base_album,
                 compare_album_item=candidate_album,
+                allow_item_id_match=allow_item_id_match,
             ),
             base_album,
         )

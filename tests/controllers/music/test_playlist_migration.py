@@ -133,7 +133,11 @@ async def test_migrate_playlist_queues_validated_task(
             "get_library_item",
             AsyncMock(return_value=source_playlist),
         ),
-        patch.object(music.mass, "get_provider", return_value=target_provider),
+        patch.object(
+            music.mass,
+            "get_provider",
+            return_value=target_provider,
+        ) as get_provider,
         patch.object(
             MusicController,
             "providers",
@@ -154,13 +158,14 @@ async def test_migrate_playlist_queues_validated_task(
     ):
         result = await music.playlists.migrate_playlist(
             source_playlist.item_id,
-            destination_provider=target_provider.instance_id,
+            destination_provider=target_provider.domain,
             name="Migrated",
             match_policy=PlaylistMigrationMatchPolicy.BEST_EFFORT,
         )
         await tasks.run_background_task.call_args.kwargs["handler"]()
 
     assert result is queued_task
+    get_provider.assert_not_called()
     assert "task_id" not in tasks.run_background_task.call_args.kwargs
     assert tasks.run_background_task.call_args.kwargs["metadata"]["match_policy"] == "best_effort"
     handle_migration.assert_awaited_once_with(
@@ -219,6 +224,9 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
     target_provider.name = "Tidal"
     target_provider.playlist_duplicates_supported = duplicates_supported
     target_provider.add_playlist_tracks = AsyncMock()
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
 
     async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
         for track in (
@@ -254,7 +262,14 @@ async def test_streaming_migration_handles_provider_duplicate_policy(
         patch.object(music.playlists, "tracks", iter_source_tracks),
         patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
         patch.object(music.tracks, "find_provider_match", find_match),
-        patch.object(music.mass, "get_provider", return_value=target_provider),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id: {
+                "spotify_1": source_provider,
+                "tidal_1": target_provider,
+            }[provider_instance_id],
+        ),
         patch.object(
             music.playlists,
             "create_playlist",
@@ -323,6 +338,9 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
     builtin_provider.instance_id = "builtin"
     builtin_provider.domain = "builtin"
     builtin_provider.name = "Music Assistant"
+    source_provider = MagicMock(spec=MusicProvider)
+    source_provider.instance_id = "spotify_1"
+    source_provider.domain = "spotify"
     destination_playlist = _playlist("2", "Migrated", "builtin", "migrated")
 
     async def iter_source_tracks(*_args: object, **_kwargs: object) -> AsyncGenerator[Track]:
@@ -351,7 +369,14 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
             "enrich_provider_mappings",
             AsyncMock(return_value=enrichment),
         ) as enrich,
-        patch.object(music.mass, "get_provider", return_value=builtin_provider),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id: {
+                "builtin": builtin_provider,
+                "spotify_1": source_provider,
+            }[provider_instance_id],
+        ),
         patch.object(
             music.playlists,
             "_create_builtin_migration_playlist",
@@ -372,6 +397,7 @@ async def test_builtin_migration_keeps_all_enriched_mappings(
         source,
         minimum_confidence=TrackMatchConfidence.LOOSE,
         provider_instance_ids={"builtin", "spotify_1"},
+        trust_track_mappings=True,
     )
     assert create_builtin.await_args is not None
     entries = create_builtin.await_args.args[1]
