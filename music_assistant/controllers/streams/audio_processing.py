@@ -523,6 +523,10 @@ def get_normalization_details(
     if mode in (None, VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.UNKNOWN):
         return None
     assert mode is not None
+    if mode == VolumeNormalizationMode.SOURCE:
+        # the source set the level without saying to what, and a measurement of our
+        # own would describe audio it already levelled, so only the mode is known
+        return AudioNormalizationDetails(mode=mode)
     measurement_source = AudioNormalizationMeasurementSource.UNKNOWN
     measured_lufs: float | None = None
     if mode == VolumeNormalizationMode.DYNAMIC:

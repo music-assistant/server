@@ -137,6 +137,21 @@ if TYPE_CHECKING:
 isfile = wrap(os.path.isfile)
 
 
+def volume_normalization_preference_options() -> list[ConfigValueOption]:
+    """
+    Return the normalization modes that can be picked as a preference.
+
+    The preference says what Music Assistant should do, so the two modes that only
+    ever come back as an outcome are left out: SOURCE is set by a source that levels
+    its own audio, UNKNOWN is what an unrecognised value deserializes to.
+    """
+    return [
+        ConfigValueOption(mode.value, title=mode.value.replace("_", " ").title())
+        for mode in VolumeNormalizationMode
+        if mode not in (VolumeNormalizationMode.SOURCE, VolumeNormalizationMode.UNKNOWN)
+    ]
+
+
 def _audio_source_headers(session: AudioSourceSession, output_format_str: str) -> dict[str, str]:
     """
     Return the response headers for a live audio source stream.
@@ -347,6 +362,26 @@ class StreamsController(CoreController):
             return CrossfadeMode.SMART_CROSSFADE
         return CrossfadeMode.STANDARD_CROSSFADE
 
+    def get_source_crossfade_mode(
+        self, queue: PlayerQueue, streamdetails: StreamDetails
+    ) -> CrossfadeMode:
+        """
+        Return the crossfade an item's own source applies, or DISABLED when none does.
+
+        A source that crossfades its own playback is handed the queue's crossfade
+        setting instead of Music Assistant mixing the overlap, so the queue
+        preference still decides whether a fade happens at all.
+
+        :param queue: Queue the item is played from.
+        :param streamdetails: Stream details of the item.
+        """
+        if self.get_crossfade_mode(queue) == CrossfadeMode.DISABLED:
+            return CrossfadeMode.DISABLED
+        provider = self.mass.get_provider(streamdetails.provider)
+        if isinstance(provider, MusicProvider) and provider.delivers_crossfaded_audio:
+            return CrossfadeMode.SOURCE
+        return CrossfadeMode.DISABLED
+
     def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
         """Return whether the queue's effective crossfade mode is smart crossfade."""
         return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
@@ -369,20 +404,14 @@ class StreamsController(CoreController):
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
                 type=ConfigEntryType.STRING,
                 default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
-                options=[
-                    ConfigValueOption(x.value, title=x.value.replace("_", " ").title())
-                    for x in VolumeNormalizationMode
-                ],
+                options=volume_normalization_preference_options(),
                 category="playback",
             ),
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
                 type=ConfigEntryType.STRING,
                 default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
-                options=[
-                    ConfigValueOption(x.value, title=x.value.replace("_", " ").title())
-                    for x in VolumeNormalizationMode
-                ],
+                options=volume_normalization_preference_options(),
                 category="playback",
             ),
             ConfigEntry(
@@ -737,12 +766,18 @@ class StreamsController(CoreController):
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
+            # a crossfade the source performs itself is never mixed here, so it is
+            # tracked apart from the mode that drives our own mixer
+            source_crossfade_mode = CrossfadeMode.DISABLED
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
             elif queue_item.streamdetails.is_realtime:
                 # a realtime source delivers at playback pace, so it has no audio to
                 # spare for an overlap in either direction
                 crossfade_mode = CrossfadeMode.DISABLED
+                source_crossfade_mode = self.get_source_crossfade_mode(
+                    queue, queue_item.streamdetails
+                )
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
@@ -821,6 +856,7 @@ class StreamsController(CoreController):
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
                 session_id=session_id,
+                source_crossfade_mode=source_crossfade_mode,
             )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
@@ -1927,18 +1963,22 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         overlay_enabled: bool,
         session_id: str | None = None,
+        source_crossfade_mode: CrossfadeMode = CrossfadeMode.DISABLED,
     ) -> None:
         """
         Store the shared processing context selected for a queue item.
 
-        The crossfade is left out on purpose: only the audio layer knows whether one
-        really happens, and it reports that itself once the boundary has decided.
+        Our own crossfade is left out on purpose: only the audio layer knows whether
+        one really happens, and it reports that itself once the boundary has decided.
+        A crossfade the source performs is the exception - the audio layer never sees
+        that one, so it is carried here.
 
         :param queue: Active player queue.
         :param queue_item: Queue item being prepared.
         :param pcm_format: Shared PCM format leaving queue processing.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         :param session_id: Queue session that owns processing-detail updates.
+        :param source_crossfade_mode: Crossfade the item's own source applies, if any.
         """
         if queue_item.streamdetails is None:
             return
@@ -1960,6 +2000,7 @@ class StreamsController(CoreController):
                     "float",
                     queue_item.extra_attributes.get("playback_speed", 1.0),
                 ),
+                crossfade_mode=source_crossfade_mode,
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,

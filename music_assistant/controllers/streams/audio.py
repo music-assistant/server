@@ -2297,11 +2297,17 @@ class StreamsAudio:
                     )
                     continue
                 # a realtime source delivers at playback pace, so it has no audio to spare
-                # for an overlap in either direction
+                # for an overlap in either direction - but one that crossfades its own
+                # playback still does that boundary itself, inside the audio it hands over
                 item_crossfade_mode = (
                     CrossfadeMode.DISABLED
                     if queue_track.streamdetails.is_realtime
                     else crossfade_mode
+                )
+                item_source_crossfade_mode = (
+                    self.mass.streams.get_source_crossfade_mode(queue, queue_track.streamdetails)
+                    if queue_track.streamdetails.is_realtime
+                    else CrossfadeMode.DISABLED
                 )
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
@@ -2426,12 +2432,13 @@ class StreamsAudio:
                             + (timing_info.fadein_trimmed_duration + timing_info.crossfade_duration)
                             * track_playback_speed
                         )
-                # no fade is credited to this track until one is really rendered below
+                # no fade is credited to this track until one is really rendered below,
+                # unless its own source is the one applying it
                 self._report_crossfade_mode(
                     queue.queue_id,
                     queue_track,
                     pcm_format,
-                    CrossfadeMode.DISABLED,
+                    item_source_crossfade_mode,
                     flow_session_id,
                     overlay_enabled=overlay_active(queue),
                 )
@@ -3685,7 +3692,8 @@ class StreamsAudio:
         :param queue_id: Queue the item is streamed from.
         :param queue_item: Queue item the fade touches.
         :param pcm_format: Shared PCM format leaving queue processing.
-        :param crossfade_mode: Mode of the applied fade, or DISABLED when none is applied.
+        :param crossfade_mode: Mode of the applied fade, SOURCE when the item's own
+            source applies it, or DISABLED when none is applied.
         :param session_id: Queue session that owns processing-detail updates.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         """
@@ -4157,7 +4165,8 @@ class StreamsAudio:
         needs_headroom = (
             crossfade_enabled
             or overlay_active
-            or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
+            or streamdetails.volume_normalization_mode
+            not in (VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE)
             or any(self._resolve_player_dsp_config(player).enabled for player in players)
         )
         if needs_headroom:

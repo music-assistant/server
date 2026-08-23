@@ -97,6 +97,21 @@ def test_only_the_soloist_backend_declares_normalized_audio() -> None:
     assert prov.delivers_normalized_audio is False
 
 
+def test_only_the_soloist_backend_declares_crossfaded_audio() -> None:
+    """
+    The declaration follows the backend, not the queue setting.
+
+    The soloist backend keeps one session across items and is handed the queue's
+    crossfade when it starts, so the overlap is in the audio it delivers; librespot
+    fetches every track on its own and has nothing to fade into.
+    """
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    prov.backend = SoloistBackend(prov)
+    assert prov.delivers_crossfaded_audio is True
+    prov.backend = LibrespotBackend(prov)
+    assert prov.delivers_crossfaded_audio is False
+
+
 def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
     """With the setting off, MA measures and normalizes as it does for any source."""
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
