@@ -228,6 +228,13 @@ class BaseConverter(ABC):
         except AttributeError, KeyError, TypeError:
             return default
 
+    def _get_synopsis(self, obj: Any) -> str | None:
+        """Return the fullest synopsis the given object carries, if any."""
+        for length in ("long", "medium", "short"):
+            if synopsis := self._get_attr(obj, f"synopses.{length}"):
+                return str(synopsis)
+        return None
+
 
 class StationConverter(BaseConverter):
     """Converts Station-related objects."""
@@ -401,15 +408,10 @@ class PodcastConverter(BaseConverter):
             return None
         stream_details = None
         episode = await self.convert(source_obj)
-        if (
-            episode
-            and isinstance(episode, MAPodcastEpisode)
-            and (episode.metadata.description or episode.name)
-            and source_obj.stream
-        ):
+        if episode and isinstance(episode, MAPodcastEpisode) and source_obj.stream:
             stream_details = StreamDetails(
                 stream_metadata=StreamMetadata(
-                    title=episode.metadata.description or episode.name,
+                    title=episode.name,
                     uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
@@ -434,10 +436,10 @@ class PodcastConverter(BaseConverter):
                 title = f"BBC {source_obj.network.short_title}"
             elif source_obj.container:
                 title = source_obj.container.title
-            elif episode.metadata and episode.metadata.description:
-                title = episode.metadata.description
             elif source_obj.titles:
                 title = source_obj.titles["primary"]
+            elif episode.metadata and episode.metadata.description:
+                title = episode.metadata.description
 
             if not title:
                 title = ""
@@ -476,9 +478,7 @@ class PodcastConverter(BaseConverter):
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")
-        description = self._get_attr(podcast, "synopses.long") or self._get_attr(
-            podcast, "synopses.short"
-        )
+        description = self._get_synopsis(podcast)
         image_url = self._get_attr(podcast, "image_url") or self._get_attr(
             podcast, "sub_items.image_url"
         )
@@ -497,7 +497,7 @@ class PodcastConverter(BaseConverter):
         duration = self._get_attr(episode, "duration.value")
         progress_ms = self._get_attr(episode, "progress.value")
         resume_position = (progress_ms * 1000) if progress_ms else None
-        description = self._get_attr(episode, "synopses.short")
+        description = self._get_synopsis(episode)
 
         # Handle parent podcast
         podcast = None
@@ -556,7 +556,7 @@ class PodcastConverter(BaseConverter):
                 metadata=ImageProvider.create_metadata_with_image(
                     url=show.image_url,
                     provider=self.context.provider_domain,
-                    description=show.synopses.get("long") if show.synopses else None,
+                    description=self._get_synopsis(show),
                 ),
                 provider_mappings={self._create_provider_mapping(show.pid)},
             )
@@ -575,7 +575,9 @@ class PodcastConverter(BaseConverter):
             duration=duration,
             resume_position_ms=resume_position,
             metadata=ImageProvider.create_metadata_with_image(
-                show.image_url, self.context.provider_domain
+                url=show.image_url,
+                provider=self.context.provider_domain,
+                description=self._get_synopsis(show),
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(show.pid)},
@@ -584,7 +586,7 @@ class PodcastConverter(BaseConverter):
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
         duration = self._get_attr(clip, "duration.value")
-        description = self._get_attr(clip, "network.short_title")
+        description = self._get_synopsis(clip)
 
         if not clip or not clip.pid:
             raise ConversionError(f"No clip for {clip}")
