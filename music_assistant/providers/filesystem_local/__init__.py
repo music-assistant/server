@@ -256,9 +256,10 @@ class LocalFileSystemProvider(MusicProvider):
         # cannot hide a sidecar that was removed in the same sync
         self._pre_scan_album_details: dict[str, str | None] = {}
         self._pre_scan_artist_details: dict[str, str | None] = {}
-        # set only while a sidecar refresh reparses a known item, so a malformed NFO propagates
-        # (keeping the prior metadata) instead of degrading the known item to tag-only
-        self._reraise_invalid_nfo: bool = False
+        # mapping directory currently being refreshed; while set, a malformed NFO for that exact
+        # item propagates (keeping its prior metadata) instead of degrading to tag-only, without
+        # affecting unrelated album/artist NFOs parsed in the same reparse
+        self._reraise_invalid_nfo_dir: str | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -2030,9 +2031,10 @@ class LocalFileSystemProvider(MusicProvider):
             # on demand there is no baseline to protect, so degrade to the tag-only artist
             return artist
         except SidecarInvalidError as err:
-            if self._reraise_invalid_nfo:
-                # a refresh of a known artist must not degrade it to tag-only on a malformed NFO;
-                # propagate so the refresh keeps the prior metadata and retries
+            if self._reraise_invalid_nfo_dir == artist_path:
+                # a refresh of this exact artist must not degrade it to tag-only on a malformed NFO;
+                # propagate so the refresh keeps the prior metadata and retries. An unrelated
+                # artist's NFO parsed in the same reparse still degrades and never blocks this one.
                 raise
             # a malformed NFO is not a removal: import the artist from its tags only. This only
             # affects new imports; a known artist is protected by the refresh pass above.
@@ -2550,9 +2552,10 @@ class LocalFileSystemProvider(MusicProvider):
             # on demand there is no baseline to protect, so degrade to the tag-only album
             return album
         except SidecarInvalidError as err:
-            if self._reraise_invalid_nfo:
-                # a refresh of a known album must not degrade it to tag-only on a malformed NFO;
-                # propagate so the refresh keeps the prior metadata and retries
+            if self._reraise_invalid_nfo_dir == album_dir:
+                # a refresh of this exact album must not degrade it to tag-only on a malformed NFO;
+                # propagate so the refresh keeps the prior metadata and retries. An unrelated
+                # album's NFO parsed in the same reparse still degrades and never blocks this one.
                 raise
             # a malformed NFO is not a removal: import the album from its tags only. This only
             # affects new imports; a known album is protected by the refresh pass above.
@@ -3245,10 +3248,11 @@ class LocalFileSystemProvider(MusicProvider):
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
         if nfo_changed:
-            # reparse once with invalid-NFO propagation on: a present-but-malformed album.nfo then
-            # raises instead of degrading, so a valid->malformed edit keeps the prior metadata and
-            # retries rather than being reconciled as a removal (no read-then-reparse TOCTOU)
-            self._reraise_invalid_nfo = True
+            # reparse once with invalid-NFO propagation scoped to this album_dir: a
+            # present-but-malformed album.nfo then raises instead of degrading, so a
+            # valid->malformed edit keeps the prior metadata and retries rather than being
+            # reconciled as a removal (no read-then-reparse TOCTOU)
+            self._reraise_invalid_nfo_dir = album_dir
             try:
                 fresh = await self._reparse_album_from_track(stored.item_id, album_dir)
             except SidecarReadError as err:
@@ -3260,7 +3264,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return False
             finally:
-                self._reraise_invalid_nfo = False
+                self._reraise_invalid_nfo_dir = None
             if fresh is not None:
                 fresh_details = self._parse_sidecar_details(self._mapping_details(fresh))
                 new_snapshot = fresh_details[2] if fresh_details else {}
@@ -3332,10 +3336,10 @@ class LocalFileSystemProvider(MusicProvider):
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
         if nfo_changed:
-            # reparse once with invalid-NFO propagation on (see _refresh_album_sidecars): a
-            # present-but-malformed artist.nfo raises instead of degrading, so a valid->malformed
-            # edit keeps the prior metadata and retries rather than being reconciled as a removal
-            self._reraise_invalid_nfo = True
+            # reparse once with invalid-NFO propagation scoped to this artist_path (see
+            # _refresh_album_sidecars): a present-but-malformed artist.nfo raises instead of
+            # degrading, so a valid->malformed edit keeps the prior metadata and retries
+            self._reraise_invalid_nfo_dir = artist_path
             try:
                 fresh = await self._reparse_artist_from_track(stored.item_id, artist_path)
             except SidecarReadError as err:
@@ -3349,7 +3353,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return False
             finally:
-                self._reraise_invalid_nfo = False
+                self._reraise_invalid_nfo_dir = None
             if fresh is not None:
                 fresh_details = self._parse_sidecar_details(self._mapping_details(fresh))
                 new_snapshot = fresh_details[2] if fresh_details else {}

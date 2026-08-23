@@ -68,7 +68,7 @@ def _provider() -> Any:
     provider.cache.set = AsyncMock()
     provider._active_sidecar_index = SidecarIndex()
     provider._sync_mapped_album_dirs = set()
-    provider._reraise_invalid_nfo = False
+    provider._reraise_invalid_nfo_dir = None
     return provider
 
 
@@ -199,6 +199,28 @@ async def test_parse_artist_imports_tag_only_when_nfo_malformed() -> None:
     artist = await provider._parse_artist("Tag Artist", artist_path="Artist")
     assert artist.name == "Tag Artist"
     assert artist.metadata.description is None
+
+
+async def test_invalid_nfo_propagation_is_scoped_to_the_refreshed_item() -> None:
+    """While refreshing one item, an unrelated item's malformed NFO degrades and never propagates."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
+    # a refresh of "Artist" is in progress
+    provider._reraise_invalid_nfo_dir = "Artist"
+
+    # the target item's malformed NFO propagates so its refresh keeps prior metadata
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+    with pytest.raises(SidecarInvalidError):
+        await provider._parse_artist("A", artist_path="Artist")
+
+    # a different item parsed in the same reparse degrades to tag-only instead of blocking it
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Other/artist.nfo")])
+    other = await provider._parse_artist("B", artist_path="Other")
+    assert other.name == "B"
 
 
 async def test_local_walk_collects_sidecars_track_dirs_and_skips_strays() -> None:
