@@ -37,7 +37,11 @@ from music_assistant.providers.filesystem_local.constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
+from music_assistant.providers.filesystem_local.helpers import (
+    FileSystemItem,
+    ScanErrors,
+    SidecarIndex,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -320,6 +324,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        sidecar_index: SidecarIndex | None = None,
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -352,6 +357,9 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     await _walk(item.relative_path, is_root=False)
                     if scan_errors.aborted:
                         return
+                    continue
+                # the API listing already includes sidecars, so record them for free
+                if sidecar_index is not None and sidecar_index.record(item):
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue

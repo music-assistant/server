@@ -7,17 +7,28 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypeVar
+from xml.parsers.expat import ExpatError
 
+import xmltodict
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import MediaItemImage, UniqueList
 
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.helpers.security import is_safe_path
 
+from .constants import IMAGE_EXTENSIONS, NFO_SIDECAR_NAMES, RECOGNIZED_IMAGE_STEMS
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 logger = logging.getLogger(__name__)
+
+_ScalarT = TypeVar("_ScalarT")
 
 # number of consecutive unreadable directories that marks the storage itself as gone
 MAX_CONSECUTIVE_SCAN_ERRORS = 10
@@ -230,6 +241,164 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
     parts = sorted(f"{x.relative_path}\0{x.checksum}\0{x.file_size}" for x in items)
     return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
+
+
+def is_sidecar_file(item: FileSystemItem) -> bool:
+    """Return True when item is a recognized music metadata sidecar (NFO or folder image)."""
+    return not item.is_dir and (_is_image_sidecar(item) or _is_nfo_sidecar(item))
+
+
+@dataclass
+class SidecarIndex:
+    """
+    Recognized metadata sidecars (``album.nfo``, ``artist.nfo``, folder images) per directory.
+
+    Populated during the music sync walk from the directory listings it already produces, so
+    sidecar add/edit/remove is detectable without any extra filesystem probes. Album ``album.nfo``
+    is only ever read from the album's own mapping directory (Kodi layout); disc-subfolder
+    ``album.nfo`` is deliberately excluded from album signatures, while disc images still count
+    towards the album's artwork.
+    """
+
+    files_by_dir: dict[str, list[FileSystemItem]] = field(default_factory=dict)
+
+    def record(self, item: FileSystemItem) -> bool:
+        """
+        Record item if it is a recognized sidecar; return whether it was recorded.
+
+        :param item: A file discovered while walking the provider tree.
+        """
+        if not is_sidecar_file(item):
+            return False
+        self.files_by_dir.setdefault(item.relative_parent_path, []).append(item)
+        return True
+
+    def image_items(self, folder: str) -> list[FileSystemItem]:
+        """Return the recognized image sidecars recorded directly inside folder."""
+        return [item for item in self.files_by_dir.get(folder, ()) if _is_image_sidecar(item)]
+
+    def files(self, folder: str) -> list[FileSystemItem]:
+        """Return all recognized sidecars recorded directly inside folder."""
+        return list(self.files_by_dir.get(folder, ()))
+
+    def child_dirs(self, parent: str) -> list[str]:
+        """Return recorded directories that are an immediate child of parent."""
+        return [d for d in self.files_by_dir if d != parent and os.path.dirname(d) == parent]
+
+    def nfo_item(self, folder: str, name: str) -> FileSystemItem | None:
+        """Return the named NFO sidecar recorded directly inside folder, if present."""
+        name = name.lower()
+        for item in self.files_by_dir.get(folder, ()):
+            if item.filename.lower() == name:
+                return item
+        return None
+
+    def album_signatures(self, album_dir: str) -> tuple[str, str]:
+        """
+        Return the ``(nfo_signature, image_signature)`` for an album mapped at album_dir.
+
+        ``album.nfo`` is taken from album_dir only; images from album_dir and its immediate
+        disc subfolders.
+
+        :param album_dir: The album's mapping directory.
+        """
+        nfo_item = self.nfo_item(album_dir, "album.nfo")
+        images = list(self.image_items(album_dir))
+        for sub in self.child_dirs(album_dir):
+            images.extend(self.image_items(sub))
+        return (
+            get_folder_signature([nfo_item] if nfo_item else []),
+            get_folder_signature(images),
+        )
+
+    def artist_signatures(self, artist_path: str) -> tuple[str, str]:
+        """
+        Return the ``(nfo_signature, image_signature)`` for an artist mapped at artist_path.
+
+        :param artist_path: The artist's mapping directory.
+        """
+        nfo_item = self.nfo_item(artist_path, "artist.nfo")
+        return (
+            get_folder_signature([nfo_item] if nfo_item else []),
+            get_folder_signature(list(self.image_items(artist_path))),
+        )
+
+
+def reconcile_scalar(
+    stored: _ScalarT | None, fresh: _ScalarT | None, previous: _ScalarT | None
+) -> _ScalarT | None:
+    """
+    Return the value to keep for a provider-managed scalar during a sidecar refresh.
+
+    The freshly parsed value wins. When the sidecar no longer provides one, the stored value is
+    cleared only if it still equals what this provider last contributed, so another provider's
+    value (or a manual edit) is preserved.
+
+    :param stored: The value currently held by the library item.
+    :param fresh: The value the sidecar provides now, or None when absent.
+    :param previous: The value this provider last contributed, or None when unknown.
+    """
+    if fresh is not None:
+        return fresh
+    if previous is not None and stored == previous:
+        return None
+    return stored
+
+
+def reconcile_images(
+    stored: Iterable[MediaItemImage] | None,
+    fresh_provider_images: Iterable[MediaItemImage],
+    provider_instance: str,
+) -> UniqueList[MediaItemImage]:
+    """
+    Merge freshly parsed provider images with images owned by other providers.
+
+    Images previously contributed by this provider instance are dropped and replaced by the fresh
+    set, so a removed local image disappears while other providers' images are kept.
+
+    :param stored: Images currently on the library item.
+    :param fresh_provider_images: Images parsed from this provider's folder(s) now.
+    :param provider_instance: This provider's instance id (the image provenance key).
+    """
+    kept = [image for image in (stored or ()) if image.provider != provider_instance]
+    return UniqueList([*kept, *fresh_provider_images])
+
+
+def nfo_root_dict(
+    raw: str, root: str, source: str, log: logging.Logger
+) -> Mapping[str, Any] | None:
+    """
+    Parse an NFO document and return its root element as a mapping, or None if it is unusable.
+
+    Guards against malformed XML and wrong, empty or scalar roots (``<foo/>``, ``<album/>``,
+    ``<album>text</album>``, a repeated root parsed as a list) so a bad sidecar is logged and
+    ignored instead of aborting the scan.
+
+    :param raw: The NFO file contents.
+    :param root: The expected root element name (``album`` or ``artist``).
+    :param source: The NFO path, named in the warning.
+    :param log: Logger for the warning.
+    """
+    try:
+        parsed = xmltodict.parse(raw)
+    except ExpatError as err:
+        log.warning("Ignoring malformed NFO file %s: %s", source, err)
+        return None
+    node = parsed.get(root) if isinstance(parsed, dict) else None
+    if not isinstance(node, dict):
+        log.warning("Ignoring NFO file %s: missing or invalid <%s> root element", source, root)
+        return None
+    return node
+
+
+def _is_image_sidecar(item: FileSystemItem) -> bool:
+    """Return True when item is a recognized folder image."""
+    return item.ext in IMAGE_EXTENSIONS and item.name.lower() in RECOGNIZED_IMAGE_STEMS
+
+
+def _is_nfo_sidecar(item: FileSystemItem) -> bool:
+    """Return True when item is a recognized NFO sidecar."""
+    return item.filename.lower() in NFO_SIDECAR_NAMES
 
 
 def get_artist_dir(

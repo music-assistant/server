@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ImageType
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
@@ -158,6 +158,18 @@ SUPPORTED_EXTENSIONS = {
     *CUE_EXTENSIONS,
 }
 
+# Music metadata sidecars. NFO files are Kodi-style and only meaningful in their item's
+# mapping directory (album folder / artist folder); disc-subfolder album.nfo is ignored.
+NFO_SIDECAR_NAMES: Final[frozenset[str]] = frozenset({"album.nfo", "artist.nfo"})
+# Image stems the folder-image parser recognizes: the typed image names plus the generic
+# thumbnail fallbacks. Kept in sync with LocalFileSystemProvider._get_local_images.
+RECOGNIZED_IMAGE_STEMS: Final[frozenset[str]] = frozenset(
+    {*(image_type.value for image_type in ImageType), "folder", "cover", "album", "artist"}
+)
+# Extensions the music sync walk additionally surfaces (on top of SUPPORTED_EXTENSIONS) so
+# sidecar changes are detectable from the listings the walk already produces.
+SIDECAR_SCAN_EXTENSIONS: Final[set[str]] = {*IMAGE_EXTENSIONS, "nfo"}
+
 
 class IsChapterFile(Exception):
     """Exception to indicate that a file is part of a multi-part media (e.g. audiobook chapter)."""
@@ -171,6 +183,9 @@ CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
+# persisted per-provider sidecar state (per-item nfo/image signatures + scalar snapshots)
+# used to detect sidecar changes across syncs and reconcile removals
+CACHE_CATEGORY_SIDECAR_STATE: Final[int] = 9
 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this

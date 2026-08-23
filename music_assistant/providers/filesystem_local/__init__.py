@@ -13,11 +13,9 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
-from xml.parsers.expat import ExpatError
 
 import aiofiles
 import shortuuid
-import xmltodict
 from aiofiles.os import wrap
 from music_assistant_models.enums import (
     ContentType,
@@ -44,6 +42,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
+    MediaItemMetadata,
     MediaItemType,
     Playlist,
     Podcast,
@@ -78,7 +77,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
@@ -97,6 +96,7 @@ from .constants import (
     CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
+    CACHE_CATEGORY_SIDECAR_STATE,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
@@ -113,6 +113,7 @@ from .constants import (
     PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
+    SIDECAR_SCAN_EXTENSIONS,
     SOUND_EFFECT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
@@ -129,15 +130,20 @@ from .cue import (
 from .helpers import (
     FileSystemItem,
     ScanErrors,
+    SidecarIndex,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    is_sidecar_file,
+    nfo_root_dict,
+    reconcile_images,
+    reconcile_scalar,
     recursive_iter,
     sorted_scandir,
 )
-from .parsers import parse_album_nfo
+from .parsers import parse_album_nfo, parse_artist_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -160,6 +166,30 @@ SUPPORTED_FEATURES = {
 }
 
 
+def _scalar_snapshot(metadata: MediaItemMetadata) -> dict[str, Any]:
+    """Return the filesystem-owned scalar fields to remember for removal reconciliation."""
+    return {
+        "description": metadata.description,
+        "genres": sorted(metadata.genres) if metadata.genres else None,
+    }
+
+
+def _sorted_or_none(genres: set[str] | None) -> list[str] | None:
+    """Serialize a genres set to a stable list for the persisted sidecar snapshot."""
+    return sorted(genres) if genres else None
+
+
+def _set_or_none(genres: list[str] | None) -> set[str] | None:
+    """Rehydrate a persisted genres snapshot list back into a set."""
+    return set(genres) if genres else None
+
+
+# signature of a folder that holds no sidecars; used to tell "no sidecar" from "changed sidecar"
+_EMPTY_SIGNATURE = get_folder_signature([])
+# the sidecar state must outlive normal sync intervals; a year mirrors the podcast-episode cache
+SIDECAR_STATE_EXPIRATION = 3600 * 24 * 365
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -180,6 +210,9 @@ class LocalFileSystemProvider(MusicProvider):
     _SYNC_CONCURRENCY: ClassVar[int] = 16
     _sync_tracks: bool = True
     _sync_playlists: bool = True
+    # active only during a music sync; lets parse/image helpers derive folder signatures from the
+    # walk's listings instead of extra probes
+    _active_sidecar_index: SidecarIndex | None = None
 
     def __init__(
         self,
@@ -201,6 +234,13 @@ class LocalFileSystemProvider(MusicProvider):
             "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         self._cue = CueSheetHandler(self)
+        # per-music-sync sidecar state, populated for the duration of one music sync so
+        # _parse_album/_parse_artist/_get_local_images can derive folder signatures from the
+        # walk's listings instead of extra probes
+        self._active_sidecar_index: SidecarIndex | None = None
+        self._sync_touched_items: set[str] = set()
+        self._sync_album_scalars: dict[str, dict[str, Any]] = {}
+        self._sync_artist_scalars: dict[str, dict[str, Any]] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -491,8 +531,18 @@ class LocalFileSystemProvider(MusicProvider):
         # scan is incomplete, a fatal one means the provider is unreachable
         scan_errors = ScanErrors()
 
+        # music syncs additionally collect NFO/image sidecars during the walk so their changes
+        # can refresh already-known albums/artists without reparsing every track
+        sidecar_index = SidecarIndex() if self.media_content_type == "music" else None
         self.sync_running = True
         try:
+            self._active_sidecar_index = sidecar_index
+            self._sync_touched_items = set()
+            self._sync_album_scalars = {}
+            self._sync_artist_scalars = {}
+            prev_sidecar_state = (
+                await self._load_sidecar_state() if sidecar_index is not None else None
+            )
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
                 cue_file_checksums=cue_file_checksums,
@@ -501,6 +551,7 @@ class LocalFileSystemProvider(MusicProvider):
                 unchanged_cue_items=unchanged_cue_items,
                 cue_stems=cue_stems,
                 scan_errors=scan_errors,
+                sidecar_index=sidecar_index,
             )
             if scan_errors.fatal:
                 # the storage is gone, so reading the files collected before it went
@@ -570,36 +621,44 @@ class LocalFileSystemProvider(MusicProvider):
             async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
                 for item, prev_checksum in items_to_process:
                     await tm.create_task_with_limit(_process(item, prev_checksum))
+
+            # post-processing runs while the sidecar index is still live so a sidecar refresh
+            # can reuse the walk's listings; do not run deletions on a clean but empty scan of a
+            # previously non-empty library (wrong share mounted, empty backup mount, ...)
+            if prev_filenames and not cur_filenames:
+                self.logger.error(
+                    "Aborting sync for %s: scan found no files but %d were previously indexed",
+                    self.name,
+                    len(prev_filenames),
+                )
+                report_current_task_failure(
+                    f"Sync aborted: scan found no files but {len(prev_filenames)} "
+                    "were previously indexed"
+                )
+                return
+
+            # a scan that skipped folders or files is incomplete: what it missed is still
+            # there, so deleting it or reconciling its sidecars would discard valid content
+            if scan_errors.incomplete:
+                summary = scan_errors.describe()
+                self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
+                report_current_task_failure(f"Deletions skipped: {summary}")
+            else:
+                if sidecar_index is not None:
+                    new_signatures = await self._refresh_changed_sidecars(
+                        sidecar_index, prev_sidecar_state
+                    )
+                deleted_files = prev_filenames - cur_filenames
+                await self._process_deletions(deleted_files)
+                await self._process_orphaned_albums_and_artists()
+                if sidecar_index is not None:
+                    await self._save_sidecar_state(new_signatures, prev_sidecar_state)
+
+            # flag provider as available again if an earlier sync had marked it down
+            self._set_available(True)
         finally:
             self.sync_running = False
-
-        # do not run deletions on a clean but empty scan of a previously non-empty library
-        # (wrong share mounted, empty backup mount, ...)
-        if prev_filenames and not cur_filenames:
-            self.logger.error(
-                "Aborting sync for %s: scan found no files but %d were previously indexed",
-                self.name,
-                len(prev_filenames),
-            )
-            report_current_task_failure(
-                f"Sync aborted: scan found no files but {len(prev_filenames)} "
-                "were previously indexed"
-            )
-            return
-
-        # a scan that skipped folders or files is incomplete: what it missed is still
-        # there, so deleting it from the library would throw away valid content
-        if scan_errors.incomplete:
-            summary = scan_errors.describe()
-            self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
-            report_current_task_failure(f"Deletions skipped: {summary}")
-        else:
-            deleted_files = prev_filenames - cur_filenames
-            await self._process_deletions(deleted_files)
-            await self._process_orphaned_albums_and_artists()
-
-        # flag provider as available again if an earlier sync had marked it down
-        self._set_available(True)
+            self._active_sidecar_index = None
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -1085,6 +1144,7 @@ class LocalFileSystemProvider(MusicProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        sidecar_index: SidecarIndex | None = None,
     ) -> None:
         """
         Walk every supported file under the provider root and populate the sync buckets.
@@ -1101,9 +1161,17 @@ class LocalFileSystemProvider(MusicProvider):
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
         :param scan_errors: Receives the errors raised while walking the tree.
+        :param sidecar_index: When set, receives the recognized NFO/image sidecars found during
+            the walk so sidecar changes are detectable without extra probes.
         """
         ignore_album_playlists = self.media_content_type == "music" and bool(
             self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
+        )
+        # surface sidecars during the same walk so their signatures come for free
+        scan_extensions = (
+            SUPPORTED_EXTENSIONS | SIDECAR_SCAN_EXTENSIONS
+            if sidecar_index is not None
+            else SUPPORTED_EXTENSIONS
         )
 
         def _walk() -> None:
@@ -1111,7 +1179,7 @@ class LocalFileSystemProvider(MusicProvider):
                 recursive_iter(
                     self.base_path,
                     self.base_path,
-                    SUPPORTED_EXTENSIONS,
+                    scan_extensions,
                     self.logger,
                     scan_errors=scan_errors,
                 ),
@@ -1119,6 +1187,8 @@ class LocalFileSystemProvider(MusicProvider):
             ):
                 if scanned % 500 == 0:
                     update_current_task_progress_text(f"Scanning files: {scanned} found")
+                if sidecar_index is not None and sidecar_index.record(item):
+                    continue
                 self._classify_scan_item(
                     item,
                     file_checksums=file_checksums,
@@ -1299,6 +1369,7 @@ class LocalFileSystemProvider(MusicProvider):
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
+                    self._record_touched_items(track)
                     if cur_filenames is not None:
                         cur_filenames.add(track.item_id)
                 return True
@@ -1315,6 +1386,7 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
+                self._record_touched_items(track)
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -1853,16 +1925,30 @@ class LocalFileSystemProvider(MusicProvider):
                     if artist_path:
                         break
 
-        # prefer (short lived) cache for a bit more speed
-        if artist_path and (
-            cache := await self.cache.get(
+        # the artist folder's own sidecars (artist.nfo + its images) version the cached parse
+        # during a sync (see _parse_album); on demand the cache key alone is used
+        artist_nfo_item: FileSystemItem | None = None
+        artist_cache_checksum: str | None = None
+        index = self._active_sidecar_index
+        if artist_path:
+            if index is not None:
+                artist_sidecars = index.files(artist_path)
+                artist_nfo_item = self._find_nfo(artist_sidecars, "artist.nfo")
+                artist_cache_checksum = self._folder_sidecar_checksum(
+                    artist_nfo_item, artist_sidecars
+                )
+            if cache := await self.cache.get(
                 key=artist_path,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_ARTIST_INFO,
+                checksum=artist_cache_checksum,
                 base_class=Artist,
-            )
-        ):
-            return cache  # type: ignore[no-any-return]
+            ):
+                return cache  # type: ignore[no-any-return]
+            if index is None:
+                artist_nfo_item = self._find_nfo(
+                    await self._folder_sidecars(artist_path), "artist.nfo"
+                )
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1882,42 +1968,26 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if mbid := clean_mbid(mbid, f"tags of artist {name}"):
             artist.mbid = mbid
-        if not artist_path or not await self.exists(artist_path):
+        if not artist_path:
             return artist
 
         # grab additional metadata within the Artist's folder
-        nfo_file = os.path.join(artist_path, "artist.nfo")
-        if await self.exists(nfo_file):
-            # found NFO file with metadata
-            # https://kodi.wiki/view/NFO_files/Artists
-            try:
-                data = (await self._read_file(nfo_file)).decode("utf-8")
-                info = await asyncio.to_thread(xmltodict.parse, data)
-                info = info["artist"]
-                artist.name = info.get("title", info.get("name", name))
-                if sort_name := info.get("sortname"):
-                    artist.sort_name = sort_name
-                if mbid := clean_mbid(info.get("musicbrainzartistid"), nfo_file):
-                    artist.mbid = mbid
-                if description := info.get("biography"):
-                    artist.metadata.description = description
-                if genre := info.get("genre"):
-                    artist.metadata.genres = set(split_items(genre))
-            except (ExpatError, KeyError) as err:
-                self.logger.warning(
-                    "Failed to parse artist NFO file %s: %s",
-                    nfo_file,
-                    str(err),
-                )
+        if artist_nfo_item is not None:
+            await self._apply_artist_nfo(artist, artist_nfo_item)
         # find local images
-        if images := await self._get_local_images(artist_path, extra_thumb_names=("artist",)):
+        if images := await self._get_local_images(
+            artist_path, extra_thumb_names=("artist",), versioned=True
+        ):
             artist.metadata.images = UniqueList(images)
 
+        if self._active_sidecar_index is not None:
+            self._sync_artist_scalars[artist_path] = _scalar_snapshot(artist.metadata)
         await self.cache.set(
             key=artist_path,
             data=artist.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ARTIST_INFO,
+            checksum=artist_cache_checksum,
             expiration=120,
         )
 
@@ -2274,15 +2344,28 @@ class LocalFileSystemProvider(MusicProvider):
         track_dir = os.path.dirname(track_path)
         album_dir = get_album_dir(track_dir, track_tags.album)
 
-        if album_dir and (
-            cache := await self.cache.get(
+        # the album folder's own sidecars (album.nfo + its images) version the cached parse during
+        # a sync, so an edited/removed sidecar is never served from a stale 120s entry; disc-folder
+        # image changes are picked up by the sidecar refresh instead. On demand the cache key alone
+        # is used so a hit costs no folder listing.
+        album_nfo_item: FileSystemItem | None = None
+        album_cache_checksum: str | None = None
+        index = self._active_sidecar_index
+        if album_dir:
+            if index is not None:
+                album_sidecars = index.files(album_dir)
+                album_nfo_item = self._find_nfo(album_sidecars, "album.nfo")
+                album_cache_checksum = self._folder_sidecar_checksum(album_nfo_item, album_sidecars)
+            if cache := await self.cache.get(
                 key=album_dir,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_ALBUM_INFO,
+                checksum=album_cache_checksum,
                 base_class=Album,
-            )
-        ):
-            return cache  # type: ignore[no-any-return]
+            ):
+                return cache  # type: ignore[no-any-return]
+            if index is None:
+                album_nfo_item = self._find_nfo(await self._folder_sidecars(album_dir), "album.nfo")
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -2380,68 +2463,94 @@ class LocalFileSystemProvider(MusicProvider):
         if not album_dir:
             return album
 
-        for folder_path in (track_dir, album_dir):
-            if not folder_path or not await self.exists(folder_path):
-                continue
-            nfo_file = os.path.join(folder_path, "album.nfo")
-            if await self.exists(nfo_file):
-                # found NFO file with metadata
-                # https://kodi.wiki/view/NFO_files/Artists
-                try:
-                    data = (await self._read_file(nfo_file)).decode("utf-8")
-                    info = await asyncio.to_thread(xmltodict.parse, data)
-                    parse_album_nfo(album, info["album"], nfo_file)
-                except (ExpatError, KeyError) as err:
-                    self.logger.warning(
-                        "Failed to parse album NFO file %s: %s",
-                        nfo_file,
-                        str(err),
-                    )
+        # album.nfo is Kodi album-folder-level metadata: read it only from the album folder,
+        # never from a disc subfolder
+        if album_nfo_item is not None:
+            await self._apply_album_nfo(album, album_nfo_item)
 
-            # find local images
-            if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
+        # find local images in the album folder and the (disc) track folder
+        for folder_path in (track_dir, album_dir):
+            if not folder_path:
+                continue
+            if images := await self._get_local_images(
+                folder_path, extra_thumb_names=("album",), versioned=True
+            ):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
 
+        if self._active_sidecar_index is not None:
+            self._sync_album_scalars[album_dir] = _scalar_snapshot(album.metadata)
         await self.cache.set(
             key=album_dir,
             data=album.to_dict(),
             provider=self.instance_id,
             category=CACHE_CATEGORY_ALBUM_INFO,
+            checksum=album_cache_checksum,
             expiration=120,
         )
         return album
 
     async def _get_local_images(
-        self, folder: str, extra_thumb_names: tuple[str, ...] | None = None
+        self,
+        folder: str,
+        extra_thumb_names: tuple[str, ...] | None = None,
+        versioned: bool = False,
     ) -> UniqueList[MediaItemImage]:
-        """Return local images found in a given folderpath."""
+        """
+        Return recognized images found in a given folder.
+
+        :param folder: The folder to look in.
+        :param extra_thumb_names: Extra image stems (besides folder/cover) treated as a thumbnail.
+        :param versioned: When True, append the image checksum to each path so replaced bytes
+            bypass the global image cache (used for album/artist artwork).
+        """
+        index = self._active_sidecar_index
+        image_items: list[FileSystemItem] | None
+        checksum: str | None
+        if index is not None:
+            # during a sync, source images from the walk index and version the cache entry by
+            # their signature, so a replaced/removed image is never served from a stale 120s entry
+            image_items = index.image_items(folder)
+            checksum = get_folder_signature(image_items)
+        else:
+            # on demand the cache key alone is enough (callers own freshness), so a folder listing
+            # only happens on a miss
+            image_items = None
+            checksum = None
         if (
-            cache := await self.cache.get(
+            cached := await self.cache.get(
                 key=folder,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_FOLDER_IMAGES,
+                checksum=checksum,
                 base_class=MediaItemImage,
             )
         ) is not None:
-            return UniqueList(cache)
+            return UniqueList(cached)
+        if image_items is None:
+            image_items = [
+                item for item in await self._folder_sidecars(folder) if item.ext in IMAGE_EXTENSIONS
+            ]
         if extra_thumb_names is None:
             extra_thumb_names = ()
+
+        def _image_path(item: FileSystemItem) -> str:
+            return (
+                self._versioned_image_path(item.relative_path, item.checksum)
+                if versioned
+                else item.relative_path
+            )
+
         images: UniqueList[MediaItemImage] = UniqueList()
-        folder_files = await self._scandir(folder)
-        for item in folder_files:
-            if "." not in item.relative_path or item.is_dir or not item.ext:
-                continue
-            if item.ext.lower() not in IMAGE_EXTENSIONS:
-                continue
+        for item in image_items:
             # try match on filename = one of our imagetypes
             if item.name.lower() in ImageType:
                 images.append(
                     MediaItemImage(
                         type=ImageType(item.name),
-                        path=item.relative_path,
+                        path=_image_path(item),
                         provider=self.instance_id,
                         remotely_accessible=False,
                     )
@@ -2449,17 +2558,13 @@ class LocalFileSystemProvider(MusicProvider):
 
         # try alternative names for thumbs
         extra_thumb_names = ("folder", "cover", *extra_thumb_names)
-        for item in folder_files:
-            if "." not in item.relative_path or item.is_dir or not item.ext:
-                continue
-            if item.ext.lower() not in IMAGE_EXTENSIONS:
-                continue
+        for item in image_items:
             if item.name.lower() not in extra_thumb_names:
                 continue
             images.append(
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=item.relative_path,
+                    path=_image_path(item),
                     provider=self.instance_id,
                     remotely_accessible=False,
                 )
@@ -2470,6 +2575,7 @@ class LocalFileSystemProvider(MusicProvider):
             data=[img.to_dict() for img in images],
             provider=self.instance_id,
             category=CACHE_CATEGORY_FOLDER_IMAGES,
+            checksum=checksum,
             expiration=120,
         )
         return images
@@ -2770,3 +2876,459 @@ class LocalFileSystemProvider(MusicProvider):
         """Read file contents. Override for network storage."""
         async with aiofiles.open(self.get_absolute_path(path), mode="rb") as f:
             return cast("bytes", await f.read())
+
+    async def _folder_sidecars(self, folder: str) -> list[FileSystemItem]:
+        """
+        Return the recognized NFO/image sidecars directly inside folder.
+
+        During a music sync these come from the walk's index (no probe); otherwise the folder is
+        listed on demand.
+
+        :param folder: The folder to inspect.
+        """
+        if self._active_sidecar_index is not None:
+            return self._active_sidecar_index.files(folder)
+        if not folder or not await self.exists(folder):
+            return []
+        return [item for item in await self._scandir(folder) if is_sidecar_file(item)]
+
+    @staticmethod
+    def _folder_sidecar_checksum(
+        nfo_item: FileSystemItem | None, sidecars: list[FileSystemItem]
+    ) -> str:
+        """Return the cache checksum for a folder's own sidecars (its NFO plus its images)."""
+        images = [item for item in sidecars if item.ext in IMAGE_EXTENSIONS]
+        return (
+            f"{get_folder_signature([nfo_item] if nfo_item else [])}:{get_folder_signature(images)}"
+        )
+
+    @staticmethod
+    def _find_nfo(sidecars: list[FileSystemItem], name: str) -> FileSystemItem | None:
+        """Return the named NFO sidecar from a list of a folder's sidecars, if present."""
+        name = name.lower()
+        return next((item for item in sidecars if item.filename.lower() == name), None)
+
+    async def _sidecar_nfo(self, folder: str, name: str) -> FileSystemItem | None:
+        """Return the named NFO sidecar directly inside folder, if present."""
+        return self._find_nfo(await self._folder_sidecars(folder), name)
+
+    async def _read_nfo(self, nfo_item: FileSystemItem, root: str) -> Any:
+        """
+        Read and validate an NFO sidecar, returning its root element or None when unusable.
+
+        :param nfo_item: The NFO file to read.
+        :param root: The expected root element name (``album`` or ``artist``).
+        """
+        try:
+            data = (await self._read_file(nfo_item.relative_path)).decode("utf-8")
+        except (MusicAssistantError, OSError, UnicodeDecodeError) as err:
+            self.logger.warning("Failed to read NFO file %s: %s", nfo_item.relative_path, err)
+            return None
+        return await asyncio.to_thread(
+            nfo_root_dict, data, root, nfo_item.relative_path, self.logger
+        )
+
+    async def _apply_album_nfo(self, album: Album, nfo_item: FileSystemItem) -> None:
+        """Enrich album from its album.nfo sidecar, ignoring an unreadable or malformed file."""
+        info = await self._read_nfo(nfo_item, "album")
+        if info is None:
+            return
+        try:
+            parse_album_nfo(album, info, nfo_item.relative_path)
+        except (ValueError, TypeError) as err:
+            self.logger.warning(
+                "Ignoring malformed values in album NFO %s: %s", nfo_item.relative_path, err
+            )
+
+    async def _apply_artist_nfo(self, artist: Artist, nfo_item: FileSystemItem) -> None:
+        """Enrich artist from its artist.nfo sidecar, ignoring an unreadable or malformed file."""
+        info = await self._read_nfo(nfo_item, "artist")
+        if info is None:
+            return
+        try:
+            parse_artist_nfo(artist, info, nfo_item.relative_path)
+        except (ValueError, TypeError) as err:
+            self.logger.warning(
+                "Ignoring malformed values in artist NFO %s: %s", nfo_item.relative_path, err
+            )
+
+    def _record_touched_items(self, track: Track) -> None:
+        """Remember the album/artist dirs a just-processed track rebuilt, so the sidecar pass skips them."""
+        if self._active_sidecar_index is None:
+            return
+        if isinstance(track.album, Album):
+            self._sync_touched_items.add(track.album.item_id)
+        for artist in track.artists:
+            self._sync_touched_items.add(artist.item_id)
+
+    async def _load_sidecar_state(self) -> dict[str, dict[str, Any]]:
+        """Return the persisted per-provider sidecar signatures and scalar snapshots."""
+        state = await self.mass.cache.get(
+            key="sidecar_state",
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_SIDECAR_STATE,
+        )
+        if not isinstance(state, dict):
+            state = {}
+        for section in ("albums", "artists", "album_scalars", "artist_scalars"):
+            if not isinstance(state.get(section), dict):
+                state[section] = {}
+        return state
+
+    async def _save_sidecar_state(
+        self, new_signatures: dict[str, dict[str, Any]], prev_state: dict[str, Any] | None
+    ) -> None:
+        """
+        Persist the sidecar signatures and scalar snapshots gathered during this sync.
+
+        :param new_signatures: The per-item signatures computed from this scan.
+        :param prev_state: The state loaded at the start of this sync.
+        """
+        prev_state = prev_state or {}
+        state = {
+            "albums": new_signatures["albums"],
+            "artists": new_signatures["artists"],
+            "album_scalars": self._merge_scalars(
+                new_signatures["albums"], self._sync_album_scalars, prev_state.get("album_scalars")
+            ),
+            "artist_scalars": self._merge_scalars(
+                new_signatures["artists"],
+                self._sync_artist_scalars,
+                prev_state.get("artist_scalars"),
+            ),
+        }
+        await self.mass.cache.set(
+            key="sidecar_state",
+            data=state,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_SIDECAR_STATE,
+            expiration=SIDECAR_STATE_EXPIRATION,
+            persistent=True,
+        )
+
+    @staticmethod
+    def _merge_scalars(
+        known: dict[str, Any],
+        current: dict[str, dict[str, Any]],
+        previous: dict[str, dict[str, Any]] | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Keep the latest scalar snapshot per still-known dir, dropping entries for gone items."""
+        previous = previous or {}
+        merged: dict[str, dict[str, Any]] = {}
+        for item_dir in known:
+            scalar = current.get(item_dir) or previous.get(item_dir)
+            if scalar is not None:
+                merged[item_dir] = scalar
+        return merged
+
+    async def _load_mapped_dirs(self) -> tuple[list[str], list[str]]:
+        """Return this provider's known album and artist mapping directories from the library."""
+        assert self.mass.music.database
+        query = (
+            f"SELECT provider_item_id, media_type FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' AND media_type in ('album', 'artist')"
+        )
+        album_dirs: list[str] = []
+        artist_dirs: list[str] = []
+        for row in await self.mass.music.database.get_rows_from_query(query, limit=0):
+            if row["media_type"] == "album":
+                album_dirs.append(str(row["provider_item_id"]))
+            else:
+                artist_dirs.append(str(row["provider_item_id"]))
+        return album_dirs, artist_dirs
+
+    async def _refresh_changed_sidecars(
+        self, sidecar_index: SidecarIndex, prev_state: dict[str, Any] | None
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Refresh known albums/artists whose NFO/image sidecars changed since the last sync.
+
+        :param sidecar_index: The sidecars collected during this scan.
+        :param prev_state: The sidecar state loaded at the start of this sync.
+        :return: The per-item signatures computed for this scan, for persistence.
+        """
+        prev_state = prev_state or {}
+        prev_albums = prev_state.get("albums", {})
+        prev_artists = prev_state.get("artists", {})
+        album_dirs, artist_dirs = await self._load_mapped_dirs()
+        new_signatures: dict[str, dict[str, Any]] = {"albums": {}, "artists": {}}
+        affected_albums: dict[str, bool] = {}
+        affected_artists: dict[str, bool] = {}
+
+        for album_dir in album_dirs:
+            nfo_sig, img_sig = sidecar_index.album_signatures(album_dir)
+            new_signatures["albums"][album_dir] = {"nfo": nfo_sig, "img": img_sig}
+            if album_dir in self._sync_touched_items:
+                continue
+            decision = self._classify_sidecar_change(prev_albums.get(album_dir), nfo_sig, img_sig)
+            if decision is not None:
+                affected_albums[album_dir] = decision
+
+        for artist_path in artist_dirs:
+            nfo_sig, img_sig = sidecar_index.artist_signatures(artist_path)
+            new_signatures["artists"][artist_path] = {"nfo": nfo_sig, "img": img_sig}
+            if artist_path in self._sync_touched_items:
+                continue
+            decision = self._classify_sidecar_change(
+                prev_artists.get(artist_path), nfo_sig, img_sig
+            )
+            if decision is not None:
+                affected_artists[artist_path] = decision
+
+        for album_dir, nfo_changed in affected_albums.items():
+            await self._refresh_album_sidecars(album_dir, nfo_changed, prev_state)
+        for artist_path, nfo_changed in affected_artists.items():
+            await self._refresh_artist_sidecars(artist_path, nfo_changed, prev_state)
+        if affected_albums or affected_artists:
+            self.logger.info(
+                "Refreshed sidecar metadata for %d album(s) and %d artist(s) on %s",
+                len(affected_albums),
+                len(affected_artists),
+                self.name,
+            )
+        return new_signatures
+
+    @staticmethod
+    def _classify_sidecar_change(
+        prev: dict[str, str] | None, nfo_sig: str, img_sig: str
+    ) -> bool | None:
+        """
+        Decide how a mapped item changed since last sync.
+
+        Returns True when the NFO changed (full reconciliation), False when only images changed,
+        or None when nothing changed. A missing baseline refreshes once when sidecars exist, so a
+        pre-existing sidecar is applied on the first sync after upgrade.
+
+        :param prev: The item's previously stored ``{nfo, img}`` signatures, or None.
+        :param nfo_sig: The item's current NFO signature.
+        :param img_sig: The item's current image signature.
+        """
+        if prev is None:
+            if nfo_sig != _EMPTY_SIGNATURE:
+                return True
+            if img_sig != _EMPTY_SIGNATURE:
+                return False
+            return None
+        if prev.get("nfo") != nfo_sig:
+            return True
+        if prev.get("img") != img_sig:
+            return False
+        return None
+
+    async def _refresh_album_sidecars(
+        self, album_dir: str, nfo_changed: bool, prev_state: dict[str, Any]
+    ) -> None:
+        """
+        Refresh one known album's sidecar-derived metadata, preserving other providers' data.
+
+        :param album_dir: The album's mapping directory.
+        :param nfo_changed: True when album.nfo changed (also reconcile scalar metadata).
+        :param prev_state: The sidecar state loaded at the start of this sync.
+        """
+        stored = await self.mass.music.albums.get_library_item_by_prov_id(
+            album_dir, self.instance_id
+        )
+        if stored is None:
+            return
+        await self._invalidate_album_caches(album_dir)
+        fresh = await self._reparse_album_from_track(stored.item_id) if nfo_changed else None
+        fresh_images = (
+            (fresh.metadata.images or UniqueList())
+            if fresh is not None
+            else await self._collect_album_images(album_dir)
+        )
+        images = reconcile_images(stored.metadata.images, fresh_images, self.instance_id)
+        stored.metadata.images = images or None
+        if nfo_changed:
+            if fresh is not None:
+                stored.name = fresh.name
+                stored.version = fresh.version
+                if fresh.year:
+                    stored.year = fresh.year
+                if fresh.sort_name:
+                    stored.sort_name = fresh.sort_name
+                stored.external_ids.update(fresh.external_ids)
+                fresh_desc = fresh.metadata.description
+                fresh_genres = fresh.metadata.genres
+            else:
+                # no representative track to rebuild the tag baseline: reconcile NFO scalars only
+                nfo_album = await self._read_album_nfo(album_dir)
+                fresh_desc = nfo_album.metadata.description if nfo_album else None
+                fresh_genres = nfo_album.metadata.genres if nfo_album else None
+            prev_scalars = prev_state.get("album_scalars", {}).get(album_dir, {})
+            stored.metadata.description = reconcile_scalar(
+                stored.metadata.description, fresh_desc, prev_scalars.get("description")
+            )
+            stored.metadata.genres = reconcile_scalar(
+                stored.metadata.genres, fresh_genres, _set_or_none(prev_scalars.get("genres"))
+            )
+            self._sync_album_scalars[album_dir] = {
+                "description": fresh_desc,
+                "genres": _sorted_or_none(fresh_genres),
+            }
+        await self.mass.music.albums.update_item_in_library(stored.item_id, stored, overwrite=True)
+
+    async def _refresh_artist_sidecars(
+        self, artist_path: str, nfo_changed: bool, prev_state: dict[str, Any]
+    ) -> None:
+        """
+        Refresh one known artist's sidecar-derived metadata, preserving other providers' data.
+
+        :param artist_path: The artist's mapping directory.
+        :param nfo_changed: True when artist.nfo changed (also reconcile scalar metadata).
+        :param prev_state: The sidecar state loaded at the start of this sync.
+        """
+        stored = await self.mass.music.artists.get_library_item_by_prov_id(
+            artist_path, self.instance_id
+        )
+        if stored is None:
+            return
+        await self._invalidate_artist_caches(artist_path)
+        fresh = (
+            await self._reparse_artist_from_track(stored.item_id, artist_path)
+            if nfo_changed
+            else None
+        )
+        fresh_images = (
+            (fresh.metadata.images or UniqueList())
+            if fresh is not None
+            else await self._get_local_images(
+                artist_path, extra_thumb_names=("artist",), versioned=True
+            )
+        )
+        images = reconcile_images(stored.metadata.images, fresh_images, self.instance_id)
+        stored.metadata.images = images or None
+        if nfo_changed:
+            if fresh is not None:
+                stored.name = fresh.name
+                if fresh.sort_name:
+                    stored.sort_name = fresh.sort_name
+                if fresh.mbid:
+                    stored.mbid = fresh.mbid
+                fresh_desc = fresh.metadata.description
+                fresh_genres = fresh.metadata.genres
+            else:
+                nfo_artist = await self._read_artist_nfo(artist_path)
+                fresh_desc = nfo_artist.metadata.description if nfo_artist else None
+                fresh_genres = nfo_artist.metadata.genres if nfo_artist else None
+            prev_scalars = prev_state.get("artist_scalars", {}).get(artist_path, {})
+            stored.metadata.description = reconcile_scalar(
+                stored.metadata.description, fresh_desc, prev_scalars.get("description")
+            )
+            stored.metadata.genres = reconcile_scalar(
+                stored.metadata.genres, fresh_genres, _set_or_none(prev_scalars.get("genres"))
+            )
+            self._sync_artist_scalars[artist_path] = {
+                "description": fresh_desc,
+                "genres": _sorted_or_none(fresh_genres),
+            }
+        await self.mass.music.artists.update_item_in_library(stored.item_id, stored, overwrite=True)
+
+    async def _collect_album_images(self, album_dir: str) -> UniqueList[MediaItemImage]:
+        """Return the filesystem images for an album from its folder and any disc subfolders."""
+        images = UniqueList(
+            await self._get_local_images(album_dir, extra_thumb_names=("album",), versioned=True)
+        )
+        if self._active_sidecar_index is not None:
+            for sub in self._active_sidecar_index.child_dirs(album_dir):
+                images += await self._get_local_images(
+                    sub, extra_thumb_names=("album",), versioned=True
+                )
+        return images
+
+    async def _reparse_album_from_track(self, library_album_id: str) -> Album | None:
+        """Rebuild an album from one representative track's tags (and current NFO), or None."""
+        tracks = await self.mass.music.albums.tracks(
+            library_album_id, "library", in_library_only=True
+        )
+        rep = await self._first_local_track(tracks)
+        if rep is None:
+            return None
+        item, tags = rep
+        if not tags.album:
+            return None
+        return await self._parse_album(item.relative_path, tags, item.created_at)
+
+    async def _reparse_artist_from_track(
+        self, library_artist_id: str, artist_path: str
+    ) -> Artist | None:
+        """Rebuild an artist from one representative track's tags (and current NFO), or None."""
+        tracks = await self.mass.music.artists.tracks(
+            library_artist_id, "library", provider_filter=self.instance_id
+        )
+        rep = await self._first_local_track(tracks)
+        if rep is None:
+            return None
+        item, tags = rep
+        parsed_track = await self._parse_track(item, tags)
+        candidates: list[Artist | ItemMapping] = list(parsed_track.artists)
+        if isinstance(parsed_track.album, Album):
+            candidates.extend(parsed_track.album.artists)
+        for candidate in candidates:
+            if isinstance(candidate, Artist) and candidate.item_id == artist_path:
+                return candidate
+        return None
+
+    async def _first_local_track(
+        self, tracks: list[Track]
+    ) -> tuple[FileSystemItem, AudioTags] | None:
+        """Return the first library track carried by this provider, resolved and tag-parsed."""
+        for track in tracks:
+            for prov_mapping in track.provider_mappings:
+                if prov_mapping.provider_instance != self.instance_id:
+                    continue
+                try:
+                    item = await self.resolve(prov_mapping.item_id)
+                    tags = await async_parse_tags(item.absolute_path, item.file_size)
+                except (MusicAssistantError, OSError) as err:
+                    self.logger.warning(
+                        "Could not read representative track %s: %s", prov_mapping.item_id, err
+                    )
+                    continue
+                return item, tags
+        return None
+
+    async def _read_album_nfo(self, album_dir: str) -> Album | None:
+        """Read album.nfo scalars into a scratch Album for fallback reconciliation, or None."""
+        nfo_item = await self._sidecar_nfo(album_dir, "album.nfo")
+        if nfo_item is None:
+            return None
+        scratch = Album(
+            item_id=album_dir, provider=self.instance_id, name="", provider_mappings=set()
+        )
+        await self._apply_album_nfo(scratch, nfo_item)
+        return scratch
+
+    async def _read_artist_nfo(self, artist_path: str) -> Artist | None:
+        """Read artist.nfo scalars into a scratch Artist for fallback reconciliation, or None."""
+        nfo_item = await self._sidecar_nfo(artist_path, "artist.nfo")
+        if nfo_item is None:
+            return None
+        scratch = Artist(
+            item_id=artist_path, provider=self.instance_id, name="", provider_mappings=set()
+        )
+        await self._apply_artist_nfo(scratch, nfo_item)
+        return scratch
+
+    async def _invalidate_album_caches(self, album_dir: str) -> None:
+        """Drop the album's cached parse and folder images so the refresh re-reads from disk."""
+        await self.cache.delete(
+            album_dir, category=CACHE_CATEGORY_ALBUM_INFO, provider=self.instance_id
+        )
+        await self.cache.delete(
+            album_dir, category=CACHE_CATEGORY_FOLDER_IMAGES, provider=self.instance_id
+        )
+        if self._active_sidecar_index is not None:
+            for sub in self._active_sidecar_index.child_dirs(album_dir):
+                await self.cache.delete(
+                    sub, category=CACHE_CATEGORY_FOLDER_IMAGES, provider=self.instance_id
+                )
+
+    async def _invalidate_artist_caches(self, artist_path: str) -> None:
+        """Drop the artist's cached parse and folder images so the refresh re-reads from disk."""
+        await self.cache.delete(
+            artist_path, category=CACHE_CATEGORY_ARTIST_INFO, provider=self.instance_id
+        )
+        await self.cache.delete(
+            artist_path, category=CACHE_CATEGORY_FOLDER_IMAGES, provider=self.instance_id
+        )

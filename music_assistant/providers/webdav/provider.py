@@ -31,7 +31,11 @@ from music_assistant.providers.filesystem_local.constants import (
     SUPPORTED_EXTENSIONS,
     content_type_config_entry,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
+from music_assistant.providers.filesystem_local.helpers import (
+    FileSystemItem,
+    ScanErrors,
+    SidecarIndex,
+)
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
@@ -279,6 +283,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
+        # drop the cache-busting suffix appended for versioned local images
+        path = path.split("?cs=", 1)[0]
         # Check if this is an audio file with embedded image
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:
@@ -308,6 +314,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        sidecar_index: SidecarIndex | None = None,
     ) -> None:
         """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -340,6 +347,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     await _walk(item.relative_path, is_root=False)
                     if scan_errors.aborted:
                         return
+                    continue
+                # the PROPFIND listing already includes sidecars, so record them for free
+                if sidecar_index is not None and sidecar_index.record(item):
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue
