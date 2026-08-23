@@ -54,6 +54,14 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   sample, so the cut position does not matter and Spotify's crossfade simply lives
   inside the bytes. Only consecutive tracks are stitched; a podcast episode or audiobook
   chapter is played on its own.
+- **A session in use is never cut short**: the engine allows one session, so an item
+  the running one cannot serve would otherwise restart it and truncate whatever it is
+  still delivering. That happens at boundaries the session does not drive — a podcast
+  episode or audiobook chapter (never stitched), the same track twice in a row, or
+  another player — so those are reported as `ProviderStreamLimitError` instead. A
+  speculative prepare then gives up softly, and the real request, made once the other
+  item has been released, gets the session. The cost is a cold start at those
+  boundaries rather than a warm buffer.
 - **Readiness comes from the session**: the core's blind next-item pre-buffer is
   suppressed for a realtime source (`controllers/streams/audio.py`), because the next
   item's audio does not exist until the session gets there. The session calls

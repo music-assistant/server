@@ -43,6 +43,7 @@ from music_assistant.helpers.pulse_capture import (
     PipeSink,
     get_pulse_capture_server,
 )
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.spotify.constants import (
     CONF_AUDIO_QUALITY,
     CONF_SOLOIST_API_KEY,
@@ -387,14 +388,16 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 item.claim()
                 return session, item
             if session is not None:
-                if session.queue_id != queue_id and session.in_use:
-                    # the account runs one Soloist session and a second one would
-                    # terminate this one anyway, so refuse rather than cut off the
-                    # player that is listening to it
-                    raise AudioError(
-                        "Spotify Soloist can only play on one player at a time "
-                        "(already playing elsewhere)"
-                    )
+                if session.in_use:
+                    # The session cannot serve this item and is still delivering
+                    # another one, so restarting it would cut that item short.
+                    # This is what an early fetch across a boundary the session
+                    # does not drive looks like - a podcast episode or audiobook
+                    # chapter, which are never stitched, or the same track twice
+                    # in a row. Reported as capacity so a speculative prepare
+                    # gives up softly and the real request, made once the other
+                    # item has been released, gets the session.
+                    raise ProviderStreamLimitError(self.provider, None)
                 self._session = None
                 await session.stop()
             # cheap thanks to the shared verify cache; swaps in a fresh build when

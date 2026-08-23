@@ -23,6 +23,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import AudioError, LoginFailed
 
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
 from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
@@ -586,20 +587,51 @@ async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -
     assert session.has_pending is False
 
 
-async def test_a_second_player_does_not_steal_a_session_in_use(tmp_path: Path) -> None:
-    """One session serves one player: a second player is refused, not handed the session."""
+@pytest.mark.parametrize("other_queue", ["player2", "player1"])
+async def test_a_session_in_use_is_never_cut_short(tmp_path: Path, other_queue: str) -> None:
+    """
+    An item the session cannot serve must not stop one it is still delivering.
+
+    Covers a second player, and an early fetch across a boundary the session does
+    not drive (a podcast episode, or the same track twice in a row) on the same
+    queue. Reported as capacity, so a speculative prepare gives up softly.
+    """
     backend = _make_backend(tmp_path)
     backend._server = MagicMock()
     backend._binary = Path("/nonexistent/soloist")
     session = _SoloistSession(backend, "player1")
     backend._session = session
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
     item.claim()
-    with pytest.raises(AudioError, match="one player at a time"):
-        await backend._acquire(TRACK_B, 0, "player2")
+    with pytest.raises(ProviderStreamLimitError):
+        await backend._acquire(TRACK_B, 0, other_queue)
     # the session that was playing is untouched
     assert backend._session is session
     assert session.usable is True
+
+
+async def test_a_session_nobody_reads_is_replaced_for_another_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the other item has been released, the same request gets the session."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    item.close()
+    item.release()
+    _install_fake_binary_manager(monkeypatch)
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    monkeypatch.setattr(session, "stop", AsyncMock())
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(TRACK_B, 0, "player1")
 
 
 async def test_a_replacement_waits_for_the_old_daemon_to_be_gone(
