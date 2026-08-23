@@ -362,6 +362,20 @@ class StreamsController(CoreController):
             return CrossfadeMode.SMART_CROSSFADE
         return CrossfadeMode.STANDARD_CROSSFADE
 
+    def source_normalizes_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether the item's own source already levelled this audio.
+
+        Correcting a level the source set would mean normalizing twice, the second
+        time against a measurement of its own output.
+
+        :param streamdetails: Stream details of the item.
+        """
+        # plugin providers serve playable items too, and only a music provider
+        # declares this (a plugin's live audio is handled by the media type)
+        provider = self.mass.get_provider(streamdetails.provider)
+        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
+
     def get_source_crossfade_mode(self, queue: PlayerQueue, queue_item: QueueItem) -> CrossfadeMode:
         """
         Return the crossfade an item's own source applies, or DISABLED when none does.

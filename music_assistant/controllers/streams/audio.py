@@ -611,7 +611,7 @@ class StreamsAudio:
             self._get_volume_normalization_preference(streamdetails),
             volume_normalization_enabled,
             streamdetails,
-            self._source_delivers_normalized_audio(streamdetails),
+            self.mass.streams.source_normalizes_audio(streamdetails),
         )
 
         self.logger.debug(
@@ -1560,7 +1560,7 @@ class StreamsAudio:
                     self._get_volume_normalization_preference(streamdetails),
                     volume_normalization_enabled,
                     streamdetails,
-                    self._source_delivers_normalized_audio(streamdetails),
+                    self.mass.streams.source_normalizes_audio(streamdetails),
                 )
 
         # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
@@ -2999,17 +2999,6 @@ class StreamsAudio:
             return
         music_prov = cast("MusicProvider", provider)
         self.mass.create_task(music_prov.on_streamed(streamdetails))
-
-    def _source_delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
-        """
-        Return whether the provider already normalized this audio on the way out.
-
-        :param streamdetails: The stream to evaluate.
-        """
-        # plugin providers serve playable items too, and only a music provider
-        # declares this (a plugin's live audio is handled by the media type)
-        provider = self.mass.get_provider(streamdetails.provider)
-        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
