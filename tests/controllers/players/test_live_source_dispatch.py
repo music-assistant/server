@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ProviderFeature, RepeatMode, SourceControl
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import InvalidCommand, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 
@@ -238,3 +238,19 @@ async def test_a_source_with_no_control_surface_refuses_cleanly() -> None:
         await controller._forward_to_external_source(
             controller.get_player(PLAYER_ID), SourceControl.SHUFFLE, True
         )
+
+
+async def test_an_unknown_repeat_mode_is_refused_before_it_reaches_a_source() -> None:
+    """
+    UNKNOWN is what a source reports when it cannot say, not a mode to set.
+
+    Forwarding it asks a plugin to apply a non-mode: soloist raises a bare ValueError
+    on it, and other providers would silently accept and do nothing.
+    """
+    controller, provider = _controller(_source())
+    controller._get_player_with_redirect = MagicMock(return_value=controller.get_player(PLAYER_ID))
+
+    with pytest.raises(InvalidCommand, match="unknown repeat mode"):
+        await controller.cmd_repeat(PLAYER_ID, RepeatMode.UNKNOWN)
+
+    provider.on_source_control.assert_not_awaited()

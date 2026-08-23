@@ -48,6 +48,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
     InsufficientPermissions,
+    InvalidCommand,
     InvalidDataError,
     MusicAssistantError,
     PlayerCommandFailed,
@@ -762,6 +763,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param repeat_mode: The repeat mode to apply.
         """
+        if repeat_mode == RepeatMode.UNKNOWN:
+            # not a mode to set: it is what a source reports when it cannot say
+            raise InvalidCommand("Cannot set an unknown repeat mode")
         player = self._get_player_with_redirect(player_id)
         if await self._forward_to_external_source(player, SourceControl.REPEAT, repeat_mode):
             return
