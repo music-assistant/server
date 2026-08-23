@@ -73,14 +73,13 @@ def write_audio_prefs(
     that only nudges the engine's behavior can carry on, while one that tells the
     rest of the server what the engine is doing has to know the write landed.
 
-    :return: True when every store was written.
-
     :param data_dir: The daemon's data directory (holds the settings stores).
     :param logger: Logger to report per-store write failures on.
     :param crossfade_ms: Crossfade duration in milliseconds (0 disables crossfade).
     :param loudness_normalization: Whether the engine normalizes loudness itself.
     :param audio_quality: One of the AUDIO_QUALITY_* tiers, or None to leave the
         quality the engine is already configured with untouched.
+    :return: True when every store was written.
     """
     managed_lines = [
         f"{PREF_CROSSFADE}={'true' if crossfade_ms else 'false'}",

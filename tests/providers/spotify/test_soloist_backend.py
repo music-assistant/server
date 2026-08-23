@@ -32,6 +32,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     _IDLE_TIMEOUT_S,
     _MAX_LEAD_TRIM_S,
     SoloistBackend,
+    _CaptureShaper,
     _ItemAudio,
     _SoloistSession,
     _trim_lead_silence,
@@ -617,14 +618,25 @@ async def test_seeking_the_playing_item_restarts_the_session(
     stopped.assert_awaited_once()
 
 
-@pytest.mark.parametrize("other_queue", ["player2", "player1"])
-async def test_a_session_in_use_is_never_cut_short(tmp_path: Path, other_queue: str) -> None:
+@pytest.mark.parametrize(
+    ("requested", "other_queue"),
+    [
+        # another player, whatever it asks for - including the very track this
+        # session is in the middle of delivering
+        pytest.param(TRACK_B, "player2", id="other_player"),
+        pytest.param(TRACK_A, "player2", id="other_player_same_track"),
+        # an early fetch across a boundary this session does not drive, such as a
+        # podcast episode or audiobook chapter
+        pytest.param(TRACK_B, "player1", id="unstitched_boundary"),
+    ],
+)
+async def test_a_session_in_use_is_never_cut_short(
+    tmp_path: Path, requested: str, other_queue: str
+) -> None:
     """
     An item the session cannot serve must not stop one it is still delivering.
 
-    Covers a second player, and an early fetch across a boundary the session does
-    not drive (a podcast episode, or the same track twice in a row) on the same
-    queue. Reported as capacity, so a speculative prepare gives up softly.
+    Reported as capacity, so a speculative prepare gives up softly.
     """
     backend = _make_backend(tmp_path)
     backend._server = MagicMock()
@@ -634,8 +646,11 @@ async def test_a_session_in_use_is_never_cut_short(tmp_path: Path, other_queue: 
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
     item.started.set()
     item.claim()
+    # the session really is playing TRACK_A, so a same-track request from another
+    # player cannot be mistaken for a seek
+    session._current = item
     with pytest.raises(ProviderStreamLimitError) as err:
-        await backend._acquire(TRACK_B, 0, other_queue)
+        await backend._acquire(requested, 0, other_queue)
     # a stream-limit error so the item is not marked unplayable, but the message
     # is about the session, not the provider's source-stream budget
     assert err.value.limit == 1
@@ -1195,6 +1210,22 @@ def test_a_session_being_read_never_expires(tmp_path: Path) -> None:
     session._idle_since = time.monotonic() - _IDLE_TIMEOUT_S * 10
     session._expire_idle()
     assert session.usable is True
+
+
+def test_pre_roll_silence_is_dropped_a_whole_frame_at_a_time() -> None:
+    """
+    Trimming pre-roll must leave the audio on the session's frame grid.
+
+    A FIFO read is not always a whole number of frames, and dropping a partial
+    one would shift every sample that follows for the rest of the session.
+    """
+    shaper = _CaptureShaper()
+    # pre-roll that ends mid-frame: the real audio starts at byte 1024
+    assert shaper.shape(b"\x00" * 1021) == b""
+    audio = bytes(range(1, 9)) * 4
+    shaped = shaper.shape(b"\x00" * 3 + audio)
+    assert shaped == audio
+    assert shaper._lead_skipped % _FRAME_BYTES == 0
 
 
 async def test_a_refused_skip_does_not_leave_the_audio_discarded(tmp_path: Path) -> None:

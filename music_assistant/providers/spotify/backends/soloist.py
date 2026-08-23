@@ -483,12 +483,13 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     pending.claim()
                     return session, pending
             if session is not None:
-                if session.in_use and not session.is_playing(spotify_uri):
-                    # The session is still delivering a DIFFERENT item, so
-                    # restarting it here would cut that one short. This is what
-                    # an early fetch across a boundary the session does not drive
-                    # looks like - a podcast episode or audiobook chapter, which
-                    # are never stitched, or the same track twice in a row.
+                if session.in_use and (
+                    session.queue_id != queue_id or not session.is_playing(spotify_uri)
+                ):
+                    # Restarting the session here would cut short whatever it is
+                    # still delivering: another player's item, or an early fetch
+                    # across a boundary this session does not drive (a podcast
+                    # episode or audiobook chapter, which are never stitched).
                     # Reported as capacity so a speculative prepare gives up
                     # softly and the real request, made once the other item has
                     # been released, gets the session.
@@ -907,8 +908,7 @@ class _SoloistSession:
             # Closed straight away, with no grace period for a natural exit: a
             # session daemon serves items until it is told to stop, so pausing it
             # never makes it quit and any wait here is pure latency on every
-            # seek and track change. (Its single-track ancestor did exit by
-            # itself, which is where that wait came from.) The log reader stays
+            # seek and track change. The log reader stays
             # alive across the close: nothing else drains the daemon's stdout,
             # and a full pipe would keep it from exiting. A forced close must
             # never be judged by its exit code.
@@ -1803,14 +1803,18 @@ class _CaptureShaper:
 
         :param chunk: The bytes just read from the capture FIFO.
         """
+        if self._carry:
+            chunk = self._carry + chunk
+            self._carry = b""
         if not self._first_audio_seen:
             chunk, skipped = _trim_lead_silence(chunk, self._lead_skipped)
             self._lead_skipped += skipped
-            if not chunk:
+            if not chunk.lstrip(b"\x00"):
+                # still nothing but pre-roll: hold what was left of the frame so
+                # the next read continues on the same grid
+                self._carry = chunk
                 return b""
             self._first_audio_seen = True
-        if self._carry:
-            chunk = self._carry + chunk
         if remainder := len(chunk) % _FRAME_BYTES:
             self._carry = chunk[-remainder:]
             return chunk[:-remainder]
@@ -1861,7 +1865,12 @@ def _trim_lead_silence(chunk: bytes, already_skipped: int) -> tuple[bytes, int]:
     stripped = chunk.lstrip(b"\x00")
     if not stripped:
         if already_skipped + len(chunk) <= max_lead_trim:
-            return b"", len(chunk)
+            # whole frames only: the offset below places the first sample on the
+            # session's frame grid, which holds only while everything dropped
+            # before it was a whole number of frames. The leftover bytes go back
+            # to the caller, which carries them into the next read.
+            dropped = len(chunk) // _FRAME_BYTES * _FRAME_BYTES
+            return chunk[dropped:], dropped
         # budget exhausted: this is genuine silence content, not infrastructure
         return chunk, 0
     # Keep sample-frame alignment when the audio starts mid-chunk, and never trim
