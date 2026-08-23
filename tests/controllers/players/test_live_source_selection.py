@@ -6,6 +6,7 @@ selecting anything else, or deselecting, gives the source back and tells the
 plugin so an upstream session stops pointing at Music Assistant.
 """
 
+from contextlib import suppress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,6 +18,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
 PLAYER_ID = "player_1"
@@ -317,3 +319,74 @@ async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:
 
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_an_announcement_does_not_take_the_source_off_the_player() -> None:
+    """
+    An announcement interrupts the player without ending the source session.
+
+    The player is handed straight back afterwards, and a released source cannot be
+    re-selected: its plugin has let go of the upstream session by then.
+    """
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    controller._handle_play_media = PlayerController._handle_play_media.__get__(controller)
+    controller.get_player = MagicMock(return_value=_player)
+    _player.play_media = AsyncMock()
+
+    with suppress(Exception):
+        await controller._handle_play_media(
+            PLAYER_ID,
+            PlayerMedia(uri="http://x/announce.mp3", media_type=MediaType.ANNOUNCEMENT),
+        )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+
+
+async def test_ordinary_media_does_take_the_source_off_the_player() -> None:
+    """Anything that is not transient ends the session, so the source is handed back."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    controller._handle_play_media = PlayerController._handle_play_media.__get__(controller)
+    controller.get_player = MagicMock(return_value=_player)
+    _player.play_media = AsyncMock()
+
+    with suppress(Exception):
+        await controller._handle_play_media(
+            PLAYER_ID,
+            PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK),
+        )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_a_plugin_unloading_releases_the_sources_it_owns() -> None:
+    """
+    A plugin going away takes its sources off the players playing them.
+
+    A session outliving its provider leaves the player naming a source that can no
+    longer be streamed, and the queue behind it stays inactive.
+    """
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    assert controller.get_audio_source_session(PLAYER_ID) is not None
+
+    await controller.release_provider_sources(PROVIDER_INSTANCE)
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_another_plugin_unloading_leaves_the_session_alone() -> None:
+    """Only the sources of the plugin that is going away are given back."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+
+    await controller.release_provider_sources("some_other_provider--1")
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()

@@ -1434,6 +1434,12 @@ class StreamsController(CoreController):
             and (session := self.mass.players.get_audio_source_session(media.source_id))
         ):
             # a live source playing on a player rather than an item in a queue
+            if media.queue_session_id != session.playback_session_id:
+                # a stale request from a superseded session must not attach to the one
+                # playing now; the http route rejects the same mismatch with a 404
+                raise AudioError(
+                    f"Unknown (or invalid) audio source session: {media.queue_session_id}"
+                )
             return self._get_audio_source_session_stream(
                 session, pcm_format, player_id or media.source_id
             )

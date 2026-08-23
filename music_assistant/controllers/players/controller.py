@@ -1182,6 +1182,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
             await self._handle_cmd_stop(player_id)
 
+    async def release_provider_sources(self, provider_instance_id: str) -> None:
+        """
+        Give up the sources a plugin owns on every player playing one.
+
+        Call this when the plugin goes away: a session outliving its provider leaves
+        the player naming a source that can no longer be streamed nor handed back,
+        with its own queue held inactive behind it.
+
+        :param provider_instance_id: Instance id of the plugin that is going away.
+        """
+        for player_id, session in list(self._source_sessions.items()):
+            if session.provider_instance_id != provider_instance_id:
+                continue
+            self.logger.debug(
+                "Provider %s is unloading, releasing its source on player %s",
+                provider_instance_id,
+                player_id,
+            )
+            await self.deselect_source(player_id)
+
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
@@ -4000,8 +4020,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
-        # media that is not the live source itself takes the player away from it
-        if media.media_type != MediaType.AUDIO_SOURCE:
+        # media that is not the live source itself takes the player away from it. An
+        # announcement is the exception: it interrupts the player and hands it straight
+        # back, so releasing the source would tear down a session that is about to
+        # resume — and one that cannot be re-selected once its plugin has let go.
+        if media.media_type not in (MediaType.AUDIO_SOURCE, MediaType.ANNOUNCEMENT):
             await self._release_audio_source(player_id)
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:

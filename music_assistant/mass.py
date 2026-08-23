@@ -84,6 +84,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -1042,6 +1043,10 @@ class MusicAssistant:
             # below have await points, so without this a callback that is still in flight
             # could register a player back onto a provider that is already gone
             provider.unloading = True
+            if isinstance(provider, PluginProvider):
+                # a live source cannot outlive the plugin exposing it: the player would go
+                # on naming a source that can no longer be streamed, its queue held inactive
+                await self.players.release_provider_sources(instance_id)
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
