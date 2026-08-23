@@ -2991,6 +2991,9 @@ class Player(ABC):
             duration=metadata.duration if metadata else None,
             # the owner of the session, which is what its stream url is keyed on
             source_id=session.player_id,
+            # carried so this object can be handed back to the player and still
+            # resolve, as the announcement restore does
+            queue_session_id=session.playback_session_id,
             elapsed_time=elapsed_time,
             elapsed_time_last_updated=elapsed_time_last_updated,
         )

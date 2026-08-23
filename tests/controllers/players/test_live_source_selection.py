@@ -18,7 +18,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
 PLAYER_ID = "player_1"
@@ -390,3 +390,22 @@ async def test_another_plugin_unloading_leaves_the_session_alone() -> None:
 
     assert controller.get_audio_source_session(PLAYER_ID) is session
     provider.on_source_released.assert_not_awaited()
+
+
+async def test_the_reported_media_can_be_handed_back_to_the_player() -> None:
+    """
+    What the player reports it is playing carries the session token.
+
+    The announcement restore hands this object straight back to the player, and the
+    stream url cannot be resolved without the token the session is keyed on.
+    """
+    controller, _provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+
+    media = controller._handle_play_media.await_args.args[1]
+    reported = Player._Player__audio_source_media(_player, session)
+
+    assert reported.queue_session_id == session.playback_session_id
+    assert reported.source_id == media.source_id
