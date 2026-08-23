@@ -149,22 +149,26 @@ async def test_overwrite_without_full_replace_keeps_nfo_values(music: MusicContr
     }
 
 
-async def test_full_replace_clears_artist_nfo_owned_mbid(music: MusicController) -> None:
-    """A full_replace artist update removes the final NFO-owned MusicBrainz id and sort name."""
+async def test_full_replace_keeps_artist_external_ids_sticky(music: MusicController) -> None:
+    """An empty authoritative artist update never clears external ids; a non-empty set replaces."""
     artist = Artist(
         item_id="Artist",
         provider=INSTANCE,
         name="Artist",
         sort_name="Artist, The",
-        external_ids={(ExternalID.MB_ARTIST, ARTIST_MBID)},
+        external_ids={(ExternalID.MB_ARTIST, ARTIST_MBID), (ExternalID.DISCOGS, "12345")},
         provider_mappings={
             ProviderMapping(item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE)
         },
     )
     artist.metadata.genres = {"Jazz"}
     stored = await music.artists.add_item_to_library(artist, overwrite_existing=True)
-    assert await _external_ids(music, "artist", stored.item_id) == {str(ExternalID.MB_ARTIST)}
+    assert await _external_ids(music, "artist", stored.item_id) == {
+        str(ExternalID.MB_ARTIST),
+        str(ExternalID.DISCOGS),
+    }
 
+    # an empty authoritative update reverts scalar metadata but keeps every sticky identity id
     cleared = Artist(
         item_id="Artist",
         provider=INSTANCE,
@@ -175,8 +179,21 @@ async def test_full_replace_clears_artist_nfo_owned_mbid(music: MusicController)
         },
     )
     await music.artists.update_item_in_library(stored.item_id, cleared, full_replace=True)
-
-    assert await _external_ids(music, "artist", stored.item_id) == set()
     refreshed = await music.artists.get_library_item(stored.item_id)
-    assert refreshed.mbid is None
-    assert not refreshed.metadata.genres
+    assert refreshed.mbid == ARTIST_MBID  # sticky: the MusicBrainz id is not cleared
+    assert (ExternalID.DISCOGS, "12345") in refreshed.external_ids  # other id survives too
+    assert not refreshed.metadata.genres  # scalar metadata still reverts
+
+    # an explicit non-empty authoritative id set replaces/updates the stored ids
+    new_mbid = "99998888-7777-6666-5555-444433332222"
+    updated = Artist(
+        item_id="Artist",
+        provider=INSTANCE,
+        name="Artist",
+        external_ids={(ExternalID.MB_ARTIST, new_mbid)},
+        provider_mappings={
+            ProviderMapping(item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE)
+        },
+    )
+    await music.artists.update_item_in_library(stored.item_id, updated, full_replace=True)
+    assert (await music.artists.get_library_item(stored.item_id)).mbid == new_mbid

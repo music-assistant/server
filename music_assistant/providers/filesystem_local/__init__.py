@@ -3291,9 +3291,10 @@ class LocalFileSystemProvider(MusicProvider):
                 new_snapshot = fresh_details[2] if fresh_details else {}
                 stored.name = fresh.name
                 stored.sort_name = fresh.sort_name
-                stored.external_ids = reconcile_provenance_set(
-                    stored.external_ids, fresh.external_ids, _snapshot_external_ids(prev_snapshot)
-                )
+                # artist identity IDs (esp. MusicBrainz) are sticky: a fresh NFO/tag id is added,
+                # but an absent NFO never removes the final id, which the same artist may also be
+                # given by another album.nfo or a streaming provider
+                stored.external_ids = stored.external_ids | fresh.external_ids
                 stored.metadata.description = reconcile_scalar(
                     stored.metadata.description,
                     new_snapshot.get("description"),

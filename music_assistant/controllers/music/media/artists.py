@@ -1151,10 +1151,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # update/set external id lookup table
+        # artist identity ids are sticky: a non-empty authoritative set replaces them, but an empty
+        # one never clears the final id (a MusicBrainz artist id may also be asserted by another
+        # album.nfo or a streaming provider), so this never passes replace=True
         await self.set_external_ids(
             db_id,
             update.external_ids if authoritative else cur_item.external_ids,
-            replace=full_replace,
         )
         # update/set provider_mappings table
         provider_mappings = provider_mappings_for_update(

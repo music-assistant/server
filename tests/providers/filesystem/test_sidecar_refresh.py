@@ -289,8 +289,8 @@ async def test_removed_nfo_drops_nfo_only_album_artist() -> None:
     assert [a.name for a in saved.artists] == ["Tag Artist"]  # NFO-only album artist gone
 
 
-async def test_removed_artist_nfo_reverts_sort_and_mbid() -> None:
-    """Removing artist.nfo reverts sort name and drops the NFO-owned artist MBID."""
+async def test_removed_artist_nfo_reverts_sort_keeps_mbid() -> None:
+    """Removing artist.nfo reverts sort/genres but keeps the sticky artist MBID."""
     provider = _provider()
     prev_snap: dict[str, Any] = {
         "description": "our nfo bio",
@@ -311,7 +311,7 @@ async def test_removed_artist_nfo_reverts_sort_and_mbid() -> None:
     assert ok is True
     saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
     assert saved.sort_name == "Tag Artist"  # reverted to the tag baseline
-    assert saved.mbid is None  # NFO-owned artist MBID removed
+    assert saved.mbid == "old-nfo-artist-mbid"  # identity id is sticky, not cleared
     assert saved.metadata.genres == {"Ambient"}  # our Jazz dropped, other provider's kept
     assert saved.metadata.description is None  # our bio cleared
 
