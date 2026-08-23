@@ -194,13 +194,15 @@ class MusicProvider(Provider):
         return False
 
     @property
-    def delivers_crossfaded_audio(self) -> bool:
+    def delivers_crossfaded_audio(self) -> bool | None:
         """
-        Return whether this provider crossfades its own playback.
+        Return whether this provider crossfades the playback it is serving.
 
         True means the source applies the overlap between consecutive items itself,
         so Music Assistant hands its crossfade setting over instead of mixing one.
-        Only say so when the source really does fade: nothing downstream verifies it.
+        None means the provider is not serving anything yet and the queue's own
+        setting answers instead. Only say True when the source really does fade:
+        nothing downstream verifies it.
         """
         return False
 

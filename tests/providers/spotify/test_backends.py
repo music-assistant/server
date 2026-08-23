@@ -97,19 +97,40 @@ def test_only_the_soloist_backend_declares_normalized_audio() -> None:
     assert prov.delivers_normalized_audio is False
 
 
-def test_only_the_soloist_backend_declares_crossfaded_audio() -> None:
+def test_only_the_soloist_backend_can_declare_crossfaded_audio() -> None:
     """
-    The declaration follows the backend, not the queue setting.
+    Librespot fetches every track on its own, so it has nothing to fade into.
 
-    The soloist backend keeps one session across items and is handed the queue's
-    crossfade when it starts, so the overlap is in the audio it delivers; librespot
-    fetches every track on its own and has nothing to fade into.
+    With no soloist session running yet there is nothing to report either, and the
+    queue's own setting answers instead.
     """
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     prov.backend = SoloistBackend(prov)
-    assert prov.delivers_crossfaded_audio is True
+    assert prov.delivers_crossfaded_audio is None
     prov.backend = LibrespotBackend(prov)
     assert prov.delivers_crossfaded_audio is False
+
+
+@pytest.mark.parametrize(("crossfade_ms", "expected"), [(8000, True), (0, False)])
+def test_a_running_session_reports_the_crossfade_it_was_started_with(
+    crossfade_ms: int, expected: bool
+) -> None:
+    """
+    The engine reads the crossfade once, at spawn, so the session answers for itself.
+
+    Following the current setting instead would claim a fade the running engine is
+    not applying, or deny the one it still is.
+    """
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    backend = SoloistBackend(prov)
+    prov.backend = backend
+    session = MagicMock()
+    session.usable = True
+    session.crossfade_ms = crossfade_ms
+    backend._session = session
+
+    assert backend.session_crossfades is expected
+    assert prov.delivers_crossfaded_audio is expected
 
 
 def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:

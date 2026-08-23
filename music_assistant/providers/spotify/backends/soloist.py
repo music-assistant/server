@@ -316,6 +316,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         session = self._session
         return session.engine_normalizes if session is not None and session.usable else None
 
+    @property
+    def session_crossfades(self) -> bool | None:
+        """
+        Return whether the running session's engine is crossfading, if there is one.
+
+        None when nothing is playing yet, in which case the configuration is the
+        only thing to go on.
+        """
+        session = self._session
+        return session.crossfade_ms > 0 if session is not None and session.usable else None
+
     async def setup(self) -> None:
         """
         Validate the binary and paired session, and start the capture server.

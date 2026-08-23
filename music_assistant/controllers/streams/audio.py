@@ -2304,10 +2304,8 @@ class StreamsAudio:
                     if queue_track.streamdetails.is_realtime
                     else crossfade_mode
                 )
-                item_source_crossfade_mode = (
-                    self.mass.streams.get_source_crossfade_mode(queue, queue_track.streamdetails)
-                    if queue_track.streamdetails.is_realtime
-                    else CrossfadeMode.DISABLED
+                item_source_crossfade_mode = self.mass.streams.get_source_crossfade_mode(
+                    queue, queue_track
                 )
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",

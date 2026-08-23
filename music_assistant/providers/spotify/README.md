@@ -83,7 +83,9 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   mixing, so the queue's own crossfade preference is written into the engine's prefs
   before every spawn. Its unit is milliseconds and sub-second values silently disable
   crossfade, which the seconds-based queue setting can never produce. Changing the
-  setting mid-playback takes effect on the next playback.
+  setting mid-playback takes effect on the next playback, which is also why
+  `delivers_crossfaded_audio` reports the running session's captured value rather
+  than the current setting.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the session runs

@@ -23,7 +23,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import get_normalization_details
 from music_assistant.controllers.streams.controller import (
-    volume_normalization_preference_options,
+    _volume_normalization_preference_options,
 )
 from music_assistant.helpers.audio import get_normalization_mode
 
@@ -171,7 +171,7 @@ def test_an_outcome_only_mode_is_not_offered_as_a_preference() -> None:
     SOURCE is set by a source that levels its own audio and UNKNOWN is what an
     unrecognised value deserializes to; neither is something to ask a user for.
     """
-    offered = {option.value for option in volume_normalization_preference_options()}
+    offered = {option.value for option in _volume_normalization_preference_options()}
 
     assert VolumeNormalizationMode.SOURCE.value not in offered
     assert VolumeNormalizationMode.UNKNOWN.value not in offered
