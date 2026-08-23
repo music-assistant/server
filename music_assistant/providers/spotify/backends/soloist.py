@@ -44,6 +44,7 @@ from music_assistant.helpers.pulse_capture import (
     get_pulse_capture_server,
 )
 from music_assistant.providers.spotify.constants import (
+    CONF_AUDIO_QUALITY,
     CONF_SOLOIST_API_KEY,
     CONF_SOLOIST_CONSENT,
     CONF_SOLOIST_SESSION_DIR,
@@ -306,6 +307,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         return str(self.provider.get_setup_value(CONF_SOLOIST_API_KEY) or "")
 
     @property
+    def _audio_quality(self) -> str:
+        """
+        Return the configured streaming quality ceiling.
+
+        Stated rather than left to the engine's own default, which would
+        otherwise decide it silently. Spotify serves the best the account is
+        entitled to below the ceiling.
+        """
+        return str(self.provider.config.get_value(CONF_AUDIO_QUALITY) or AUDIO_QUALITY_LOSSLESS)
+
+    @property
     def _consent(self) -> bool:
         """Return whether the user consented to downloading the binary."""
         return bool(self.provider.get_setup_value(CONF_SOLOIST_CONSENT))
@@ -428,16 +440,13 @@ class SoloistBackend(SpotifyPlaybackBackend):
             (self._data_dir / endpoint_file).unlink(missing_ok=True)
         # The engine reads its prefs at startup only, so they are refreshed on
         # every spawn. Its own loudness normalization stays off: Music Assistant
-        # normalizes this audio itself and would otherwise do so twice. The
-        # quality tier has to be stated rather than left alone - the engine's own
-        # default would decide it, and the capture format promises 32-bit PCM.
-        # Spotify serves the best the account is entitled to below the ceiling.
+        # normalizes this audio itself and would otherwise do so twice.
         write_audio_prefs(
             self._data_dir,
             self.logger,
             crossfade_ms=crossfade_ms,
             loudness_normalization=False,
-            audio_quality=AUDIO_QUALITY_LOSSLESS,
+            audio_quality=self._audio_quality,
         )
 
     def _session_args(self) -> list[str]:

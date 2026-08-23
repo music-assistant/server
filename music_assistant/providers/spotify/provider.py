@@ -59,11 +59,16 @@ from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_OPTIONS,
+)
 
 from .backends import LibrespotBackend, SoloistBackend, SpotifyPlaybackBackend
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
+    CONF_AUDIO_QUALITY,
     CONF_CLIENT_ID,
     CONF_PLAYBACK_BACKEND,
     CONF_REFRESH_TOKEN_DEV,
@@ -126,6 +131,16 @@ class SpotifyProvider(MusicProvider):
         audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_AUDIO_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=AUDIO_QUALITY_LOSSLESS,
+                required=False,
+                options=AUDIO_QUALITY_OPTIONS,
+                # librespot streams Spotify's own file untouched, so there is
+                # nothing to choose there
+                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+            ),
             ConfigEntry(
                 key=CONF_SYNC_PODCAST_PROGRESS,
                 type=ConfigEntryType.BOOLEAN,

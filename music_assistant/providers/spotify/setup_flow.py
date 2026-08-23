@@ -62,6 +62,7 @@ from .helpers import (
     librespot_credentials_via_pairing,
     librespot_credentials_via_token,
     pair_soloist_session,
+    soloist_session_account,
     soloist_session_present,
 )
 from .provider import SpotifyProvider
@@ -302,7 +303,7 @@ async def _setup_playback(
         selected = await _choose_playback_backend(session, preselect, errors)
         errors = None
         if selected == BACKEND_SOLOIST:
-            if not await _authorize_soloist(session, setup_data):
+            if not await _authorize_soloist(session, setup_data, account_id):
                 # consent refused: back to the backend choice with a clear error
                 preselect = BACKEND_SOLOIST
                 errors = {"base": "soloist_consent_required"}
@@ -360,12 +361,15 @@ async def _choose_playback_backend(
         return selected
 
 
-async def _authorize_soloist(session: SetupSession, setup_data: dict[str, Any]) -> bool:
+async def _authorize_soloist(
+    session: SetupSession, setup_data: dict[str, Any], account_id: str | None
+) -> bool:
     """
     Run the soloist branch: consent, API key and account pairing.
 
     :param session: The setup session driving the flow.
     :param setup_data: The setup data collected so far, updated in place.
+    :param account_id: The signed-in Spotify user id, to pair against.
     :return: True when the branch completed, False when consent was refused.
     """
     if not await _ask_soloist_consent(session, bool(setup_data.get(CONF_SOLOIST_CONSENT))):
@@ -380,19 +384,67 @@ async def _authorize_soloist(session: SetupSession, setup_data: dict[str, Any]) 
     while True:
         await _ask_soloist_api_key(session, setup_data, errors)
         if keep_session:
+            if await _paired_account_differs(_instance_data_dir(session), account_id):
+                # the kept pairing belongs to another Spotify account, so it
+                # cannot be kept: fall through to pairing again
+                keep_session = False
+                errors = {"base": "soloist_account_mismatch"}
+                continue
             setup_data[CONF_SOLOIST_SESSION_DIR] = None
             return True
         try:
             await _pair_soloist(session, setup_data)
-            return True
         except StepExpiredError:
             errors = {"base": "soloist_pairing_not_completed"}
+            continue
         except SoloistError as err:
             # download/refresh problems carry their own translation keys
             errors = {"base": err.translation_key or "soloist_pairing_failed"}
+            continue
         except LoginFailed:
             # a rejected key is the most likely cause; re-show the key step
             errors = {"base": "soloist_pairing_failed"}
+            continue
+        pairing_dir = Path(session.mass.storage_path) / SOLOIST_PAIRING_DIR / session.flow_id
+        if await _paired_account_differs(pairing_dir, account_id):
+            # the user picked the device from a Spotify app signed in as someone
+            # else; discard it so the retry starts from a clean directory
+            setup_data[CONF_SOLOIST_SESSION_DIR] = None
+            await _discard_pairing_dir(session)
+            errors = {"base": "soloist_account_mismatch"}
+            continue
+        return True
+
+
+def _instance_data_dir(session: SetupSession) -> Path:
+    """Return the soloist data dir of the instance being reconfigured."""
+    return (
+        Path(session.mass.storage_path)
+        / "spotify"
+        / str(session.context.instance_id)
+        / SOLOIST_DATA_DIR_NAME
+    )
+
+
+async def _paired_account_differs(data_dir: Path, account_id: str | None) -> bool:
+    """
+    Return whether a paired session belongs to a different account than the sign-in.
+
+    Answers False whenever either side is unknown, so a session whose account
+    cannot be read never blocks a setup that is otherwise fine.
+
+    :param data_dir: The soloist data dir holding the paired session.
+    :param account_id: The signed-in Spotify user id, when known.
+    """
+    if not account_id:
+        return False
+    paired = await asyncio.to_thread(soloist_session_account, data_dir)
+    # the engine records Spotify's canonical username, which is the signed-in
+    # id lowercased
+    if not paired or paired.casefold() == account_id.casefold():
+        return False
+    LOGGER.warning("Soloist is paired with %s instead of %s", paired, account_id)
+    return True
 
 
 async def _ask_soloist_consent(session: SetupSession, prefill: bool) -> bool:
@@ -455,13 +507,7 @@ async def _has_existing_soloist_session(session: SetupSession) -> bool:
     """Return whether the instance being reconfigured already has a paired session."""
     if not session.context.instance_id:
         return False
-    data_dir = (
-        Path(session.mass.storage_path)
-        / "spotify"
-        / session.context.instance_id
-        / SOLOIST_DATA_DIR_NAME
-    )
-    return await asyncio.to_thread(soloist_session_present, data_dir)
+    return await asyncio.to_thread(soloist_session_present, _instance_data_dir(session))
 
 
 async def _ask_soloist_repair(session: SetupSession) -> bool:

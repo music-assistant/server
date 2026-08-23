@@ -9,7 +9,7 @@ and librespot's URI translation are locked down here as well.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import MagicMock
 
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
@@ -17,9 +17,11 @@ from music_assistant.providers.spotify.backends.soloist import SoloistBackend
 from music_assistant.providers.spotify.constants import (
     BACKEND_LIBRESPOT,
     BACKEND_SOLOIST,
+    CONF_AUDIO_QUALITY,
     CONF_PLAYBACK_BACKEND,
 )
 from music_assistant.providers.spotify.provider import SpotifyProvider
+from music_assistant.providers.spotify_connect.base import AUDIO_QUALITY_LOSSLESS
 
 if TYPE_CHECKING:
     import asyncio
@@ -54,6 +56,32 @@ def test_max_concurrent_streams_is_two_on_either_backend() -> None:
     assert _make_provider({}).max_concurrent_streams == 2
     assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 2
     assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 2
+
+
+async def test_the_quality_option_is_offered_for_soloist_only() -> None:
+    """Librespot hands over Spotify's own file untouched, so there is nothing to choose."""
+    soloist = await _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).get_config_entries()
+    quality = next(entry for entry in soloist if entry.key == CONF_AUDIO_QUALITY)
+    assert quality.hidden is False
+    assert quality.default_value == AUDIO_QUALITY_LOSSLESS
+    assert [option.value for option in quality.options or []] == [
+        "normal",
+        "high",
+        "very_high",
+        "lossless",
+    ]
+    librespot = await _make_provider({}).get_config_entries()
+    assert next(entry for entry in librespot if entry.key == CONF_AUDIO_QUALITY).hidden is True
+
+
+def test_the_backend_streams_at_the_configured_quality() -> None:
+    """The configured tier is what reaches the engine's prefs."""
+    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    backend = SoloistBackend(prov)
+    # nothing chosen yet: the ceiling is stated rather than left to the engine
+    assert backend._audio_quality == AUDIO_QUALITY_LOSSLESS
+    cast("MagicMock", prov.config).get_value = MagicMock(return_value="very_high")
+    assert backend._audio_quality == "very_high"
 
 
 async def test_librespot_receives_the_translated_uri(

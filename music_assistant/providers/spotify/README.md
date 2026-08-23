@@ -30,7 +30,17 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
 - **Setup**: explicit backend choice → ToS warning/consent → personal API key (created
   with a Premium account) → `soloist --pair` against a flow-private data dir, which the
   provider adopts into `<storage>/spotify/<instance_id>/soloist-data` on the next load.
-  Existing configs without a backend value keep using librespot.
+  Existing configs without a backend value keep using librespot, and a fresh setup
+  preselects it too.
+- **The pairing has to be the same account as the sign-in**, or the library and the audio
+  come from different places. The engine records the paired account as its per-user state
+  directory (`settings/Users/<username>-user`, the canonical username, i.e. the signed-in
+  id lowercased), which is the only place that identity is written down. Checked after
+  pairing and before keeping an existing pairing on reconfigure; a session whose account
+  cannot be read never blocks setup, mirroring the librespot credential check.
+- **Streaming quality** is a provider option, shared with the Spotify Connect provider's
+  tiers and defaulting to lossless. It is a ceiling: Spotify serves the best the account
+  is entitled to below it. Hidden on librespot, which passes Spotify's own file through.
 - **One session, fed one track ahead**: a Spotify account supports a single active
   Soloist session, so items are not fetched one by one. The session plays consecutive
   tracks continuously — `play(uri)` for the first, `add_to_queue(uri)` for the follower

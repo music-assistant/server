@@ -60,6 +60,16 @@
     },
     "soloist_repair": {
       "label": "Pair again with the Spotify app (replaces the current pairing)"
+    },
+    "audio_quality": {
+      "label": "Streaming quality",
+      "description": "The highest quality Spotify is asked to stream. This is a ceiling, not a promise: Spotify still picks something lower when the connection is slow, when a track has no file at this quality, or when your account does not include it. Lossless needs a Spotify plan that offers it. Takes effect the next time playback starts.",
+      "options": {
+        "normal": "Normal (about 96 kbps)",
+        "high": "High (about 160 kbps)",
+        "very_high": "Very high (about 320 kbps)",
+        "lossless": "Lossless"
+      }
     }
   },
   "setup_flow": {
@@ -160,7 +170,8 @@
     "soloist_pairing_required": "Spotify Soloist is not paired with your Spotify account (or the pairing was lost). Open the Spotify provider settings and run through the setup once more to restore playback.",
     "soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",
     "soloist_invalid_archive": "The Spotify Soloist app downloaded from Spotify could not be used. Try again later.",
-    "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later."
+    "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",
+    "soloist_account_mismatch": "Music Assistant was paired from a Spotify app signed in to a different account than the one you connected. Pair again from an app signed in to the same account, so your music library and the audio come from the same place."
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."

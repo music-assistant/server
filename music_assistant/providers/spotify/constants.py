@@ -25,6 +25,12 @@ CONF_SOLOIST_CONSENT = "soloist_download_consent"
 CONF_SOLOIST_SESSION_DIR = "soloist_session_dir"
 SOLOIST_DATA_DIR_NAME = "soloist-data"
 SOLOIST_PAIRING_DIR = "spotify/pairing"
+# the engine names its per-account state dir "<username>-user", which is where a
+# paired session records which Spotify account it belongs to
+SOLOIST_USER_DIR_SUFFIX = "-user"
+# Streaming quality, only meaningful on the soloist backend: librespot hands over
+# Spotify's own ~320 kbps Ogg stream untouched and has nothing to choose.
+CONF_AUDIO_QUALITY = "audio_quality"
 # The playback session registers under this name, so it shows up as a device in
 # the user's Spotify apps for as long as Music Assistant is playing.
 SOLOIST_DEVICE_NAME = "Music Assistant"

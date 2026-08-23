@@ -32,7 +32,10 @@ from music_assistant.providers.spotify.constants import (
     CONF_SOLOIST_SESSION_DIR,
     SOLOIST_DATA_DIR_NAME,
 )
-from music_assistant.providers.spotify.helpers import pair_soloist_session
+from music_assistant.providers.spotify.helpers import (
+    pair_soloist_session,
+    soloist_session_account,
+)
 from music_assistant.providers.spotify_connect.soloist import UnsupportedPlatformError
 
 if TYPE_CHECKING:
@@ -220,6 +223,123 @@ async def test_reconfigure_keeps_the_existing_paired_session(
     assert setup_data[CONF_SOLOIST_API_KEY] == "k" * 20
 
 
+def test_the_paired_account_is_read_from_the_session(tmp_path: Path) -> None:
+    """The engine records the paired account as its per-user state directory."""
+    data_dir = tmp_path / "soloist-data"
+    assert soloist_session_account(data_dir) is None
+    users = data_dir / "settings" / "Users"
+    users.mkdir(parents=True)
+    (users / "marcelveldt3-user").mkdir()
+    assert soloist_session_account(data_dir) == "marcelveldt3"
+    # state for more than one account cannot say which one paired
+    (users / "someoneelse-user").mkdir()
+    assert soloist_session_account(data_dir) is None
+
+
+def test_unrelated_directories_are_not_read_as_an_account(tmp_path: Path) -> None:
+    """Only the engine's per-user state dirs count."""
+    users = tmp_path / "soloist-data" / "settings" / "Users"
+    users.mkdir(parents=True)
+    (users / "scratch").mkdir()
+    assert soloist_session_account(tmp_path / "soloist-data") is None
+
+
+async def test_pairing_from_another_account_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pairing from a Spotify app signed in as someone else is refused and re-asked."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    paired_dirs = _record_pairing(monkeypatch, account="someoneelse")
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            # the second attempt pairs with the right account
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+
+    async def _second_attempt_is_correct(_mass: Any, _key: str, data_dir: Path) -> None:
+        account = "someoneelse" if len(paired_dirs) == 0 else "spotify-user"
+        paired_dirs.append(data_dir)
+        users = data_dir / "settings" / "Users" / f"{account}-user"
+        users.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(setup_flow, "pair_soloist_session", _second_attempt_is_correct)
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert setup_data[CONF_PLAYBACK_BACKEND] == BACKEND_SOLOIST
+    # the key step was shown again, with the mismatch reported
+    assert _step_ids(session).count("soloist_api_key") == 2
+    errors = session.form.await_args_list[-1].kwargs["errors"]
+    assert errors == {"base": "soloist_account_mismatch"}
+
+
+async def test_a_matching_pairing_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pairing from the same account completes on the first attempt."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch, account="spotify-user")
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    setup_data: dict[str, Any] = {}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    assert _step_ids(session).count("soloist_api_key") == 1
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
+
+
+async def test_an_unknown_account_never_blocks_pairing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sign-in whose account could not be read must not turn a good pairing away."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch, account="someoneelse")
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    await setup_flow._setup_playback(session, {}, None)
+    assert _step_ids(session).count("soloist_api_key") == 1
+
+
+async def test_a_kept_session_on_another_account_forces_a_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keeping a pairing that belongs to another account is not offered: it is redone."""
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    _record_pairing(monkeypatch, account="spotify-user")
+    stored = tmp_path / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME / "settings" / "Users"
+    (stored / "someoneelse-user").mkdir(parents=True)
+    session = _make_session(
+        tmp_path,
+        [
+            {CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST},
+            {CONF_SOLOIST_CONSENT: True},
+            {setup_flow.CONF_SOLOIST_REPAIR: False},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+            {CONF_SOLOIST_API_KEY: "k" * 20},
+        ],
+    )
+    session.context.instance_id = "spotify--test"
+    setup_data: dict[str, Any] = {CONF_SOLOIST_API_KEY: "k" * 20}
+    await setup_flow._setup_playback(session, setup_data, "spotify-user")
+    # the kept pairing was refused, so a fresh one was made instead
+    assert setup_data[CONF_SOLOIST_SESSION_DIR] == "spotify/pairing/flow1"
+
+
 async def test_a_fresh_setup_preselects_librespot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -328,12 +448,19 @@ def _step_ids(session: MagicMock) -> list[str]:
     return [call.kwargs["step_id"] for call in session.form.await_args_list]
 
 
-def _record_pairing(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """Replace pair_soloist_session with a recording no-op, returning the recorded dirs."""
+def _record_pairing(monkeypatch: pytest.MonkeyPatch, account: str | None = None) -> list[Path]:
+    """
+    Replace pair_soloist_session with a recording no-op, returning the recorded dirs.
+
+    :param account: The Spotify username the fake pairing lands on, written the
+        way the engine records it. None leaves the account unreadable.
+    """
     paired_dirs: list[Path] = []
 
     async def _fake_pair(_mass: Any, _api_key: str, data_dir: Path) -> None:
         paired_dirs.append(data_dir)
+        if account is not None:
+            (data_dir / "settings" / "Users" / f"{account}-user").mkdir(parents=True)
 
     monkeypatch.setattr(setup_flow, "pair_soloist_session", _fake_pair)
     return paired_dirs

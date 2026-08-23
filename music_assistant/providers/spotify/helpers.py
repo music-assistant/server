@@ -24,7 +24,12 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_PORT_FILE,
 )
 
-from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE, PAIRING_DEVICE_NAME
+from .constants import (
+    CHECK_AUTH_TIMEOUT,
+    CREDENTIALS_FILE,
+    PAIRING_DEVICE_NAME,
+    SOLOIST_USER_DIR_SUFFIX,
+)
 
 # how long the pairing daemon's log reader is given to drain after it exits
 PAIR_LOG_DRAIN_TIMEOUT = 2.0
@@ -196,6 +201,28 @@ async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Pat
         raise LoginFailed(f"Soloist pairing failed (exit code {returncode})")
     if not await asyncio.to_thread(soloist_session_present, data_dir):
         raise LoginFailed("Soloist did not store a paired session")
+
+
+def soloist_session_account(data_dir: Path) -> str | None:
+    """
+    Return the Spotify username a stored soloist session belongs to (blocking).
+
+    The engine keeps its per-account state under ``settings/Users/<username>-user``,
+    which is where the paired identity is written down. Answers None when it
+    cannot be told apart: no session yet, or state for more than one account.
+
+    :param data_dir: The soloist data directory to inspect.
+    """
+    users_dir = data_dir / "settings" / "Users"
+    try:
+        accounts = [
+            entry.name.removesuffix(SOLOIST_USER_DIR_SUFFIX)
+            for entry in users_dir.iterdir()
+            if entry.is_dir() and entry.name.endswith(SOLOIST_USER_DIR_SUFFIX)
+        ]
+    except OSError:
+        return None
+    return accounts[0] if len(accounts) == 1 else None
 
 
 def soloist_session_present(data_dir: Path) -> bool:
