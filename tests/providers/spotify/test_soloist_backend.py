@@ -177,6 +177,7 @@ async def test_a_channel_is_only_ever_served_once(tmp_path: Path) -> None:
     """A consumed channel cannot be replayed, so the item needs a fresh session."""
     session = _make_session(tmp_path)
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
     assert session.item_for(TRACK_A) is item
     item.claim()
     item.close()
@@ -190,6 +191,7 @@ async def test_an_abandoned_channel_cannot_be_continued(tmp_path: Path) -> None:
     """A stream abandoned mid-item cannot resume where it left off either."""
     session = _make_session(tmp_path)
     item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.started.set()
     item.claim()
     item.release()
     assert session.item_for(TRACK_A) is None
@@ -766,6 +768,82 @@ async def test_the_follower_of_the_streamed_item_is_fed(tmp_path: Path) -> None:
     assert session.has_pending is True
 
 
+async def test_an_item_the_queue_resolved_elsewhere_is_not_fed(tmp_path: Path) -> None:
+    """A track the queue will stream from another provider must not be queued here."""
+    session = _make_session(tmp_path, queue_id="player1")
+    streamdetails = MagicMock()
+    playing = _queue_item(TRACK_A, streamdetails=streamdetails)
+    # same track, but the queue already picked a different provider for it
+    follower = _queue_item(TRACK_B, streamdetails=MagicMock(provider="tidal--x"))
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
+    queues.get_next_item.return_value = follower
+    await session.feed_after(streamdetails, TRACK_A)
+    _client_of(session).add_to_queue.assert_not_awaited()
+
+
+async def test_a_fed_item_the_engine_has_not_reached_is_not_served(tmp_path: Path) -> None:
+    """Skipping to an already-fed item must not hand over a channel that fills later."""
+    session = _make_session(tmp_path)
+    fed = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+    # fed, but the engine is still on the previous track
+    assert session.item_for(TRACK_B) is None
+    # once the engine gets there it is servable
+    await session._observe_current(TRACK_B, 200_000)
+    assert session.item_for(TRACK_B) is fed
+
+
+def test_the_shaper_only_emits_whole_frames() -> None:
+    """A read that ends mid-frame must never split a frame across two items."""
+    shaper = soloist_backend._CaptureShaper()
+    # the session's first bytes are infrastructure silence, and are dropped
+    assert shaper.shape(b"\x00" * 4096) == b""
+    # a mis-aligned read emits whole frames and carries the remainder
+    first = shaper.shape(b"\x01" * (_FRAME_BYTES + 3))
+    assert len(first) == _FRAME_BYTES
+    # which is then completed by the next read, losing nothing
+    second = shaper.shape(b"\x02" * (_FRAME_BYTES - 3))
+    assert len(second) == _FRAME_BYTES
+    assert second[:3] == b"\x01" * 3
+    # an aligned read passes straight through
+    assert shaper.shape(b"\x03" * _FRAME_BYTES) == b"\x03" * _FRAME_BYTES
+
+
+def test_the_shaper_trims_lead_silence_only_once() -> None:
+    """Silence after the audio has started is content, not pre-roll."""
+    shaper = soloist_backend._CaptureShaper()
+    assert shaper.shape(b"\x01" * _FRAME_BYTES) == b"\x01" * _FRAME_BYTES
+    silence = b"\x00" * _FRAME_BYTES
+    assert shaper.shape(silence) == silence
+
+
+async def test_only_whole_sample_frames_are_handed_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read that ends mid-frame must not split a frame across two items."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    session._demand_started = True
+    session._sink_running = True
+    # two reads that are each mis-aligned but whole together
+    reads = [b"\x01" * (_FRAME_BYTES + 3), b"\x02" * (_FRAME_BYTES - 3), b""]
+    reader = MagicMock()
+
+    async def _read(_size: int) -> bytes:
+        return reads.pop(0) if reads else b""
+
+    reader.read = _read
+    session._reader = reader
+    monkeypatch.setattr(soloist_backend, "_PACE_RATE", 1000.0)
+    await session._read_capture()
+    # every write was frame-aligned, and no byte was lost
+    assert item.buffered % _FRAME_BYTES == 0
+    assert item.buffered == _FRAME_BYTES * 2
+
+
 async def test_an_already_known_item_is_not_fed_twice(tmp_path: Path) -> None:
     """An item the session already plays or was fed is not queued again."""
     session = _make_session(tmp_path, queue_id="player1")
@@ -792,7 +870,9 @@ async def test_a_non_spotify_follower_is_not_fed(tmp_path: Path) -> None:
     session = _make_session(tmp_path, queue_id="player1")
     streamdetails = MagicMock()
     playing = _queue_item(TRACK_A, streamdetails=streamdetails)
-    follower = MagicMock(media_item=MagicMock(media_type=MediaType.TRACK, provider="tidal--x"))
+    follower = MagicMock(
+        media_item=MagicMock(media_type=MediaType.TRACK, provider="tidal--x"), streamdetails=None
+    )
     follower.media_item.provider_mappings = []
     queues = _queues_of(session)
     queues.get.return_value = MagicMock(current_index=0)
@@ -808,7 +888,8 @@ async def test_a_library_item_is_fed_through_its_spotify_mapping(tmp_path: Path)
     streamdetails = MagicMock()
     playing = _queue_item(TRACK_A, streamdetails=streamdetails)
     follower = MagicMock(
-        media_item=MagicMock(media_type=MediaType.TRACK, provider="library", item_id="42")
+        media_item=MagicMock(media_type=MediaType.TRACK, provider="library", item_id="42"),
+        streamdetails=None,
     )
     follower.media_item.provider_mappings = [
         MagicMock(provider_instance="other--y", item_id="wrong"),

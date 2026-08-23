@@ -551,7 +551,17 @@ async def _pair_soloist(session: SetupSession, setup_data: dict[str, Any]) -> No
 async def _discard_pairing_dir(session: SetupSession) -> None:
     """Remove this flow's private pairing directory, if it created one."""
     pairing_dir = Path(session.mass.storage_path) / SOLOIST_PAIRING_DIR / session.flow_id
-    await asyncio.to_thread(shutil.rmtree, pairing_dir, ignore_errors=True)
+    # the directory holds a reusable Spotify login, so a failure to remove it is
+    # logged rather than swallowed - only "it was never there" is uninteresting
+    await asyncio.to_thread(
+        shutil.rmtree,
+        pairing_dir,
+        onexc=lambda _func, path, err: (
+            LOGGER.warning("Failed to remove the Soloist pairing directory %s: %s", path, err)
+            if not isinstance(err, FileNotFoundError)
+            else None
+        ),
+    )
 
 
 async def _authorize_playback(session: SetupSession, account_id: str | None) -> str:

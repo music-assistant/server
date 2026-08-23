@@ -464,13 +464,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # doing it the provider declares the audio pre-normalized, which takes
         # MA's own normalization out of the path (see
         # SpotifyProvider.delivers_normalized_audio).
-        write_audio_prefs(
+        if not write_audio_prefs(
             self._data_dir,
             self.logger,
             crossfade_ms=crossfade_ms,
             loudness_normalization=self.provider.delivers_normalized_audio,
             audio_quality=self._audio_quality,
-        )
+        ):
+            # the provider has told the rest of the server who normalizes this
+            # audio; running the engine on settings that may say otherwise would
+            # mean normalizing twice, or not at all
+            raise AudioError("Spotify Soloist audio settings could not be applied")
 
     def _session_args(self) -> list[str]:
         """
@@ -539,6 +543,7 @@ class _SoloistSession:
         self._reader: asyncio.StreamReader | None = None
         self._error: str | None = None
         self._stopped = False
+        self._teardown_done = False
         # None until the engine reports its login state for the first time
         self._logged_in: bool | None = None
         self._data_dir_busy = False
@@ -575,14 +580,15 @@ class _SoloistSession:
         """
         Return the audio channel for an item this session plays or was fed, if any.
 
-        A channel is served at most once. Its audio is handed over as it is
-        consumed, so a stream that already read it — to the end or part-way —
-        cannot be replayed, and the item needs a fresh session instead. That is
-        what a queue holding the same track twice, or repeat wrapping back to
-        the top, ends up asking for.
+        Two conditions. A channel is served at most once: its audio is handed
+        over as it is consumed, so a stream that already read it — to the end or
+        part-way — cannot be replayed. And the engine has to have reached the
+        item: a fed item the engine is not playing yet means Music Assistant
+        moved somewhere the session has not (a skip), and continuing there would
+        hand over a channel that only fills when the current track ends.
         """
         item = self._items.get(spotify_uri)
-        if item is None or item.spent:
+        if item is None or item.spent or not item.started.is_set():
             return None
         return item
 
@@ -659,6 +665,13 @@ class _SoloistSession:
         next_uri = self._track_uri(follower)
         if next_uri is None or next_uri in self._items:
             return
+        if (
+            follower_details := follower.streamdetails
+        ) is not None and follower_details.provider != self.backend.provider.instance_id:
+            # the queue has already resolved this item to another provider, so
+            # feeding it here would have the engine play audio nobody reads -
+            # and cut the current item short when it starts
+            return
         # Registered before the command goes out: the engine can reach the item
         # while it is still in flight, and the events task has to find its
         # channel rather than mistake it for something nobody asked for.
@@ -707,8 +720,14 @@ class _SoloistSession:
             )
 
     async def stop(self) -> None:
-        """Tear the session down: stop the daemon, the reader and the capture sink."""
-        if self._stopped:
+        """
+        Tear the session down: stop the daemon, the reader and the capture sink.
+
+        Safe to call again after a cancelled teardown: every step is idempotent
+        and the session is only marked torn down once they have all run, so a
+        cancellation part-way cannot leave the daemon or the sink behind.
+        """
+        if self._teardown_done:
             return
         self._stopped = True
         for item in self._items.values():
@@ -741,6 +760,7 @@ class _SoloistSession:
             self._sink = None
             with suppress(Exception):
                 await sink.unload()
+        self._teardown_done = True
 
     def _spawn_task(self, coro: object) -> None:
         """
@@ -992,8 +1012,7 @@ class _SoloistSession:
         assert reader is not None
         assert proc is not None
         loop = asyncio.get_running_loop()
-        lead_skipped = 0
-        first_audio_seen = False
+        shaper = _CaptureShaper()
         pace_anchor: float | None = None
         paced_bytes = 0
         stalled_for = 0.0
@@ -1024,12 +1043,8 @@ class _SoloistSession:
                 # writer end closed: the capture sink is gone (pulse restart)
                 self._fail("the capture sink was lost mid-stream")
                 return
-            if not first_audio_seen:
-                chunk, skipped = _trim_lead_silence(chunk, lead_skipped)
-                lead_skipped += skipped
-                if not chunk:
-                    continue
-                first_audio_seen = True
+            if not (chunk := shaper.shape(chunk)):
+                continue
             if pace_anchor is None:
                 pace_anchor = loop.time()
                 paced_bytes = 0
@@ -1128,6 +1143,9 @@ class _SoloistSession:
         if not self._demand_started or item is None:
             return
         playing = data.status == "playing"
+        # recorded before the branches below: a drain returns early, and the sink
+        # still has to learn that the engine is no longer producing
+        self._engine_playing = playing
         if playing:
             # the engine picked the item back up: it was only rebuffering after all
             self._cancel_tail_drain(item)
@@ -1558,6 +1576,45 @@ def _decorated_duration_ms(item: object) -> int | None:
         return None
     duration_ms = playback.get("duration_ms")
     return int(duration_ms) if isinstance(duration_ms, int | float) else None
+
+
+class _CaptureShaper:
+    """
+    Turns raw FIFO reads into whole sample frames of real audio.
+
+    Two jobs. It drops the infrastructure silence that precedes the session's
+    first decoded sample (bounded, see ``_MAX_LEAD_TRIM_S``). And it carries a
+    partial frame across reads: ``StreamReader.read`` returns whatever is
+    available, which is not always a whole number of frames, so without this an
+    item change between two reads would end one item mid-frame and start the
+    next on the remainder - swapping its channels.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the shaper for one session."""
+        self._lead_skipped = 0
+        self._first_audio_seen = False
+        self._carry = b""
+
+    def shape(self, chunk: bytes) -> bytes:
+        """
+        Return the next whole frames of audio, or empty when there are none yet.
+
+        :param chunk: The bytes just read from the capture FIFO.
+        """
+        if not self._first_audio_seen:
+            chunk, skipped = _trim_lead_silence(chunk, self._lead_skipped)
+            self._lead_skipped += skipped
+            if not chunk:
+                return b""
+            self._first_audio_seen = True
+        if self._carry:
+            chunk = self._carry + chunk
+        if remainder := len(chunk) % _FRAME_BYTES:
+            self._carry = chunk[-remainder:]
+            return chunk[:-remainder]
+        self._carry = b""
+        return chunk
 
 
 async def _cancel_and_join(tasks: list[asyncio.Task[None]]) -> None:

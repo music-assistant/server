@@ -1200,11 +1200,25 @@ class SpotifyProvider(MusicProvider):
         session_dir = self._instance_storage_dir / SOLOIST_DATA_DIR_NAME
         if session_dir.is_dir():
             self.logger.debug("Removing leftover soloist session at %s", session_dir)
-            shutil.rmtree(session_dir, ignore_errors=True)
+            self._remove_tree(session_dir)
 
     def _remove_instance_storage(self) -> None:
         """Remove this instance's storage dir (blocking)."""
-        shutil.rmtree(self._instance_storage_dir, ignore_errors=True)
+        self._remove_tree(self._instance_storage_dir)
+
+    def _remove_tree(self, path: Path) -> None:
+        """
+        Remove a directory tree holding login material (blocking).
+
+        A failure is logged rather than swallowed: what is left behind is a
+        reusable Spotify login, so it should not disappear quietly.
+        """
+
+        def _report(_func: object, failed: str, err: BaseException) -> None:
+            if not isinstance(err, FileNotFoundError):
+                self.logger.warning("Failed to remove %s: %s", failed, err)
+
+        shutil.rmtree(path, onexc=_report)
 
     @property
     def _instance_storage_dir(self) -> Path:

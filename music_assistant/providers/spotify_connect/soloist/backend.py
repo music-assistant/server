@@ -568,6 +568,7 @@ class SoloistBackend(SpotifyConnectBackend):
 
     def _write_audio_prefs(self) -> None:
         """Write the configured audio behavior into the engine's prefs stores (blocking)."""
+        # best-effort here: nothing outside this backend depends on the result
         write_audio_prefs(
             self._data_dir,
             self.logger,

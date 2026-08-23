@@ -60,7 +60,7 @@ def write_audio_prefs(
     crossfade_ms: int = 0,
     loudness_normalization: bool = False,
     audio_quality: str | None = None,
-) -> None:
+) -> bool:
     """
     Write the given audio behavior into the engine's prefs stores (blocking).
 
@@ -69,8 +69,11 @@ def write_audio_prefs(
     appears after an account paired — the global store covers that account's
     first session until the next daemon (re)spawn refreshes both.
 
-    Best-effort: a write failure must never block playback, so errors are
-    logged per store and the daemon spawns with the engine's previous settings.
+    Errors are logged per store and reported back rather than raised: a caller
+    that only nudges the engine's behavior can carry on, while one that tells the
+    rest of the server what the engine is doing has to know the write landed.
+
+    :return: True when every store was written.
 
     :param data_dir: The daemon's data directory (holds the settings stores).
     :param logger: Logger to report per-store write failures on.
@@ -107,6 +110,7 @@ def write_audio_prefs(
             ]
     except OSError as err:
         logger.warning("Failed to list the Spotify per-user settings: %s", err)
+    written = True
     for prefs_file in prefs_files:
         try:
             lines = []
@@ -124,3 +128,5 @@ def write_audio_prefs(
             tmp_file.replace(prefs_file)
         except (OSError, UnicodeDecodeError) as err:
             logger.warning("Failed to write the Spotify audio settings to %s: %s", prefs_file, err)
+            written = False
+    return written

@@ -187,7 +187,17 @@ async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Pat
         ) as pair_proc:
             log_task = asyncio.create_task(_log_soloist_pairing_output(pair_proc, api_key))
             try:
-                returncode = await pair_proc.wait()
+                # watched together: nothing else drains the daemon's stdout, so a
+                # reader that died would leave it blocked on a full pipe until the
+                # setup step expires
+                wait_task = asyncio.ensure_future(pair_proc.wait())
+                await asyncio.wait({wait_task, log_task}, return_when=asyncio.FIRST_COMPLETED)
+                if log_task.done() and not log_task.cancelled() and log_task.exception():
+                    wait_task.cancel()
+                    raise LoginFailed(
+                        "Soloist pairing could not be monitored"
+                    ) from log_task.exception()
+                returncode = await wait_task
                 # an exited daemon still has its last (and most telling) lines in
                 # the stream buffer; the shield keeps the reader alive across the
                 # timeout so a pairing failure stays diagnosable
