@@ -76,6 +76,10 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
+    from music_assistant.controllers.players.audio_sources import (
+        AudioSourceSession,
+    )
+
     from .player_provider import PlayerProvider
     from .setup_flow import SetupSession
 
@@ -318,7 +322,18 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
         "options": tuple((o.key, o.value, o.read_only) for o in state.options),
         "source_list": tuple(
-            (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+            (
+                s.id,
+                s.name,
+                s.passive,
+                s.can_play_pause,
+                s.can_seek,
+                s.can_next_previous,
+                s.can_shuffle,
+                s.can_repeat,
+                s.shuffle_enabled,
+                s.repeat_mode,
+            )
             for s in state.source_list
         ),
         "output_protocols": tuple(
@@ -2409,7 +2424,18 @@ class Player(ABC):
                 tuple(sorted(device_info.identifiers.items())),
             ),
             "source_list": tuple(
-                (s.id, s.name, s.passive, s.can_play_pause, s.can_seek, s.can_next_previous)
+                (
+                    s.id,
+                    s.name,
+                    s.passive,
+                    s.can_play_pause,
+                    s.can_seek,
+                    s.can_next_previous,
+                    s.can_shuffle,
+                    s.can_repeat,
+                    s.shuffle_enabled,
+                    s.repeat_mode,
+                )
                 for s in self.source_list
             ),
             "sound_mode_list": tuple((m.id, m.name, m.passive) for m in self._attr_sound_mode_list),
@@ -2666,34 +2692,26 @@ class Player(ABC):
             elapsed_time = self.elapsed_time
             elapsed_time_last_updated = self.elapsed_time_last_updated
 
-        # If the active queue item is an AudioSource with upstream-clock
-        # metadata (e.g. Spotify Connect / AirPlay / Yandex Ynison reporting
-        # the source's logical position), prefer that over the protocol /
-        # self elapsed_time — the latter tracks bytes consumed, which is the
-        # wrong clock for live plugin sources (loses upstream seeks and
-        # pause-resume on the queue's corrected_elapsed_time, which the
-        # player_queues controller and several player providers consume).
-        # A group player outputs the AudioSource from its own queue, which
-        # __final_active_source may not resolve to, so the group's own queue
-        # is also consulted.
-        candidate_source_ids = [self.__final_active_source]
-        if self.type == PlayerType.GROUP:
-            candidate_source_ids.append(self.player_id)
-        for source_id in candidate_source_ids:
-            if (
-                source_id
-                and (queue := self.mass.player_queues.get(source_id))
-                and (current_item := queue.current_item) is not None
-                and (sd := current_item.streamdetails) is not None
-                and sd.media_type == MediaType.AUDIO_SOURCE
-                and sd.stream_metadata is not None
-                and sd.stream_metadata.elapsed_time is not None
-            ):
-                elapsed_time = sd.stream_metadata.elapsed_time
-                elapsed_time_last_updated = (
-                    sd.stream_metadata.elapsed_time_last_updated or time.time()
-                )
-                break
+        # A live external source reports its own logical position (Spotify Connect,
+        # AirPlay, Yandex Ynison). Prefer it over the protocol / self elapsed_time,
+        # which tracks bytes consumed — the wrong clock for a live source, losing
+        # upstream seeks and pause-resume on corrected_elapsed_time, which the
+        # player_queues controller and several player providers consume.
+        # Only for a player playing the source itself: one that is hearing another
+        # player's audio already took that player's position above, and its own
+        # position would contradict the media it is reporting.
+        if (
+            not self.__final_synced_to
+            and not self.__final_active_group
+            and not (self.type == PlayerType.PROTOCOL and self.protocol_parent_id)
+            and (session := self.mass.players.get_audio_source_session(self.player_id)) is not None
+            and session.stream_metadata is not None
+            and session.stream_metadata.elapsed_time is not None
+        ):
+            elapsed_time = session.stream_metadata.elapsed_time
+            elapsed_time_last_updated = (
+                session.stream_metadata.elapsed_time_last_updated or time.time()
+            )
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
@@ -2816,6 +2834,9 @@ class Player(ABC):
         if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
             if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
                 return parent_player.state.current_media
+        # a live external source reports what it plays itself
+        if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
+            return self.__audio_source_media(session)
         # if MA queue is active, return those details
         active_source = self.__final_active_source
         active_queue: PlayerQueue | None = None
@@ -2935,6 +2956,48 @@ class Player(ABC):
             return self._attr_current_palette
         return None
 
+    @final
+    def __audio_source_media(self, session: AudioSourceSession) -> PlayerMedia:
+        """
+        Describe what a live external source is playing on this player.
+
+        Falls back to the source's own name and artwork for the parts it has not
+        reported, so a source that reports nothing still shows as itself rather
+        than as an empty player.
+
+        :param session: The live source session on this player.
+        """
+        metadata = session.stream_metadata
+        source_image_url = (
+            self.mass.metadata.get_image_url(session.source.image, size=512)
+            if session.source.image
+            else None
+        )
+        image_url = (metadata.image_url if metadata else None) or source_image_url
+        elapsed_time, elapsed_time_last_updated = _resolve_position(
+            metadata.elapsed_time if metadata else None,
+            metadata.elapsed_time_last_updated if metadata else None,
+            self.elapsed_time,
+            self.elapsed_time_last_updated,
+        )
+        return PlayerMedia(
+            uri=session.source_uri or session.source_id,
+            media_type=MediaType.AUDIO_SOURCE,
+            title=(metadata.title if metadata else None) or session.source.name,
+            artist=metadata.artist if metadata else None,
+            album=(metadata.album or metadata.description) if metadata else None,
+            image_url=image_url,
+            palette=self._resolved_palette(image_url),
+            duration=metadata.duration if metadata else None,
+            # the owner of the session, which is what its stream url is keyed on
+            source_id=session.player_id,
+            # carried so this object can be handed back to the player and still
+            # resolve, as the announcement restore does
+            queue_session_id=session.playback_session_id,
+            elapsed_time=elapsed_time,
+            elapsed_time_last_updated=elapsed_time_last_updated,
+        )
+
     @cached_property
     @final
     def __final_source_list(self) -> UniqueList[PlayerSource]:
@@ -2962,6 +3025,27 @@ class Player(ABC):
                 can_next_previous=queue_running,
             )
             sources.append(mass_source)
+        # publish the live external source playing on this player, so clients can name it
+        # and offer only the transport it actually supports
+        if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None and (
+            source_uri := session.source_uri
+        ):
+            sources.append(
+                PlayerSource(
+                    id=source_uri,
+                    name=session.source.name,
+                    passive=not session.source.can_initiate,
+                    can_play_pause=session.source.can_play_pause,
+                    can_seek=session.source.can_seek,
+                    can_next_previous=session.source.can_next_previous,
+                    can_shuffle=session.source.can_shuffle,
+                    can_repeat=session.source.can_repeat,
+                    # the ordering the session reports, so a client can render it
+                    # without a queue to read it from
+                    shuffle_enabled=session.shuffle_enabled,
+                    repeat_mode=session.repeat_mode,
+                )
+            )
         return sources
 
     @cached_property
@@ -3188,6 +3272,11 @@ class Player(ABC):
             and (parent_player := self.mass.players.get_player(self.protocol_parent_id))
         ):
             return parent_player.state.active_source
+
+        # a live external source playing on this player is what it is playing, and MA
+        # put it there, so it outranks whatever the device reports about itself
+        if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
+            return session.source_uri or session.player_id
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input, we use an explicit list here

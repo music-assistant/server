@@ -14,7 +14,7 @@ import os
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
@@ -1418,12 +1418,14 @@ class StreamsAudio:
 
     async def get_audio_source_stream(
         self,
-        queue_item: QueueItem,
+        streamdetails: StreamDetails,
         pcm_format: AudioFormat,
         raise_on_error: bool = True,
+        display_name: str | None = None,
+        on_no_audio: Callable[[], None] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
-        Get the realtime PCM stream for an AudioSource queue item.
+        Get the realtime PCM stream for a live AudioSource.
 
         AudioSources are live/realtime: bytes flow at the producer's pace, with
         no pre-buffering, no loudness hydration, no volume normalization, no
@@ -1437,13 +1439,15 @@ class StreamsAudio:
         Slow path: when formats differ, ffmpeg resamples/recodes the stream
         (with ``-readrate`` pacing) via ``get_media_stream``.
 
-        :param queue_item: The AudioSource queue item to stream.
+        :param streamdetails: The stream details of the source to stream.
         :param pcm_format: Output PCM format the consumer wants.
         :param raise_on_error: Re-raise stream errors instead of swallowing them.
+        :param display_name: Name to identify the source by in the logs.
+        :param on_no_audio: Called when the stream failed without ever producing
+            audio, so the caller can mark its own copy of the source unplayable.
         """
-        streamdetails = queue_item.streamdetails
-        assert streamdetails
         logger = self.logger.getChild("audio_source_stream")
+        name = display_name or streamdetails.uri
         bytes_received = 0
         try:
             async for chunk in self._iter_audio_source_pcm(streamdetails, pcm_format):
@@ -1451,14 +1455,14 @@ class StreamsAudio:
                 yield chunk
         except AudioError as err:
             streamdetails.stream_error = True
-            # revoke availability when the stream never produced any audio
             if bytes_received == 0 and not isinstance(err, ProviderStreamLimitError):
-                queue_item.available = False
+                if on_no_audio is not None:
+                    on_no_audio()
             if raise_on_error:
                 raise
             logger.error(
                 "AudioError while streaming AudioSource %s (%s): %s",
-                queue_item.name,
+                name,
                 streamdetails.uri,
                 err,
             )
@@ -1470,7 +1474,7 @@ class StreamsAudio:
                 raise
             logger.exception(
                 "Unexpected error while streaming AudioSource %s (%s)",
-                queue_item.name,
+                name,
                 streamdetails.uri,
             )
         finally:
@@ -1513,10 +1517,16 @@ class StreamsAudio:
         streamdetails.stream_error = False
 
         if queue_item.media_type == MediaType.AUDIO_SOURCE:
+
+            def _mark_item_unavailable() -> None:
+                queue_item.available = False
+
             async for chunk in self.get_audio_source_stream(
-                queue_item=queue_item,
+                streamdetails=streamdetails,
                 pcm_format=pcm_format,
                 raise_on_error=raise_on_error,
+                display_name=queue_item.name,
+                on_no_audio=_mark_item_unavailable,
             ):
                 yield chunk
             return
