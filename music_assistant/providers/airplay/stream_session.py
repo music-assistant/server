@@ -13,7 +13,6 @@ from music_assistant_models.errors import MusicAssistantError, PlayerCommandFail
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
-from music_assistant.helpers.audio import pcm_formats_match
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
@@ -246,9 +245,8 @@ class AirPlayStreamSession:
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
-        # the encoding counts as much as the rate and depth: replace() wires the
-        # new source into the session's existing declared format
-        if not pcm_formats_match(pcm_format, self.pcm_format):
+        # replace() wires the new source into the session's existing declared format
+        if pcm_format != self.pcm_format:
             return False
         return all(
             p.stream is not None and p.stream.running and p.stream.connected
