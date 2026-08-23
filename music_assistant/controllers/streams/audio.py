@@ -129,7 +129,6 @@ from music_assistant.helpers.audio import (
     is_grouping_preventing_dsp,
     iter_pcm_slices,
     parse_extinf_metadata,
-    pcm_formats_match,
     realtime_pcm_pacer,
     resample_pcm_audio,
     resolve_output_player_ids,
@@ -3841,7 +3840,7 @@ class StreamsAudio:
         # deliberately the advertised format: an AudioSource provider states the
         # PCM it delivers here, and providers that advertise a codec instead rely
         # on the ffmpeg path below to notice their source ending
-        if pcm_formats_match(streamdetails.audio_format, pcm_format):
+        if streamdetails.audio_format == pcm_format:
             source_gen = self._open_audio_source_generator(streamdetails)
             async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
                 yield chunk

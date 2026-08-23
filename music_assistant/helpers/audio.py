@@ -740,27 +740,6 @@ async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -
     )
 
 
-def pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
-    """
-    Return True if two PCM formats describe identical raw bytes.
-
-    ``AudioFormat.__eq__`` cannot answer this: every PCM content type renders
-    the same ``output_format_str``, so integer and float PCM of equal depth
-    compare equal. Anything that decides whether audio may be passed through
-    unconverted has to use this instead, or it will hand one to a consumer
-    expecting the other.
-
-    :param a: One format.
-    :param b: The format to compare it against.
-    """
-    return (
-        a.content_type == b.content_type
-        and a.sample_rate == b.sample_rate
-        and a.bit_depth == b.bit_depth
-        and a.channels == b.channels
-    )
-
-
 def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
     """
     Return the format the audio actually arrives in.
