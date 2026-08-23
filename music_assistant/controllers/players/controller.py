@@ -1160,7 +1160,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Delegate to internal handler for actual implementation
         await self._handle_select_source(player_id, source)
 
-    async def deselect_source(self, player_id: str, stop_playback: bool = True) -> None:
+    async def deselect_source(
+        self,
+        player_id: str,
+        stop_playback: bool = True,
+        provider_instance_id: str | None = None,
+    ) -> None:
         """
         Give up the source a player was playing, and stop it.
 
@@ -1172,9 +1177,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to give the source up on.
         :param stop_playback: Whether to stop the player as well. Pass False when the
             caller has already stopped it, or is about to.
+        :param provider_instance_id: Optional provider instance that owns the source session.
         """
         player = self.get_player(player_id, raise_unavailable=False)
         if not player:
+            return
+        session = self._source_sessions.get(player_id)
+        if (
+            provider_instance_id is not None
+            and session is not None
+            and session.provider_instance_id != provider_instance_id
+        ):
+            self.logger.debug(
+                "Ignoring source release from provider %s on player %s: "
+                "the active source belongs to provider %s",
+                provider_instance_id,
+                player_id,
+                session.provider_instance_id,
+            )
             return
         await self._release_audio_source(player_id)
         if not stop_playback:

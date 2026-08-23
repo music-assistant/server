@@ -431,7 +431,11 @@ class AirPlayReceiverProvider(PluginProvider):
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
             # the player is not playing us any more, so it should stop saying it is
             self.mass.create_task(
-                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+                self.mass.players.deselect_source(
+                    prev_player_id,
+                    stop_playback=False,
+                    provider_instance_id=self.instance_id,
+                )
             )
 
     def _save_last_player_id(self, player_id: str) -> None:

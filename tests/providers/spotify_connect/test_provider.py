@@ -175,6 +175,13 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
+    provider.config = ProviderConfig(
+        values={},
+        type=ProviderType.PLUGIN,
+        domain="spotify_connect",
+        instance_id="spotify_connect--test",
+        name="Spotify Connect",
+    )
     backend = MagicMock()
     deactivate = AsyncMock()
     backend.deactivate = deactivate

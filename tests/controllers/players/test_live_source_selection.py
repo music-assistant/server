@@ -116,15 +116,28 @@ async def test_selecting_another_source_releases_the_first() -> None:
 
 
 async def test_deselecting_releases_the_source_and_stops_the_player() -> None:
-    """An explicit deselect gives the source back and stops playback."""
+    """The source owner can give its source back and stop playback."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
 
-    await controller.deselect_source(PLAYER_ID)
+    await controller.deselect_source(PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE)
 
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
     controller._handle_cmd_stop.assert_awaited_once()
+
+
+async def test_deselecting_from_another_provider_leaves_the_source_playing() -> None:
+    """A provider cannot release or stop a source session it does not own."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+
+    await controller.deselect_source(PLAYER_ID, provider_instance_id="airplay_receiver--xyz")
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:

@@ -105,6 +105,7 @@ async def test_forward_action_without_exclusion_reaches_all_senders() -> None:
 def _playback_receiver(*, active_player_id: str | None, owner: str | None) -> SimpleNamespace:
     """Build a bare receiver namespace for driving _handle_playback_state."""
     return SimpleNamespace(
+        instance_id="ariacast_receiver--test",
         _is_playing=True,
         _in_use_by_player=owner,
         _active_player_id=active_player_id,
@@ -133,7 +134,9 @@ async def test_the_sender_stopping_gives_the_source_back_to_its_owner() -> None:
 
     await _playback(receiver, False)
 
-    receiver.mass.players.deselect_source.assert_called_once_with("owner-player")
+    receiver.mass.players.deselect_source.assert_called_once_with(
+        "owner-player", provider_instance_id=receiver.instance_id
+    )
     assert receiver._in_use_by_player is None
 
 

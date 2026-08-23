@@ -1588,7 +1588,11 @@ class YandexYnisonProvider(PluginProvider):
             if owner_player_id:
                 # give the source back as well as stopping: a session left on the player
                 # keeps it publishing this source, so its own queue stays unreachable
-                self.mass.create_task(self.mass.players.deselect_source(owner_player_id))
+                self.mass.create_task(
+                    self.mass.players.deselect_source(
+                        owner_player_id, provider_instance_id=self.instance_id
+                    )
+                )
             self.mass.players.trigger_player_update(prev_player_id)
 
     # ------------------------------------------------------------------

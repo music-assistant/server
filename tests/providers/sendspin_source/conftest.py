@@ -135,7 +135,12 @@ class _FakePlayers:
     def get_audio_source_session(self, player_id: str) -> Any:
         return self.source_sessions.get(player_id)
 
-    async def deselect_source(self, player_id: str, stop_playback: bool = True) -> None:
+    async def deselect_source(
+        self,
+        player_id: str,
+        stop_playback: bool = True,
+        provider_instance_id: str | None = None,
+    ) -> None:
         self.deselected.append(player_id)
         if stop_playback:
             await self.cmd_stop(player_id)

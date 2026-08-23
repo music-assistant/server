@@ -377,7 +377,9 @@ class TestClearActivePlayer:
 
         provider._clear_active_player()
 
-        provider.mass.players.deselect_source.assert_called_once_with("some-player")
+        provider.mass.players.deselect_source.assert_called_once_with(
+            "some-player", provider_instance_id=provider.instance_id
+        )
 
     def test_the_owner_is_released_not_the_consuming_player(self) -> None:
         """The session hangs off the owner, which is not who consumed the audio."""
@@ -388,7 +390,9 @@ class TestClearActivePlayer:
 
         provider._clear_active_player()
 
-        provider.mass.players.deselect_source.assert_called_once_with("owner-player")
+        provider.mass.players.deselect_source.assert_called_once_with(
+            "owner-player", provider_instance_id=provider.instance_id
+        )
 
     def test_nothing_is_released_when_the_source_was_not_in_use(self) -> None:
         """No owner means no session to give back."""

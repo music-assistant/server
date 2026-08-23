@@ -759,7 +759,11 @@ class AriaCastReceiver(PluginProvider):
             owner_player_id = self._in_use_by_player
             # Clear the guard before the stop so a fast resume can re-trigger
             self._in_use_by_player = None
-            self.mass.create_task(self.mass.players.deselect_source(owner_player_id))
+            self.mass.create_task(
+                self.mass.players.deselect_source(
+                    owner_player_id, provider_instance_id=self.instance_id
+                )
+            )
 
         await self._broadcast_meta()
 
