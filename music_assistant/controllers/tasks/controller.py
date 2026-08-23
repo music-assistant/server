@@ -489,6 +489,29 @@ class TasksController(CoreController):
             return
         self.update_task_progress(task_id, progress, text)
 
+    def set_task_report(self, task_id: str, markdown: str | None) -> None:
+        """
+        Set the Markdown report for a task.
+
+        :param task_id: The id of the task to update.
+        :param markdown: Markdown report content or None to clear.
+        """
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(self.set_task_report, task_id, markdown)
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        self._update_task_report(managed, markdown)
+
+    def set_current_task_report(self, markdown: str | None) -> None:
+        """
+        Set the Markdown report for the task active in the current async context.
+
+        :param markdown: Markdown report content or None to clear.
+        """
+        if task_context := ACTIVE_TASK_CONTEXT.get():
+            task_context.set_report(markdown)
+
     def add_task_failure(self, task_id: str, message: str) -> None:
         """
         Record a non-fatal failure for a task.
@@ -580,6 +603,37 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
+    def _set_task_report_for_run(
+        self,
+        task_id: str,
+        markdown: str | None,
+        *,
+        run_token: str,
+    ) -> None:
+        """Set a task report only while its originating run is active."""
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(
+                partial(
+                    self._set_task_report_for_run,
+                    task_id,
+                    markdown,
+                    run_token=run_token,
+                )
+            )
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        if managed.run_token != run_token or managed.task_info.status != TaskStatus.RUNNING:
+            return
+        self._update_task_report(managed, markdown)
+
+    def _update_task_report(self, managed: ManagedTask, markdown: str | None) -> None:
+        """Update a managed task report and notify task consumers."""
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
+        self._schedule_task_update()
+
     def _append_task_lifecycle_log(
         self,
         task_id: str,
@@ -645,6 +699,7 @@ class TasksController(CoreController):
         if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
+        managed.run_token = uuid4().hex
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -652,12 +707,14 @@ class TasksController(CoreController):
             managed.task_info.last_error = None
             managed.task_info.failure_count = 0
             managed.task_info.failure_messages.clear()
+            managed.task_info.report = None
             managed.task_info.finished_at = None
         managed.task_info.status = TaskStatus.PENDING
         managed.task_info.last_run_user_id = run_user_id
         managed.task_info.started_at = None
         managed.task_info.next_run = None
         managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
             if managed.priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
@@ -693,6 +750,10 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
+            update_report=partial(
+                self._set_task_report_for_run,
+                run_token=managed.run_token,
+            ),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)

@@ -27,7 +27,6 @@ from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFound
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
-    SourceQueueCapabilities,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -152,12 +151,12 @@ class SpotifyConnectProvider(PluginProvider):
         )
         self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {self._publish_name}")
         self._audio_source = self._build_audio_source()
-        # _in_use_by_queue is the queue currently streaming us. Claimed in
+        # _in_use_by_player is the queue currently streaming us. Claimed in
         # on_source_selected (NOT in get_stream_details — that path also runs
         # from queue preload, where claiming would block a later cross-queue
         # handoff). Released in on_source_unselected when the session id
         # matches, or in _clear_active_player on the backend's 'inactive' event.
-        self._in_use_by_queue: str | None = None
+        self._in_use_by_player: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
@@ -364,24 +363,34 @@ class SpotifyConnectProvider(PluginProvider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource has been selected/started on a player."""
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Cache the queue_id (== user-facing MA player) rather than the
+        # Cache the owner_player_id (== user-facing MA player) rather than the
         # protocol-level player_id. Some protocol players are ephemeral bridges
         # whose ID is invalid for play_media / queue lookups once torn down.
-        active_player_id = queue_id
+        active_player_id = owner_player_id
+        prev_player_id = (
+            self._active_player_id if self._active_player_id != active_player_id else None
+        )
 
-        # If there's already a different active player, kick it out. The claim
-        # below replaces the previous queue's claim; the prior stream's
-        # on_source_unselected may fire later, but its session-id guard keeps it
-        # from clobbering the new claim.
-        if self._active_player_id and self._active_player_id != active_player_id:
-            prev_player_id = self._active_player_id
+        # Claim ownership for this queue BEFORE kicking the previous player: the
+        # awaited stop below can complete the old stream's teardown, and only an
+        # already-replaced session id lets on_source_unselected's stale-guard
+        # reject that teardown — otherwise it releases the Spotify session this
+        # handover is about to use.
+        self._in_use_by_player = owner_player_id
+        self._active_session_id = stream_session_id
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
+
+        # If a different player was consuming the source, kick it out (the source
+        # is exclusive).
+        if prev_player_id:
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
                 active_player_id,
@@ -392,17 +401,11 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
-        # Claim ownership for this queue.
-        self._in_use_by_queue = queue_id
-        self._active_session_id = stream_session_id
-        self._active_player_id = active_player_id
-        self.logger.debug("Active player set to: %s", active_player_id)
-
         # Push the options the session reported before this claim existed, so the
         # queue mirrors the session's shuffle/repeat state from the start.
         if self._last_playback_options is not None:
-            self.mass.streams.update_source_queue_options(
-                queue_id,
+            self.mass.players.update_source_options(
+                owner_player_id,
                 AUDIO_SOURCE_ID,
                 self.instance_id,
                 shuffle_enabled=self._last_playback_options.shuffle,
@@ -445,20 +448,20 @@ class SpotifyConnectProvider(PluginProvider):
         await self._sync_player_volume_to_spotify(active_player_id)
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects would otherwise let an old request's late callback clear
         # the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
+        if self._in_use_by_player == owner_player_id:
+            self._in_use_by_player = None
         if self._playing:
             # MA-side stop/queue-clear: release the Spotify session so the app
             # drops the device as its playback target — the daemon would
@@ -471,15 +474,15 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to release Spotify session on stream teardown: %s", err)
 
-    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
-        """Release the Spotify session when the queue drops this source."""
-        if source_id != AUDIO_SOURCE_ID or self._active_player_id != queue_id:
+    async def on_source_released(self, source_id: str, player_id: str) -> None:
+        """Release the Spotify session when a player is done with this source."""
+        if source_id != AUDIO_SOURCE_ID or self._active_player_id != player_id:
             return
         if not self._spotify_session_active:
             return
         # Released whether or not a stream is still winding down: a paused source
         # already ended its stream, so its teardown released nothing and the
-        # Spotify app would stay tethered to a device that has no queue left.
+        # Spotify app would stay tethered to a player that has moved on.
         #
         # Let the player go first. The backend answers a deactivate with the same
         # 'inactive' event a deselect in the Spotify app produces, and that stops
@@ -488,18 +491,7 @@ class SpotifyConnectProvider(PluginProvider):
         try:
             await self._backend.deactivate()
         except Exception as err:
-            self.logger.debug("Failed to release Spotify session on queue clear: %s", err)
-
-    async def on_source_transferred(
-        self, source_id: str, from_queue_id: str, to_queue_id: str
-    ) -> None:
-        """Follow this AudioSource to the queue it was handed over to."""
-        if source_id != AUDIO_SOURCE_ID or self._active_player_id != from_queue_id:
-            return
-        # A transfer while playing re-selects the source on the target and re-claims it there,
-        # but a paused one moves without a stream request: without this the plugin would stay
-        # pointed at the queue it left behind.
-        self._active_player_id = to_queue_id
+            self.logger.debug("Failed to release Spotify session: %s", err)
 
     async def on_source_control(
         self,
@@ -628,20 +620,9 @@ class SpotifyConnectProvider(PluginProvider):
         Backends provide a full control surface, so play / pause / seek /
         next / previous are always available while a session is active — the
         capability flags are static (no dependency on the Spotify Web API).
-        Backends implementing the queue-session verbs additionally declare
-        queue capabilities, so the queue controller delegates queue commands
-        to this plugin while the source is playing.
+        Ordering the session is only offered by backends implementing the
+        queue-session verbs.
         """
-        queue_capabilities: SourceQueueCapabilities | None = None
-        if self._backend.supports_queue_control:
-            # only what is consumed today is declared; the remaining declarations
-            # (queue view, enqueue/play media types, native_* flags) arrive with
-            # the queue-view mirror and the play-redirect
-            queue_capabilities = SourceQueueCapabilities(
-                provider_domain="spotify",
-                can_shuffle=True,
-                can_repeat=True,
-            )
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -657,13 +638,14 @@ class SpotifyConnectProvider(PluginProvider):
             can_play_pause=True,
             can_seek=True,
             can_next_previous=True,
+            can_shuffle=self._backend.supports_queue_control,
+            can_repeat=self._backend.supports_queue_control,
             exclusive=True,
             allow_external_trigger=True,
             # Browsable/startable from MA: playback resumes the last known
             # Spotify context (claiming active device status). Without any
             # prior context a localized error points the user to the app.
             can_initiate=True,
-            queue_capabilities=queue_capabilities,
         )
 
     def _get_target_player_id(self) -> str | None:
@@ -777,7 +759,7 @@ class SpotifyConnectProvider(PluginProvider):
             await asyncio.sleep(PLAY_MEDIA_DEBOUNCE_S)
         except asyncio.CancelledError:
             return
-        if not self._playing or self._in_use_by_queue:
+        if not self._playing or self._in_use_by_player:
             return
         target_player_id = self._get_target_player_id()
         if not target_player_id:
@@ -800,12 +782,16 @@ class SpotifyConnectProvider(PluginProvider):
         """Clear the active player and reset playback state when a session ends."""
         prev_player_id = self._active_player_id
         self._active_player_id = None
-        self._in_use_by_queue = None
+        self._in_use_by_player = None
         self._active_session_id = None
         self._playing = False
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
-            self.mass.players.trigger_player_update(prev_player_id)
+            # the player is not playing us any more, so it should stop saying it is;
+            # the stop itself is scheduled separately by the caller
+            self.mass.create_task(
+                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+            )
 
     def _save_last_player_id(self, player_id: str) -> None:
         """Persist the selected player ID as the new default."""
@@ -889,7 +875,7 @@ class SpotifyConnectProvider(PluginProvider):
             # the active Connect device (e.g. right after a deactivate) must
             # not grab MA players in a loop.
             if (
-                not self._in_use_by_queue
+                not self._in_use_by_player
                 and self._spotify_session_active
                 and (self._pending_play_media_task is None or self._pending_play_media_task.done())
             ):
@@ -926,9 +912,9 @@ class SpotifyConnectProvider(PluginProvider):
             await self._handle_volume_event(event.volume)
 
         # push metadata update to the active queue item's streamdetails
-        if self._in_use_by_queue:
-            self.mass.streams.update_stream_metadata(
-                self._in_use_by_queue,
+        if self._in_use_by_player:
+            self.mass.players.update_source_metadata(
+                self._in_use_by_player,
                 AUDIO_SOURCE_ID,
                 self.instance_id,
                 self._stream_metadata,
@@ -978,10 +964,10 @@ class SpotifyConnectProvider(PluginProvider):
         # options before the queue claim exists; on_source_selected pushes the cached
         # value once claimed
         self._last_playback_options = event.options
-        if not self._in_use_by_queue:
+        if not self._in_use_by_player:
             return
-        self.mass.streams.update_source_queue_options(
-            self._in_use_by_queue,
+        self.mass.players.update_source_options(
+            self._in_use_by_player,
             AUDIO_SOURCE_ID,
             self.instance_id,
             shuffle_enabled=event.options.shuffle,
@@ -1016,18 +1002,18 @@ class SpotifyConnectProvider(PluginProvider):
         if time.time() - self._last_session_active_time < INITIAL_VOLUME_GRACE_S:
             self.logger.debug("Ignoring initial volume_changed event after session active")
             return
-        if not self._in_use_by_queue:
+        if not self._in_use_by_player:
             return
         previous_volume = self._last_volume_sent
         self._last_volume_sent = volume
         try:
-            await self.mass.players.cmd_volume_set(self._in_use_by_queue, volume)
+            await self.mass.players.cmd_volume_set(self._in_use_by_player, volume)
         except Exception as err:
             # Volume sync is best-effort: the player may not support volume, or the
             # command may fail. Restore the cached value so a retry isn't wrongly
             # deduped, and never let it bubble up and drop the events loop.
             self._last_volume_sent = previous_volume
-            self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
+            self.logger.debug("Could not set volume on %s: %s", self._in_use_by_player, err)
 
     async def _sync_player_volume_to_spotify(self, player_id: str) -> None:
         """
