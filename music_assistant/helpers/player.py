@@ -1,16 +1,6 @@
 """Helpers for player behavior."""
 
-from typing import TYPE_CHECKING
-
-from music_assistant_models.enums import PlayerType, ProviderFeature
-from music_assistant_models.media_items import AudioSource
-
-from music_assistant.models.plugin import PluginProvider
-
-if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
-
-    from music_assistant.mass import MusicAssistant
+from music_assistant_models.enums import PlayerType
 
 _DEFAULT_ICONS_BY_PROVIDER = {
     "airplay": "airplay",
@@ -84,39 +74,3 @@ def get_default_player_icon(
     if provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain):
         return provider_icon
     return "speaker"
-
-
-def get_queue_audio_source(
-    mass: MusicAssistant, queue: PlayerQueue | None
-) -> tuple[AudioSource, PluginProvider] | None:
-    """
-    Return the AudioSource current on the given queue and its owning PluginProvider.
-
-    Returns None when the queue's current item is not a MediaType.AUDIO_SOURCE
-    or when the owning plugin provider is no longer available.
-
-    :param mass: The MusicAssistant instance.
-    :param queue: The queue whose current item to inspect (None allowed).
-    """
-    if queue is None:
-        return None
-    current_item = queue.current_item
-    if current_item is None or current_item.media_item is None:
-        return None
-    media_item = current_item.media_item
-    # isinstance check defends against a non-AudioSource subclass that
-    # somehow has media_type=AUDIO_SOURCE set (mutated or constructed wrong)
-    # — the media_type guard alone would let it through and crash later.
-    if not isinstance(media_item, AudioSource):
-        return None
-    provider = mass.get_provider(media_item.provider)
-    if not isinstance(provider, PluginProvider):
-        return None
-    # Belt-and-suspenders: a queue item carrying media_type=AUDIO_SOURCE
-    # can only have come from a provider that declared the feature, but
-    # a feature flag flipped off at runtime (provider reload, config
-    # change) would leave on_source_control / on_volume_change raising
-    # NotImplementedError. Skip cleanly.
-    if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
-        return None
-    return media_item, provider

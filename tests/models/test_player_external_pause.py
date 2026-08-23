@@ -23,6 +23,7 @@ def mock_mass() -> MagicMock:
         side_effect=lambda _player_id, _key, default=None: default
     )
     mass.player_queues.get = MagicMock(return_value=None)
+    mass.players.get_audio_source_session = MagicMock(return_value=None)
     mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _player_id, volume: volume)
     return mass
 

@@ -61,6 +61,7 @@ from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
@@ -208,6 +209,11 @@ class SpotifyProvider(MusicProvider):
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
         return features
+
+    @property
+    def account_id(self) -> str | None:
+        """Return the Spotify user id of the logged-in account, if known."""
+        return str(self._sp_user["id"]) if self._sp_user else None
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -950,6 +956,10 @@ class SpotifyProvider(MusicProvider):
             )
             if country := userinfo.get("country"):
                 self.mass.metadata.set_default_preferred_language(country)
+            if self.get_setup_value(CONF_ACCOUNT_ID) != userinfo["id"]:
+                # instances configured before the account was recorded fill it in here,
+                # so the setup flow can spot a duplicate account without loading them
+                self._update_setup_data(CONF_ACCOUNT_ID, userinfo["id"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
         return auth_info
 

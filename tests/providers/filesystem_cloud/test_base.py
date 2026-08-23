@@ -74,6 +74,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
     provider.config.get_value = MagicMock(return_value=False)
     provider.mass = MagicMock()
     provider.mass.streams.base_url = BASE_URL
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     provider.tree = TREE if tree is None else tree
     provider.file_data = FILE_DATA
     provider.fail_list = set()
