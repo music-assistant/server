@@ -217,7 +217,9 @@ class SoloistBackend(SpotifyConnectBackend):
         # Soloist decodes internally and never exposes the source codec or
         # quality, so this capture format doubles as the display format: MA's
         # input really is 32-bit PCM (24-bit lossless fits losslessly), while
-        # Spotify's upstream quality stays unknowable either way.
+        # Spotify's upstream quality stays unknowable either way. The advertised
+        # format also decides the internal PCM depth and the ffmpeg-free
+        # passthrough for an AudioSource, so it has to stay what arrives.
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
