@@ -249,30 +249,31 @@ def overlay_active(queue: PlayerQueue) -> bool:
 
 class _RealtimeTailHold:
     """
-    Grow a fade-out holdback for a realtime source out of its banked surplus.
+    Grow a fade-out holdback for a realtime source without starving the player.
 
     A realtime source delivers barely above playback pace, so a fixed holdback
-    would starve the player at the start of a track. What can be withheld safely
-    is the surplus the source has delivered beyond the wall clock — which is also
-    exactly the audio a boundary can spend on a fade without the player ever
-    missing a byte. The window therefore starts at nothing and grows with the
-    source's overpace; once the source is done, the rest is resident and the
-    full window is available.
+    would starve the player. The only audio that may be withheld is what the
+    stream has received beyond the wall clock plus a safety reserve - that is
+    audio the player provably does not need to keep rendering in time - and
+    only half of that, so the player's own lead keeps growing too. Once the
+    source is done, the rest is resident and the full window is available.
     """
+
+    # the player's supply must stay at least this far ahead of the wall clock
+    _LEAD_RESERVE_S = 3.0
 
     def __init__(self, pcm_format: AudioFormat, audio_buffer: AudioBuffer | None) -> None:
         """
         Initialize the tracker for one track's stream.
 
         :param pcm_format: PCM format of the stream's chunks.
-        :param audio_buffer: The track's source buffer, if any; its resident audio
-            counts toward the surplus and its EOF releases the full window.
+        :param audio_buffer: The track's source buffer, if any; its EOF releases
+            the full window.
         """
         self._pcm_format = pcm_format
         self._audio_buffer = audio_buffer
         self._started: float | None = None
-        self._content_bytes = 0
-        self._resident_at_anchor = 0.0
+        self._received_bytes = 0
 
     def note_bytes(self, count: int) -> None:
         """
@@ -282,12 +283,7 @@ class _RealtimeTailHold:
         """
         if self._started is None:
             self._started = asyncio.get_event_loop().time()
-            # what the buffer already held is not new surplus: counting it would
-            # snap the hold to a lump the player pays for as an immediate stall
-            self._resident_at_anchor = (
-                self._audio_buffer.duration_available if self._audio_buffer is not None else 0.0
-            )
-        self._content_bytes += count
+        self._received_bytes += count
 
     def hold_target(self, max_bytes: int, frame_size: int) -> int:
         """
@@ -302,21 +298,10 @@ class _RealtimeTailHold:
         if audio_buffer is not None and audio_buffer.eof:
             # the source is done: everything left is resident, hold the full window
             return max_bytes
-        # net buffer change since the anchor: together with the bytes read, this
-        # is exactly what the source delivered since then, and delivery beyond
-        # the wall clock is the only audio that may be withheld
-        resident_delta = (
-            audio_buffer.duration_available - self._resident_at_anchor
-            if audio_buffer is not None
-            else 0.0
-        )
         elapsed = asyncio.get_event_loop().time() - self._started
-        surplus_seconds = (
-            self._content_bytes / self._pcm_format.pcm_sample_size + resident_delta - elapsed
-        )
-        # half the surplus: the other half keeps growing the player's lead, which
-        # is what absorbs the source's own delivery wobble mid-track
-        surplus_bytes = int(max(0.0, surplus_seconds) * self._pcm_format.pcm_sample_size) // 2
+        received_seconds = self._received_bytes / self._pcm_format.pcm_sample_size
+        spare_seconds = received_seconds - elapsed - self._LEAD_RESERVE_S
+        surplus_bytes = int(max(0.0, spare_seconds) * self._pcm_format.pcm_sample_size) // 2
         return min(max_bytes, surplus_bytes // frame_size * frame_size)
 
 
@@ -2033,6 +2018,8 @@ class StreamsAudio:
             exact_seek=exact_buffer_seek,
         ):
             total_chunks_received += 1
+            if tail_hold is not None:
+                tail_hold.note_bytes(len(chunk))
 
             if warmup_bytes < warmup_size:
                 # warmup: yield directly, don't buffer
@@ -2041,11 +2028,6 @@ class StreamsAudio:
                 bytes_written += len(chunk)
                 del chunk
                 continue
-
-            if tail_hold is not None:
-                # counted from warmup end on purpose: what the warmup banked
-                # stays with the player as its lead
-                tail_hold.note_bytes(len(chunk))
 
             if tail_hold is None and not holdback_armed:
                 holdback_armed = self._crossfade_holdback_allowed(
@@ -2645,6 +2627,8 @@ class StreamsAudio:
                             )
                             return
                         total_chunks_received += 1
+                        if tail_hold is not None:
+                            tail_hold.note_bytes(len(chunk))
                         if not first_chunk_received:
                             first_chunk_received = True
                             # inform the queue that the track is now loaded in the buffer
@@ -2670,11 +2654,6 @@ class StreamsAudio:
                             bytes_written += len(chunk)
                             del chunk
                             continue
-
-                        if tail_hold is not None:
-                            # counted from warmup end on purpose: what the warmup banked
-                            # stays with the player as its lead
-                            tail_hold.note_bytes(len(chunk))
 
                         if tail_hold is None and not last_fadeout_part and not holdback_armed:
                             holdback_armed = self._crossfade_holdback_allowed(

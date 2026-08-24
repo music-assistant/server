@@ -309,7 +309,7 @@ def test_holdback_never_arms_a_fixed_window_for_a_realtime_source() -> None:
 
 
 async def test_realtime_tail_hold_grows_with_the_banked_surplus() -> None:
-    """The holdback window covers exactly what the source delivered beyond the clock."""
+    """The holdback takes half of what arrived beyond the wall clock plus a reserve."""
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, duration_available=2.0)
@@ -318,20 +318,21 @@ async def test_realtime_tail_hold_grows_with_the_banked_surplus() -> None:
     # nothing arrived yet: nothing may be held
     assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
 
-    # 22s of content arrived; pretend ~4s of wall time passed since the first byte.
-    # The 2s the buffer held at the anchor is NOT surplus (it predates the anchor);
-    # 2s more arriving into the buffer since then is.
-    hold.note_bytes(22 * pcm_format.pcm_sample_size)
+    # 27s arrived in ~4s of wall time: 27 - 4 - 3 (reserve) = 20s is spare, half
+    # of which may be held (the rest keeps growing the player's lead)
+    hold.note_bytes(27 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
-    audio_buffer.duration_available = 4.0
     target = hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size)
-    # surplus = 22 (content) + 2 (buffer delta) - 4 (elapsed) = 20s; half of it may
-    # be held (the rest keeps growing the player's lead) => capped at the window
     assert target == 8 * pcm_format.pcm_sample_size
-    # a larger window is bounded by half the surplus, frame-aligned
     larger = hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
     assert larger % frame_size == 0
     assert int(9.5 * pcm_format.pcm_sample_size) < larger <= 10 * pcm_format.pcm_sample_size
+
+    # barely above realtime: within the reserve nothing may be held at all
+    fresh = _RealtimeTailHold(pcm_format, cast("Any", audio_buffer))
+    fresh.note_bytes(6 * pcm_format.pcm_sample_size)
+    fresh._started = asyncio.get_event_loop().time() - 4.0
+    assert fresh.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
 
     # once the source is done, the rest is resident: full window regardless
     audio_buffer.eof = True
