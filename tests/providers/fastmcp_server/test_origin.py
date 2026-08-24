@@ -192,7 +192,8 @@ def test_request_origin_allowed_via_allowlist(monkeypatch: pytest.MonkeyPatch) -
 def test_request_origin_accepts_ingress_forwarded_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ingress request whose Origin matches X-Forwarded-Host is accepted.
+    """
+    Ingress request whose Origin matches X-Forwarded-Host is accepted.
 
     Reproduces the HA add-on case where the user opens the Connect Wizard at
     ``https://<ha>/<slug>/…`` and the browser sends ``Origin: https://<ha>``,
@@ -255,7 +256,8 @@ def test_request_origin_no_forward_header_rejected(
 def test_request_origin_missing_proto_falls_back_to_transport_scheme(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When ``X-Forwarded-Proto`` is absent, the aiohttp ``scheme`` fills in.
+    """
+    When ``X-Forwarded-Proto`` is absent, the aiohttp ``scheme`` fills in.
 
     Inside an HA add-on the transport scheme is plain ``http`` because the
     container is reached over the docker network. A proxy that forwards the
@@ -387,7 +389,8 @@ def test_build_protected_resource_metadata_full() -> None:
 
 
 async def test_mount_well_known_with_dynamic_scopes_refreshes() -> None:
-    """When scopes_supported is a callable, the body refreshes on each request.
+    """
+    When scopes_supported is a callable, the body refreshes on each request.
 
     Permission hot-swap mutates the closed-over set in MCPServerRuntime;
     the well-known endpoint must reflect the change without a runtime rebuild.

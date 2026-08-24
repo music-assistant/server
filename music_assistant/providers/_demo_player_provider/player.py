@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerOptionValueType, PlayerSource
 
@@ -28,7 +28,10 @@ class DemoPlayer(Player):
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
+            PlayerFeature.SET_MEMBERS,
         }
+        # demo players can be (sync) grouped with other players of this provider
+        self._attr_can_group_with = {provider.instance_id}
         self._set_attributes()
 
     async def on_config_updated(self) -> None:
@@ -84,11 +87,7 @@ class DemoPlayer(Player):
             ),
         ]
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         # OPTIONAL
         # this method is optional and should be implemented if you need player specific
@@ -322,6 +321,23 @@ class DemoPlayer(Player):
         # OPTIONAL - required only if you specified PlayerFeature.SET_MEMBERS
         # This method is optional and should be implemented if the player supports
         # syncing/grouping with other players.
+        # This demo keeps a simple in-memory member list: the leader tracks its
+        # group_members and each member's synced_to is then derived automatically by
+        # the base Player from the leader's list. A real provider would also issue the
+        # native sync command to the device here.
+        members = dict.fromkeys(self._attr_group_members)
+        for member_id in player_ids_to_add or []:
+            members[member_id] = None
+        for member_id in player_ids_to_remove or []:
+            members.pop(member_id, None)
+        other_member_ids = [pid for pid in members if pid != self.player_id]
+        # the leader is always the first member while the group is non-empty
+        self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
+        self.update_state()
+        # refresh affected members so their derived synced_to / can_group_with recompute
+        for member_id in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
+            if (member := self.mass.players.get_player(member_id)) is not None:
+                member.update_state()
 
     async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
         """Handle SET_OPTION command on the player."""

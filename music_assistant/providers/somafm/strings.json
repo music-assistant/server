@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "quality": {
+      "label": "Stream Quality",
+      "options": {
+        "highest": "Highest",
+        "high": "High",
+        "low": "Low"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Listen to SomaFM. Over 30 channels of commercial-free, human-curated radio programming focusing on non-mainstream music."
+  }
+}

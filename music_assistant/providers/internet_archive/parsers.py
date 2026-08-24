@@ -59,7 +59,7 @@ def is_likely_album(doc: dict[str, Any]) -> bool:
             file_count = len(doc["files"]) if isinstance(doc["files"], list) else 0
             if file_count > 3:  # More than just 1-2 audio files + derivatives
                 return True
-        except (TypeError, KeyError):
+        except TypeError, KeyError:
             pass
 
     # Use title keywords to identify likely albums vs singles

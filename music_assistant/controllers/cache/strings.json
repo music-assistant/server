@@ -1,0 +1,20 @@
+{
+  "config_entries": {
+    "clear_cache": {
+      "label": "Clear cache",
+      "description": "Reset/clear all items in the cache. "
+    }
+  },
+  "config_actions": {
+    "clear_cache": {
+      "result": "The cache has been cleared"
+    }
+  },
+  "background_task": {
+    "cache_database_cleanup": "Cache database cleanup"
+  },
+  "manifest": {
+    "name": "Cache",
+    "description": "Configuration of the core module that handles caching of data across the application"
+  }
+}

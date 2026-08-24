@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "nts",
-  "stage": "beta",
+  "stage": "stable",
   "name": "NTS Radio",
   "description": "Stream NTS Radio's live channels and Infinite Mixtapes — independent, eclectic radio broadcast from over 50 cities around the globe, live 24/7.",
   "codeowners": ["@mike-sheppard"],

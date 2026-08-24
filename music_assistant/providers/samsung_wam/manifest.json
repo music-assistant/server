@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "samsung_wam",
+  "stage": "beta",
   "name": "Samsung WAM",
   "description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "codeowners": ["@oliver-stevens"],

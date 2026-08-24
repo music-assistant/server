@@ -1,0 +1,119 @@
+{
+  "config_entries": {
+    "mode": {
+      "label": "Party Mode",
+      "description": "How the party audio is played. In venue mode an existing player plays the music out loud for everyone in the room. In remote mode every guest listens on their own device (silent-disco style).",
+      "options": {
+        "venue": "Venue (play on a real speaker)",
+        "remote": "Remote (guests listen on their own device)"
+      }
+    },
+    "player": {
+      "label": "Party Player",
+      "description": "Select which player/queue is attached to the party dashboard. When set to auto, the first active player will be used.",
+      "options": {
+        "__auto__": "Auto (last active player)"
+      }
+    },
+    "party_duration": {
+      "label": "Party Duration (hours)",
+      "description": "How long (in hours) a generated guest join link/QR code stays valid. Changing this only affects links created after the change - it won't extend one that's already active."
+    },
+    "party_name": {
+      "label": "Party Name",
+      "description": "Custom name/title for the party, displayed in the party dashboard. Leave blank to not show a text at all."
+    },
+    "enable_guest_access": {
+      "label": "Enable Guest Access via QR Code"
+    },
+    "guest_disabled_note": {
+      "label": "Ready to get the party started? Enable guest access and let your friends add songs by scanning a QR code!"
+    },
+    "guest_enabled_note": {
+      "label": "Guest mode is enabled. Guests will be able to join your party by scanning the QR code (which automatically expires after 8 hours unless configured otherwise). Switch the toggle off to end the party and withdraw guest access."
+    },
+    "qr_text": {
+      "label": "QR Code Text",
+      "description": "Custom text to display alongside the QR code. Leave blank to not show a text at all."
+    },
+    "hide_back_button": {
+      "label": "Hide Back Button in Fullscreen Mode",
+      "description": "WARNING: Enabling this option will hide all regular navigation elements in fullscreen mode. You will need to use browser controls (e.g. Alt+Left or the browser back button) to navigate back to Music Assistant."
+    },
+    "show_progress_bar": {
+      "label": "Show Progress Bar for the current playing song",
+      "description": "When enabled, a progress bar will be displayed on the current playing song in the track list, visually indicating the progress of the currently playing song. "
+    },
+    "karaoke_mode": {
+      "label": "Karaoke Mode",
+      "description": "When enabled, lyrics are displayed prominently in the center of the screen with the track list minimized to current and next song at the bottom."
+    },
+    "highlight_ahead": {
+      "label": "Highlight Lyrics Ahead of Time",
+      "description": "When enabled, the lyric line highlight transition finishes exactly when the line's timestamp arrives, giving a smooth anticipation effect. When disabled, the transition starts at the timestamp instead."
+    },
+    "anti_burn_in": {
+      "label": "Enable Anti Burn-in",
+      "description": "Periodically swap the QR code and track list sides to prevent burn-in on OLED or plasma displays. Sides swap every 10 minutes."
+    },
+    "enable_rate_limiting": {
+      "label": "Enable Rate Limiting",
+      "description": "Enable token-based rate limiting to prevent guests from overusing features. When disabled, guests have unlimited uses (subject to feature toggles below)."
+    },
+    "enable_add_queue": {
+      "label": "Allow Add to Queue",
+      "description": "Allow guests to add songs to the end of the queue. When disabled, guests cannot add songs to the queue at all."
+    },
+    "prevent_duplicate_tracks": {
+      "label": "Prevent Duplicate Tracks",
+      "description": "Prevent guests from adding a track that is already in the queue. When enabled, duplicate track requests will be rejected."
+    },
+    "add_queue_limit": {
+      "label": "Add to Queue Token Limit",
+      "description": "Maximum number of 'Add to Queue' actions a guest can perform before tokens are refilled (based on refill rate below)."
+    },
+    "add_queue_refill_minutes": {
+      "label": "Add to Queue Refill Rate (minutes)",
+      "description": "How many minutes it takes for one 'Add to Queue' token to refill. This controls how often guests can add songs."
+    },
+    "enable_boost": {
+      "label": "Allow Boost",
+      "description": "Allow guests to boost songs to play next (jump the queue). When disabled, guests can only add songs to the end of the queue."
+    },
+    "boost_limit": {
+      "label": "Boost Token Limit",
+      "description": "Maximum number of 'Boost' actions a guest can perform before tokens are refilled (based on refill rate below)."
+    },
+    "boost_refill_minutes": {
+      "label": "Boost Refill Rate (minutes)",
+      "description": "How many minutes it takes for one 'Boost' token to refill. This controls how often guests can skip the queue."
+    },
+    "enable_skip_song": {
+      "label": "Allow Skip Song",
+      "description": "Allow guests to skip the currently playing song. When disabled, guests cannot skip songs at all."
+    },
+    "skip_song_limit": {
+      "label": "Skip Song Token Limit",
+      "description": "Maximum number of 'Skip Song' actions a guest can perform before tokens are refilled (based on refill rate below)."
+    },
+    "skip_song_refill_minutes": {
+      "label": "Skip Song Refill Rate (minutes)",
+      "description": "How many minutes it takes for one 'Skip Song' token to refill. This controls how often guests can skip the currently playing song."
+    },
+    "request_badge_color": {
+      "label": "Request Badge Color",
+      "description": "Color for the 'Request' badge shown on guest-added queue items."
+    },
+    "boost_badge_color": {
+      "label": "Boost Badge Color",
+      "description": "Color for the 'Boost' badge shown on priority guest requests."
+    }
+  },
+  "config_categories": {
+    "guest_features": "Guest Features",
+    "karaoke": "Karaoke"
+  },
+  "manifest": {
+    "description": "Enable guest access with a shareable URL for party, allowing guests to add songs to the queue with rate limiting."
+  }
+}

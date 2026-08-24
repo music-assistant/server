@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.media_items import UniqueList
 
 from .provider import Provider
 
@@ -12,14 +13,19 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         Album,
         Artist,
+        BrowseFolder,
+        ItemMapping,
         MediaItemMetadata,
+        MediaItemType,
+        Playlist,
         RecommendationFolder,
         Track,
     )
 
 
 class MetadataProvider(Provider):
-    """Base representation of a Metadata Provider (controller).
+    """
+    Base representation of a Metadata Provider (controller).
 
     Metadata Provider implementations should inherit from this base model.
     """
@@ -44,6 +50,12 @@ class MetadataProvider(Provider):
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
+            raise NotImplementedError
+        return None
+
+    async def get_playlist_metadata(self, playlist: Playlist) -> MediaItemMetadata | None:
+        """Retrieve metadata for a playlist on this Metadata provider."""
+        if ProviderFeature.PLAYLIST_METADATA in self.supported_features:
             raise NotImplementedError
         return None
 
@@ -73,13 +85,58 @@ class MetadataProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Retrieve a list of recommendation folders from this metadata provider.
+        Get this provider's available recommendation rows, without items.
+
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
 
         Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        Live backend fetches belong here. Will only be called if
+        ProviderFeature.RECOMMENDATIONS is declared.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return UniqueList()
+
+    async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
+        """
+        Retrieve a list of top tracks for the given artist.
+
+        Will only be called if ProviderFeature.ARTIST_TOPTRACKS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top tracks to return.
+        """
+        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_artist_topalbums(self, artist: Artist, limit: int = 25) -> list[Album]:
+        """
+        Retrieve a list of top albums for the given artist.
+
+        Will only be called if ProviderFeature.ARTIST_TOPALBUMS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top albums to return.
+        """
+        if ProviderFeature.ARTIST_TOPALBUMS in self.supported_features:
             raise NotImplementedError
         return []
 

@@ -1,0 +1,29 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "[%key:common::config_entries::email::label%]",
+      "description": "Your MusicMe account email address."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Your MusicMe account password."
+    }
+  },
+  "media": {
+    "folder": {
+      "featured": { "name": "Featured" },
+      "new_releases": { "name": "New releases" },
+      "top_artists": { "name": "Top artists" },
+      "themed_radios": { "name": "Themed radios" }
+    },
+    "recommendations": {
+      "featured": { "name": "Featured" },
+      "new_releases": { "name": "New releases" },
+      "top_artists": { "name": "Top artists" },
+      "radios": { "name": "Radios" }
+    }
+  },
+  "manifest": {
+    "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks."
+  }
+}

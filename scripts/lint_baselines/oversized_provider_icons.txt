@@ -1,0 +1,46 @@
+# Provider/controller icons that already exceeded their size budget when the check was introduced.
+# New icons must stay within budget (svg <= 5 KB, png <= 20 KB); shrink these and drop them from this list.
+# Regenerate with: uv run -m scripts.check_provider_icons --update-baseline
+music_assistant/providers/airplay/icon_monochrome.svg	1
+music_assistant/providers/alexa/icon.svg	1
+music_assistant/providers/alexa/icon_monochrome.svg	1
+music_assistant/providers/builtin/icon.svg	1
+music_assistant/providers/builtin/icon_monochrome.svg	1
+music_assistant/providers/coverartarchive/icon_monochrome.svg	1
+music_assistant/providers/digitally_incorporated/icon.svg	1
+music_assistant/providers/digitally_incorporated/icon_monochrome.svg	1
+music_assistant/providers/fanarttv/icon.svg	1
+music_assistant/providers/fanarttv/icon_monochrome.svg	1
+music_assistant/providers/filesystem_local/icon_monochrome.svg	1
+music_assistant/providers/filesystem_nfs/icon_monochrome.svg	1
+music_assistant/providers/filesystem_smb/icon_monochrome.svg	1
+music_assistant/providers/fully_kiosk/icon_monochrome.svg	1
+music_assistant/providers/gpodder/icon.svg	1
+music_assistant/providers/internet_archive/icon.svg	1
+music_assistant/providers/internet_archive/icon_monochrome.svg	1
+music_assistant/providers/itunes_podcasts/icon_monochrome.svg	1
+music_assistant/providers/listenbrainz_scrobble/icon.svg	1
+music_assistant/providers/lrclib/icon.svg	1
+music_assistant/providers/mpd/icon.svg	1
+music_assistant/providers/mpd/icon_monochrome.svg	1
+music_assistant/providers/musicbrainz/icon_monochrome.svg	1
+music_assistant/providers/musiccast/icon_monochrome.svg	1
+music_assistant/providers/nicovideo/icon_monochrome.svg	1
+music_assistant/providers/opensubsonic/icon_monochrome.svg	1
+music_assistant/providers/pandora/icon_monochrome.svg	1
+music_assistant/providers/phishin/icon_monochrome.svg	1
+music_assistant/providers/podcast_index/icon_monochrome.svg	1
+music_assistant/providers/podcastfeed/icon_monochrome.svg	1
+music_assistant/providers/radiobrowser/icon.svg	1
+music_assistant/providers/radiobrowser/icon_monochrome.svg	1
+music_assistant/providers/radioparadise/icon.svg	1
+music_assistant/providers/radioparadise/icon_monochrome.svg	1
+music_assistant/providers/roku_media_assistant/icon_monochrome.svg	1
+music_assistant/providers/subsonic_scrobble/icon_monochrome.svg	1
+music_assistant/providers/sync_group/icon.svg	1
+music_assistant/providers/sync_group/icon_monochrome.svg	1
+music_assistant/providers/theaudiodb/icon_monochrome.svg	1
+music_assistant/providers/universal_group/icon.svg	1
+music_assistant/providers/universal_group/icon_monochrome.svg	1
+music_assistant/providers/vban_receiver/icon_monochrome.svg	1
+music_assistant/providers/webdav/icon_monochrome.svg	1

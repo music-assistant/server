@@ -1,0 +1,15 @@
+{
+  "media": {
+    "folder": {
+      "live_channels": {
+        "name": "Live Channels"
+      },
+      "infinite_mixtapes": {
+        "name": "Infinite Mixtapes"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream NTS Radio's live channels and Infinite Mixtapes — independent, eclectic radio broadcast from over 50 cities around the globe, live 24/7."
+  }
+}

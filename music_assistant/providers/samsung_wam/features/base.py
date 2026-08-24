@@ -28,7 +28,8 @@ class WamProviderFeatureBase:
     """Base class for provider feature handlers."""
 
     def __init__(self, provider: SamsungWamProvider) -> None:
-        """Initialize the feature base with the parent provider instance.
+        """
+        Initialize the feature base with the parent provider instance.
 
         :param provider: The SamsungWamProvider instance.
         """
@@ -54,7 +55,8 @@ class WamPlayerFeatureBase:
     """Base class for player feature handlers."""
 
     def __init__(self, player: WamPlayer) -> None:
-        """Initialize the feature base with the parent player instance.
+        """
+        Initialize the feature base with the parent player instance.
 
         :param player: The WamPlayer instance.
         """
@@ -80,7 +82,8 @@ def retry_command(
     attempts: int = COMMAND_RETRY_ATTEMPTS,
     initial_backoff: float = COMMAND_RETRY_BACKOFF,
 ) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
-    """Decorate a player command to retry on temporary failures.
+    """
+    Decorate a player command to retry on temporary failures.
 
     :param attempts: Total number of attempts to make.
     :param initial_backoff: Initial wait time in seconds before retrying.

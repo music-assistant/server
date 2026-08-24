@@ -1,4 +1,5 @@
-"""JWT token helper for Music Assistant authentication.
+"""
+JWT token helper for Music Assistant authentication.
 
 Future OIDC Support:
 - Consuming external OIDC providers (Google, Keycloak, etc.): Can be added without
@@ -29,7 +30,8 @@ class JWTHelper:
     """Helper class for JWT token operations."""
 
     def __init__(self, secret_key: str) -> None:
-        """Initialize JWT helper.
+        """
+        Initialize JWT helper.
 
         :param secret_key: Secret key for signing JWTs.
         """
@@ -44,7 +46,8 @@ class JWTHelper:
         expires_at: datetime,
         is_long_lived: bool = False,
     ) -> str:
-        """Encode a JWT token for a user.
+        """
+        Encode a JWT token for a user.
 
         :param user: User object to create token for.
         :param token_id: Unique token identifier.
@@ -60,7 +63,7 @@ class JWTHelper:
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
             "username": user.username,
-            "role": user.role.value,
+            "role": user.role,
             "token_name": token_name,
             "is_long_lived": is_long_lived,
         }
@@ -68,7 +71,8 @@ class JWTHelper:
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
 
     def decode_token(self, token: str, verify_exp: bool = True) -> dict[str, Any]:
-        """Decode and verify a JWT token.
+        """
+        Decode and verify a JWT token.
 
         :param token: JWT token string to decode.
         :param verify_exp: Whether to verify token expiration.
@@ -85,14 +89,16 @@ class JWTHelper:
 
     @staticmethod
     def generate_secret_key() -> str:
-        """Generate a secure random secret key for JWT signing.
+        """
+        Generate a secure random secret key for JWT signing.
 
         :return: Base64-encoded 256-bit random key.
         """
         return secrets.token_urlsafe(32)  # 32 bytes = 256 bits
 
     def get_token_id(self, token: str) -> str | None:
-        """Extract token ID (jti) from JWT without full validation.
+        """
+        Extract token ID (jti) from JWT without full validation.
 
         :param token: JWT token string.
         :return: Token ID or None if invalid.

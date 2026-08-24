@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate release notes based on PRs between two tags.
+"""
+Generate release notes based on PRs between two tags.
 
 Reads configuration from .github/release-notes-config.yml for categorization and formatting.
 """
@@ -8,15 +9,18 @@ import os
 import re
 import sys
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import yaml
 from github import Github, GithubException
 
 
-def load_config():
+def load_config() -> dict[str, Any]:
     """Load the release-notes-config.yml configuration."""
     config_path = ".github/release-notes-config.yml"
-    if not os.path.exists(config_path):
+    if not Path(config_path).exists():
         print(f"Error: {config_path} not found")  # noqa: T201
         sys.exit(1)
 
@@ -24,7 +28,7 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def get_tag_date(repo, tag_name):
+def get_tag_date(repo, tag_name) -> datetime | None:
     """Get the creation date of a tag (supports both annotated and lightweight tags)."""
     try:
         ref = repo.get_git_ref(f"tags/{tag_name}")
@@ -39,28 +43,64 @@ def get_tag_date(repo, tag_name):
         return None
 
 
-def get_prs_between_tags(repo, previous_tag, current_branch):
-    """Get all merged PRs between the previous tag and current HEAD."""
-    tag_date = None
+def get_released_pr_numbers(repo, merge_base_sha, previous_tag) -> set[int]:
+    """Get PR numbers that already shipped on the previous tag's (diverged) branch."""
+    merge_pattern = re.compile(r"Merge pull request #(\d+)")
+    squash_pattern = re.compile(r"\(#(\d+)\)\s*$")
+    released = set()
+    comparison = repo.compare(merge_base_sha, previous_tag)
+    for commit in comparison.commits:
+        # Only the first line (squash/merge commit title) identifies the released
+        # PR; the body may reference unrelated PRs/issues.
+        title = commit.commit.message.split("\n", 1)[0]
+        match = merge_pattern.search(title) or squash_pattern.search(title)
+        if match:
+            released.add(int(match.group(1)))
+    return released
+
+
+def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
+    """Get all merged PRs between the previous tag and exact source commit."""
+    pr_pattern = re.compile(r"#(\d+)")
+    merge_pattern = re.compile(r"Merge pull request #(\d+)")
+
+    cutoff_date = None
+    released_pr_numbers = set()
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
         # Get the first commit on the branch
-        commits = list(repo.get_commits(sha=current_branch))
+        commits = list(repo.get_commits(sha=head_sha))
         # Limit to last 100 commits to avoid going too far back
         commits = commits[:100]
     else:
-        print(f"Finding PRs between {previous_tag} and {current_branch}")  # noqa: T201
-        tag_date = get_tag_date(repo, previous_tag)
-        if tag_date:
-            print(f"Previous tag date: {tag_date}")  # noqa: T201
-        comparison = repo.compare(previous_tag, current_branch)
+        print(f"Finding PRs between {previous_tag} and {head_sha}")  # noqa: T201
+        comparison = repo.compare(previous_tag, head_sha)
         commits = comparison.commits
         print(f"Found {comparison.total_commits} commits")  # noqa: T201
+        if comparison.behind_by:
+            # The previous tag lives on a diverged branch: a minor release (e.g. 2.9.0)
+            # compares against the latest patch tag (2.8.9) on the old stable branch.
+            # That tag's date lies *after* most of this release's content was merged to
+            # dev, so cut off at the merge base (the old branch point) instead, and
+            # drop PRs that already shipped in the patch releases on the old branch.
+            merge_base = comparison.merge_base_commit
+            cutoff_date = merge_base.commit.committer.date
+            print(  # noqa: T201
+                f"Previous tag {previous_tag} has diverged from {head_sha}, "
+                f"using merge base date {cutoff_date} as cutoff"
+            )
+            released_pr_numbers = get_released_pr_numbers(repo, merge_base.sha, previous_tag)
+            print(  # noqa: T201
+                f"Found {len(released_pr_numbers)} PRs already released "
+                f"in patch releases up to {previous_tag}"
+            )
+        else:
+            cutoff_date = get_tag_date(repo, previous_tag)
+            if cutoff_date:
+                print(f"Previous tag date: {cutoff_date}")  # noqa: T201
 
     # Extract PR numbers from commit messages
     pr_numbers = set()
-    pr_pattern = re.compile(r"#(\d+)")
-    merge_pattern = re.compile(r"Merge pull request #(\d+)")
 
     for commit in commits:
         message = commit.commit.message
@@ -75,17 +115,24 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 
-    # Fetch the actual PR objects, filtering out PRs merged before the previous tag
+    # Fetch the actual PR objects, filtering out PRs merged before the cutoff date
+    # and PRs that already shipped in patch releases on the previous (stable) branch
     prs = []
     skipped = 0
     for pr_num in sorted(pr_numbers):
+        if pr_num in released_pr_numbers:
+            skipped += 1
+            print(  # noqa: T201
+                f"  Skipping PR #{pr_num}: already released in a patch release"
+            )
+            continue
         try:
             pr = repo.get_pull(pr_num)
             if pr.merged:
-                if tag_date and pr.merged_at and pr.merged_at <= tag_date:
+                if cutoff_date and pr.merged_at and pr.merged_at <= cutoff_date:
                     skipped += 1
                     print(  # noqa: T201
-                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before tag date {tag_date}"
+                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before cutoff {cutoff_date}"
                     )
                     continue
                 prs.append(pr)
@@ -93,12 +140,12 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
             print(f"Warning: Could not fetch PR #{pr_num}: {e}")  # noqa: T201
 
     if skipped:
-        print(f"Filtered out {skipped} PRs merged before {previous_tag}")  # noqa: T201
+        print(f"Filtered out {skipped} PRs already released before/in {previous_tag}")  # noqa: T201
 
     return prs
 
 
-def categorize_prs(prs, config):
+def categorize_prs(prs, config) -> tuple[dict[str, list[Any]], list[Any]]:
     """Categorize PRs based on their labels using the config."""
     categories = defaultdict(list)
     uncategorized = []
@@ -142,7 +189,7 @@ def categorize_prs(prs, config):
     return categories, uncategorized
 
 
-def get_contributors(prs, config):
+def get_contributors(prs, config) -> list[str]:
     """Extract unique contributors from PRs."""
     excluded = set(config.get("exclude-contributors", []))
     contributors = set()
@@ -155,7 +202,7 @@ def get_contributors(prs, config):
     return sorted(contributors)
 
 
-def format_change_line(pr, config):
+def format_change_line(pr, config) -> str:
     """Format a single PR line using the change-template from config."""
     template = config.get("change-template", "- $TITLE (by @$AUTHOR in #$NUMBER)")
 
@@ -174,8 +221,9 @@ def format_change_line(pr, config):
     return result.replace("$URL", pr.html_url)
 
 
-def extract_frontend_changes(prs):
-    """Extract frontend changes from frontend update PRs.
+def extract_frontend_changes(prs) -> tuple[list[str], set[str]]:
+    """
+    Extract frontend changes from frontend update PRs.
 
     Returns tuple of (frontend_changes_list, frontend_contributors_set)
     """
@@ -230,7 +278,7 @@ def generate_release_notes(  # noqa: PLR0915
     previous_tag,
     frontend_changes=None,
     important_notes=None,
-):
+) -> str:
     """Generate the formatted release notes."""
     lines = []
 
@@ -298,8 +346,7 @@ def generate_release_notes(  # noqa: PLR0915
     if frontend_changes and len(frontend_changes) > 0:
         lines.append("### 🎨 Frontend Changes")
         lines.append("")
-        for change in frontend_changes:
-            lines.append(change)
+        lines.extend(frontend_changes)
         lines.append("")
 
     # Add uncategorized PRs if any
@@ -351,24 +398,24 @@ def generate_release_notes(  # noqa: PLR0915
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     """Generate release notes for the target version."""
     # Get environment variables
     github_token = os.environ.get("GITHUB_TOKEN")
     version = os.environ.get("VERSION")
     previous_tag = os.environ.get("PREVIOUS_TAG", "")
-    branch = os.environ.get("BRANCH")
+    head_sha = os.environ.get("HEAD_SHA")
     channel = os.environ.get("CHANNEL")
     repo_name = os.environ.get("GITHUB_REPOSITORY")
     important_notes = os.environ.get("IMPORTANT_NOTES", "")
 
-    if not all([github_token, version, branch, channel, repo_name]):
+    if not all([github_token, version, head_sha, channel, repo_name]):
         print("Error: Missing required environment variables")  # noqa: T201
         sys.exit(1)
 
     print(f"Generating release notes for {version} ({channel} channel)")  # noqa: T201
     print(f"Repository: {repo_name}")  # noqa: T201
-    print(f"Branch: {branch}")  # noqa: T201
+    print(f"Source SHA: {head_sha}")  # noqa: T201
     print(f"Previous tag: {previous_tag or 'None (first release)'}")  # noqa: T201
 
     # Initialize GitHub API
@@ -380,7 +427,7 @@ def main():
     print(f"Loaded config with {len(config.get('categories', []))} categories")  # noqa: T201
 
     # Get PRs between tags
-    prs = get_prs_between_tags(repo, previous_tag, branch)
+    prs = get_prs_between_tags(repo, previous_tag, head_sha)
     print(f"Processing {len(prs)} merged PRs")  # noqa: T201
 
     if not prs:

@@ -1,4 +1,5 @@
-"""Smoke tests for the optional 1024-dim CLAP usearch index helper.
+"""
+Smoke tests for the optional 1024-dim CLAP usearch index helper.
 
 Round-trip coverage: deterministic labels, add/contains/get, and
 persistence to the sonic_similarity_clap.usearch filename stem under
@@ -7,9 +8,13 @@ the configured storage_path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
+from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -79,6 +84,28 @@ async def test_round_trip_persists_under_sonic_similarity_stem(
 
 
 @pytest.mark.asyncio
+async def test_saved_index_reloads_with_its_embeddings(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """A saved index comes back intact through a fresh instance."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    vectors = {f"track{n}": _unit_vec(n) for n in range(20)}
+    for item_id, vec in vectors.items():
+        await idx.add("spotify", item_id, vec)
+    await idx.save()
+
+    reloaded = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await reloaded.load()
+
+    assert len(reloaded) == len(vectors)
+    for item_id, vec in vectors.items():
+        stored = reloaded.get_embedding("spotify", item_id)
+        assert stored is not None
+        np.testing.assert_allclose(stored, vec, atol=1e-3)
+
+
+@pytest.mark.asyncio
 async def test_get_embedding_by_item_id_missing_returns_none(
     tmp_path: Path, logger: logging.Logger
 ) -> None:
@@ -86,6 +113,26 @@ async def test_get_embedding_by_item_id_missing_returns_none(
     idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
     await idx.load()
     assert idx.get_embedding_by_item_id("not_in_index") is None
+
+
+@pytest.mark.asyncio
+async def test_get_embedding_o1_lookup_matches_provider(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """get_embedding returns the vector for the right provider and None otherwise."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    vec = _unit_vec(7)
+    await idx.add("spotify", "track_xyz", vec)
+
+    stored = idx.get_embedding("spotify", "track_xyz")
+    assert stored is not None
+    assert stored.shape == (CLAP_EMBEDDING_DIM,)
+    np.testing.assert_allclose(stored, vec, atol=1e-3)
+
+    # Same item_id under a different provider derives a different label → miss.
+    assert idx.get_embedding("tidal", "track_xyz") is None
+    assert idx.get_embedding("spotify", "not_in_index") is None
 
 
 @pytest.mark.asyncio
@@ -113,7 +160,7 @@ async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
     await idx.add("spotify", "track1", _unit_vec(1))
 
     # Force the index save to fail after the keys file has already been written.
-    def _boom(_path: str) -> None:
+    def _boom() -> Any:
         raise RuntimeError("disk full mid-save")
 
     monkeypatch.setattr(idx._index, "save", _boom)
@@ -126,6 +173,114 @@ async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
     assert keys_path.exists()
     assert "track1" in keys_path.read_text(encoding="utf-8")
     assert not (tmp_path / "sonic_similarity_clap_keys.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_a_save_whose_task_was_cancelled(
+    tmp_path: Path,
+    logger: logging.Logger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server shutdown cancels the save task; its worker keeps writing and must finish alone."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.add("spotify", "track1", _unit_vec(1))
+
+    real_save = idx._index.save
+    in_save = threading.Event()
+    release = threading.Event()
+    writers_lock = threading.Lock()
+    writers = 0
+
+    def _slow_save() -> Any:
+        nonlocal writers
+        with writers_lock:
+            writers += 1
+        in_save.set()
+        # parked here rather than sleeping, so the assertion below can never
+        # be decided by how fast the machine happens to be
+        assert release.wait(10), "close() never let the save finish"
+        return real_save()
+
+    monkeypatch.setattr(idx._index, "save", _slow_save)
+
+    save_task = asyncio.create_task(idx.save())
+    assert await asyncio.to_thread(in_save.wait, 10)
+    save_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await save_task
+
+    # the unload that follows task cancellation on shutdown
+    close_task = asyncio.create_task(idx.close())
+
+    # an unguarded close would start writing here; the lock keeps it queued
+    # behind the worker still parked above
+    deadline = time.monotonic() + 0.25
+    while time.monotonic() < deadline and writers < 2:
+        await asyncio.sleep(0.01)
+    assert writers == 1
+
+    release.set()
+    await close_task
+
+    keys_path = tmp_path / "sonic_similarity_clap_keys.json"
+    assert "track1" in keys_path.read_text(encoding="utf-8")
+    assert idx._index is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_survives_inserts_from_the_rebuild_worker(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """A lookup on the event loop must not break while a rebuild inserts from its thread."""
+
+    class _StubIndex:
+        """Stand-in so the insert loop costs the map, not usearch."""
+
+        def __contains__(self, label: int) -> bool:
+            return False
+
+        def add(self, label: int, vec: np.ndarray) -> None:
+            """Accept the vector and discard it."""
+
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    idx._index = _StubIndex()
+    idx._reverse = {label: ("spotify", f"track{label}") for label in range(40_000)}
+
+    stop = threading.Event()
+    vec = _unit_vec(1)
+
+    def _insert_until_stopped() -> None:
+        for label in range(10_000_000, 10_050_000):
+            if stop.is_set():
+                return
+            idx._add_sync(label, vec, "spotify", f"new{label}")
+
+    worker = threading.Thread(target=_insert_until_stopped, daemon=True)
+    worker.start()
+    try:
+        for _ in range(20):
+            assert idx.get_embedding_by_item_id("absent_track") is None
+    finally:
+        stop.set()
+        worker.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_add_landing_after_release_leaves_no_phantom_entry(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """An insert that reaches the worker after teardown must not record a key without a vector."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.close()
+
+    # the worker an in-flight add() would have reached once the index was released
+    applied = idx._add_sync(derive_label("spotify", "late"), _unit_vec(1), "spotify", "late")
+
+    assert applied is False
+    assert len(idx) == 0
+    assert not idx.contains("spotify", "late")
 
 
 @pytest.mark.asyncio

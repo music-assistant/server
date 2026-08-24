@@ -1,4 +1,5 @@
-"""Contract tests for ``provider.origins``.
+"""
+Contract tests for ``provider.origins``.
 
 Two contracts are pinned here:
 
@@ -34,7 +35,8 @@ def test_public_names_exist() -> None:
 
 
 def test_http_bridge_re_exports_legacy_names() -> None:
-    """Historical names on ``provider.http_bridge`` keep working for back-compat.
+    """
+    Historical names on ``provider.http_bridge`` keep working for back-compat.
 
     The attribute-defined ignores below are deliberate: the re-exports use
     underscore-prefixed aliases so mypy treats them as private. This test
@@ -62,7 +64,8 @@ def test_compute_origin_allowlist_includes_loopback() -> None:
 
 
 def test_compute_origin_allowlist_adds_both_schemes_on_ma_port() -> None:
-    """When MA runs on a non-default port, both http and https on that port are accepted.
+    """
+    When MA runs on a non-default port, both http and https on that port are accepted.
 
     Browsers serialize the port in Origin even for loopback connections, and
     a TLS-terminating reverse proxy in front of MA produces https origins

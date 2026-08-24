@@ -30,6 +30,7 @@ ITEM_KEY_PRIMARY_IMAGE_ITEM_ID = "PrimaryImageItemId"
 ITEM_KEY_GENRES = "Genres"
 
 USER_DATA_KEY_IS_FAVORITE = "IsFavorite"
+USER_DATA_KEY_LAST_PLAYED_DATE = "LastPlayedDate"
 
 AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"
@@ -49,6 +50,7 @@ TRACK_FIELDS = [
     "ImageTags",
     "DateCreated",
     "Genres",
+    "UserDataLastPlayedDate",
 ]
 
 ALBUM_FIELDS = [

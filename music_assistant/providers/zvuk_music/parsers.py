@@ -42,7 +42,8 @@ if TYPE_CHECKING:
 
 
 def _get_image_url(image: ZvukImage | None, size: int = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert Zvuk Image to full URL with guaranteed square dimensions.
+    """
+    Convert Zvuk Image to full URL with guaranteed square dimensions.
 
     :param image: Zvuk Image object.
     :param size: Image size in pixels (applied as both width and height).
@@ -70,7 +71,8 @@ def _get_image_url(image: ZvukImage | None, size: int = IMAGE_SIZE_LARGE) -> str
 
 
 def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpleArtist) -> Artist:
-    """Parse Zvuk artist object to MA Artist model.
+    """
+    Parse Zvuk artist object to MA Artist model.
 
     :param provider: The Zvuk Music provider instance.
     :param artist_obj: Zvuk artist or SimpleArtist object.
@@ -128,7 +130,8 @@ def parse_artist(provider: ZvukMusicProvider, artist_obj: ZvukArtist | ZvukSimpl
 
 
 def parse_album(provider: ZvukMusicProvider, release_obj: ZvukRelease | ZvukSimpleRelease) -> Album:
-    """Parse Zvuk release object to MA Album model.
+    """
+    Parse Zvuk release object to MA Album model.
 
     :param provider: The Zvuk Music provider instance.
     :param release_obj: Zvuk release or SimpleRelease object.
@@ -218,7 +221,8 @@ def parse_album(provider: ZvukMusicProvider, release_obj: ZvukRelease | ZvukSimp
 
 
 def parse_track(provider: ZvukMusicProvider, track_obj: ZvukTrack | ZvukSimpleTrack) -> Track:
-    """Parse Zvuk track object to MA Track model.
+    """
+    Parse Zvuk track object to MA Track model.
 
     :param provider: The Zvuk Music provider instance.
     :param track_obj: Zvuk track or SimpleTrack object.
@@ -301,7 +305,8 @@ def parse_track(provider: ZvukMusicProvider, track_obj: ZvukTrack | ZvukSimpleTr
 def parse_playlist(
     provider: ZvukMusicProvider, playlist_obj: ZvukPlaylist | ZvukSimplePlaylist
 ) -> Playlist:
-    """Parse Zvuk playlist object to MA Playlist model.
+    """
+    Parse Zvuk playlist object to MA Playlist model.
 
     :param provider: The Zvuk Music provider instance.
     :param playlist_obj: Zvuk playlist or SimplePlaylist object.

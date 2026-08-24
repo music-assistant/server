@@ -18,10 +18,12 @@ PHISH_ARTIST_ID: Final[str] = "phish"
 PHISH_MUSICBRAINZ_ID: Final[str] = "e01646f2-2a04-450d-8bf2-0d993082e058"
 PHISH_DISCOGS_ID: Final[str] = "252354"
 PHISH_TADB_ID: Final[str] = "112677"
+# The API serves a single artist and exposes no genre info, so use fixed genres
+PHISH_GENRES: Final[frozenset[str]] = frozenset({"Jam Band", "Progressive Rock", "Funk Rock"})
 
 # Fallback image for albums without artwork
 FALLBACK_ALBUM_IMAGE: Final[str] = (
-    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/refs/heads/main/docs/assets/icons/phish-logo.png"
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/refs/heads/main/public/assets/icons/phish-logo.png"
 )
 
 # API endpoints

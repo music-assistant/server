@@ -93,7 +93,7 @@ async def test_trigger_action_relays_entries(mounted_config: Any, mock_config_ta
             {"instance_id": "yandex_music", "action_key": "auth_qr"},
         )
     assert result.data.action_key == "auth_qr"
-    mock_config_targets.config.get_provider_config_entries.assert_awaited()
+    mock_config_targets.config.invoke_provider_config_action.assert_awaited()
 
 
 async def test_save_provider_bulk_persists(mounted_config: Any, mock_config_targets: Any) -> None:
@@ -120,8 +120,50 @@ async def test_secret_write_delegates_plaintext_and_never_logs_it(
     assert "sup3rsecret" not in caplog.text  # never logged
 
 
+def test_action_outcome_localizes_a_translation_key() -> None:
+    from unittest.mock import MagicMock
+
+    from music_assistant_models.config_entries import ConfigActionResult
+
+    from music_assistant.providers.fastmcp_server.tools.config import _action_outcome
+
+    mass = MagicMock()
+    # stand in for the resolver, echoing what it was asked to resolve
+    mass.translations.get_translation.side_effect = lambda key, owner=None, params=None: (
+        f"{key}|{owner}|{','.join(params or ())}"
+    )
+    result = ConfigActionResult(
+        translation_key="clear_cache.result", translation_owner="core.cache"
+    )
+
+    assert _action_outcome(mass, result) == {
+        "message": "config_actions.clear_cache.result|core.cache|"
+    }
+    # positional args reach the resolver so a templated message renders filled in
+    templated = ConfigActionResult(
+        translation_key="cleanup.result", translation_owner="core.cache", translation_args=[3]
+    )
+
+    assert _action_outcome(mass, templated) == {
+        "message": "config_actions.cleanup.result|core.cache|3"
+    }
+
+
+def test_action_outcome_reports_a_url_and_omits_absent_fields() -> None:
+    from unittest.mock import MagicMock
+
+    from music_assistant_models.config_entries import ConfigActionResult
+
+    from music_assistant.providers.fastmcp_server.tools.config import _action_outcome
+
+    result = ConfigActionResult(open_url="/mcp/v1/connect?bootstrap=jwt-xyz")
+
+    assert _action_outcome(MagicMock(), result) == {"open_url": "/mcp/v1/connect?bootstrap=jwt-xyz"}
+
+
 async def test_write_tools_use_interactive_timeout() -> None:
-    """Confirmation-gated writes must not use the 10s fast timeout.
+    """
+    Confirmation-gated writes must not use the 10s fast timeout.
 
     The elicitation round-trip + save+reload needs a human-scale window.
     Regression for a live timeout-mid-confirmation bug.

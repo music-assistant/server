@@ -1,0 +1,32 @@
+{
+  "config_entries": {
+    "content_type": {
+      "label": "Content type",
+      "description": "The type of content stored on this WebDAV server",
+      "options": {
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+      }
+    },
+    "url": {
+      "label": "WebDAV URL",
+      "description": "The base URL of your WebDAV server (e.g., https://example.com/webdav)"
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "Username for WebDAV authentication (leave empty for no authentication)"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Password for WebDAV authentication"
+    },
+    "verify_ssl": {
+      "label": "Verify SSL certificate",
+      "description": "Verify SSL certificates when connecting to HTTPS WebDAV servers"
+    }
+  },
+  "manifest": {
+    "description": "Stream music and audiobooks stored on any WebDAV-compatible server"
+  }
+}

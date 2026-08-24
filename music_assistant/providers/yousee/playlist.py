@@ -16,14 +16,14 @@ if TYPE_CHECKING:
 class YouSeePlaylistManager:
     """Manages YouSee Musik playlist operations."""
 
-    def __init__(self, provider: "YouSeeMusikProvider"):
+    def __init__(self, provider: YouSeeMusikProvider):
         """Initialize playlist manager."""
         self.provider = provider
         self.api = provider.api
         self.auth = provider.auth
         self.logger = provider.logger
 
-    async def create(self, name: str) -> "Playlist":
+    async def create(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         query = """
             mutation createPlaylist($title: String!, $imageSize: Int = 512) {
@@ -48,7 +48,12 @@ class YouSeePlaylistManager:
         if not result or not result.get("data", {}).get("playlists", {}).get("create", {}).get(
             "playlist"
         ):
-            raise MediaNotFoundError(f"Could not create playlist {name}")
+            raise MediaNotFoundError(
+                f"Could not create playlist {name}",
+                translation_key="playlist_create_failed",
+                translation_owner=self.provider.translation_owner,
+                translation_args=[name],
+            )
 
         return await parse_playlist(
             self.provider, result["data"]["playlists"]["create"]["playlist"]

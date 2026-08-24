@@ -92,9 +92,10 @@ async def test_wait_for_media_returns_on_play(player: MSXPlayer) -> None:
         await asyncio.sleep(0.05)
         await player.play_media(media)
 
-    asyncio.create_task(delayed_play())
+    task = asyncio.create_task(delayed_play())
     result = await player.wait_for_media(timeout=2.0)
     assert result is media
+    await task
 
 
 async def test_wait_for_media_fast_path(player: MSXPlayer) -> None:
@@ -118,7 +119,8 @@ async def test_wait_for_media_timeout(player: MSXPlayer) -> None:
 
 
 async def test_stop_does_not_clear_media_ready_event(player: MSXPlayer) -> None:
-    """stop() must NOT clear _media_ready (C1 fix).
+    """
+    stop() must NOT clear _media_ready (C1 fix).
 
     Clearing it in stop() would race with a concurrent wait_for_media() call.
     The wait_for_media() fast-path already guards on _attr_current_media, so
@@ -129,6 +131,43 @@ async def test_stop_does_not_clear_media_ready_event(player: MSXPlayer) -> None:
     # _attr_current_media is None after stop — wait_for_media returns None even
     # though the event may still be set.
     assert player._attr_current_media is None
+    result = await player.wait_for_media(timeout=0.05)
+    assert result is None
+
+
+async def test_expect_new_media_arms_wait_for_media(player: MSXPlayer) -> None:
+    """
+    After expect_new_media(), wait_for_media must wait for the NEXT play_media.
+
+    Without arming, the event left set by a previous track would make
+    wait_for_media return the stale current_media immediately — serving the
+    previous track's stream to the TV.
+    """
+    old_media = Mock(spec=PlayerMedia)
+    old_media.uri = "library://track/1"
+    await player.play_media(old_media)
+
+    new_media = Mock(spec=PlayerMedia)
+    new_media.uri = "library://track/2"
+    player.expect_new_media()
+
+    async def delayed_play() -> None:
+        await asyncio.sleep(0.05)
+        await player.play_media(new_media)
+
+    task = asyncio.create_task(delayed_play())
+    result = await player.wait_for_media(timeout=2.0)
+    assert result is new_media
+    await task
+
+
+async def test_expect_new_media_timeout_returns_none(player: MSXPlayer) -> None:
+    """After expect_new_media(), wait_for_media times out with None if no play_media arrives."""
+    old_media = Mock(spec=PlayerMedia)
+    old_media.uri = "library://track/1"
+    await player.play_media(old_media)
+
+    player.expect_new_media()
     result = await player.wait_for_media(timeout=0.05)
     assert result is None
 
@@ -561,13 +600,14 @@ async def test_play_media_skips_ws_when_skip_notify_set(player: MSXPlayer, mass_
 async def test_play_media_non_queue_sends_broadcast_play(
     player: MSXPlayer,
 ) -> None:
-    """play_media without queue context should use broadcast_play as before."""
+    """play_media without queue context should push the media metadata via broadcast_play."""
     media = Mock(spec=PlayerMedia)
     media.uri = "http://ma-server/stream/12345"
     media.title = "Track 1"
     media.artist = "Artist 1"
-    media.image_url = None
+    media.image_url = "http://ma-server/image.png"
     media.duration = 180
+    media.stream_duration = None
     media.source_id = None
     media.queue_item_id = None
 
@@ -578,7 +618,15 @@ async def test_play_media_non_queue_sends_broadcast_play(
         await player.play_media(media)
 
     mock_playlist.assert_not_called()
-    mock_play.assert_called_once()
+    mock_play.assert_called_once_with(
+        player.player_id,
+        title="Track 1",
+        artist="Artist 1",
+        image_url="http://ma-server/image.png",
+        duration=180,
+        next_action=f"request:interaction:/api/next/{player.player_id}",
+        prev_action=f"request:interaction:/api/previous/{player.player_id}",
+    )
 
 
 async def test_stop_resets_playing_from_queue(player: MSXPlayer) -> None:
@@ -601,6 +649,19 @@ def test_update_position(player: MSXPlayer) -> None:
     player.update_state.assert_called()  # type: ignore[attr-defined]
 
 
+def test_update_position_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Position reports must not exceed the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+
+    player.update_position(150)
+
+    assert player._attr_elapsed_time == 120
+
+
 def test_update_position_ignored_when_paused(player: MSXPlayer) -> None:
     """update_position should be ignored when PAUSED to protect accumulated time."""
     player._attr_playback_state = PlaybackState.PAUSED
@@ -619,12 +680,13 @@ async def test_poll_skips_when_ws_position_recent(player: MSXPlayer) -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 30.0
     player._attr_elapsed_time_last_updated = 200.0
-    player._last_ws_position = 200.0  # very recent
+    player._last_ws_position = 200.0  # very recent (monotonic)
 
     player.update_state.reset_mock()  # type: ignore[attr-defined]
 
     with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
-        mock_time.time.return_value = 205.0  # only 5s since last WS (< 10s threshold)
+        mock_time.time.return_value = 205.0
+        mock_time.monotonic.return_value = 205.0  # only 5s since last WS (< 10s threshold)
         await player.poll()
 
     # Should NOT have updated elapsed_time
@@ -637,13 +699,57 @@ async def test_poll_uses_wall_clock_when_ws_stale(player: MSXPlayer) -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 30.0
     player._attr_elapsed_time_last_updated = 200.0
-    player._last_ws_position = 180.0  # 25s ago
+    player._last_ws_position = 180.0  # 25s ago (monotonic)
 
     with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
         mock_time.time.return_value = 205.0
+        mock_time.monotonic.return_value = 205.0
         await player.poll()
 
     assert player._attr_elapsed_time == 35.0  # 30 + (205 - 200)
+
+
+async def test_poll_clamps_to_served_stream_duration(player: MSXPlayer) -> None:
+    """Wall-clock progress must stop at the shortened stream served after a seek."""
+    media = Mock(spec=PlayerMedia)
+    media.duration = 300
+    media.stream_duration = 120
+    player._attr_current_media = media
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 115.0
+    player._attr_elapsed_time_last_updated = 200.0
+    player._last_ws_position = None
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 210.0
+        await player.poll()
+
+    assert player._attr_elapsed_time == 120
+
+
+async def test_poll_ws_staleness_immune_to_wall_clock_jump(player: MSXPlayer) -> None:
+    """
+    A wall-clock jump (NTP step) must not make a fresh WS position look stale.
+
+    The WS staleness check must use the monotonic clock: with wall-clock, an
+    NTP correction of +1h right after a WS report makes poll() fall back to
+    the wall-clock delta and corrupt elapsed_time by hours.
+    """
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 30.0
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 200.0
+        mock_time.monotonic.return_value = 1000.0
+        player.update_position(42.0)
+
+        # NTP jumps wall clock forward 1 hour; monotonic advances only 5s
+        mock_time.time.return_value = 200.0 + 3600.0
+        mock_time.monotonic.return_value = 1005.0
+        await player.poll()
+
+    # WS report is 5s old (monotonic) — still fresh, elapsed must be untouched
+    assert player._attr_elapsed_time == 42.0
 
 
 async def test_stop_clears_ws_position(player: MSXPlayer) -> None:

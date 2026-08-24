@@ -45,7 +45,8 @@ class AlbumWithTracks(DataClassDictMixin):
 
 
 def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:
-    """Log a message at VERBOSE level with performance optimization.
+    """
+    Log a message at VERBOSE level with performance optimization.
 
     Args:
         logger: Logger instance

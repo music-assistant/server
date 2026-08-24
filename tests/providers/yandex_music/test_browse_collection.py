@@ -2,30 +2,44 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import BrowseFolder
 
-from music_assistant.providers.yandex_music.constants import BROWSE_NAMES_EN, BROWSE_NAMES_RU
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
+from .conftest import provider_dir
 
-def _make_provider_mock(features: set[ProviderFeature], *, locale: str = "en_US") -> Mock:
+_STRINGS = json.loads((provider_dir() / "strings.json").read_text(encoding="utf-8"))
+
+
+def _make_provider_mock(features: set[ProviderFeature]) -> Mock:
     provider = Mock(spec=YandexMusicProvider)
     provider.instance_id = "yandex_music_instance"
     provider.domain = "yandex_music"
     provider.supported_features = features
     provider.mass = Mock()
-    provider.mass.metadata = Mock()
-    provider.mass.metadata.locale = locale
-    # real method so locale mapping runs
-    provider._get_browse_names = YandexMusicProvider._get_browse_names.__get__(
-        provider, YandexMusicProvider
-    )
+    # Resolve authored names from the real strings.json, like the MA
+    # translations controller would for the English source.
+    provider.mass.translations.get_translation.side_effect = lambda key: _lookup_strings_key(key)
+    # real method so the strings.json lookup path runs
+    provider._media_label = YandexMusicProvider._media_label.__get__(provider, YandexMusicProvider)
     provider.logger = Mock()
     return provider
+
+
+def _lookup_strings_key(key: str) -> str | None:
+    """Resolve provider.yandex_music.media.<group>.<slug>.name against strings.json."""
+    parts = key.split(".")
+    node: object = _STRINGS
+    for part in parts[2:]:  # skip "music_assistant.providers.yandex_music.yandex_music"
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, str) else None
 
 
 @pytest.mark.asyncio
@@ -49,7 +63,7 @@ async def test_collection_shows_audiobooks_folder_when_feature_enabled() -> None
     )
     assert audiobook_folder.is_playable is False
     assert audiobook_folder.path.endswith("audiobooks")
-    assert audiobook_folder.name == BROWSE_NAMES_EN["audiobooks"]
+    assert audiobook_folder.name == _STRINGS["media"]["folder"]["my_audiobooks"]["name"]
 
 
 @pytest.mark.asyncio
@@ -88,21 +102,26 @@ async def test_collection_hides_audiobooks_folder_when_feature_disabled() -> Non
 
 
 @pytest.mark.asyncio
-async def test_collection_audiobooks_folder_russian_locale() -> None:
-    """Russian locale uses Russian folder names."""
+async def test_collection_folders_carry_authored_translation_keys() -> None:
+    """
+    Collection folders localize via translation keys authored in strings.json.
+
+    Localization happens at API serialization (per connection locale), so
+    the provider must emit an English fallback name plus a key that exists
+    under ``media.folder`` in strings.json.
+    """
     features = {
         ProviderFeature.LIBRARY_AUDIOBOOKS,
         ProviderFeature.LIBRARY_PODCASTS,
     }
-    provider = _make_provider_mock(features, locale="ru_RU")
+    provider = _make_provider_mock(features)
 
     folders = await YandexMusicProvider._browse_collection(
         provider, "yandex_music_instance://collection"
     )
 
-    audiobook = next(
-        f for f in folders if isinstance(f, BrowseFolder) and f.item_id == "audiobooks"
-    )
-    podcast = next(f for f in folders if isinstance(f, BrowseFolder) and f.item_id == "podcasts")
-    assert audiobook.name == BROWSE_NAMES_RU["audiobooks"]
-    assert podcast.name == BROWSE_NAMES_RU["podcasts"]
+    authored = _STRINGS["media"]["folder"]
+    for folder in folders:
+        assert isinstance(folder, BrowseFolder)
+        assert folder.translation_key is not None
+        assert folder.translation_key in authored

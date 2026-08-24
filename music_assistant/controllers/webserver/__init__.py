@@ -1,4 +1,5 @@
-"""Webserver Controller for Music Assistant.
+"""
+Webserver Controller for Music Assistant.
 
 Handles the built-in webserver that hosts the API, frontend, and authentication.
 """

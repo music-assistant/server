@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, IdentifierType
 from music_assistant_models.player import DeviceInfo
 from rokuecp import Roku
 
@@ -14,7 +15,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_AUTO_DISCOVER
+from .constants import CONF_AUTO_DISCOVER, CONF_ROKU_APP_ID
 from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
@@ -27,13 +28,32 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 class MediaAssistantprovider(PlayerProvider):
     """Media Assistant Player provider."""
 
-    roku_players: dict[str, MediaAssistantPlayer] = {}
+    roku_players: ClassVar[dict[str, MediaAssistantPlayer]] = {}
     lock: asyncio.Lock
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            ConfigEntry(
+                key=CONF_ROKU_APP_ID,
+                type=ConfigEntryType.STRING,
+                default_value="782875",
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_AUTO_DISCOVER,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -1,4 +1,5 @@
-"""MA Player ↔ Yandex Smart Home device mapper.
+"""
+MA Player ↔ Yandex Smart Home device mapper.
 
 Maps Music Assistant Player state to Yandex Smart Home device descriptions,
 capability states, and action execution.
@@ -6,6 +7,7 @@ capability states, and action execution.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -22,10 +24,12 @@ from .constants import (
     INSTANCE_ON,
     INSTANCE_PAUSE,
     INSTANCE_VOLUME,
+    MAX_INPUT_SOURCES,
     UNIT_PERCENT,
     YANDEX_DEVICE_TYPE_MEDIA,
     YANDEX_MODE_VALUES,
 )
+from .playlists import play_playlist
 from .schema import (
     ActionResult,
     CapabilityAction,
@@ -85,9 +89,43 @@ def _get_source_list(player: Player) -> list[PlayerSource]:
     return []
 
 
-def _build_source_modes(source_list: list[PlayerSource]) -> list[ModeValue]:
-    """Build Yandex mode values from an MA source list (max 10)."""
-    return [ModeValue(value=YANDEX_MODE_VALUES[i]) for i in range(min(len(source_list), 10))]
+def _combined_size(
+    source_list: list[PlayerSource], playlist_uris: tuple[str, ...] | list[str]
+) -> int:
+    """Total slot count for mode(input_source): native first, playlists fill rest."""
+    return min(len(source_list) + len(playlist_uris), MAX_INPUT_SOURCES)
+
+
+def _build_combined_modes(
+    source_list: list[PlayerSource], playlist_uris: tuple[str, ...] | list[str]
+) -> list[ModeValue]:
+    """Build mode values covering both native sources and playlist slots."""
+    size = _combined_size(source_list, playlist_uris)
+    return [ModeValue(value=YANDEX_MODE_VALUES[i]) for i in range(size)]
+
+
+def _resolve_combined_slot(
+    index: int,
+    source_list: list[PlayerSource],
+    playlist_uris: tuple[str, ...] | list[str],
+) -> tuple[str, str] | None:
+    """
+    Resolve a 0-based slot index to ("native"|"playlist", value).
+
+    Returns None if the slot is out of range. The native source slots come
+    first; playlist URIs fill the remainder up to MAX_INPUT_SOURCES.
+    """
+    native_count = len(source_list)
+    if index < 0:
+        return None
+    if index < native_count:
+        return ("native", source_list[index].id)
+    playlist_idx = index - native_count
+    if playlist_idx >= len(playlist_uris):
+        return None
+    if native_count + playlist_idx >= MAX_INPUT_SOURCES:
+        return None
+    return ("playlist", playlist_uris[playlist_idx])
 
 
 def _source_to_mode(active_source: str | None, source_list: list[PlayerSource]) -> str | None:
@@ -105,7 +143,7 @@ def _source_to_mode(active_source: str | None, source_list: list[PlayerSource]) 
 def _mode_to_source(mode_value: str, source_list: list[PlayerSource]) -> str | None:
     """Resolve a Yandex mode value to an MA source id."""
     try:
-        idx = list(YANDEX_MODE_VALUES).index(mode_value)
+        idx = YANDEX_MODE_VALUES.index(mode_value)
     except ValueError:
         return None
     if idx >= len(source_list):
@@ -135,7 +173,8 @@ _RE_MULTI_SPACE = re.compile(r" {2,}")
 
 
 def normalize_device_name(name: str) -> str:
-    """Normalize player name for Yandex Smart Home.
+    """
+    Normalize player name for Yandex Smart Home.
 
     Rules: only Russian/English letters, digits, and spaces;
     mandatory space between letters and digits.
@@ -147,7 +186,11 @@ def normalize_device_name(name: str) -> str:
     return result or name
 
 
-def get_device_description(player: Player) -> DeviceDescription:
+def get_device_description(
+    player: Player,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
+) -> DeviceDescription:
     """Build a Yandex Smart Home device description from an MA player."""
     capabilities = [
         CapabilityDescription(type=YandexCapabilityType.ON_OFF),
@@ -178,20 +221,30 @@ def get_device_description(player: Player) -> DeviceDescription:
             )
         )
 
-    # mode(input_source) — only if player has sources
+    # mode(input_source): register when native sources or playlists exist.
+    # Native sources occupy first slots; playlists fill remainder up to MAX_INPUT_SOURCES.
     source_list = _get_source_list(player)
-    if source_list:
-        modes = _build_source_modes(source_list)
-        if modes:
-            capabilities.append(
-                CapabilityDescription(
-                    type=YandexCapabilityType.MODE,
-                    parameters=CapabilityParameters(
-                        instance=INSTANCE_INPUT_SOURCE,
-                        modes=modes,
-                    ),
-                )
+    if len(source_list) >= MAX_INPUT_SOURCES and playlist_uris:
+        # Debug-level: this fires on every /user/devices poll for an
+        # affected player, but it documents a config decision rather than
+        # a runtime fault — promoting it to warn would spam production logs.
+        _LOGGER.debug(
+            "Player %s has %d native sources (>= cap %d); playlist sources ignored",
+            player.player_id,
+            len(source_list),
+            MAX_INPUT_SOURCES,
+        )
+    modes = _build_combined_modes(source_list, playlist_uris)
+    if modes:
+        capabilities.append(
+            CapabilityDescription(
+                type=YandexCapabilityType.MODE,
+                parameters=CapabilityParameters(
+                    instance=INSTANCE_INPUT_SOURCE,
+                    modes=modes,
+                ),
             )
+        )
 
     model = "MA Player"
     if hasattr(player, "device_info") and player.device_info:
@@ -206,7 +259,11 @@ def get_device_description(player: Player) -> DeviceDescription:
     )
 
 
-def get_device_state(player: Player) -> DeviceState:
+def get_device_state(
+    player: Player,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
+) -> DeviceState:
     """Read current MA player state and convert to Yandex capability states."""
     # on = player is powered on (or available if power state unknown)
     powered = getattr(player, "powered", None)
@@ -256,9 +313,11 @@ def get_device_state(player: Player) -> DeviceState:
             )
         )
 
-    # input_source state — only if player has sources
+    # input_source state — only reported when active MA source matches a native slot.
+    # Playlist slots have no reliable "active" signal, so they leave state unset
+    # (Yandex tolerates an unreported state on mode capabilities).
     source_list = _get_source_list(player)
-    if source_list:
+    if source_list or playlist_uris:
         active = getattr(player, "active_source", None)
         mode_value = _source_to_mode(active, source_list)
         if mode_value:
@@ -273,7 +332,13 @@ def get_device_state(player: Player) -> DeviceState:
 
 
 async def _execute_input_source(
-    mass: Any, player_id: str, player: Player | None, instance: str, value: Any
+    mass: Any,
+    player_id: str,
+    player: Player | None,
+    instance: str,
+    value: Any,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
 ) -> CapabilityActionResult | None:
     """Handle input_source mode action. Returns error result or None on success."""
     if player is None:
@@ -288,23 +353,50 @@ async def _execute_input_source(
                 ),
             ),
         )
+
+    try:
+        slot_index = YANDEX_MODE_VALUES.index(str(value))
+    except ValueError:
+        return CapabilityActionResult(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionResultState(
+                instance=instance,
+                action_result=ActionResult(
+                    status="ERROR",
+                    error_code=ERROR_INVALID_ACTION,
+                    error_message=f"Unknown source mode: {value}",
+                ),
+            ),
+        )
+
     p_state = player.state if hasattr(player, "state") else player
     source_list = _get_source_list(p_state)
-    source = _mode_to_source(str(value), source_list)
-    if source:
-        await mass.players.select_source(player_id, source)
-        return None
-    return CapabilityActionResult(
-        type=YandexCapabilityType.MODE,
-        state=CapabilityActionResultState(
-            instance=instance,
-            action_result=ActionResult(
-                status="ERROR",
-                error_code=ERROR_INVALID_ACTION,
-                error_message=f"Unknown source mode: {value}",
+    resolved = _resolve_combined_slot(slot_index, source_list, playlist_uris)
+    if resolved is None:
+        return CapabilityActionResult(
+            type=YandexCapabilityType.MODE,
+            state=CapabilityActionResultState(
+                instance=instance,
+                action_result=ActionResult(
+                    status="ERROR",
+                    error_code=ERROR_INVALID_ACTION,
+                    error_message=f"No source configured for mode: {value}",
+                ),
             ),
-        ),
-    )
+        )
+
+    kind, target = resolved
+    if kind == "native":
+        await mass.players.select_source(player_id, target)
+        return None
+
+    # Playlist slot: power on if needed, then start playback via player_queues.play_media.
+    if _has_feature(p_state, "power"):
+        powered = getattr(p_state, "powered", None)
+        if powered is False:
+            await mass.players.cmd_power(player_id, True)
+    await play_playlist(mass, player_id, target)
+    return None
 
 
 def _invalid_bool_result(cap_type: str, instance: str, value: Any) -> CapabilityActionResult:
@@ -346,8 +438,11 @@ async def execute_capability_action(  # noqa: PLR0915
     player_id: str,
     action: CapabilityAction,
     current_volume: int = 0,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
 ) -> CapabilityActionResult:
-    """Execute a Yandex capability action by calling the corresponding MA player command.
+    """
+    Execute a Yandex capability action by calling the corresponding MA player command.
 
     Returns a CapabilityActionResult with success or error status.
     """
@@ -430,7 +525,9 @@ async def execute_capability_action(  # noqa: PLR0915
             # Non-relative channel set is ignored (no concept of channel number in MA)
 
         elif action.type == YandexCapabilityType.MODE and instance == INSTANCE_INPUT_SOURCE:
-            result = await _execute_input_source(mass, player_id, player, instance, value)
+            result = await _execute_input_source(
+                mass, player_id, player, instance, value, playlist_uris=playlist_uris
+            )
             if result:
                 return result
 
@@ -447,7 +544,7 @@ async def execute_capability_action(  # noqa: PLR0915
                 ),
             )
 
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return CapabilityActionResult(
             type=action.type,
             state=CapabilityActionResultState(
@@ -459,6 +556,11 @@ async def execute_capability_action(  # noqa: PLR0915
                 ),
             ),
         )
+    except asyncio.CancelledError:
+        # Cooperative cancellation must propagate untouched — without this
+        # the broad `except Exception` below would convert a shutdown /
+        # config-flow abort into an INTERNAL_ERROR action result.
+        raise
     except Exception:
         _LOGGER.exception("Error executing action %s/%s on %s", action.type, instance, player_id)
         return CapabilityActionResult(

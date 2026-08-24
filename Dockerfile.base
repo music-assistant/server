@@ -9,12 +9,11 @@ ARG PYTHON_VERSION=3.14
 # This image forms the base for the final image and is not meant to be used directly
 # NOTE that the dev add-on is also based on this base image
 
-FROM python:${PYTHON_VERSION}-slim-bookworm AS ffmpeg-builder
+FROM python:${PYTHON_VERSION}-slim-trixie AS ffmpeg-builder
 
 # Enable non-free and contrib repositories for FDK-AAC and other codecs
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+# (trixie uses the deb822 sources format)
+RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
 
 # Install build dependencies for FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -107,7 +106,7 @@ RUN set -x \
 ##################################################################################################
 
 # PyAV wheel builder - builds PyAV against the custom FFmpeg
-FROM python:${PYTHON_VERSION}-slim-bookworm AS pyav-builder
+FROM python:${PYTHON_VERSION}-slim-trixie AS pyav-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ python3-dev pkg-config && rm -rf /var/lib/apt/lists/*
@@ -129,12 +128,63 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-FROM python:${PYTHON_VERSION}-slim-bookworm
+# Build shairport-sync (airplay receiver provider) from source against this image's
+# libraries, using the same configuration as music_assistant/providers/airplay_receiver/bin/build_binaries.sh:
+# tinysvcmdns as embedded mDNS backend (no avahi), stdout/pipe outputs and metadata support.
+FROM python:${PYTHON_VERSION}-slim-trixie AS shairport-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    libconfig-dev \
+    libpopt-dev \
+    libssl-dev \
+    libdbus-1-dev \
+    libglib2.0-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Version and its commit SHA are the single source of truth (also read by
+# build_binaries.sh). Tags are mutable, so the fetched tag is verified against the
+# pinned SHA. Bump both when changing the version.
+ARG SHAIRPORT_VERSION=4.3.7
+ARG SHAIRPORT_SHA=0b1c4391ffd398e7b145eb4b98416261380adeea
+RUN set -x \
+    && git init /tmp/shairport-sync \
+    && cd /tmp/shairport-sync \
+    && git remote add origin https://github.com/mikebrady/shairport-sync.git \
+    && git fetch --depth 1 origin refs/tags/${SHAIRPORT_VERSION} \
+    && git checkout FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${SHAIRPORT_SHA}" \
+    && autoreconf -fi \
+    && ./configure \
+        --with-pipe \
+        --with-metadata \
+        --without-avahi \
+        --without-dns-sd \
+        --with-tinysvcmdns \
+        --with-ssl=openssl \
+        --with-stdout \
+        --sysconfdir=/etc \
+    && make -j$(nproc) \
+    && strip shairport-sync \
+    && cp shairport-sync /usr/local/bin/shairport-sync \
+    && rm -rf /tmp/shairport-sync
+
+##################################################################################################
+
+FROM python:${PYTHON_VERSION}-slim-trixie
+
+# Ensure UTF-8 encoding across system
+ENV LANG=C.UTF-8
 
 # Enable non-free and contrib repositories for codec libraries
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+# (trixie uses the deb822 sources format)
+RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
 
 # Install runtime dependencies
 RUN set -x \
@@ -146,7 +196,7 @@ RUN set -x \
         wget \
         # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
-        libnfs13 \
+        libnfs14 \
         nfs-common \
         # airplay libraries
         openssl \
@@ -155,13 +205,12 @@ RUN set -x \
         libcurl4 \
         libsodium23 \
         libconfuse2 \
-        libunistring2 \
-        libxml2 \
         libevent-dev \
         libjson-c5 \
-        libplist3 \
         libgcrypt20 \
-        libavfilter8 \
+        # glib is needed by the shairport-sync binary (previously pulled in only
+        # indirectly via the pipewire/pulseaudio utils)
+        libglib2.0-0 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
         # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
@@ -195,17 +244,37 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
-        # Allows pipewire devices to be detected when running in docker container. (local audio)
-        pipewire-alsa \
+        # PipeWire stack (daemon + libs) required by the pipewire-alsa plugin
+        # unpacked below (host pipewire access in docker, local audio)
+        pipewire \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
+        # PulseAudio daemon for MA's private audio-capture server (spotify connect soloist)
+        pulseaudio \
         libvorbisidec1 \
-        libflac12 \
+        libflac14 \
         libavahi-client3 \
         libavahi-common3 \
         # AirPlay receiver dependencies (shairport-sync)
-        libconfig9 \
+        libconfig11 \
         libpopt0 \
+    # pipewire-alsa (ALSA apps -> host pipewire, needed for local audio in docker)
+    # declares Conflicts: pulseaudio because both want to own the ALSA default
+    # device, but there is no file overlap, so unpack it outside dpkg and keep
+    # the ALSA default routed to pipewire by removing pulseaudio's
+    # default-routing and autospawn snippets.
+    # NOTE: the unpacked package is not registered in dpkg, so package/CVE
+    # scanners will not list pipewire-alsa.
+    # This whole workaround (and the pipewire package above) exists only for
+    # the local audio provider and can be dropped once that moves to its own
+    # dedicated container, leaving a plain apt install of pulseaudio.
+    && (cd /tmp && apt-get download pipewire-alsa) \
+    && dpkg-deb -x /tmp/pipewire-alsa_*.deb / \
+    && rm /tmp/pipewire-alsa_*.deb \
+    && rm -f \
+        /etc/alsa/conf.d/99-pulse.conf \
+        /usr/share/alsa/alsa.conf.d/pulse.conf \
+        /etc/pulse/client.conf.d/01-enable-autospawn.conf \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f \
@@ -226,10 +295,33 @@ RUN set -x \
     else \
         SNAPCAST_ARCH="amd64"; \
     fi \
-    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapserver_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_bookworm.deb" -O /tmp/snapserver.deb \
-    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_bookworm.deb" -O /tmp/snapclient.deb \
-    && dpkg -i /tmp/snapserver.deb /tmp/snapclient.deb \
+    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapserver_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapserver.deb \
+    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapclient.deb \
+    # install via apt so any missing dependencies of the debs are resolved as well
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/snapserver.deb /tmp/snapclient.deb \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
     && rm /tmp/snapserver.deb /tmp/snapclient.deb
+
+# Install go-librespot (used by the Spotify Connect provider) from GitHub releases.
+# The release binaries statically link libvorbis/libogg/libFLAC, so the only dynamic
+# dependency is libasound2 (already installed above for Snapcast).
+# The pinned SHA256 per arch is verified before extraction; bump both when changing the version.
+ARG GO_LIBRESPOT_VERSION=0.9.0
+RUN set -x \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        GO_LIBRESPOT_ARCH="arm64"; \
+        GO_LIBRESPOT_SHA256="79b80bb3723b7973165d2d94c428676b8582780aeca7c54694589206ab741e91"; \
+    else \
+        GO_LIBRESPOT_ARCH="x86_64"; \
+        GO_LIBRESPOT_SHA256="87b27ce57cc7871bad6ffac8acba7e2a89c72a7e6c7990b88bec404f449f381e"; \
+    fi \
+    && wget -q "https://github.com/devgianlu/go-librespot/releases/download/v${GO_LIBRESPOT_VERSION}/go-librespot_linux_${GO_LIBRESPOT_ARCH}.tar.gz" -O /tmp/go-librespot.tar.gz \
+    && echo "${GO_LIBRESPOT_SHA256}  /tmp/go-librespot.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/go-librespot.tar.gz -C /usr/local/bin go-librespot \
+    && chmod +x /usr/local/bin/go-librespot \
+    && rm /tmp/go-librespot.tar.gz
 
 # Copy FFmpeg binaries and libraries from builder stage
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
@@ -237,6 +329,10 @@ COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
+
+# Copy shairport-sync binary from builder stage (found by the airplay receiver
+# provider via its system PATH lookup)
+COPY --from=shairport-builder /usr/local/bin/shairport-sync /usr/local/bin/
 
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/

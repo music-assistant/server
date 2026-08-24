@@ -9,20 +9,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-import chromaprint
 import numpy as np
-from music_assistant_models.enums import ExternalID, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, StreamType
 from music_assistant_models.errors import (
     MusicAssistantError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnsupportedSystemError,
 )
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import import_module_in_thread, parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -30,7 +34,7 @@ from music_assistant.providers.musicbrainz import MusicbrainzProvider
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
-    from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.media_items import AudioFormat, Track
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -43,6 +47,12 @@ CONF_WRITE_TAGS_BACK = "write_tags_back"
 CONF_ANALYSE_STREAMING = "analyse_streaming"
 
 DEFAULT_MIN_SCORE = 0.85
+# Days before a track that fingerprinted but found no match is retried. The AcoustID
+# database grows over time, so an unidentifiable track may match on a later attempt.
+NO_MATCH_RETRY_DAYS = 60
+# No-match results are stored at this version so they always read as stale and are
+# re-offered to the provider, which then gates the actual retry on NO_MATCH_RETRY_DAYS.
+NO_MATCH_ANALYSIS_VERSION = -1
 MAX_FINGERPRINT_SECONDS = 120
 MAX_CANDIDATES = 5
 # Per-recording cap on stored release-groups; sized to fit popular tracks
@@ -85,103 +95,60 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """Initialize the provider with an empty per-session state container."""
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
+        # Populated once a real chromaprint fingerprinter is built; stays empty while no
+        # native fingerprinter exists, in which case its errors cannot be raised either.
+        self._fingerprint_errors: tuple[type[BaseException], ...] = ()
 
-    async def _start_analysis(
-        self,
-        session_id: str,
-        streamdetails: StreamDetails,
-        audio_format: AudioFormat,
-    ) -> bool:
+    async def handle_async_init(self) -> None:
         """
-        Accept or decline an analysis session for the given track.
+        Handle async initialization of the provider.
 
-        :param session_id: Session ID assigned by the AudioAnalysisController.
-        :param streamdetails: Stream details for the track being analysed.
-        :param audio_format: PCM format of the incoming audio stream.
+        :raises UnsupportedSystemError: When the chromaprint native library is missing.
         """
-        # Tracks only — podcasts and audiobooks must not reach the fingerprinter.
-        if streamdetails.media_type != MediaType.TRACK:
-            return False
-        # API key is required=True at config time; defensive check here too.
-        if not self.config.get_value(CONF_API_KEY):
-            self.logger.debug("Skipping %s — no AcoustID API key configured", session_id)
-            return False
-        # Streaming-provider tracks are opt-in — local files always analyse.
-        if streamdetails.stream_type != StreamType.LOCAL_FILE and not self.config.get_value(
-            CONF_ANALYSE_STREAMING
-        ):
-            self.logger.debug(
-                "Skipping %s — streaming-provider lookups are disabled in settings",
-                session_id,
-            )
-            return False
-
+        # pyacoustid binds libchromaprint through ctypes at import time, so this import is
+        # what surfaces a missing native library. Route it through the shared import
+        # executor to keep the dlopen off the event loop; it also warms sys.modules so the
+        # per-session import in _create_fingerprinter is a plain lookup.
         try:
-            track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                streamdetails.item_id, streamdetails.provider
+            await import_module_in_thread("chromaprint")
+        except ImportError as err:
+            msg = (
+                "AcoustID needs the chromaprint library, which is not installed on this "
+                "system. See the Music Assistant documentation for how to install it."
             )
-        except MusicAssistantError as err:
-            self.logger.debug(
-                "Could not load library row for %s/%s: %s",
-                streamdetails.provider,
-                streamdetails.item_id,
-                err,
-            )
-            return False
-        # No library row → nothing to persist into; skip the fingerprint work.
-        if track is None:
-            self.logger.debug("Skipping %s — track is not in the library", session_id)
-            return False
-        if track.mbid:
-            self.logger.debug(
-                "Skipping %s — track already has a MusicBrainz Recording Id", session_id
-            )
-            return False
-        if track.get_external_id(ExternalID.ISRC):
-            self.logger.debug("Skipping %s — track already has an ISRC", session_id)
-            return False
+            raise UnsupportedSystemError(msg) from err
 
-        fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
-        if fingerprinter is None:
-            return False
-
-        bit_depth = audio_format.bit_depth
-        if not bit_depth:
-            return False
-        sample_width = max(1, bit_depth // 8)
-        track_duration = int(streamdetails.duration or 0)
-        expected_album_title = _extract_album_title(track)
-        expected_track_title = _extract_track_title(track)
-        self._data[session_id] = _AcoustidSessionData(
-            fingerprinter=fingerprinter,
-            sample_rate=int(audio_format.sample_rate),
-            channels=int(audio_format.channels),
-            sample_width=sample_width,
-            track_duration=track_duration,
-            expected_track_title=expected_track_title,
-            expected_album_title=expected_album_title,
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                default_value=None,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_SCORE,
+                type=ConfigEntryType.FLOAT,
+                default_value=DEFAULT_MIN_SCORE,
+                range=(0, 1),
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANALYSE_STREAMING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_WRITE_TAGS_BACK,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
         )
-        self.logger.info(
-            "AcoustID lookup started for track=%r album=%r",
-            expected_track_title,
-            expected_album_title,
-        )
-        return True
-
-    def _create_fingerprinter(self, sample_rate: int, channels: int) -> Any | None:
-        """
-        Construct and start a chromaprint Fingerprinter, or return None on failure.
-
-        :param sample_rate: Audio sample rate in Hz.
-        :param channels: Number of audio channels.
-        """
-        try:
-            fp = chromaprint.Fingerprinter()
-            fp.start(int(sample_rate), int(channels))
-        except chromaprint.FingerprintError as err:
-            self.logger.warning("Failed to initialise chromaprint fingerprinter: %s", err)
-            return None
-        return fp
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """
@@ -209,9 +176,10 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 data.error = f"pcm conversion failed: {err}"
                 return
 
+        feed_errors: tuple[type[BaseException], ...] = (*self._fingerprint_errors, TypeError)
         try:
             data.fingerprinter.feed(pcm_chunk)
-        except (chromaprint.FingerprintError, TypeError) as err:
+        except feed_errors as err:
             self.logger.debug("Chromaprint rejected PCM chunk for %s: %s", session_id, err)
             data.error = f"feed failed: {err}"
             return
@@ -230,151 +198,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """
         self._data.pop(session_id, None)
         await super().cancel(session_id)
-
-    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """
-        Compute the fingerprint, query AcoustID, and return the chosen IDs.
-
-        :param session_id: Active analysis session ID.
-        """
-        data = self._data.pop(session_id, None)
-        if not data:
-            return None
-        if data.error or data.pcm_seconds_fed <= 0:
-            return None
-
-        try:
-            fingerprint_raw = data.fingerprinter.finish()
-        except chromaprint.FingerprintError as err:
-            self.logger.debug("Chromaprint failed to produce a fingerprint: %s", err)
-            return None
-
-        if not isinstance(fingerprint_raw, (bytes, bytearray)):
-            self.logger.debug(
-                "Discarding fingerprint — expected bytes, got %s",
-                type(fingerprint_raw).__name__,
-            )
-            return None
-        try:
-            fingerprint = bytes(fingerprint_raw).decode("ascii")
-        except UnicodeDecodeError:
-            self.logger.debug("Discarding fingerprint — not valid ASCII")
-            return None
-        if not fingerprint:
-            self.logger.debug("Discarding fingerprint — empty")
-            return None
-
-        api_key = self.config.get_value(CONF_API_KEY)
-        duration_for_lookup = data.track_duration or round(data.pcm_seconds_fed)
-        if duration_for_lookup <= 0:
-            self.logger.debug("No usable track duration — cannot query AcoustID")
-            return None
-
-        try:
-            response = await self._lookup(str(api_key), fingerprint, duration_for_lookup)
-        except (aiohttp.ClientError, RetriesExhausted, TimeoutError, json.JSONDecodeError) as err:
-            # Some aiohttp exceptions (e.g. ClientResponseError) stringify with the
-            # full request URL, which includes the API key as a query param.
-            self.logger.warning(
-                "AcoustID lookup failed: %s: %s",
-                type(err).__name__,
-                str(err).replace(str(api_key), "***"),
-            )
-            return None
-        if not response:
-            return None
-
-        raw_min_score = self.config.get_value(CONF_MIN_SCORE)
-        min_score = (
-            float(raw_min_score) if isinstance(raw_min_score, (int, float)) else DEFAULT_MIN_SCORE
-        )
-
-        (
-            chosen_score,
-            chosen_acoustid,
-            chosen_mbid,
-            candidates,
-            _album_matched,
-            release_groups,
-        ) = _parse_response(
-            response,
-            expected_track_title=data.expected_track_title,
-            expected_album_title=data.expected_album_title,
-            min_score=min_score,
-        )
-        if chosen_mbid is None:
-            if data.expected_track_title:
-                self.logger.debug(
-                    "Discarding AcoustID result — no candidate matches track title %r",
-                    data.expected_track_title,
-                )
-            return None
-
-        if chosen_score < min_score:
-            self.logger.debug(
-                "Discarding AcoustID result — match score %.3f is below the configured "
-                "minimum of %.2f",
-                chosen_score,
-                min_score,
-            )
-            return None
-
-        return AudioAnalysisData(
-            extra_data={
-                "acoustid": chosen_acoustid,
-                "mbid": chosen_mbid,
-                "match_score": round(chosen_score, 4),
-                "candidates": candidates,
-                "release_groups": release_groups,
-            }
-        )
-
-    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL)
-    @throttle_with_retries
-    async def _lookup(self, api_key: str, fingerprint: str, duration: int) -> dict[str, Any] | None:
-        """
-        Look up a fingerprint against the AcoustID web service.
-
-        :param api_key: AcoustID API key for this deployment.
-        :param fingerprint: Base64 chromaprint fingerprint string.
-        :param duration: Full track duration in seconds. AcoustID expects the
-            track length here, not the duration of audio actually fingerprinted.
-        :raises ResourceTemporarilyUnavailable: On a 429 or 5xx response.
-        """
-        params = {
-            "client": api_key,
-            # Selectors must be space-separated; AcoustID rejects '+'-joined values.
-            "meta": "recordings releases releasegroups",
-            "fingerprint": fingerprint,
-            "duration": str(duration),
-            "format": "json",
-        }
-        async with self.mass.http_session.get(ACOUSTID_LOOKUP_URL, params=params) as response:
-            if response.status == 429:
-                backoff = int(response.headers.get("Retry-After", 0))
-                raise ResourceTemporarilyUnavailable("AcoustID rate limit", backoff_time=backoff)
-            if 500 <= response.status < 600:
-                raise ResourceTemporarilyUnavailable("AcoustID server error", backoff_time=30)
-            if response.status in (401, 403):
-                self.logger.error(
-                    "AcoustID lookup unauthorised (HTTP %d) — check the configured API key",
-                    response.status,
-                )
-                return None
-            if response.status >= 400:
-                self.logger.debug("AcoustID returned HTTP %d — discarding result", response.status)
-                return None
-            payload = await response.json()
-        if not isinstance(payload, dict):
-            self.logger.debug(
-                "AcoustID response was not a JSON object (got %s) — discarding",
-                type(payload).__name__,
-            )
-            return None
-        if payload.get("status") != "ok":
-            self.logger.debug("AcoustID response status=%s — discarding", payload.get("status"))
-            return None
-        return payload
 
     async def post_analysis(
         self,
@@ -461,6 +284,343 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             isrcs=isrcs,
             artist_mbids=artist_mbids,
         )
+
+    def _resolve_api_key(self) -> str:
+        """Return the user-supplied AcoustID API key, falling back to the shared key."""
+        user_key = self.config.get_value(CONF_API_KEY)
+        if isinstance(user_key, str) and user_key:
+            return user_key
+        return str(app_var("acoustid_api_key"))
+
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """
+        Accept or decline an analysis session for the given track.
+
+        :param session_id: Session ID assigned by the AudioAnalysisController.
+        :param streamdetails: Stream details for the track being analysed.
+        :param audio_format: PCM format of the incoming audio stream.
+        """
+        # Tracks only — podcasts and audiobooks must not reach the fingerprinter.
+        if streamdetails.media_type != MediaType.TRACK:
+            return False
+        # Streaming-provider tracks are opt-in — local files always analyse.
+        if streamdetails.stream_type != StreamType.LOCAL_FILE and not self.config.get_value(
+            CONF_ANALYSE_STREAMING
+        ):
+            self.logger.debug(
+                "Skipping %s — streaming-provider lookups are disabled in settings",
+                session_id,
+            )
+            return False
+
+        try:
+            track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                streamdetails.item_id, streamdetails.provider
+            )
+        except MusicAssistantError as err:
+            self.logger.debug(
+                "Could not load library row for %s/%s: %s",
+                streamdetails.provider,
+                streamdetails.item_id,
+                err,
+            )
+            return False
+        # No library row → nothing to persist into; skip the fingerprint work.
+        if track is None:
+            self.logger.debug("Skipping %s — track is not in the library", session_id)
+            return False
+        if track.mbid or track.get_external_id(ExternalID.ISRC):
+            # Already identified, so fingerprinting would be wasted work. Record the
+            # existing identifiers as a result so coverage counts the track and the scan
+            # does not revisit it.
+            await self._record_existing_identifiers(streamdetails, track)
+            self.logger.debug(
+                "Skipping %s — track already identified (MBID/ISRC present); "
+                "recorded existing identifiers",
+                session_id,
+            )
+            return False
+
+        if await self._within_no_match_cooldown(streamdetails):
+            self.logger.debug(
+                "Skipping %s — earlier AcoustID lookup found no match; still within retry cooldown",
+                session_id,
+            )
+            return False
+
+        # Chromaprint only fingerprints mono/stereo audio. Feeding it multichannel
+        # (e.g. 5.1) trips a C-level assertion in its AudioProcessor that aborts the
+        # whole process rather than raising, so it cannot be caught and logged — the
+        # only safe option is to skip the file. See acoustid/chromaprint#90.
+        if audio_format.channels > 2:
+            self.logger.warning(
+                "AcoustID can only scan mono/stereo files; skipping multichannel "
+                "(%d-channel) file: %s",
+                audio_format.channels,
+                streamdetails.path or streamdetails.uri,
+            )
+            return False
+
+        fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
+        if fingerprinter is None:
+            return False
+
+        bit_depth = audio_format.bit_depth
+        if not bit_depth:
+            return False
+        sample_width = max(1, bit_depth // 8)
+        track_duration = int(streamdetails.duration or 0)
+        expected_album_title = _extract_album_title(track)
+        expected_track_title = _extract_track_title(track)
+        self._data[session_id] = _AcoustidSessionData(
+            fingerprinter=fingerprinter,
+            sample_rate=int(audio_format.sample_rate),
+            channels=int(audio_format.channels),
+            sample_width=sample_width,
+            track_duration=track_duration,
+            expected_track_title=expected_track_title,
+            expected_album_title=expected_album_title,
+        )
+        self.logger.info(
+            "AcoustID lookup started for track=%r album=%r",
+            expected_track_title,
+            expected_album_title,
+        )
+        return True
+
+    def _create_fingerprinter(self, sample_rate: int, channels: int) -> Any | None:
+        """
+        Construct and start a chromaprint Fingerprinter, or return None on failure.
+
+        :param sample_rate: Audio sample rate in Hz.
+        :param channels: Number of audio channels.
+        """
+        import chromaprint  # noqa: PLC0415
+
+        self._fingerprint_errors = (chromaprint.FingerprintError,)
+        try:
+            fp = chromaprint.Fingerprinter()
+            fp.start(int(sample_rate), int(channels))
+        except chromaprint.FingerprintError as err:
+            self.logger.warning("Failed to initialise chromaprint fingerprinter: %s", err)
+            return None
+        return fp
+
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """
+        Compute the fingerprint, query AcoustID, and return the chosen IDs.
+
+        :param session_id: Active analysis session ID.
+        """
+        data = self._data.pop(session_id, None)
+        if not data:
+            return None
+        if data.error or data.pcm_seconds_fed <= 0:
+            return None
+
+        try:
+            fingerprint_raw = data.fingerprinter.finish()
+        except self._fingerprint_errors as err:
+            self.logger.debug("Chromaprint failed to produce a fingerprint: %s", err)
+            return None
+
+        if not isinstance(fingerprint_raw, (bytes, bytearray)):
+            self.logger.debug(
+                "Discarding fingerprint — expected bytes, got %s",
+                type(fingerprint_raw).__name__,
+            )
+            return None
+        try:
+            fingerprint = bytes(fingerprint_raw).decode("ascii")
+        except UnicodeDecodeError:
+            self.logger.debug("Discarding fingerprint — not valid ASCII")
+            return None
+        if not fingerprint:
+            self.logger.debug("Discarding fingerprint — empty")
+            return None
+
+        api_key = self._resolve_api_key()
+        duration_for_lookup = data.track_duration or round(data.pcm_seconds_fed)
+        if duration_for_lookup <= 0:
+            self.logger.debug("No usable track duration — cannot query AcoustID")
+            return None
+
+        try:
+            response = await self._lookup(str(api_key), fingerprint, duration_for_lookup)
+        except (aiohttp.ClientError, RetriesExhausted, TimeoutError, json.JSONDecodeError) as err:
+            # Some aiohttp exceptions (e.g. ClientResponseError) stringify with the
+            # full request URL, which includes the API key as a query param.
+            self.logger.warning(
+                "AcoustID lookup failed: %s: %s",
+                type(err).__name__,
+                str(err).replace(str(api_key), "***"),
+            )
+            return None
+        if not response:
+            return None
+
+        raw_min_score = self.config.get_value(CONF_MIN_SCORE)
+        min_score = (
+            float(raw_min_score) if isinstance(raw_min_score, (int, float)) else DEFAULT_MIN_SCORE
+        )
+
+        (
+            chosen_score,
+            chosen_acoustid,
+            chosen_mbid,
+            candidates,
+            _album_matched,
+            release_groups,
+        ) = _parse_response(
+            response,
+            expected_track_title=data.expected_track_title,
+            expected_album_title=data.expected_album_title,
+            min_score=min_score,
+        )
+        if chosen_mbid is None:
+            if data.expected_track_title:
+                self.logger.debug(
+                    "No AcoustID match for %r — recording no-match result, "
+                    "will retry after %d days",
+                    data.expected_track_title,
+                    NO_MATCH_RETRY_DAYS,
+                )
+            await self._persist_no_match(session_id)
+            return None
+
+        if chosen_score < min_score:
+            self.logger.debug(
+                "No confident AcoustID match — best score %.3f is below the configured "
+                "minimum of %.2f; recording no-match result, will retry after %d days",
+                chosen_score,
+                min_score,
+                NO_MATCH_RETRY_DAYS,
+            )
+            await self._persist_no_match(session_id)
+            return None
+
+        return AudioAnalysisData(
+            extra_data={
+                "acoustid": chosen_acoustid,
+                "mbid": chosen_mbid,
+                "match_score": round(chosen_score, 4),
+                "candidates": candidates,
+                "release_groups": release_groups,
+            }
+        )
+
+    async def _within_no_match_cooldown(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether a prior no-match result for this track is still within its retry cooldown.
+
+        :param streamdetails: Stream details for the track being analysed.
+        """
+        stored = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(self.domain,),
+        )
+        if not stored or not stored.extra_data:
+            return False
+        retry_after = stored.extra_data.get("retry_after")
+        return retry_after is not None and int(utc_timestamp()) < int(retry_after)
+
+    async def _persist_no_match(self, session_id: str) -> None:
+        """
+        Record that a track fingerprinted but found no match, scheduling a later retry.
+
+        :param session_id: Active analysis session ID.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        streamdetails = session.streamdetails
+        retry_after = int(utc_timestamp()) + NO_MATCH_RETRY_DAYS * 86400
+        await self.mass.streams.audio_analysis.set_audio_analysis(
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            aa_provider_domain=self.domain,
+            analysis=AudioAnalysisData(extra_data={"retry_after": retry_after}),
+            analysis_version=NO_MATCH_ANALYSIS_VERSION,
+            media_type=streamdetails.media_type,
+        )
+
+    async def _record_existing_identifiers(
+        self, streamdetails: StreamDetails, track: Track
+    ) -> None:
+        """
+        Persist a track's existing MBID/ISRC as an analysis result, as if freshly looked up.
+
+        :param streamdetails: Stream details for the already-identified track.
+        :param track: Library track carrying the existing identifiers.
+        """
+        extra_data: dict[str, Any] = {"source": "existing_tags"}
+        if track.mbid:
+            extra_data["mbid"] = track.mbid
+        if isrc := track.get_external_id(ExternalID.ISRC):
+            extra_data["isrc"] = isrc
+        await self.mass.streams.audio_analysis.set_audio_analysis(
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            aa_provider_domain=self.domain,
+            analysis=AudioAnalysisData(extra_data=extra_data),
+            analysis_version=self.analysis_version,
+            media_type=streamdetails.media_type,
+        )
+
+    # None can signal an auth/bad-request failure as well as "no match", so don't cache it
+    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL, cache_none=False)
+    @throttle_with_retries
+    async def _lookup(self, api_key: str, fingerprint: str, duration: int) -> dict[str, Any] | None:
+        """
+        Look up a fingerprint against the AcoustID web service.
+
+        :param api_key: AcoustID API key for this deployment.
+        :param fingerprint: Base64 chromaprint fingerprint string.
+        :param duration: Full track duration in seconds. AcoustID expects the
+            track length here, not the duration of audio actually fingerprinted.
+        :raises ResourceTemporarilyUnavailable: On a 429 or 5xx response.
+        """
+        params = {
+            "client": api_key,
+            # Selectors must be space-separated; AcoustID rejects '+'-joined values.
+            "meta": "recordings releases releasegroups",
+            "fingerprint": fingerprint,
+            "duration": str(duration),
+            "format": "json",
+        }
+        async with self.mass.http_session.get(ACOUSTID_LOOKUP_URL, params=params) as response:
+            if response.status == 429:
+                backoff = int(response.headers.get("Retry-After", 0))
+                raise RateLimited("AcoustID rate limit", backoff_time=backoff)
+            if 500 <= response.status < 600:
+                raise ResourceTemporarilyUnavailable("AcoustID server error", backoff_time=30)
+            if response.status in (401, 403):
+                self.logger.error(
+                    "AcoustID lookup unauthorised (HTTP %d) — check the configured API key",
+                    response.status,
+                )
+                return None
+            if response.status >= 400:
+                self.logger.debug("AcoustID returned HTTP %d — discarding result", response.status)
+                return None
+            payload = await response.json()
+        if not isinstance(payload, dict):
+            self.logger.debug(
+                "AcoustID response was not a JSON object (got %s) — discarding",
+                type(payload).__name__,
+            )
+            return None
+        if payload.get("status") != "ok":
+            self.logger.debug("AcoustID response status=%s — discarding", payload.get("status"))
+            return None
+        return payload
 
     async def _fetch_mb_extras(
         self, mbid: str, *, include_artist_mbids: bool = True
@@ -617,7 +777,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return
         try:
             album_item_id = int(album_item_id_raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.logger.debug(
                 "Skipping album lookup — album id %r is not an integer", album_item_id_raw
             )

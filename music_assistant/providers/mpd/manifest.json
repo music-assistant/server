@@ -2,9 +2,10 @@
   "type": "player",
   "domain": "mpd",
   "name": "MPD Players",
+  "stage": "stable",
   "description": "Stream music from Music Assistant to any device running MPD (Music Player Daemon).",
   "codeowners": ["@OzGav"],
   "requirements": ["python-mpd2>=3.1.1"],
-  "documentation": "https://music-assistant.io/music-providers/mpd/",
+  "documentation": "https://music-assistant.io/player-support/music-player-daemon/",
   "multi_instance": false
 }

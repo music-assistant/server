@@ -112,7 +112,8 @@ def test_select_best_quality_none_preferred_returns_highest_bitrate(
 
 
 def _flac_streaminfo_payload(sample_rate: int, bit_depth: int) -> bytes:
-    """Build a 34-byte FLAC STREAMINFO payload for the given sample_rate/bit_depth.
+    """
+    Build a 34-byte FLAC STREAMINFO payload for the given sample_rate/bit_depth.
 
     Layout of bytes 10..14 (4 bytes, big-endian, 32 bits total):
         sample_rate (20) | channels (3) | bps_minus_1 (5) | total_samples_hi (4)

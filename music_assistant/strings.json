@@ -1,0 +1,1247 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Username",
+      "description": "The username to authenticate to the remote server."
+    },
+    "password": {
+      "label": "Password",
+      "description": "The password to authenticate to the remote server."
+    },
+    "email": {
+      "label": "Email",
+      "description": "The email address to authenticate to the remote server."
+    },
+    "max_num_episodes": {
+      "label": "Maximum number of episodes (0 for unlimited)",
+      "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
+    },
+    "suffix_version": {
+      "label": "Suffix version to track names",
+      "description": "Whether to add the version as suffix to track names, e.g. 'Amazing Track (Live)'."
+    },
+    "scrobble_users": {
+      "label": "Scrobble for users",
+      "description": "Only register scrobbles for the selected users. Leave empty to scrobble for all users."
+    },
+    "scrobble_players": {
+      "label": "Scrobble for players",
+      "description": "Only register scrobbles for the selected players. Leave empty to scrobble for all players."
+    },
+    "announce_volume": {
+      "label": "Volume for Announcements",
+      "description": "The percentual, relative or absolute volume level, used with the strategy for announcements."
+    },
+    "announce_volume_max": {
+      "label": "Maximum Volume level for Announcements",
+      "description": "The volume (adjustment) of announcements should not go above this level."
+    },
+    "announce_volume_min": {
+      "label": "Minimum Volume level for Announcements",
+      "description": "The volume (adjustment) of announcements should not go below this level."
+    },
+    "announce_volume_strategy": {
+      "label": "Volume strategy for Announcements",
+      "description": "When an announcement is being broadcast to this player, how should the volume be adjusted temporarily (use in combination with the volume value below)?",
+      "options": {
+        "absolute": "Absolute volume",
+        "relative": "Relative volume increase",
+        "percentual": "Volume increase by fixed percentage",
+        "none": "Do not adjust volume"
+      },
+      "option_descriptions": {
+        "absolute": "Play announcements at the fixed volume set below, ignoring the player's current volume.",
+        "relative": "Raise the current volume by the amount set below while the announcement plays.",
+        "percentual": "Raise the current volume by the percentage set below while the announcement plays.",
+        "none": "Leave the volume unchanged; play the announcement at the player's current volume."
+      }
+    },
+    "auto_play": {
+      "label": "Automatically play (resume on power on)",
+      "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
+    },
+    "crossfade_different_sample_rates": {
+      "label": "Allow crossfades between tracks of different sample rates",
+      "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
+    },
+    "enable_icy_metadata": {
+      "label": "Try to inject metadata into stream (ICY)",
+      "description": "Try to inject metadata into the stream (ICY) to show track info on the player, even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by online radio stations to show you what is playing. \n\nBe aware that not all players support this correctly. If you experience issues with playback, try disabling this setting.",
+      "options": {
+        "disabled": "Disabled - do not send ICY metadata",
+        "basic": "Profile 1 - basic info",
+        "full": "Profile 2 - full info (including image)"
+      },
+      "option_descriptions": {
+        "disabled": "Don't inject metadata; the player won't show track info during flow mode.",
+        "basic": "Send title and artist only. Lightweight and widely compatible.",
+        "full": "Also send album name and cover art. Richer, but some players mishandle it — use Basic if you see playback issues."
+      }
+    },
+    "flow_mode": {
+      "label": "Enable queue flow mode",
+      "description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream.\nUse for players that do not natively support gapless and/or crossfading or if the player has trouble transitioning between tracks."
+    },
+    "flow_mode_sample_rate": {
+      "label": "Flow Mode sample rate",
+      "description": "When streaming in Flow Mode, the entire queue is sent as one gapless stream and must use a single sample rate for the whole stream.",
+      "options": {
+        "smart": "Smart",
+        "bit_perfect": "Bit-perfect",
+        "48000": "48 kHz",
+        "96000": "96 kHz",
+        "highest": "Highest supported by player"
+      },
+      "option_descriptions": {
+        "smart": "Starts at the first track's rate; upsamples lower-rate tracks to match, and restarts the stream only when a track has a higher rate. Best balance of quality and seamless playback.",
+        "bit_perfect": "Never resamples. Playback restarts between tracks of differing sample rates, which disables gapless and crossfade across those transitions.",
+        "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
+        "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
+        "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
+      }
+    },
+    "http_profile": {
+      "label": "HTTP Profile used for sending audio",
+      "description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
+      "options": {
+        "chunked": "Profile 1 - chunked",
+        "no_content_length": "Profile 2 - no content length",
+        "forced_content_length": "Profile 3 - forced content length"
+      },
+      "option_descriptions": {
+        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
+        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
+        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
+      }
+    },
+    "icon": {
+      "label": "Icon",
+      "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
+    },
+    "ignore_album_playlists": {
+      "label": "Ignore playlists with album tracks within album folders",
+      "description": "A digital album often comes with a playlist file (.m3u) that contains the tracks of the album. \nAdding all these playlists to the library, is not very practical so it's better to just ignore them.\n\nIf this option is enabled, all playlists will be ignored which are more than 1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u"
+    },
+    "missing_album_artist_action": {
+      "label": "Action when a track is missing the Albumartist ID3 tag",
+      "description": "How to fill in the album artist for tracks with no Albumartist tag. This affects how those albums are grouped in your library.",
+      "options": {
+        "track_artist": "Use Track artist(s)",
+        "various_artists": "Use Various Artists",
+        "folder_name": "Use Folder name (if possible)"
+      },
+      "option_descriptions": {
+        "track_artist": "Use the track's own artist(s). Can split an album across artists when its tracks differ.",
+        "various_artists": "Group everything under a single 'Various Artists' album artist. Keeps the album together; best for compilations.",
+        "folder_name": "Use the containing folder's name, falling back to 'Various Artists' when it can't be determined."
+      }
+    },
+    "propagate_track_genres": {
+      "label": "Propagate track genres to albums and artists",
+      "description": "Derive album and artist genres from their tracks when the album/artist has no genre metadata of its own. Useful when your files only have genres tagged at track level."
+    },
+    "library_sync_album_tracks": {
+      "label": "Import album tracks",
+      "description": "By default, when importing Albums into the library, only the Album itself will be imported into the Music Assistant Library, allowing you to manually browse and select which tracks you want to import. \n\nIf you want to override this default behavior, you can use this configuration option.\n\nPlease note that some (streaming) sources may already define this behavior unsolicited, by automatically adding all tracks from the album to their library/favorites."
+    },
+    "library_sync_albums": {
+      "label": "Sync Library Albums from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Albums from this source to the Music Assistant Library. \n\nPlease note that by adding an Album into the Music Assistant library, the Album Artists will always be imported as well."
+    },
+    "library_sync_artists": {
+      "label": "Sync Library Artists from this source to Music Assistant",
+      "description": "Whether to synchronize (favourited/in-library) Artists from this source to the Music Assistant Library."
+    },
+    "library_sync_audiobooks": {
+      "label": "Sync Library Audiobooks from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Audiobooks from this source to the Music Assistant Library."
+    },
+    "library_sync_back": {
+      "label": "Sync back library additions/removals (2-way sync)",
+      "description": "Specify the behavior if an item is manually added to (or removed from) the Music Assistant Library. \nShould we synchronise that action back to the source?\n\nPlease note that if you you don't sync back to the source and you have enabled automatic sync/import for this source, a removed item may reappear in the library the next time a sync is performed."
+    },
+    "library_sync_deletions": {
+      "label": "Sync library deletions",
+      "description": "When enabled, items removed from the source's library will also be hidden from the Music Assistant library.\n\nWhen disabled, items removed from the source will remain visible in the Music Assistant library."
+    },
+    "library_sync_playlist_tracks": {
+      "label": "Import playlist tracks",
+      "description": "By default, when importing Playlists into the library, only the Playlist itself will be imported into the Music Assistant Library, allowing you to browse and play the Playlist and optionally add any individual tracks of the Playlist to the Music Assistant Library manually. \n\nUse this configuration option to override this default behavior, by specifying the Playlists for which you'd like to import all tracks.\nYou can either enter the Playlist name (case sensitive) or the Playlist URI."
+    },
+    "library_sync_playlists": {
+      "label": "Sync Library Playlists from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Playlists from this source to the Music Assistant Library."
+    },
+    "library_sync_podcasts": {
+      "label": "Sync Library Podcasts from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Podcasts from this source to the Music Assistant Library."
+    },
+    "library_sync_radios": {
+      "label": "Sync Library Radios from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Radio stations from this source to the Music Assistant Library."
+    },
+    "library_sync_tracks": {
+      "label": "Sync Library Tracks from this source to Music Assistant",
+      "description": "Whether to import (favourited/in-library) Tracks from this source to the Music Assistant Library. \n\nPlease note that by adding a Track into the Music Assistant library, the Track's Artists and Album will always be imported as well."
+    },
+    "log_level": {
+      "label": "Log level",
+      "description": "Set the log verbosity for this provider.",
+      "options": {
+        "GLOBAL": "Global",
+        "INFO": "Info",
+        "WARNING": "Warning",
+        "ERROR": "Error",
+        "DEBUG": "Debug",
+        "VERBOSE": "Verbose"
+      }
+    },
+    "manual_discovery_ip_addresses": {
+      "label": "Manual IP addresses for discovery",
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network. using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nIn case of special network setups or when you run into issues where one or more players are not discovered, you can manually add the IP addresses of the players here. \n\nNote that this setting is not recommended for normal use and should only be used if you know what you are doing. Also, if players are not on the same subnet as the Music Assistant server, you may run into issues with streaming. In that case always ensure that the players can reach the server on the network and double check the base URL configuration of the Stream server in the settings."
+    },
+    "max_volume": {
+      "label": "Maximum volume",
+      "description": "Maximum device volume. The volume slider (0-100) will be scaled to this as the upper bound."
+    },
+    "min_volume": {
+      "label": "Minimum volume",
+      "description": "Minimum device volume. The volume slider (0-100) will be scaled to this as the lower bound."
+    },
+    "output_channels": {
+      "label": "Output Channel Mode",
+      "description": "You can configure this player to play only the left or right channel, for example to create a stereo pair with 2 players.",
+      "options": {
+        "stereo": "Stereo (both channels)",
+        "left": "Left channel only",
+        "right": "Right channel only",
+        "mono": "Mono (both channels)"
+      }
+    },
+    "output_codec": {
+      "label": "Output codec to use for streaming audio to the player",
+      "description": "Select the codec to use for streaming audio to this player. \nBy default, Music Assistant sends lossless, high quality audio to all players and prefers the FLAC codec because it offers some compression while still remaining lossless \n\nSome players however do not support FLAC and require the stream to be packed into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
+      "options": {
+        "flac": "FLAC (lossless, compressed)",
+        "mp3": "MP3 (lossy)",
+        "aac": "AAC (lossy)",
+        "wav": "WAV (uncompressed PCM)"
+      },
+      "option_descriptions": {
+        "flac": "Lossless and compressed — full quality at a moderate bitrate. The default and best choice for most players.",
+        "mp3": "Lossy — smaller bitrate at some quality cost. Use for players that can't play FLAC, or to save bandwidth.",
+        "aac": "Lossy — comparable to MP3; pick it for players that prefer AAC.",
+        "wav": "Uncompressed PCM audio in a WAV container — highest bandwidth. Only needed for players that can't handle FLAC."
+      }
+    },
+    "prefer_wav_for_live_sources": {
+      "label": "Prefer low-latency WAV for live sources",
+      "description": "Send live sources such as Spotify Connect and AirPlay Receiver as uncompressed PCM audio in a WAV container to reduce playback delay. Disable this if the player cannot play continuous WAV streams; Music Assistant will use the configured output codec instead."
+    },
+    "play_media_overrides_group": {
+      "label": "Play Media overrides active group",
+      "description": "When this player is currently captured by an active group or sync session, an explicit Play Media command (e.g. starting a new playlist or track from Home Assistant) will release this player from the group/sync and play the new media directly on this player. Disable this to keep the legacy behavior where Play Media is redirected to the group leader. Other commands (next/prev/pause/resume) are always forwarded to the group leader as they act on the existing playback."
+    },
+    "preview_note": {
+      "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
+    },
+    "sample_rates": {
+      "label": "Sample rates supported by this player",
+      "description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",
+      "options": {
+        "44100||16": "44.1kHz / 16 bits",
+        "44100||24": "44.1kHz / 24 bits",
+        "48000||16": "48kHz / 16 bits",
+        "48000||24": "48kHz / 24 bits",
+        "88200||16": "88.2kHz / 16 bits",
+        "88200||24": "88.2kHz / 24 bits",
+        "96000||16": "96kHz / 16 bits",
+        "96000||24": "96kHz / 24 bits",
+        "176400||16": "176.4kHz / 16 bits",
+        "176400||24": "176.4kHz / 24 bits",
+        "192000||16": "192kHz / 16 bits",
+        "192000||24": "192kHz / 24 bits",
+        "352800||16": "352.8kHz / 16 bits",
+        "352800||24": "352.8kHz / 24 bits",
+        "384000||16": "384kHz / 16 bits",
+        "384000||24": "384kHz / 24 bits"
+      }
+    },
+    "sync_adjust": {
+      "label": "Audio synchronization delay correction",
+      "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
+    },
+    "tts_pre_announce": {
+      "label": "Pre-announce TTS announcements",
+      "description": "When a TTS (text-to-speech) message is sent to the Announce feature, prepend the announcement with a short pre-announcement sound (bell whistle)."
+    },
+    "unofficial_provider_note": {
+      "label": "This is an unofficial integration that is not affiliated with, supported by, or endorsed by the music service. It relies on interfaces that are not officially supported and may stop working at any time. Use of this provider may also be subject to the service's terms of use."
+    },
+    "volume_normalization_target": {
+      "label": "Target level for volume normalization",
+      "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
+    },
+    "zeroconf_interfaces": {
+      "label": "Mdns/Zeroconf discovery interface(s)",
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.",
+      "options": {
+        "default": "Default interface",
+        "all": "All interfaces"
+      }
+    },
+    "protocol_enable": {
+      "label": "Enable this protocol on this player",
+      "description": "Enable or disable this output protocol for the player."
+    },
+    "protocol_enable_via": {
+      "label": "Enable this protocol on this player",
+      "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
+    },
+    "pre_announcement_chime_url": {
+      "label": "Custom (pre)announcement chime URL",
+      "description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3"
+    },
+    "hide_in_ui": {
+      "label": "Hide this player in the user interface",
+      "description": "Hide this player from the main players list and dashboard selection menus.  The player remains fully controllable and still appears in any sync group it currently belongs to and in the settings. Disable the player to exclude it everywhere."
+    },
+    "expose_player_to_ha": {
+      "label": "Expose this player to Home Assistant",
+      "description": "Expose this player to the Home Assistant integration. \nIf disabled, this player will not be imported into Home Assistant."
+    },
+    "power_control": {
+      "label": "Power Control",
+      "options": {
+        "native": "Native power control",
+        "none": "None",
+        "fake": "Fake power control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native power control."
+      }
+    },
+    "volume_control": {
+      "label": "Volume Control",
+      "options": {
+        "native": "Native volume control",
+        "follow_protocol": "Auto-select (based on active/preferred protocol)",
+        "none": "None"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native volume control."
+      }
+    },
+    "mute_control": {
+      "label": "Mute Control",
+      "options": {
+        "native": "Native mute control",
+        "follow_protocol": "Auto-select (based on active/preferred protocol)",
+        "none": "None",
+        "fake": "Fake mute control"
+      },
+      "disabled_reasons": {
+        "native": "This player does not support native mute control."
+      }
+    },
+    "preferred_output_protocol": {
+      "label": "Preferred Output Protocol",
+      "description": "Select the preferred protocol for audio playback to this device.",
+      "options": {
+        "auto": "Auto-select"
+      },
+      "disabled_reasons": {
+        "needs_setup": "This output must be set up before it can be used.",
+        "unavailable": "This output is currently not available.",
+        "turned_off": "This output is turned off."
+      }
+    },
+    "bind_port": {
+      "label": "TCP Port",
+      "description": "The TCP port to run the server. Make sure that this server can be reached on the given IP and TCP port by players on the local network."
+    },
+    "bind_ip": {
+      "label": "Bind to IP/interface",
+      "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
+    },
+    "content_type": {
+      "label": "Content type",
+      "description": "The type of content stored in this location",
+      "options": {
+        "audiobooks": "Audiobooks",
+        "music": "Music",
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound Effects"
+      }
+    },
+    "mass_player_id": {
+      "options": {
+        "__auto__": "Auto (prefer playing player)"
+      },
+      "label": "Connected Music Assistant Player"
+    },
+    "auth_device": {
+      "label": "Login with device code",
+      "description": "Open a verification URL on any device and enter the short code.",
+      "action_label": "Login with device code"
+    },
+    "auth_qr": {
+      "label": "Login with QR code",
+      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
+      "action_label": "Login with QR code"
+    },
+    "auth_cookies": {
+      "label": "Login with Cookies",
+      "description": "Authenticate using browser cookies from passport.yandex.ru.",
+      "action_label": "Login with Cookies"
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires — toggling this off after logging in immediately drops the stored long-lived tokens."
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "action_label": "Reset authentication",
+      "description": "Clear the current authentication details."
+    },
+    "verify_ssl": {
+      "label": "Verify SSL",
+      "description": "Whether or not to verify the certificate of SSL/TLS connections."
+    },
+    "child": {
+      "label": "Device to set up",
+      "description": "Choose which connected device to set up."
+    },
+    "ai_engine": {
+      "label": "AI engine",
+      "description": "The AI engine used for this feature."
+    },
+    "ai_engine_unavailable": {
+      "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
+    },
+    "tts_engine": {
+      "label": "Text-to-speech engine",
+      "description": "The text-to-speech engine used for this feature."
+    },
+    "tts_engine_unavailable": {
+      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    }
+  },
+  "config_categories": {
+    "generic": "Generic",
+    "advanced": "Advanced",
+    "announcements": "Announcements",
+    "player_controls": "Player controls",
+    "sync_options": "Sync/import options",
+    "builtin_playlists": "Builtin Playlists",
+    "web_player": "Web Player",
+    "playback": "Queue Playback",
+    "items_to_select": "Items to select",
+    "default_enqueue_option": "Default enqueue option",
+    "click_actions": "Click actions",
+    "autoplay": "Autoplay",
+    "crossfade": "Crossfade",
+    "smart_shuffle": "Smart shuffle",
+    "protocol_settings": "Output Protocol(s)",
+    "protocol_output_settings": "Enable {0} support",
+    "protocol_output_settings_via": "Enable {0} support (over {1})",
+    "dsp": "Digital Signal Processing (DSP)",
+    "options": "Player options",
+    "audio": "Audio",
+    "preferences": "Preferences",
+    "display_settings": "Display",
+    "airplay": "AirPlay specific settings",
+    "protocol_generic": "Generic",
+    "protocol_general": "General",
+    "audio_analysis": "Audio Analysis",
+    "presets": "Presets",
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
+  },
+  "media": {
+    "genre": {
+      "afrobeats": {
+        "name": "Afrobeats (West African Urban/Pop Music)",
+        "description": "Afrobeats, not to be confused with Afrobeat or Afroswing, is an umbrella term to describe popular music from West Africa and the diaspora that initially developed in Nigeria, Ghana, and the UK in the 2000s and 2010s. Afrobeats is less of a style per se, and more of a descriptor for the fusion of sounds flowing out of Nigeria and Ghana. Genres such as hiplife, jùjú music, highlife, azonto music, and naija beats, among others, were amalgamated under the \"Afrobeats\" umbrella."
+      },
+      "ambient": {
+        "name": "Ambient",
+        "description": "Ambient music is a genre of music that emphasizes tone and atmosphere over traditional musical structure or rhythm. Often \"peaceful\" sounding and lacking composition, beat, and/or structured melody, ambient music uses textural layers of sound that can reward both passive and active listening, and encourage a sense of calm or contemplation. The genre evokes an \"atmospheric\", \"visual\", or \"unobtrusive\" quality. Nature soundscapes may be included, and some works use sustained or repeated notes, as in drone music. Bearing elements associated with new-age music, instruments such as the piano, strings and flute may be emulated through a synthesizer."
+      },
+      "anime_and_video_game_music": {
+        "name": "Anime & Video Game Music",
+        "description": "Video game music (VGM) is the soundtrack that accompanies video games. Early video game music was once limited to sounds of early sound chips, such as programmable sound generators (PSG) or FM synthesis chips. These limitations have led to the style of music known as chiptune, which became the sound of the early video games."
+      },
+      "asian_music": {
+        "name": "Asian Music",
+        "description": "Asian music encompasses numerous musical styles, diverse cultural and religious traditions, and forms originating on the Asian continent."
+      },
+      "bluegrass": {
+        "name": "Bluegrass",
+        "description": "Bluegrass music is a genre of American roots music that developed in the 1940s in the Appalachian region of the United States. The genre derives its name from the band Bill Monroe and the Blue Grass Boys. Bluegrass has roots in African American genres like blues and jazz and North European genres, such as Irish ballads and dance tunes. Unlike country, it is traditionally played exclusively on acoustic instruments such as the fiddle, mandolin, banjo, guitar and upright bass. It was further developed by musicians who played with Monroe, including 5-string banjo player Earl Scruggs and guitarist Lester Flatt. Bill Monroe once described bluegrass music as, \"It's a part of Methodist, Holiness and Baptist traditions. It's blues and jazz, and it has a high lonesome sound.\""
+      },
+      "blues": {
+        "name": "Blues",
+        "description": "Blues is a music genre and musical form that originated among African Americans in the Deep South of the United States around the 1860s. Blues has incorporated spirituals, work songs, field hollers, shouts, chants, and rhymed simple narrative ballads from the African-American culture. The blues form is ubiquitous in jazz, rhythm and blues, and rock and roll, and is characterized by the call-and-response pattern, the blues scale, and specific chord progressions, of which the twelve-bar blues is the most common. Blue notes, usually thirds, fifths or sevenths flattened in pitch, are also an essential part of the sound. Blues shuffles or walking bass reinforce the trance-like rhythm and form a repetitive effect known as the groove."
+      },
+      "brazilian_music": {
+        "name": "Brazilian Music",
+        "description": "The music of Brazil encompasses various regional musical styles influenced by European, American, African and Amerindian forms. Brazilian music developed some unique and original styles such as forró, repente, coco de roda, axé, sertanejo, samba, bossa nova, MPB, gaucho music, pagode, tropicália, choro, maracatu, embolada, frevo, brega, modinha and Brazilian versions of foreign musical styles, such as rock, pop music, soul, hip-hop, disco music, country music, ambient, industrial and psychedelic music, rap, classical music, fado, and gospel."
+      },
+      "chanson": {
+        "name": "Chanson",
+        "description": "A chanson is generally any lyric-driven French song. The term is most commonly used in English to refer either to the secular polyphonic French songs of late medieval and Renaissance music or to a specific style of French pop music which emerged in the 1950s and 1960s. The genre had origins in the monophonic songs of troubadours and trouvères, though the only polyphonic precedents were 16 works by Adam de la Halle and one by Jehan de Lescurel. Not until the ars nova composer Guillaume de Machaut did any composer write a significant number of polyphonic chansons."
+      },
+      "childrens_music": {
+        "name": "Children's Music",
+        "description": "Children's music or kids' music is music composed and performed for children. In European-influenced contexts this means music, usually songs, written specifically for a juvenile audience. The composers are usually adults."
+      },
+      "christmas_music": {
+        "name": "Christmas Music",
+        "description": "Christmas music comprises a variety of genres of music regularly performed or heard around the Christmas season. Music associated with Christmas may be purely instrumental, or in the case of carols, may employ lyrics about the nativity of Jesus Christ, traditions such as gift-giving and merrymaking, cultural figures such as Santa Claus, or other topics. Many songs simply have a winter or seasonal theme, or have been adopted into the canon for other reasons."
+      },
+      "church_music": {
+        "name": "Church Music",
+        "description": "Church music is a genre of Christian music written for performance in church, or any musical setting of ecclesiastical liturgy, or music set to words expressing propositions of a sacred nature, such as a hymn."
+      },
+      "classical": {
+        "name": "Classical",
+        "description": "Art music is music considered to be of high phonoaesthetic value. It typically implies advanced structural and theoretical considerations or a written musical tradition. In this context, the terms \"serious\" or \"cultivated\" are frequently used to present a contrast with ordinary, everyday music. Many cultures have art music traditions; in the Western world, the term typically refers to Western classical music."
+      },
+      "comedy": {
+        "name": "Comedy",
+        "description": "Comedy music or musical comedy is a genre of music that is comedic in nature. Its history can be traced back to the first century in ancient Greece and Rome, moving forward in time to the Medieval Period, Classical and Romantic eras, and the 20th century. Various forms of comedic musical theatre, including \"musical play\", \"musical comedy\", \"operetta\" and \"light opera\", evolved from the comic operas first developed in late 17th-century Italy. Popular music artists in the 20th century interested in comedy include Allan Sherman, Frank Zappa, Tiny Tim, Barenaked Ladies, Randy Newman, and \"Weird Al\" Yankovic. Artists in the 21st century include Tenacious D, Flight of the Conchords, The Lonely Island, Ninja Sex Party and The Axis of Awesome."
+      },
+      "country": {
+        "name": "Country",
+        "description": "Country music, also known as country and western or simply country, is a music genre known for its ballads and dance tunes, identifiable by both traditional lyrics and harmonies accompanied by banjos, mandolins, fiddles, harmonicas, and many types of guitar; either acoustic, electric, steel, or resonator guitars. Once called hillbilly music, the term country music was popularized in the 1940s to give it a correct term."
+      },
+      "dance": {
+        "name": "Dance",
+        "description": "Dance music is music composed specifically to facilitate or accompany dancing. It can be either a whole piece or part of a larger musical arrangement. In terms of performance, the major categories are live dance music and recorded dance music. While there exist attestations of the combination of dance and music in ancient history, the earliest Western dance music that we can still reproduce with a degree of certainty are old-fashioned dances. In the Baroque period, the major dance styles were noble court dances. In the classical music era, the minuet was frequently used as a third movement, although in this context it would not accompany any dancing. The waltz also arose later in the classical era. Both remained part of the romantic music period, which also saw the rise of various other nationalistic dance forms like the barcarolle, mazurka, ecossaise, ballade and polonaise."
+      },
+      "dark_ambient": {
+        "name": "Dark Ambient",
+        "description": "Dark ambient is a subgenre of post-industrial music, that originally emerged in the mid-1980s. It draws primary influence from ambient music and is characterized by ominous, dark drones, discordant overtones and a gloomy, monumental or catacomb-inspired atmosphere. Although mostly an electronic genre, artists frequently sample traditional instruments and make use of semi-acoustic recording procedures."
+      },
+      "dark_wave": {
+        "name": "Dark Wave",
+        "description": "Dark wave is a music genre that emerged from the new wave and post-punk movement of the late 1970s. Dark wave compositions are largely based on minor key tonality and introspective lyrics and have been perceived as being dark, romantic and bleak, with an undertone of sorrow. Common features include the use of chordophones such as electric and acoustic guitar, violin and piano, as well as electronic instruments such as synthesizer, sampler and drum machine. Like new wave, dark wave is not a \"unified genre but rather an umbrella term\" that encompasses a variety of musical styles, including cold wave, ethereal wave, gothic rock, neoclassical dark wave and neofolk."
+      },
+      "disco": {
+        "name": "Disco",
+        "description": "Disco is a genre of dance music and a subculture that emerged in the late 1960s from the United States' urban nightlife scene, particularly in African-American, Italian-American, Latino and queer communities. Its sound is typified by four-on-the-floor beats, syncopated basslines, string sections, brass and horns, electric pianos, synthesizers, and electric rhythm guitars."
+      },
+      "electronic": {
+        "name": "Electronic",
+        "description": "Electronic music broadly is a group of music genres that employ electronic musical instruments, circuitry-based music technology and software, or general-purpose electronics in its creation. It includes both music made using electronic and electromechanical means. Pure electronic instruments depend entirely on circuitry-based sound generation, for instance using devices such as an electronic oscillator, theremin, or synthesizer: no acoustic waves need to be previously generated by mechanical means and then converted into electrical signals. On the other hand, electromechanical instruments have mechanical parts such as strings or hammers that generate the sound waves, together with electric elements including magnetic pickups, power amplifiers and loudspeakers that convert the acoustic waves into electrical signals, process them and convert them back into sound waves. Such electromechanical devices include the telharmonium, Hammond organ, electric piano and electric guitar."
+      },
+      "experimental": {
+        "name": "Experimental",
+        "description": "Experimental music is a general label for any music or music genre that pushes existing boundaries and genre definitions. Experimental compositional practice is defined broadly by exploratory sensibilities radically opposed to, and questioning of, institutionalized compositional, performing, and aesthetic conventions in music. Elements of experimental music include indeterminacy, in which the composer introduces the elements of chance or unpredictability with regard to either the composition or its performance. Artists may approach a hybrid of disparate styles or incorporate unorthodox and unique elements."
+      },
+      "field_recording": {
+        "name": "Field Recording",
+        "description": "Field recording is the production of audio recordings outside recording studios, and the term applies to recordings of both natural and human-produced sounds. It can also include the recording of electromagnetic fields or vibrations using different microphones like a passive magnetic antenna for electromagnetic recordings or contact microphones, or underwater field recordings made with hydrophones to capture the sounds and/or movements of whales, or other sealife. These recordings are often regarded as being very useful for sound designers and foley artists."
+      },
+      "folk": {
+        "name": "Folk",
+        "description": "Folk music is a music genre that includes traditional folk music and the contemporary genre that evolved from the former during the 20th-century folk revival. Some types of folk music may be called world music. Traditional folk music has been defined in several ways: as music transmitted orally, music with unknown composers, music that is played on traditional instruments, music about cultural or national identity, music that changes between generations, music associated with a people's folklore, or music performed by custom over a long period of time. It has been contrasted with commercial and classical styles. The term originated in the 19th century, but folk music extends beyond that."
+      },
+      "funk": {
+        "name": "Funk",
+        "description": "Funk is a music genre that originated in African-American communities in the mid-1960s when musicians created a rhythmic, danceable new form of music through a mixture of various music genres that were popular among African-Americans in the mid-20th century. It deemphasizes melody and chord progressions and focuses on a strong rhythmic groove of a bassline played by an electric bassist and a drum part played by a percussionist, often at slower tempos than other popular music. Funk typically consists of a complex percussive groove with rhythm instruments playing interlocking grooves that create a \"hypnotic\" and \"danceable\" feel. Early funk, specifically James Brown, fused jazz and blues, and added a syncopated drum groove."
+      },
+      "gangsta_rap": {
+        "name": "Gangsta Rap",
+        "description": "Gangsta or gangster rap, initially called reality rap, is a subgenre of hip-hop that conveys the culture, values, and experiences of urban gangs and street hustlers, frequently discussing unpleasant realities of the world in general through an urban lens. Emerging in the late 1980s, gangsta rap's pioneers include Schoolly D and Ice-T, later expanding with artists such as N.W.A. In 1992, via record producer and rapper Dr. Dre, rapper Snoop Dogg, and their G-funk sound, gangster rap broadened to mainstream popularity."
+      },
+      "gospel": {
+        "name": "Gospel",
+        "description": "Gospel music is a traditional genre of Christian music and a cornerstone of Christian media, characterized by dominant vocals and lyrics that reflect Christian teachings and values. The creation, performance, significance, and even the definition of gospel music vary according to culture and social context. Gospel music is composed and performed for many purposes, including aesthetic pleasure, and also religious or ceremonial purposes, and as an entertainment product for the marketplace. Gospel music can be traced to the early 17th century."
+      },
+      "hip_hop": {
+        "name": "Hip Hop",
+        "description": "Hip-hop is a genre of popular music that emerged in the early 1970s alongside an associated subculture in the African-American and Caribbean immigrants communities of New York City. The musical style is characterized by the synthesis of a wide range of techniques, but rapping is frequent enough that it has become a defining characteristic. Other key markers of the genre are the disc jockey (DJ), turntablism, scratching, beatboxing, and instrumental tracks. Cultural interchange has always been central to the hip-hop genre; it simultaneously borrows from its social environment while commenting on it."
+      },
+      "indian_classical": {
+        "name": "Indian Classical",
+        "description": "Indian classical music is the classical music of the Indian subcontinent. It is generally described using terms like Shastriya Sangeet and Marg Sangeet. It has two major traditions: the North Indian classical music known as Hindustani and the South Indian expression known as Carnatic. Hindustani music emphasizes improvisation and exploration of all aspects of a raga, while Carnatic performances tend to be short composition-based. However, the two systems continue to have more common features than differences. Another unique classical music tradition from the eastern part of India is Odissi music, which has evolved over the last two thousand years."
+      },
+      "industrial": {
+        "name": "Industrial",
+        "description": "Industrial music is a subgenre of experimental music inspired by post-industrial society, initially drawing influences from avant-garde and early electronic music genres such as musique concrète, tape music, noise and sound collage. The term was coined in 1976 by Monte Cazazza and adopted by Throbbing Gristle with the founding of Industrial Records. Other early industrial musicians include NON and Cabaret Voltaire. By the late 1970s, additional artists emerged such as Clock DVA, Nocturnal Emissions, Einstürzende Neubauten, SPK, Nurse with Wound, and Z’EV, alongside Whitehouse who coined the subgenre \"power electronics\"."
+      },
+      "jazz": {
+        "name": "Jazz",
+        "description": "Jazz is a music genre that originated in the African-American communities of New Orleans, Louisiana, in the late 19th and early 20th centuries. Its roots are in blues, ragtime, European harmony, African rhythmic rituals, spirituals, hymns, marches, vaudeville song, and dance music. Since the 1920s Jazz Age, it has been recognized as a major form of musical expression in traditional and popular music. Jazz is characterized by swing and blue notes, complex chords, call and response vocals, polyrhythms and improvisation."
+      },
+      "klezmer": {
+        "name": "Klezmer",
+        "description": "Klezmer is an instrumental musical tradition of the Ashkenazi Jews of Central and Eastern Europe. The essential elements of the tradition include dance tunes, ritual melodies, and virtuosic improvisations played for listening; these would have been played at weddings and other social functions. The musical genre incorporated elements of many other musical genres including Ottoman music, Baroque music, German and Slavic folk dances, and religious Jewish music. As the music arrived in the United States, it lost some of its traditional ritual elements and adopted elements of American big band and popular music. Among the European-born klezmers who popularized the genre in the United States in the 1910s and 1920s were Dave Tarras and Naftule Brandwein; they were followed by American-born musicians such as Max Epstein, Sid Beckerman and Ray Musiker."
+      },
+      "latin": {
+        "name": "Latin",
+        "description": "Latin music is a term used by the music industry as a catch-all category for various styles of music from Ibero-America, which encompasses Latin America, Spain, Portugal, and the Latino population in Canada and the United States, as well as music that is sung in either Spanish or Portuguese. It may also include music from other territories where Spanish- and Portuguese-language music is made."
+      },
+      "marching_band": {
+        "name": "Marching Band",
+        "description": "Marching band is a performance-based, visual-musical genre featuring musicians playing brass, woodwind, and percussion instruments while moving in synchronized, choreographed formations, usually at 120-160+ beats per minute. It blends musical performance with athletic, high-speed marching, often incorporating pop, rock, and classical music alongside traditional military-style marches."
+      },
+      "metal": {
+        "name": "Metal",
+        "description": "umbrella category of music genres of metal branch, derived from heavy metal music while not necessarily being its subgenre"
+      },
+      "middle_eastern_music": {
+        "name": "Middle Eastern Music",
+        "description": "The various nations of the region include the Arabic-speaking countries of the Middle East, the traditional Persian ritual music, the Jewish music of Israel and the diaspora, Kurdish music, Armenian music. Azeri Music, the varied traditions of Cypriot music, the Turkish music of Turkey, traditional Assyrian music, Coptic ritual music in Egypt as well as other genres of Egyptian music in general. It is widely regarded that some Middle-Eastern musical styles have influenced Central Asia, as well as the Balkans, Southern Italy, and Spain."
+      },
+      "musical": {
+        "name": "Musical",
+        "description": "Musical theatre is a form of theatrical performance that combines songs, spoken dialogue, acting and dance. The story and emotional content of a musical – humor, pathos, love, anger – are communicated through words, music, movement and technical aspects of the entertainment as an integrated whole. Although musical theatre overlaps with other theatrical forms like opera and dance, it may be distinguished by the equal importance given to the music as compared with the dialogue, movement and other elements. Since the early 20th century, musical theatre stage works have generally been called, simply, musicals."
+      },
+      "new_age": {
+        "name": "New Age",
+        "description": "New age is a genre of music intended to create artistic inspiration, relaxation, and optimism. It is used by listeners for yoga, massage, meditation, and reading as a method of stress management to bring about a state of ecstasy rather than trance, or to create a peaceful atmosphere in homes or other environments. It is sometimes associated with environmentalism and New Age spirituality; however, most of its artists have nothing to do with \"New Age spirituality\", and some even reject the term."
+      },
+      "poetry": {
+        "name": "Poetry",
+        "description": "Poetry as a musical genre merges spoken-word or recited verse with musical accompaniment, creating a hybrid form focused on emotional expression, storytelling, and rhythm. Often featuring acoustic instruments (piano, guitar) or experimental soundscapes, this genre blurs the line between literature and song, highlighting the inherent melody and cadence in spoken words."
+      },
+      "polka": {
+        "name": "Polka",
+        "description": "Polka is a dance style and genre of dance music in 2/4 time, originating in nineteenth-century Bohemia, now part of the Czech Republic. Though generally associated with Czech and Central European culture, polka is popular throughout Europe and the Americas."
+      },
+      "pop": {
+        "name": "Pop",
+        "description": "Pop music, or simply pop, is a genre of popular music that originated in its modern form during the mid-1950s in the United States and the United Kingdom. During the 1950s and 1960s, pop music encompassed rock and roll and the youth-oriented styles it influenced. Rock and pop music remained roughly synonymous until the late 1960s, after which pop became associated with music that was more commercial, ephemeral, and accessible."
+      },
+      "psychedelic": {
+        "name": "Psychedelic",
+        "description": "Psychedelic music is a wide range of popular music styles and genres influenced by 1960s psychedelia, a subculture of people who used psychedelic drugs such as DMT, LSD, mescaline, and psilocybin mushrooms, to experience synesthesia and altered states of consciousness. Psychedelic music may also aim to enhance the experience of using these drugs and has been found to have a significant influence on psychedelic therapy."
+      },
+      "punk": {
+        "name": "Punk",
+        "description": "umbrella category of music genres related to punk subculture, derived from punk rock music scene while not necessarily being its subgenre"
+      },
+      "r_b": {
+        "name": "R&b",
+        "description": "Rhythm and blues, frequently abbreviated as R&B or R'n'B, is a genre of popular music that originated within African American communities in the 1940s. The term was originally used by record companies to describe recordings marketed predominantly to African Americans, at a time when \"rocking, jazz based music ... [with a] heavy, insistent beat\" was starting to become more popular.\nIn the commercial rhythm and blues music typical of the 1950s through the 1970s, the bands usually consisted of a piano, one or two guitars, bass, drums, one or more saxophones, and sometimes background vocalists. R&B lyrical themes often encapsulate the African-American history and experience of pain and the quest for freedom and joy, as well as triumphs and failures in terms of societal racism, oppression, relationships, economics, and aspirations."
+      },
+      "ragtime": {
+        "name": "Ragtime",
+        "description": "Ragtime, also spelled rag-time or rag time, is a musical style noted for its syncopated or \"ragged\" rhythm. It originated in African American communities in the late 19th century and was propelled to popularity in the 1890s to 1910s by composers such as James Scott, Joseph Lamb, and particularly Scott Joplin. Known as the \"King of Ragtime\", Joplin gained fame through compositions like \"Maple Leaf Rag\" and \"The Entertainer\"."
+      },
+      "rai": {
+        "name": "Raï",
+        "description": "Raï, sometimes written rai, is a form of Algerian folk music that dates back to the 1920s. Singers of Raï are called cheb (شاب) or cheba (شابة), i.e. 'young', as opposed to sheikh, i.e. 'old', the name given to Chaabi singers. The tradition arose in the city of Oran, primarily among the poor. Traditionally sung by men, by the end of the 20th century, female singers became common. The lyrics have concerned social issues such as disease and the policing of European colonies that affected native populations."
+      },
+      "reggae": {
+        "name": "Reggae",
+        "description": "Reggae is a music genre that originated in Jamaica in the late 1960s. The term also refers to the modern popular music of Jamaica and its diaspora. The 1968 single by Toots and the Maytals titled \"Do the Reggay\" was the first popular song to use the word reggae, effectively naming the genre and introducing it to a global audience."
+      },
+      "reggaeton": {
+        "name": "Reggaeton",
+        "description": "Reggaeton is a style of popular and electronic music that originated in Panama during the late 1980s. It has been popularized and dominated by artists from Puerto Rico since the early 1990s."
+      },
+      "rock": {
+        "name": "Rock",
+        "description": "Rock music is a genre of popular music that originated in the United States as \"rock and roll\" in the late 1940s and early 1950s, developing into a range of styles from the mid-1960s, primarily in the United States and United Kingdom. It has its roots in rock and roll, a style that drew from the African-American musical genres of blues and rhythm and blues, as well as from country music. Rock also drew strongly from genres such as electric blues and folk, and incorporated influences from jazz and other styles. Rock is typically centered on the electric guitar, usually as part of a rock group with electric bass guitar, drums, and one or more singers."
+      },
+      "salsa": {
+        "name": "Salsa",
+        "description": "Salsa music is a style of Latin American music, combining elements of Cuban and Puerto Rican influences. Because most of the basic musical components predate the labeling of salsa, there have been many controversies regarding its origin. Most songs considered as salsa are primarily based on son montuno and son cubano, with elements of cha-cha-chá, bolero, rumba, mambo, jazz, R&B, bomba, and plena. All of these elements are adapted to fit the basic Son montuno template when performed within the context of salsa."
+      },
+      "singer_songwriter": {
+        "name": "Singer-Songwriter",
+        "description": "group of musical genres that emerged in the mid-20th century, referring to the music of singer-songwriters, often characterised by political or personal lyrics and minimal acoustic accompaniment"
+      },
+      "ska": {
+        "name": "Ska",
+        "description": "Ska is a music genre that originated in Jamaica in the late 1950s and was the precursor to rocksteady and reggae. It combined elements of Caribbean mento and calypso with American jazz and rhythm and blues. Ska is characterized by a walking bass line accented with rhythms on the off beat. It was developed in Jamaica in the 1960s when Stranger Cole, Prince Buster, Clement \"Coxsone\" Dodd, and Duke Reid formed sound systems to play American rhythm and blues and then began recording their own songs. In the early 1960s, ska was the dominant music genre of Jamaica and was popular with British mods and with many skinheads."
+      },
+      "soul": {
+        "name": "Soul",
+        "description": "Soul music is a popular music genre that originated in African-American communities throughout the United States in the late 1950s and early 1960s. Catchy rhythms, stressed by handclaps and extemporaneous body movements, are an important hallmark of soul. Other characteristics are a call and response between the lead and backing vocalists, an especially tense vocal sound, and occasional improvisational additions, twirls, and auxiliary sounds. Soul music is known for reflecting African-American identity and stressing the importance of African-American culture."
+      },
+      "sound_effects": {
+        "name": "Sound Effects",
+        "description": "Sound effects as a musical genre—often encompassing soundscape composition, musique concrète, and noise music—utilize environmental noises, mechanical sounds, and Foley recordings as primary musical elements rather than traditional melodies or harmonies. This avant-garde approach creates immersive, narrative, and textured auditory experiences."
+      },
+      "soundtrack": {
+        "name": "Soundtrack",
+        "description": "A film score is original music written specifically to accompany a film or a television program. The score consists of a number of orchestral, instrumental, or choral pieces called cues, which are timed to begin and end at specific points during the film to enhance the dramatic narrative and emotional impact of scenes. Scores are written by one or more composers under the guidance of or in collaboration with the film's director or producer and are then most often performed by an ensemble of musicians – usually including an orchestra or band, instrumental soloists, and choir or vocalists – known as playback singers – and recorded by a sound engineer. The term is less frequently applied to music written for media such as live theatre, television and radio programs, and video games, and that music is typically referred to as either the soundtrack or incidental music."
+      },
+      "spoken_word": {
+        "name": "Spoken Word",
+        "description": "Spoken word is a performance-based genre combining spoken poetry, storytelling, or monologue with musical accompaniment or rhythmic delivery, focusing on the voice as the primary instrument. Rooted in oral traditions and the Beat Generation, it merges literary artistry with music, commonly featuring themes of social justice, politics, and personal narrative, often accompanied by jazz, rock, or folk elements."
+      },
+      "swing": {
+        "name": "Swing",
+        "description": "Swing music is a style of jazz that developed in the United States during the late 1920s and early 1930s. It became nationally popular from the mid-1930s. Swing represents the most famous era of jazz as a genre of entertainment, before the emergence of modern jazz. Swing bands usually featured soloists who would improvise on the melody over the arrangement. The danceable swing style of big bands and bandleaders such as Fletcher Henderson and Benny Goodman was the dominant form of American popular music from 1935 to 1946, known as the swing era, when people were dancing the Lindy Hop. The verb \"to swing\" is also used as a term of praise for playing that has a strong groove or drive. Big band leaders of the swing era include Benny Goodman, Duke Ellington, Count Basie, Jimmie Lunceford, Cab Calloway, Benny Carter, Jimmy Dorsey, Tommy Dorsey, Earl Hines, Bunny Berigan, Harry James, Lionel Hampton, Glenn Miller, and Artie Shaw."
+      },
+      "tango": {
+        "name": "Tango",
+        "description": "Tango is a style of music in 2/4 or 4/4 time that originated in Uruguay and Argentina among European immigrants in the late 19th and early 20th centuries. It has mainly Spanish, Italian, Gaucho, African, and French cultural roots. It is traditionally played on a solo guitar, guitar duo, or an ensemble, known as the orquesta típica, which includes at least two violins, flute, piano, double bass, and at least two bandoneóns. Sometimes guitars and a clarinet join the ensemble. Tango may be purely instrumental or may include a vocalist. Tango music and dance have become popular throughout the world."
+      },
+      "trap": {
+        "name": "Trap",
+        "description": "Trap music, also known simply as trap, is a subgenre of hip-hop music that originated in the Southern United States. Lyrical references to trap started in 1991 but the modern sound of trap appeared in 1999. The genre gets its name from the Atlanta term \"trap house\", a drug house. Trap music features simple, rhythmic, minimalistic productions that use synthesized drums and is characterized by complex hi-hat drum beats, snare drums, bass drums, some tuned with a long decay to emit a bass frequency. Lyrics often focus on drug use and urban violence."
+      },
+      "waltz": {
+        "name": "Waltz",
+        "description": "A waltz, probably deriving from German Ländler, is dance music in triple metre, often written in 3/4 time. A waltz typically sounds one chord per measure, and the accompaniment style particularly associated with the waltz is to play the root of the chord on the first beat, the upper notes on the second and third beats."
+      },
+      "wellness": {
+        "name": "Wellness",
+        "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
+      }
+    },
+    "podcast_genre": {
+      "arts": {
+        "name": "Arts",
+        "description": "Podcasts about the arts — books and literature, design, fashion and beauty, food, and the performing and visual arts."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Podcasts on business and the world of work, from careers and entrepreneurship to investing, management and marketing."
+      },
+      "comedy": {
+        "name": "Comedy",
+        "description": "Comedy podcasts, including stand-up, improv and comedic interviews made to entertain and make listeners laugh."
+      },
+      "education": {
+        "name": "Education",
+        "description": "Educational podcasts covering courses, how-to guides, language learning and self-improvement."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Scripted and storytelling podcasts, including audio drama, comedy fiction and science fiction."
+      },
+      "government": {
+        "name": "Government",
+        "description": "Podcasts about government, public policy and the workings of the state."
+      },
+      "health_and_fitness": {
+        "name": "Health & Fitness",
+        "description": "Podcasts on health and fitness, covering nutrition, exercise, medicine, mental health and wellbeing."
+      },
+      "history": {
+        "name": "History",
+        "description": "Podcasts exploring history — events, people and eras from the ancient world to recent times."
+      },
+      "kids_and_family": {
+        "name": "Kids & Family",
+        "description": "Family-friendly podcasts for children and parents, including stories for kids, parenting and education."
+      },
+      "leisure": {
+        "name": "Leisure",
+        "description": "Podcasts about hobbies and pastimes, from games and crafts to automotive, aviation and home & garden."
+      },
+      "music": {
+        "name": "Music",
+        "description": "Podcasts about music — commentary, interviews and the history behind artists, songs and genres."
+      },
+      "news": {
+        "name": "News",
+        "description": "News podcasts covering daily headlines, politics, business, technology, sports and entertainment."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Podcasts on religion and spirituality across faiths and traditions, and on personal spiritual practice."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science podcasts spanning astronomy, physics, chemistry, the life and earth sciences, nature and more."
+      },
+      "society_and_culture": {
+        "name": "Society & Culture",
+        "description": "Podcasts about society and culture, including documentaries, personal journals, philosophy, travel and relationships."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Sports podcasts covering teams, athletes and competitions across the world's games and pastimes."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Podcasts about technology, gadgets, software and the people and ideas shaping the digital world."
+      },
+      "true_crime": {
+        "name": "True Crime",
+        "description": "Podcasts investigating real crimes, cases and the people behind them."
+      },
+      "tv_and_film": {
+        "name": "TV & Film",
+        "description": "Podcasts about television and film, including reviews, interviews, after-shows and screen history."
+      }
+    },
+    "audiobook_genre": {
+      "arts_and_entertainment": {
+        "name": "Arts & Entertainment",
+        "description": "Audiobooks on the arts, media and entertainment, from film and music to the performing and visual arts."
+      },
+      "biography_and_memoir": {
+        "name": "Biography & Memoir",
+        "description": "Life stories — biographies and memoirs of notable people and personal accounts of lived experience."
+      },
+      "business": {
+        "name": "Business",
+        "description": "Audiobooks on business, careers, money and finance, management, marketing and economics."
+      },
+      "classics": {
+        "name": "Classics",
+        "description": "Classic works of literature that have stood the test of time."
+      },
+      "comedy_and_humor": {
+        "name": "Comedy & Humor",
+        "description": "Humorous and comedic audiobooks written to entertain and amuse."
+      },
+      "drama_and_poetry": {
+        "name": "Drama & Poetry",
+        "description": "Dramatic works and poetry, including plays, verse and performance pieces."
+      },
+      "fantasy_and_science_fiction": {
+        "name": "Fantasy & Science Fiction",
+        "description": "Speculative fiction — fantasy, science fiction and imagined worlds."
+      },
+      "fiction": {
+        "name": "Fiction",
+        "description": "Fiction and literature — novels and stories spanning every style and genre."
+      },
+      "foreign_language": {
+        "name": "Foreign Language",
+        "description": "Language-learning audiobooks and works in or about foreign languages."
+      },
+      "history": {
+        "name": "History",
+        "description": "Audiobooks exploring history — events, people and eras across the ages."
+      },
+      "kids_and_young_adult": {
+        "name": "Kids & Young Adult",
+        "description": "Audiobooks for children, teens and young adults, from picture-book stories to young-adult fiction."
+      },
+      "mystery": {
+        "name": "Mystery",
+        "description": "Mystery, thriller and suspense — crime stories, whodunits and page-turners."
+      },
+      "nonfiction": {
+        "name": "Nonfiction",
+        "description": "Nonfiction across every subject — real events, ideas, people and knowledge."
+      },
+      "religion_and_spirituality": {
+        "name": "Religion & Spirituality",
+        "description": "Audiobooks on religion, faith and spirituality across traditions and personal practice."
+      },
+      "romance": {
+        "name": "Romance",
+        "description": "Romance audiobooks, from contemporary love stories to historical and steamy reads."
+      },
+      "science": {
+        "name": "Science",
+        "description": "Science and nature audiobooks spanning the natural world, discovery and how things work."
+      },
+      "self_help": {
+        "name": "Self Help",
+        "description": "Self-help and personal development — guidance for growth, habits, wellbeing and success."
+      },
+      "speakers_and_storytellers": {
+        "name": "Speakers & Storytellers",
+        "description": "Lectures, talks and storytelling performances by notable speakers and storytellers."
+      },
+      "sports": {
+        "name": "Sports",
+        "description": "Audiobooks about sport and recreation — athletes, teams, games and the outdoors."
+      },
+      "technology": {
+        "name": "Technology",
+        "description": "Audiobooks about technology, computing and the ideas shaping the digital world."
+      },
+      "travel_and_adventure": {
+        "name": "Travel & Adventure",
+        "description": "Travel writing and adventure — journeys, places and tales of exploration."
+      }
+    },
+    "folder": {
+      "artists": {
+        "name": "Artists"
+      },
+      "albums": {
+        "name": "Albums"
+      },
+      "tracks": {
+        "name": "Tracks"
+      },
+      "playlists": {
+        "name": "Playlists"
+      },
+      "radios": {
+        "name": "Radio"
+      },
+      "radio_stations": {
+        "name": "Radio Stations"
+      },
+      "audiobooks": {
+        "name": "Audiobooks"
+      },
+      "podcasts": {
+        "name": "Podcasts"
+      },
+      "sound_effects": {
+        "name": "Sound Effects"
+      },
+      "library": {
+        "name": "Library"
+      },
+      "libraries": {
+        "name": "Libraries"
+      },
+      "recommendations": {
+        "name": "Recommendations"
+      },
+      "rock": {
+        "name": "Rock"
+      },
+      "jazz": {
+        "name": "Jazz"
+      },
+      "classical": {
+        "name": "Classical"
+      },
+      "electronic": {
+        "name": "Electronic"
+      },
+      "hiphop": {
+        "name": "Hip-Hop"
+      },
+      "rnb": {
+        "name": "R&B"
+      },
+      "chill": {
+        "name": "Chill"
+      },
+      "party": {
+        "name": "Party"
+      },
+      "relax": {
+        "name": "Relax"
+      },
+      "romantic": {
+        "name": "Romantic"
+      },
+      "sad": {
+        "name": "Sad"
+      },
+      "in_the_mood": {
+        "name": "In the Mood"
+      },
+      "workout": {
+        "name": "Workout"
+      },
+      "focus": {
+        "name": "Focus"
+      },
+      "background": {
+        "name": "Background"
+      },
+      "driving": {
+        "name": "Driving"
+      },
+      "morning": {
+        "name": "Morning"
+      },
+      "evening": {
+        "name": "Evening"
+      },
+      "80s": {
+        "name": "80s"
+      },
+      "90s": {
+        "name": "90s"
+      },
+      "2000s": {
+        "name": "2000s"
+      },
+      "retro": {
+        "name": "Retro"
+      },
+      "winter": {
+        "name": "Winter"
+      },
+      "summer": {
+        "name": "Summer"
+      },
+      "autumn": {
+        "name": "Autumn"
+      },
+      "spring": {
+        "name": "Spring"
+      },
+      "newyear": {
+        "name": "New Year"
+      }
+    },
+    "recommendations": {
+      "artists": {
+        "name": "Artists"
+      },
+      "albums": {
+        "name": "Albums"
+      },
+      "tracks": {
+        "name": "Tracks"
+      },
+      "playlists": {
+        "name": "Playlists"
+      },
+      "radios": {
+        "name": "Radio"
+      },
+      "podcasts": {
+        "name": "Podcasts"
+      },
+      "audiobooks": {
+        "name": "Audiobooks"
+      },
+      "episodes_recently_added": {
+        "name": "Newest Podcast Episodes"
+      },
+      "recently_added_albums": {
+        "name": "Recently added albums"
+      },
+      "most_played_albums": {
+        "name": "Most Played Albums"
+      },
+      "recently_played": {
+        "name": "Recently played",
+        "subtitle": "Pick up where you left off"
+      },
+      "recently_added_tracks": {
+        "name": "Recently added tracks"
+      },
+      "random_artists": {
+        "name": "Random artists"
+      },
+      "recommended_tracks": {
+        "name": "Recommended tracks"
+      },
+      "recommended_new_tracks": {
+        "name": "Recommended new tracks"
+      },
+      "recommended_playlists": {
+        "name": "Recommended playlists"
+      },
+      "trending_stations": {
+        "name": "Trending"
+      },
+      "inspired_by_recently_played": {
+        "name": "Inspired by recently played"
+      },
+      "trending_podcasts": {
+        "name": "Trending Podcasts"
+      },
+      "in_progress_items": {
+        "name": "In progress"
+      },
+      "random_albums": {
+        "name": "Random albums"
+      },
+      "recent_favorite_tracks": {
+        "name": "Recently favorited tracks"
+      },
+      "favorite_playlists": {
+        "name": "Favorite playlists"
+      },
+      "recent_artists": {
+        "name": "Recent artists"
+      },
+      "recent_tracks": {
+        "name": "Recent tracks"
+      },
+      "favorite_radio_stations": {
+        "name": "Favorite Radio stations"
+      },
+      "forgotten_tracks": {
+        "name": "Forgotten Tracks",
+        "subtitle": "Rediscover tracks you haven't heard in a while"
+      },
+      "forgotten_albums": {
+        "name": "Forgotten Albums",
+        "subtitle": "Rediscover albums you haven't heard in a while"
+      },
+      "forgotten_artists": {
+        "name": "Forgotten Artists",
+        "subtitle": "Rediscover artists you haven't heard in a while"
+      },
+      "most_played_tracks": {
+        "name": "Most Played Tracks",
+        "subtitle": "Your all-time favorites"
+      },
+      "never_played_tracks": {
+        "name": "Never / Rarely Played",
+        "subtitle": "Discover what you haven't explored yet"
+      }
+    }
+  },
+  "player_options": {
+    "adaptive_drc": {
+      "name": "Adaptive DRC"
+    },
+    "bass": {
+      "name": "Bass"
+    },
+    "bass_extension": {
+      "name": "Bass extension"
+    },
+    "clear_voice": {
+      "name": "Clear voice"
+    },
+    "dialogue_level": {
+      "name": "Dialogue level"
+    },
+    "dialogue_lift": {
+      "name": "Dialogue lift"
+    },
+    "dimmer": {
+      "name": "Dimmer"
+    },
+    "dts_dialogue_control": {
+      "name": "DTS Dialogue Control"
+    },
+    "enhancer": {
+      "name": "Enhancer"
+    },
+    "equalizer_high": {
+      "name": "Equalizer high"
+    },
+    "equalizer_low": {
+      "name": "Equalizer low"
+    },
+    "equalizer_mid": {
+      "name": "Equalizer mid"
+    },
+    "equalizer_mode": {
+      "name": "Equalizer mode"
+    },
+    "extra_bass": {
+      "name": "Extra bass"
+    },
+    "link_audio_delay": {
+      "name": "Link audio delay"
+    },
+    "link_audio_quality": {
+      "name": "Link audio quality"
+    },
+    "link_control": {
+      "name": "Link control"
+    },
+    "network_name": {
+      "name": "Network name"
+    },
+    "party_mode": {
+      "name": "Party mode"
+    },
+    "pure_direct": {
+      "name": "Pure direct"
+    },
+    "sleep": {
+      "name": "Sleep timer"
+    },
+    "speaker_a": {
+      "name": "Speaker A"
+    },
+    "speaker_b": {
+      "name": "Speaker B"
+    },
+    "subwoofer_volume": {
+      "name": "Subwoofer Volume"
+    },
+    "surround_3d": {
+      "name": "Surround 3D"
+    },
+    "surround_decoder_type": {
+      "name": "Surround decoder type"
+    },
+    "tone_control_mode": {
+      "name": "Tone control mode"
+    },
+    "treble": {
+      "name": "Treble"
+    }
+  },
+  "errors": {
+    "setup_required": "Music Assistant is not set up yet.",
+    "provider_unavailable": "The provider is currently unavailable.",
+    "media_not_found": "The requested media item could not be found.",
+    "no_playable_items": "There is nothing to play here.",
+    "invalid_data": "The data provided is invalid or could not be processed.",
+    "already_registered": "This item is already registered.",
+    "setup_failed": "Setup failed. Please check the configuration and try again.",
+    "login_failed": "Login failed. Please check your credentials and try again.",
+    "audio_error": "An error occurred while processing audio.",
+    "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
+    "queue_empty": "The queue is empty.",
+    "unsupported_feature": "This feature is not supported.",
+    "unsupported_system": "This is not supported on this system.",
+    "unsupported_system_cpu_cores": "This system does not meet the minimal requirements for {0}: at least {1} CPU cores are required ({2} detected).",
+    "unsupported_system_memory": "This system does not meet the minimal requirements for {0}: at least {1}GB of RAM is required ({2}GB detected).",
+    "unsupported_system_avx2": "On-device audio analysis requires a CPU with AVX2 support (Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. If you are running in a virtual machine (e.g. Proxmox), changing the CPU type to 'host' may expose AVX2 to the guest.",
+    "unsupported_system_ml_inference_failed": "On-device audio analysis cannot run on this CPU: it reports AVX2 support but fails to execute the required instructions. This is common on virtual machines without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or TrueNAS), set the CPU type to 'host'.",
+    "player_unavailable": "The player is not available.",
+    "player_command_failed": "The command to the player failed.",
+    "invalid_command": "Invalid or unsupported command.",
+    "unplayable_media": "This media item cannot be played.",
+    "invalid_provider_uri": "The provider URI is invalid.",
+    "invalid_provider_id": "The provider media item identifier is invalid.",
+    "retries_exhausted": "Retries exhausted. The operation could not be completed.",
+    "resource_temporarily_unavailable": "This resource is temporarily unavailable. Please try again later.",
+    "provider_permission_denied": "The provider denied this action due to insufficient permissions.",
+    "action_unavailable": "This action is currently unavailable.",
+    "authentication_required": "Authentication is required.",
+    "authentication_failed": "Authentication failed. The credentials are invalid.",
+    "password_required": "This device requires a password. Run the setup for this player to enter it.",
+    "insufficient_permissions": "You do not have permission to perform this action.",
+    "invalid_token": "The access token is invalid or has expired.",
+    "resource_busy": "This resource is currently in use elsewhere.",
+    "rate_limited": "Rate limit reached. Please try again later.",
+    "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
+    "connection_timeout": "Connection timed out: {0}.",
+    "connect_failed": "Failed to connect to {0}.",
+    "mount_failed": "Unable to connect to the remote location: {0}",
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}",
+    "user_not_found": "The user {0} could not be found."
+  },
+  "setup_flow": {
+    "select_child": {
+      "title": "Choose a device to set up",
+      "description": "This player wraps multiple devices that still need setup. Pick the one to set up now."
+    },
+    "finish_library_sync": {
+      "description": "Your library is imported in the background and can take a while the first time. It keeps filling up as the import progresses, so it is normal for things to look empty or incomplete at first."
+    }
+  },
+  "page": {
+    "device_code": {
+      "step_copy": "Copy the code",
+      "hint_copy": "Tap the code to copy it",
+      "copied": "Copied ✓",
+      "copy_manual": "Automatic copy failed — select the code and copy it manually",
+      "step_open": "Open the Yandex page and enter the code",
+      "open_button": "Continue to Yandex",
+      "expires_label": "Code expires in",
+      "expired_title": "Code expired",
+      "expired_text": "The code is no longer valid. Return to Music Assistant and start the login again.",
+      "success_title": "Authorization successful",
+      "success_text": "You can close this window.",
+      "failed_title": "Authorization failed",
+      "failed_text": "Please return to Music Assistant and try again.",
+      "denied_text": "The login was denied. Return to Music Assistant and try again.",
+      "ended_title": "Session ended",
+      "ended_text": "This login session is no longer active. You can close this window."
+    }
+  }
+}

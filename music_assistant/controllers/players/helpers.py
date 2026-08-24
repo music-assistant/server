@@ -12,7 +12,11 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
-from music_assistant_models.errors import InsufficientPermissions, PlayerCommandFailed
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MusicAssistantError,
+    PlayerCommandFailed,
+)
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -33,6 +37,9 @@ class AnnounceData(TypedDict):
     announcement_url: str
     pre_announce: bool
     pre_announce_url: str
+    # player that fetches the announcement stream when it is not the
+    # visible player itself (e.g. a linked protocol player)
+    announce_player_id: str | None
 
 
 @overload
@@ -132,6 +139,11 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                         await fn(self, *args, **kwargs)
                 else:
                     await fn(self, *args, **kwargs)
+            except MusicAssistantError:
+                # A typed error already carries its own error code and translation
+                # (e.g. "this device needs a password"); re-wrapping it here would
+                # flatten every specific failure into the generic message.
+                raise
             except Exception as err:
                 raise PlayerCommandFailed(str(err)) from err
 
@@ -149,7 +161,8 @@ async def wait_for_power_on(
     player_control: PlayerControl | None = None,
     timeout: float = 5.0,
 ) -> None:
-    """Wait for a player (or player control) to report powered on after a power on command.
+    """
+    Wait for a player (or player control) to report powered on after a power on command.
 
     :param logger: Logger instance for debug logging.
     :param player: The player to wait for (checked when player_control is None).

@@ -1,0 +1,50 @@
+{
+  "config_entries": {
+    "power_controls": {
+      "label": "Player Power Control entities",
+      "description": "Specify which Home Assistant entities you like to import as player Power controls in Music Assistant."
+    },
+    "volume_controls": {
+      "label": "Player Volume Control entities",
+      "description": "Specify which Home Assistant entities you like to import as player Volume controls in Music Assistant."
+    },
+    "mute_controls": {
+      "label": "Player Mute Control entities",
+      "description": "Specify which Home Assistant entities you like to import as player Mute controls in Music Assistant."
+    },
+    "url": {
+      "label": "URL",
+      "description": "URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)"
+    },
+    "auth": {
+      "label": "(re)Authenticate Home Assistant",
+      "description": "Authenticate to your home assistant instance and generate the long lived token."
+    },
+    "token": {
+      "label": "Authentication token for HomeAssistant"
+    },
+    "verify_ssl": {
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Home Assistant",
+      "description": "Enter the URL of your Home Assistant instance. Continue to sign in, or paste a long-lived access token to skip the browser step."
+    },
+    "auth": {
+      "title": "Sign in to Home Assistant",
+      "description": "Sign in and authorize Music Assistant in the window that opens."
+    },
+    "abort": {
+      "nothing_to_configure": "Music Assistant is running as a Home Assistant add-on and is already connected, so there is nothing to set up."
+    }
+  },
+  "errors": {
+    "auth_failed": "Could not authenticate with Home Assistant. Please check the URL and try again."
+  },
+  "manifest": {
+    "description": "Connects Music Assistant with Home Assistant for automation, integration, and enhanced smart-home control."
+  }
+}

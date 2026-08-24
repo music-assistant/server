@@ -1,0 +1,20 @@
+{
+  "config_entries": {
+    "sxm_email_address": {
+      "label": "[%key:common::config_entries::username::label%]"
+    },
+    "sxm_password": {
+      "label": "[%key:common::config_entries::password::label%]"
+    },
+    "sxm_region": {
+      "label": "Region",
+      "options": {
+        "US": "United States",
+        "CA": "Canada"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream SiriusXM’s radio, talk, and curated music channels."
+  }
+}

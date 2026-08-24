@@ -1,12 +1,58 @@
 # syntax=docker/dockerfile:1
 
+ARG BASE_IMAGE_VERSION=latest
+FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
+
+# Bump the version and checksum-manifest hash together.
+ARG CLIAIRPLAY_VERSION=v0.5.2
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=539c06f73255e5f47e5a90a37e12577e14ea230f47ed3f7d7ab157621668d3fb
+ARG TARGETARCH
+
+# Download the cliairplay release asset for this image architecture.
+RUN set -eu \
+    && case "$TARGETARCH" in \
+        amd64) CLIAIRPLAY_ARCH="x86_64" ;; \
+        arm64) CLIAIRPLAY_ARCH="aarch64" ;; \
+        *) echo "Unsupported cliairplay architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && CLIAIRPLAY_BINARY="cliairplay-linux-${CLIAIRPLAY_ARCH}" \
+    && RELEASE_URL="https://github.com/music-assistant/airplay-cli/releases/download/${CLIAIRPLAY_VERSION}" \
+    && wget -q "${RELEASE_URL}/SHA256SUMS" -O /tmp/SHA256SUMS \
+    && wget -q "${RELEASE_URL}/${CLIAIRPLAY_BINARY}" -O "/tmp/${CLIAIRPLAY_BINARY}" \
+    && echo "${CLIAIRPLAY_CHECKSUMS_SHA256}  /tmp/SHA256SUMS" | sha256sum --check - \
+    && mkdir -p /cliairplay \
+    && mv "/tmp/${CLIAIRPLAY_BINARY}" "/cliairplay/${CLIAIRPLAY_BINARY}" \
+    && awk -v filename="$CLIAIRPLAY_BINARY" \
+        '$2 == filename || $2 == "*" filename' \
+        /tmp/SHA256SUMS > /tmp/cliairplay.sha256 \
+    && test "$(wc -l < /tmp/cliairplay.sha256)" -eq 1 \
+    && (cd /cliairplay && sha256sum --check /tmp/cliairplay.sha256) \
+    && chmod 755 "/cliairplay/${CLIAIRPLAY_BINARY}" \
+    && rm /tmp/SHA256SUMS /tmp/cliairplay.sha256
+
+FROM scratch AS cliairplay
+COPY --from=cliairplay-download /cliairplay /cliairplay
+
 # Builder image. It builds the venv that will be copied to the final image
 #
-ARG BASE_IMAGE_VERSION=latest
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
+ARG TARGETARCH
 
 ADD dist dist
 COPY requirements_all.txt .
+
+# miniaudio has no Linux arm64 wheels, so pyatv requires a source build there.
+# The compiler stays in this disposable builder stage and is not copied to the final image.
+# RUN if [ "$TARGETARCH" = "arm64" ]; then \
+#         apt-get update && \
+#         apt-get install -y --no-install-recommends gcc g++ && \
+#         rm -rf /var/lib/apt/lists/*; \
+#     fi
+
+# TODO: Remove git after aiodatalibchannel is installed from pypi
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
 
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -20,8 +66,11 @@ RUN uv venv $VIRTUAL_ENV
 # because we do not have to install dependencies at runtime
 # --index-strategy: allow PyPI packages when also using the PyTorch extra index
 # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+ENV URLLIB3_NO_OVERRIDE=1
 RUN uv pip install \
     --index-strategy unsafe-best-match \
+    --no-binary urllib3-future \
     -r requirements_all.txt
 
 # Install PyAV from pre-built wheel (built against system FFmpeg in base image)
@@ -41,6 +90,15 @@ RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
+COPY --from=cliairplay /cliairplay /tmp/cliairplay
+RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
+        'import sysconfig; print(sysconfig.get_path("purelib"))')" \
+    && CLIAIRPLAY_BIN_DIR="${SITE_PACKAGES}/music_assistant/providers/airplay/bin" \
+    && mkdir -p "$CLIAIRPLAY_BIN_DIR" \
+    && mv /tmp/cliairplay/* "$CLIAIRPLAY_BIN_DIR/" \
+    && rmdir /tmp/cliairplay \
+    && "$CLIAIRPLAY_BIN_DIR"/cliairplay-linux-* --check
+
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
@@ -48,7 +106,9 @@ RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packa
 # and /tmp to allow running the container as non-root
 # IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
 #
-RUN chmod -R 777 /app
+RUN chmod -R 777 /app \
+    && chmod 755 \
+        "$VIRTUAL_ENV"/lib/python*/site-packages/music_assistant/providers/airplay/bin/cliairplay-linux-*
 
 ##################################################################################################
 
@@ -88,10 +148,13 @@ EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-# Entrypoint script that enables jemalloc for the main process only
+# Entrypoint script that enables jemalloc for the main process only.
+# MALLOC_CONF enables jemalloc's background thread so freed pages are returned to
+# the OS while the process is idle; without it an idle server holds onto the peak
+# RSS reached during startup (db migration, provider setup, metadata, image decode).
 RUN printf '#!/bin/sh\n\
 for path in /usr/lib/*/libjemalloc.so.2; do\n\
-    [ -f "$path" ] && export LD_PRELOAD="$path" && break\n\
+    [ -f "$path" ] && export LD_PRELOAD="$path" MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" && break\n\
 done\n\
 exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 

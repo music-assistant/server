@@ -14,9 +14,7 @@ PLAYER_CONFIG_ENTRIES = [
     ConfigEntry(
         key="replace_pause_with_stop",
         type=ConfigEntryType.BOOLEAN,
-        label="Replace Pause with Stop",
         default_value=False,
-        description="Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA.",
         advanced=True,
     ),
 ]

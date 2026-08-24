@@ -89,7 +89,7 @@ async def test_reload_timeout_populates_last_error(
     mass.get_provider = MagicMock(return_value=not_ready)
 
     # Speed the 5s poll up so the test stays fast.
-    # Use ``from music_assistant.providers.fastmcp_server.tools import debug`` (not ``import provider.tools.debug as``):
+    # Use ``from music_assistant.providers.fastmcp_server.tools import debug`` (not ``import music_assistant.providers.fastmcp_server.tools.debug as``):
     # the upstream import-path rewrite only translates ``from music_assistant.providers.fastmcp_server.`` imports.
     from music_assistant.providers.fastmcp_server.tools import debug as debug_mod  # noqa: PLC0415
 
@@ -172,7 +172,8 @@ async def test_concurrent_reloads_serialise_through_lock(mock_mass: MagicMock) -
 
 
 async def test_reload_tool_uses_interactive_timeout() -> None:
-    """debug_reload_provider must use interactive timeout for the confirmation round-trip.
+    """
+    debug_reload_provider must use interactive timeout for the confirmation round-trip.
 
     The tool elicits confirmation and polls up to 5s for reload; a 10s timeout
     is too short for the confirmation round-trip to complete. Regression for
@@ -217,7 +218,8 @@ async def test_reload_tool_uses_interactive_timeout() -> None:
 
 
 async def test_reload_serialises_on_injected_lock(mock_mass: MagicMock) -> None:
-    """The reload serialises on the per-runtime lock passed to build_debug_server.
+    """
+    The reload serialises on the per-runtime lock passed to build_debug_server.
 
     Holding the injected lock blocks the reload from reaching ``_load_provider``;
     releasing it lets the reload proceed. This pins that the lock is the

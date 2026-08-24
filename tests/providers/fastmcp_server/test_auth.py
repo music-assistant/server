@@ -13,7 +13,8 @@ from music_assistant.providers.fastmcp_server.auth import MASTokenVerifier
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
-    """Forge an unsigned-but-structurally-valid JWT for audience-claim tests.
+    """
+    Forge an unsigned-but-structurally-valid JWT for audience-claim tests.
 
     The signature isn't checked by ``MASTokenVerifier`` (verification is MA's
     job); we only inspect the payload's ``aud`` claim.
@@ -72,7 +73,8 @@ async def test_authenticate_called_once(mock_mass: MagicMock, mock_user: MagicMo
 async def test_underlying_exception_swallowed(
     mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """If MA's auth raises, we log AT ERROR LEVEL and return None — never propagate.
+    """
+    If MA's auth raises, we log AT ERROR LEVEL and return None — never propagate.
 
     The log level matters: a refactor that demotes ``LOGGER.exception`` to
     ``LOGGER.debug`` would silently strip operator visibility for auth-system
@@ -152,7 +154,8 @@ async def test_jwt_with_aud_list_accepted(mock_mass: MagicMock, mock_user: Magic
 async def test_strict_mode_audience_mismatch_skips_authenticate(
     mock_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """A token rejected on audience must not reach ``authenticate_with_token``.
+    """
+    A token rejected on audience must not reach ``authenticate_with_token``.
 
     Calling MA's auth refreshes the sliding-window expiry for the token. If
     audience was checked second (after authenticate), an attacker holding a
@@ -172,7 +175,8 @@ async def test_strict_mode_audience_mismatch_skips_authenticate(
 
 
 def _malformed_payload_jwt(raw_payload: bytes) -> str:
-    """Forge a JWT-shaped token with a non-standard payload segment.
+    """
+    Forge a JWT-shaped token with a non-standard payload segment.
 
     The payload segment is base64url-encoded (no padding); skipping the JSON
     encoding step lets us hand the decoder arbitrary bytes to exercise the
@@ -210,7 +214,8 @@ def _payload_jwt(payload: object) -> str:
     ],
 )
 def test_extract_jwt_audience_malformed_returns_none(token: str, case: str) -> None:
-    """Every malformed-JWT path collapses to ``None`` — never an unhandled raise.
+    """
+    Every malformed-JWT path collapses to ``None`` — never an unhandled raise.
 
     Verified against ``provider.auth._extract_jwt_audience`` so a refactor
     that broadens the try/except boundary (or worse, lets the exception

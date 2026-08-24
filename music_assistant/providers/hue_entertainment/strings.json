@@ -1,0 +1,39 @@
+{
+  "config_entries": {
+    "bridge_host": {
+      "label": "Bridge IP Address",
+      "description": "IP address of the Philips Hue bridge."
+    },
+    "pair_intro": {
+      "label": "Enter your Hue Bridge IP address below, then press the round link button on top of the bridge and continue within 30 seconds."
+    },
+    "brightness": {
+      "label": "Brightness",
+      "description": "Overall light brightness (0-100)."
+    },
+    "color_mode": {
+      "label": "Mode",
+      "description": "Visualization style. Smooth (default): spectrum-driven brightness with a slowly drifting palette. Ambient: colour cycling only, no brightness modulation. Flashing: brightness pulse on every beat, stronger on downbeats. Energetic: large brightness swings on hits plus fast palette rotation."
+    },
+    "hue_latency_ms": {
+      "label": "Light latency (ms)",
+      "description": "Milliseconds to render light updates ahead of the audio, to offset the Hue bridge and DTLS delay. Increase if the lights lag the music, decrease if they run ahead of it."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Pair with your Hue Bridge",
+      "description": "Enter your Hue Bridge IP address, press the round link button on top of the bridge, then continue within 30 seconds."
+    },
+    "pairing": {
+      "title": "Pairing with the Hue Bridge",
+      "progress_text": "Press the round link button on top of your Hue Bridge now..."
+    }
+  },
+  "manifest": {
+    "description": "Sync Philips Hue lights to music using Entertainment Mode."
+  },
+  "errors": {
+    "button_not_pressed": "The link button was not pressed in time. Press the round button on top of your Hue Bridge, then try again."
+  }
+}

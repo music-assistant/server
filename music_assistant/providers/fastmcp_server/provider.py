@@ -1,4 +1,5 @@
-"""MCP Server provider — main PluginProvider implementation.
+"""
+MCP Server provider — main PluginProvider implementation.
 
 The provider is a thin lifecycle wrapper over :class:`MCPServerRuntime` from
 ``server.py``. ``handle_async_init`` constructs the runtime and starts it;
@@ -16,7 +17,11 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import HOT_SWAPPABLE_KEYS
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
 
     from .server import MCPServerRuntime
 
@@ -28,6 +33,42 @@ class MCPServerProvider(PluginProvider):
     """Music Assistant plugin provider wrapping an MCP server runtime."""
 
     _runtime: MCPServerRuntime | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        from .config import build_config_entries  # noqa: PLC0415
+        from .constants import CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH  # noqa: PLC0415
+
+        return build_config_entries(
+            self.mass, str(self.get_config_value(CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH))
+        )
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press and report its outcome."""
+        if action == "open_connect":
+            from music_assistant_models.config_entries import ConfigActionResult  # noqa: PLC0415
+            from music_assistant_models.errors import ActionUnavailable  # noqa: PLC0415
+
+            from ._init_helpers import _dispatch_open_connect  # noqa: PLC0415
+            from .constants import CONF_CONNECT_EXTERNAL_URL, CONF_MOUNT_PATH  # noqa: PLC0415
+
+            url = await _dispatch_open_connect(
+                self.mass,
+                {
+                    CONF_MOUNT_PATH: self.get_config_value(CONF_MOUNT_PATH),
+                    CONF_CONNECT_EXTERNAL_URL: self.get_config_value(CONF_CONNECT_EXTERNAL_URL),
+                },
+            )
+            if url is None:
+                raise ActionUnavailable(
+                    "The Connect Wizard could not be opened; check the provider logs.",
+                    translation_key="connect_wizard_unavailable",
+                    translation_owner=self.translation_owner,
+                )
+            return ConfigActionResult(open_url=url)
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Build and start the FastMCP runtime."""

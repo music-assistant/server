@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "yousee",
   "name": "YouSee Musik",
-  "stage": "experimental",
+  "stage": "stable",
   "description": "YouSee Musik, a Danish music streaming service.",
   "codeowners": ["@math625f"],
   "requirements": [],

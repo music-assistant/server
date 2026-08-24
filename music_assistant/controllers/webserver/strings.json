@@ -1,0 +1,50 @@
+{
+  "config_entries": {
+    "auth_allow_self_registration": {
+      "label": "Allow User Self-Registration",
+      "description": "Allow users to create accounts via Home Assistant OAuth."
+    },
+    "base_url": {
+      "label": "Base URL",
+      "description": "The (base) URL to reach this webserver in the network. \nThe default \"auto\" automatically resolves to the server's primary IP address and the configured port at startup. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy."
+    },
+    "bind_port": {
+      "label": "[%key:common::config_entries::bind_port::label%]",
+      "description": "The TCP port to run the webserver."
+    },
+    "webserver_warn": {
+      "label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nEnable SSL below or use a reverse proxy or VPN to secure access. \n\nAs an alternative, consider using the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly."
+    },
+    "ssl_inactive_warn": {
+      "label": "SSL/TLS is enabled, but the certificate could not be loaded, so the webserver is still running unencrypted. \n\nCheck the certificate and private key below and use the Verify button to test them. The webserver switches to HTTPS as soon as a valid certificate is saved."
+    },
+    "enable_ssl": {
+      "label": "Enable SSL/TLS",
+      "description": "Enable HTTPS by providing an SSL certificate and private key. \nThis encrypts all communication with the webserver."
+    },
+    "ssl_certificate": {
+      "label": "SSL Certificate",
+      "description": "Provide your SSL certificate in PEM format. You can either:\n- Paste the full contents of your certificate file, or\n- Enter an absolute file path (e.g., /ssl/fullchain.pem)\n\nThis should include the full certificate chain if applicable.\nBoth RSA and ECDSA certificates are supported."
+    },
+    "ssl_private_key": {
+      "label": "SSL Private Key",
+      "description": "Provide your SSL private key in PEM format. You can either:\n- Paste the full contents of your private key file, or\n- Enter an absolute file path (e.g., /ssl/privkey.pem)\n\nBoth RSA and ECDSA keys are supported. The key must be unencrypted.\nThis is securely encrypted and stored."
+    },
+    "verify_ssl": {
+      "label": "Verify SSL Certificate",
+      "description": "Test your certificate and private key to verify they are valid and match each other.",
+      "action_label": "Verify"
+    },
+    "bind_ip": {
+      "label": "[%key:common::config_entries::bind_ip::label%]",
+      "description": "Bind the (web)server to this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \nSet this address for example to a docker-internal network, when you are running a reverse proxy to enhance security and protect outside access to the webinterface and API. \n\nThis is an advanced setting that should normally not be adjusted in regular setups."
+    }
+  },
+  "manifest": {
+    "name": "Webserver",
+    "description": "Configuration of the webserver and API"
+  },
+  "errors": {
+    "ssl_verification_failed": "Certificate verification failed: {0}"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "enable_artist_metadata": {
+      "label": "Enable retrieval of artist metadata."
+    },
+    "enable_album_metadata": {
+      "label": "Enable retrieval of album metadata."
+    },
+    "enable_track_metadata": {
+      "label": "Enable retrieval of track metadata."
+    },
+    "enable_images": {
+      "label": "Enable retrieval of artist/album/track images"
+    }
+  },
+  "manifest": {
+    "description": "Provides artist images, album art, and rich textual metadata from TheAudioDB for use in the Music Assistant UI."
+  }
+}

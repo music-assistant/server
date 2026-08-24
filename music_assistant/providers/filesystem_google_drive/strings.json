@@ -1,0 +1,40 @@
+{
+  "config_entries": {
+    "content_type": {
+      "label": "[%key:common::config_entries::content_type::label%]",
+      "description": "[%key:common::config_entries::content_type::description%]",
+      "options": {
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+      }
+    },
+    "auth": {
+      "label": "Authorize with Google",
+      "description": "Sign in with Google to grant Music Assistant read-only access to your Drive files."
+    },
+    "client_id": {
+      "label": "Google OAuth Client ID"
+    },
+    "client_secret": {
+      "label": "Google OAuth Client Secret"
+    },
+    "folder_id": {
+      "label": "Drive folder ID to scan",
+      "description": "The ID of the Drive folder to scan, i.e. the part after /folders/ in the URL when the folder is opened in the Google Drive web app (not the folder name). Leave as 'root' to scan the whole drive."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Enter your Google OAuth credentials",
+      "description": "Music Assistant needs its own Google OAuth client. In the Google Cloud console, enable the Google Drive API and create an OAuth client ID, then paste its client ID and secret below."
+    },
+    "authenticate": {
+      "title": "Authorize with Google",
+      "description": "Sign in with Google in the window that opens to grant Music Assistant read-only access to your Drive."
+    }
+  },
+  "manifest": {
+    "description": "Stream music, audiobooks and podcasts stored in Google Drive"
+  }
+}

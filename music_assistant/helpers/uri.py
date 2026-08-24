@@ -3,12 +3,16 @@
 import asyncio
 import os
 import re
+from typing import Final
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_uri as create_uri_org
 
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
+
+# plain stream URLs that resolve to the builtin provider, which takes the URL as its item_id
+BUILTIN_URL_SCHEMES: Final[tuple[str, ...]] = ("http://", "https://", "rtsp://", "rtmp://")
 
 # create alias to original create_uri function
 create_uri = create_uri_org
@@ -27,7 +31,8 @@ def valid_id(provider: str, item_id: str) -> bool:
 
 
 async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:  # noqa: PLR0915
-    """Try to parse URI to Mass identifiers.
+    """
+    Try to parse URI to Mass identifiers.
 
     Returns Tuple: MediaType, provider_instance_id_or_domain, item_id
     """
@@ -81,7 +86,34 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
                     raise KeyError
             else:
                 raise KeyError
-        elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+        elif uri.startswith(("https://www.deezer.com/", "https://deezer.com/")):
+            # Deezer share URL
+            # https://www.deezer.com/track/123456
+            # https://www.deezer.com/en/track/123456 (with locale)
+            # https://deezer.com/album/789
+            _deezer_type_map = {
+                "track": MediaType.TRACK,
+                "album": MediaType.ALBUM,
+                "artist": MediaType.ARTIST,
+                "playlist": MediaType.PLAYLIST,
+                "show": MediaType.PODCAST,
+                "episode": MediaType.PODCAST_EPISODE,
+            }
+            parts = uri.rstrip("/").split("?")[0].split("/")
+            # Find the type segment by checking against the known map
+            deezer_type = None
+            deezer_id = None
+            for i, part in enumerate(parts):
+                if part in _deezer_type_map and i + 1 < len(parts):
+                    deezer_type = part
+                    deezer_id = parts[i + 1]
+                    break
+            if deezer_type is None or not deezer_id or not deezer_id.isdigit():
+                raise KeyError
+            provider_instance_id_or_domain = "deezer"
+            media_type = _deezer_type_map[deezer_type]
+            item_id = deezer_id
+        elif uri.startswith(BUILTIN_URL_SCHEMES):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"
             media_type = MediaType.UNKNOWN

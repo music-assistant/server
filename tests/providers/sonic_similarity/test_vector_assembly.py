@@ -12,8 +12,10 @@ from music_assistant.providers.sonic_similarity.vectors import (
     FEATURE_GROUPS,
     VECTOR_DIMENSIONS,
     assemble_vector,
+    build_dimension_weights,
     compute_corpus_stats,
     compute_weighted_distance,
+    compute_weighted_distance_vec,
     encode_key_mode,
     normalize_features,
 )
@@ -394,3 +396,84 @@ class TestComputeWeightedDistance:
         # With equal weights (1.0) and uniform diff of 1.0, result should be
         # normalized so large-dim vectors don't dominate
         assert d < 10.0  # Sanity: not an unnormalized sum
+
+    @staticmethod
+    def _reference_distance(
+        sig_a: list[float], sig_b: list[float], weights: dict[str, float]
+    ) -> float:
+        """
+        Replicate the pre-vectorization per-group sqrt-then-square formula.
+
+        Mirrors the original compute_weighted_distance implementation so the
+        refactored vectorized version can be asserted numerically equivalent.
+        """
+        a = np.array(sig_a, dtype=np.float64)
+        b = np.array(sig_b, dtype=np.float64)
+        weighted_sq_sum = 0.0
+        total_weighted_dims = 0.0
+        for group, (start, end) in FEATURE_GROUPS.items():
+            w = weights.get(group, 1.0)
+            dim_count = end - start
+            diff = a[start:end] - b[start:end]
+            group_dist = math.sqrt(float(np.dot(diff, diff)) / dim_count)
+            weighted_sq_sum += w * (group_dist**2) * dim_count
+            total_weighted_dims += w * dim_count
+        if total_weighted_dims == 0.0:
+            return 0.0
+        return math.sqrt(weighted_sq_sum / total_weighted_dims)
+
+    def test_matches_reference_per_group_formula(self) -> None:
+        """Vectorized result equals the original per-group formula across random inputs."""
+        rng = np.random.default_rng(1234)
+        weight_sets = [
+            {},
+            {"rhythm": 0.0},
+            {"mood": 2.5, "tonal": 0.3},
+            dict.fromkeys(FEATURE_GROUPS, 0.7),
+        ]
+        for _ in range(20):
+            a = rng.standard_normal(VECTOR_DIMENSIONS).tolist()
+            b = rng.standard_normal(VECTOR_DIMENSIONS).tolist()
+            for weights in weight_sets:
+                assert compute_weighted_distance(a, b, weights) == pytest.approx(
+                    self._reference_distance(a, b, weights)
+                )
+
+    def test_numpy_array_input_matches_list_input(self) -> None:
+        """Passing numpy arrays yields the same float as passing lists (the MMR hot path)."""
+        rng = np.random.default_rng(99)
+        a = rng.standard_normal(VECTOR_DIMENSIONS)
+        b = rng.standard_normal(VECTOR_DIMENSIONS)
+        weights = {"timbre": 1.5, "loudness": 0.2}
+        from_arrays = compute_weighted_distance(a, b, weights)
+        from_lists = compute_weighted_distance(a.tolist(), b.tolist(), weights)
+        assert isinstance(from_arrays, float)
+        assert from_arrays == pytest.approx(from_lists)
+
+    def test_all_zero_weights_returns_zero(self) -> None:
+        """When every group weight is 0, the distance is defined as 0.0."""
+        a = self._make_vector(0.0)
+        b = self._make_vector(1.0)
+        all_zero = dict.fromkeys(FEATURE_GROUPS, 0.0)
+        assert compute_weighted_distance(a, b, all_zero) == 0.0
+
+    def test_precomputed_weights_match_dict_path(self) -> None:
+        """compute_weighted_distance_vec with a prebuilt vector equals the dict-based path."""
+        rng = np.random.default_rng(7)
+        a = rng.standard_normal(VECTOR_DIMENSIONS)
+        b = rng.standard_normal(VECTOR_DIMENSIONS)
+        weights = {"rhythm": 2.0, "dynamics": 0.0}
+        dim_weights = build_dimension_weights(weights)
+        assert compute_weighted_distance_vec(a, b, dim_weights) == pytest.approx(
+            compute_weighted_distance(a, b, weights)
+        )
+
+    def test_build_dimension_weights_expands_groups(self) -> None:
+        """Each group's weight lands on its dimensions; absent groups default to 1.0."""
+        dim_weights = build_dimension_weights({"timbre": 3.0})
+        assert len(dim_weights) == VECTOR_DIMENSIONS
+        start, end = FEATURE_GROUPS["timbre"]
+        assert list(dim_weights[start:end]) == [3.0] * (end - start)
+        # rhythm was not overridden, so it keeps the 1.0 default
+        r_start, r_end = FEATURE_GROUPS["rhythm"]
+        assert list(dim_weights[r_start:r_end]) == [1.0] * (r_end - r_start)

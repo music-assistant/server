@@ -1,4 +1,5 @@
-"""HLS seek optimizer for nicovideo provider.
+"""
+HLS seek optimizer for nicovideo provider.
 
 This module implements a workaround for FFmpeg's seeking limitations with fragmented MP4
 HLS playlists (see https://trac.ffmpeg.org/ticket/7359).
@@ -13,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from music_assistant.helpers.ffmpeg import get_ffmpeg_hls_cmaf_input_args
 from music_assistant.helpers.hls import HLSMediaPlaylist
 from music_assistant.providers.nicovideo.constants import (
     DOMAND_BID_COOKIE_NAME,
@@ -28,7 +30,8 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class SeekOptimizedStreamContext:
-    """Context for seek-optimized HLS streaming.
+    """
+    Context for seek-optimized HLS streaming.
 
     Contains all information needed to set up streaming with fast seeking:
     - Dynamic playlist content to serve
@@ -40,7 +43,8 @@ class SeekOptimizedStreamContext:
 
 
 class HLSSeekOptimizer:
-    """Optimizes HLS streaming with fast seeking support.
+    """
+    Optimizes HLS streaming with fast seeking support.
 
     Generates dynamic HLS playlists and FFmpeg arguments for efficient
     seeking by calculating optimal segment start positions.
@@ -53,7 +57,8 @@ class HLSSeekOptimizer:
         self,
         hls_data: NicovideoStreamData,
     ) -> None:
-        """Initialize seek optimizer with HLS data.
+        """
+        Initialize seek optimizer with HLS data.
 
         Args:
             hls_data: HLS streaming data containing parsed playlist and authentication info
@@ -62,7 +67,8 @@ class HLSSeekOptimizer:
         self.domand_bid = hls_data.domand_bid
 
     def _calculate_start_segment(self, seek_position: int) -> tuple[int, float]:
-        """Calculate which segment to start from based on seek position.
+        """
+        Calculate which segment to start from based on seek position.
 
         Args:
             seek_position: Desired seek position in seconds
@@ -89,7 +95,8 @@ class HLSSeekOptimizer:
         return (max(0, len(self.parsed_playlist.segments) - 1), 0.0)
 
     def _generate_dynamic_playlist(self, start_segment_idx: int) -> str:
-        """Generate dynamic HLS playlist with segments from start_segment_idx onward.
+        """
+        Generate dynamic HLS playlist with segments from start_segment_idx onward.
 
         Args:
             start_segment_idx: Index to start from
@@ -142,7 +149,8 @@ class HLSSeekOptimizer:
         return "\n".join(lines)
 
     def create_stream_context(self, seek_position: int) -> SeekOptimizedStreamContext:
-        """Create seek-optimized streaming context.
+        """
+        Create seek-optimized streaming context.
 
         This method combines segment calculation, playlist generation,
         and FFmpeg arguments preparation for fast seeking.
@@ -174,7 +182,8 @@ class HLSSeekOptimizer:
             f"User-Agent: {NICOVIDEO_USER_AGENT}\r\n"
             f"Cookie: {DOMAND_BID_COOKIE_NAME}={self.domand_bid}\r\n"
         )
-        extra_input_args = ["-headers", headers]
+        # nicovideo serves CMAF (.cmfa) audio segments, which some FFmpeg builds reject
+        extra_input_args = ["-headers", headers, *get_ffmpeg_hls_cmaf_input_args()]
 
         # Stage 2: Apply input-side -ss for fine-tuning within the segment
         if offset_within_segment > 0:

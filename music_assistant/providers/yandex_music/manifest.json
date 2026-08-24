@@ -1,12 +1,12 @@
 {
   "type": "music",
   "domain": "yandex_music",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Yandex Music",
   "description": "Stream music, personalized recommendations, and lossless FLAC from Yandex Music — including My Wave radio and library sync.",
   "codeowners": ["@TrudenBoy"],
   "credits": ["[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"],
   "documentation": "https://music-assistant.io/music-providers/yandex-music/",
-  "requirements": ["yandex-music==3.0.0", "ya-passport-auth==1.4.1"],
+  "requirements": ["yandex-music==3.0.0", "ya-passport-auth[ma]==1.8.0", "segno==1.6.6"],
   "multi_instance": true
 }

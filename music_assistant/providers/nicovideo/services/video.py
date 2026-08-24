@@ -132,7 +132,8 @@ class NicovideoVideoService(NicovideoBaseService):
         return str(hls_url)
 
     async def _fetch_media_playlist_text(self, hls_url: str, domand_bid: str) -> str:
-        """Fetch media playlist text from HLS stream.
+        """
+        Fetch media playlist text from HLS stream.
 
         Args:
             hls_url: URL to the HLS playlist (master or media)
@@ -165,7 +166,8 @@ class NicovideoVideoService(NicovideoBaseService):
             return await response.text()
 
     def _extract_media_playlist_url(self, master_playlist: str, base_url: str) -> str:
-        """Extract media playlist URL from master playlist.
+        """
+        Extract media playlist URL from master playlist.
 
         Args:
             master_playlist: Master playlist text

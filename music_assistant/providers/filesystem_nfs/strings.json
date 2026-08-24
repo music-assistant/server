@@ -1,0 +1,34 @@
+{
+  "config_entries": {
+    "host": {
+      "label": "Server",
+      "description": "The hostname or IP address of the NFS server to connect to. For example mynas.local or 192.168.1.100."
+    },
+    "export_path": {
+      "label": "Export path",
+      "description": "The NFS export path on the remote server. For example /volume1/music or /exports/media."
+    },
+    "subfolder": {
+      "label": "Subfolder",
+      "description": "[optional] Use if your music is stored in a sublevel of the export. E.g. 'collections' or 'albums/A-K'."
+    },
+    "nfs_version": {
+      "label": "NFS Version",
+      "description": "The NFS protocol version to use. Use Auto to let the system negotiate the best available version.",
+      "options": {
+        "": "Auto",
+        "3": "NFS 3",
+        "4": "NFS 4",
+        "4.1": "NFS 4.1",
+        "4.2": "NFS 4.2"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Play music and audiobooks stored on NFS connected network drives."
+  },
+  "errors": {
+    "invalid_subfolder": "Invalid subfolder {0}: it must be a relative path inside the export.",
+    "subfolder_not_found": "Subfolder {0} does not exist in the NFS export."
+  }
+}

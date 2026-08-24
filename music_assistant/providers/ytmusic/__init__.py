@@ -10,17 +10,16 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
 from io import StringIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
-    ConfigEntryType,
     ContentType,
     ImageType,
+    MediaType,
     ProviderFeature,
     StreamType,
 )
@@ -35,10 +34,10 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
-    MediaType,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -52,13 +51,25 @@ from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
+from ytmusicapi.parsers.podcasts import Description
 
-from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_USERNAME,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
+from music_assistant.helpers.util import (
+    import_module_in_thread,
+    infer_album_type,
+    install_package,
+    parse_title_and_version,
+)
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .helpers import (
+    YTMSearchFilter,
     add_remove_playlist_tracks,
     convert_to_netscape,
     determine_recommendation_icon,
@@ -83,7 +94,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -153,63 +164,33 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
-        ),
-        ConfigEntry(
-            key=CONF_COOKIE,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Login Cookie",
-            required=True,
-            description="The Login cookie you grabbed from an existing session, "
-            "see the documentation.",
-        ),
-        ConfigEntry(
-            key=CONF_PO_TOKEN_SERVER_URL,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_PO_TOKEN_SERVER_URL,
-            label="PO Token Server URL",
-            required=True,
-            description="The URL to the PO Token server. "
-            "Can be left as default for most people. \n\n"
-            "**Note that this does require you to have the "
-            "'YT Music PO Token Generator' addon installed!**",
-        ),
-    )
-
-
-class YoutubeMusicProvider(MusicProvider):
+class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
-    _headers = None
-    _context = None
-    _cookies = None
+    _headers: dict[str, str]
+    _context: dict[str, Any]
+    _cookies: dict[str, str]
     _cipher = None
-    _yt_user = None
-    _cookie = None
+    _yt_user: str | None
+    _cookie: str
     _yt_dlp_module = None
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """YouTube Music serves one stream per account session."""
+        return 1
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         await self._install_packages()
-        self._cookie = self.config.get_value(CONF_COOKIE)
+        self._cookie = str(self.get_setup_value(CONF_COOKIE))
         self._po_token_server_url = (
-            self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
+            self.get_setup_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
         if not await self._verify_po_token_url():
             raise LoginFailed(
@@ -217,7 +198,7 @@ class YoutubeMusicProvider(MusicProvider):
                 "Make sure you have installed the YT Music PO Token Generator "
                 "and that it is running."
             )
-        yt_username = self.config.get_value(CONF_USERNAME)
+        yt_username = str(self.get_setup_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
@@ -235,18 +216,20 @@ class YoutubeMusicProvider(MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    # the checksum invalidates entries cached before search was authenticated
+    @use_cache(3600 * 24 * 7, cache_checksum="authenticated_search_v1")  # Cache for 7 days
     async def search(
-        self, search_query: str, media_types=list[MediaType], limit: int = 5
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
         parsed_results = SearchResults()
-        ytm_filter = None
+        ytm_filter: YTMSearchFilter | None = None
         if len(media_types) == 1:
             # YTM does not support multiple searchtypes, falls back to all if no type given
             if media_types[0] == MediaType.ARTIST:
@@ -257,32 +240,63 @@ class YoutubeMusicProvider(MusicProvider):
                 ytm_filter = "songs"
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
+            if media_types[0] == MediaType.PODCAST:
+                ytm_filter = "podcasts"
             if media_types[0] == MediaType.RADIO:
                 # bit of an edge case but still good to handle
                 return parsed_results
         results = await search(
-            query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
+            query=search_query,
+            headers=self._headers,
+            ytm_filter=ytm_filter,
+            limit=limit,
+            language=self.language,
+            user=self._yt_user,
         )
         parsed_results = SearchResults()
+        artists: list[Artist | ItemMapping] = []
+        albums: list[Album | ItemMapping] = []
+        playlists: list[Playlist | ItemMapping] = []
+        tracks: list[Track | ItemMapping] = []
+        podcasts: list[Podcast | ItemMapping] = []
         for result in results:
             try:
                 if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
-                    parsed_results.artists.append(self._parse_artist(result))
+                    artists.append(self._parse_artist(result))
                 elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
-                    parsed_results.albums.append(self._parse_album(result))
+                    albums.append(self._parse_album(result))
                 elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
-                    parsed_results.playlists.append(self._parse_playlist(result))
+                    playlists.append(self._parse_playlist(result))
+                elif result["resultType"] == "podcast" and MediaType.PODCAST in media_types:
+                    if podcast := self._parse_browse_podcast(result):
+                        podcasts.append(podcast)
                 elif (
                     result["resultType"] in ("song", "video")
                     and MediaType.TRACK in media_types
                     and (track := self._parse_track(result))
                 ):
-                    parsed_results.tracks.append(track)
+                    tracks.append(track)
             except InvalidDataError:
                 pass  # ignore invalid item
+        parsed_results.artists = artists
+        parsed_results.albums = albums
+        parsed_results.playlists = playlists
+        parsed_results.tracks = tracks
+        parsed_results.podcasts = podcasts
         return parsed_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except LoginFailed as err:
+            # Every following sync fails the same way until the cookie is replaced,
+            # so hand the provider back to the user for re-authentication.
+            if self.available:
+                self.unload_with_error(err)
+            raise
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
         artists_obj = await get_library_artists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -290,7 +304,7 @@ class YoutubeMusicProvider(MusicProvider):
         for artist in artists_obj:
             yield self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Youtube Music."""
         albums_obj = await get_library_albums(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -298,7 +312,7 @@ class YoutubeMusicProvider(MusicProvider):
         for album in albums_obj:
             yield self._parse_album(album, album["browseId"])
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await get_library_playlists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -309,7 +323,7 @@ class YoutubeMusicProvider(MusicProvider):
                 continue
             yield self._parse_playlist(playlist)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Youtube Music."""
         tracks_obj = await get_library_tracks(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -320,10 +334,10 @@ class YoutubeMusicProvider(MusicProvider):
             try:
                 yield self._parse_track(track)
             except InvalidDataError:
-                track = await self.get_track(track["videoId"])
-                yield track
+                full_track = await self.get_track(track["videoId"])
+                yield full_track
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve the library podcasts from Youtube Music."""
         podcasts_obj = await get_library_podcasts(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -335,7 +349,7 @@ class YoutubeMusicProvider(MusicProvider):
             yield self._parse_podcast(podcast)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_album(self, prov_album_id) -> Album:
+    async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if album_obj := await get_album(
             headers=self._headers,
@@ -368,7 +382,7 @@ class YoutubeMusicProvider(MusicProvider):
         return tracks
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_artist(self, prov_artist_id) -> Artist:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if artist_obj := await get_artist(
             prov_artist_id=prov_artist_id, headers=self._headers, language=self.language
@@ -378,7 +392,7 @@ class YoutubeMusicProvider(MusicProvider):
         raise MediaNotFoundError(msg)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
-    async def get_track(self, prov_track_id) -> Track:
+    async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         if track_obj := await get_track(
             prov_track_id=prov_track_id,
@@ -390,13 +404,13 @@ class YoutubeMusicProvider(MusicProvider):
         raise MediaNotFoundError(msg)
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
-    async def get_playlist(self, prov_playlist_id) -> Playlist:
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         # Grab the full playlist by default
         limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
-            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
         if (
             prov_playlist_id in YT_PERSONAL_PLAYLISTS
             and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
@@ -464,7 +478,7 @@ class YoutubeMusicProvider(MusicProvider):
         return result
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
-    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if "albums" in artist_obj and "results" in artist_obj["albums"]:
@@ -479,7 +493,7 @@ class YoutubeMusicProvider(MusicProvider):
         return []
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
-    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
@@ -494,9 +508,7 @@ class YoutubeMusicProvider(MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         return self._parse_podcast(podcast_obj)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes from a podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
@@ -525,8 +537,10 @@ class YoutubeMusicProvider(MusicProvider):
                 headers=self._headers, prov_artist_id=item.item_id, add=True, user=self._yt_user
             )
         elif item.media_type == MediaType.ALBUM:
-            result = await library_add_remove_album(
-                headers=self._headers, prov_item_id=item.item_id, add=True, user=self._yt_user
+            result = bool(
+                await library_add_remove_album(
+                    headers=self._headers, prov_item_id=item.item_id, add=True, user=self._yt_user
+                )
             )
         elif item.media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
@@ -536,7 +550,7 @@ class YoutubeMusicProvider(MusicProvider):
             raise NotImplementedError
         return result
 
-    async def library_remove(self, prov_item_id, media_type: MediaType):
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the library."""
         result = False
         try:
@@ -548,8 +562,13 @@ class YoutubeMusicProvider(MusicProvider):
                     user=self._yt_user,
                 )
             elif media_type == MediaType.ALBUM:
-                result = await library_add_remove_album(
-                    headers=self._headers, prov_item_id=prov_item_id, add=False, user=self._yt_user
+                result = bool(
+                    await library_add_remove_album(
+                        headers=self._headers,
+                        prov_item_id=prov_item_id,
+                        add=False,
+                        user=self._yt_user,
+                    )
                 )
             elif media_type == MediaType.PLAYLIST:
                 result = await library_add_remove_playlist(
@@ -567,7 +586,7 @@ class YoutubeMusicProvider(MusicProvider):
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
-        return await add_remove_playlist_tracks(
+        await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=prov_track_ids,
@@ -595,7 +614,7 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id=prov_playlist_id, headers=self._headers, limit=limit
         )
         if "tracks" not in playlist_obj:
-            return None
+            return
         tracks_to_delete = []
         for index, track in enumerate(playlist_obj["tracks"]):
             if index in positions_to_remove:
@@ -606,7 +625,7 @@ class YoutubeMusicProvider(MusicProvider):
                     {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
                 )
 
-        return await add_remove_playlist_tracks(
+        await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=tracks_to_delete,
@@ -615,9 +634,8 @@ class YoutubeMusicProvider(MusicProvider):
         )
 
     @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
-    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        result = []
         result = await get_song_radio_tracks(
             headers=self._headers, prov_item_id=prov_track_id, limit=limit, user=self._yt_user
         )
@@ -659,58 +677,110 @@ class YoutubeMusicProvider(MusicProvider):
             allow_seek=True,
             expiration=expiration,
         )
-        if (
-            stream_format.get("audio_channels")
-            and str(stream_format.get("audio_channels")).isdigit()
-        ):
-            stream_details.audio_format.channels = int(stream_format.get("audio_channels"))
-        if stream_format.get("asr"):
-            stream_details.audio_format.sample_rate = int(stream_format.get("asr"))
+        if (audio_channels := stream_format.get("audio_channels")) and str(
+            audio_channels
+        ).isdigit():
+            stream_details.audio_format.channels = int(audio_channels)
+        if asr := stream_format.get("asr"):
+            stream_details.audio_format.sample_rate = int(asr)
         return stream_details
 
-    @use_cache(3600)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        recommendations = await get_home(self._headers, self.language, user=self._yt_user)
-        folders = []
-        for section in recommendations:
-            folder = RecommendationFolder(
-                name=section["title"],
-                item_id=f"{self.instance_id}_{section['title']}",
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(
+            RecommendationFolder(
+                name="Mixed for you",
+                translation_key="mixed_for_you",
+                item_id=f"{self.instance_id}_mixed_for_you",
                 provider=self.instance_id,
-                icon=determine_recommendation_icon(section["title"]),
+                icon="mdi:shuffle-variant",
             )
-            for recommended_item in section.get("contents", []):
-                if not recommended_item:
-                    continue  # yeah this seems to happen sometimes ?!
-                if recommended_item.get("videoId"):
-                    # Probably a track
-                    try:
-                        track = self._parse_track(recommended_item)
-                        folder.items.append(track)
-                    except InvalidDataError:
-                        self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+        )
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == f"{self.instance_id}_mixed_for_you":
+            return (await self._get_mixed_for_you_folder()).items
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the home feed and parse its sections into recommendation folders with items."""
+        recommendations = await get_home(self._headers, self.language, user=self._yt_user)
+
+        def _parse_sections() -> list[RecommendationFolder]:
+            # building model objects from the raw payload is CPU-bound; run off the event loop
+            folders: list[RecommendationFolder] = []
+            for section in recommendations:
+                folder = RecommendationFolder(
+                    name=section["title"],
+                    item_id=f"{self.instance_id}_{section['title']}",
+                    provider=self.instance_id,
+                    icon=determine_recommendation_icon(section["title"]),
+                )
+                for recommended_item in section.get("contents", []):
+                    if not recommended_item:
+                        continue  # yeah this seems to happen sometimes ?!
+                    if recommended_item.get("videoId"):
+                        # Probably a track
+                        try:
+                            track = self._parse_track(recommended_item)
+                            folder.items.append(track)
+                        except InvalidDataError:
+                            self.logger.debug(
+                                "Invalid track in recommendations: %s", recommended_item
+                            )
+                            continue
+                    elif recommended_item.get("playlistId"):
+                        # Probably a playlist
+                        recommended_item["id"] = recommended_item["playlistId"]
+                        del recommended_item["playlistId"]
+                        folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("browseId"):
+                        if podcast := self._parse_browse_podcast(recommended_item):
+                            folder.items.append(podcast)
+                        else:
+                            # Probably an album
+                            folder.items.append(self._parse_album(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist
+                        folder.items.append(self._parse_album(recommended_item))
+                    elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
+                        # Podcast episodes show up here without a videoId/browseId,
+                        # so there is no playable item to build from them
+                        self.logger.debug(
+                            "Skipping podcast episode in recommendation folder: %s",
+                            recommended_item.get("title"),
+                        )
                         continue
-                elif recommended_item.get("playlistId"):
-                    # Probably a playlist
-                    recommended_item["id"] = recommended_item["playlistId"]
-                    del recommended_item["playlistId"]
-                    folder.items.append(self._parse_playlist(recommended_item))
-                elif recommended_item.get("browseId"):
-                    # Probably an album
-                    folder.items.append(self._parse_album(recommended_item))
-                elif recommended_item.get("subscribers"):
-                    # Probably artist
-                    folder.items.append(self._parse_album(recommended_item))
-                else:
-                    self.logger.warning(
-                        "Unknown item type in recommendation folder: %s", recommended_item
-                    )
-                    continue
-            folders.append(folder)
-        # Also add personalized mixes if available
+                    else:
+                        self.logger.warning(
+                            "Unknown item type in recommendation folder: %s",
+                            recommended_item,
+                        )
+                        continue
+                folders.append(folder)
+            return folders
+
+        return await asyncio.to_thread(_parse_sections)
+
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
+    async def _get_mixed_for_you_folder(self) -> RecommendationFolder:
+        """
+        Build the "Mixed for you" recommendation folder from the user's personal mixes.
+
+        :return: The folder, which has no items when no personal mixes are available.
+        """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
+            translation_key="mixed_for_you",
             item_id=f"{self.instance_id}_mixed_for_you",
             provider=self.instance_id,
             icon="mdi:shuffle-variant",
@@ -741,12 +811,9 @@ class YoutubeMusicProvider(MusicProvider):
         mixed_for_you_folder.items.extend(
             preview for preview in playlist_previews if preview is not None
         )
-        if mixed_for_you_folder.items:
-            folders.append(mixed_for_you_folder)
+        return mixed_for_you_folder
 
-        return folders
-
-    async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
+    async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs: Any) -> Any:
         """Post data to the given endpoint."""
         url = f"{YTM_BASE_URL}{endpoint}"
         data.update(self._context)
@@ -759,15 +826,15 @@ class YoutubeMusicProvider(MusicProvider):
         ) as response:
             return await response.json()
 
-    async def _get_data(self, url: str, params: dict | None = None):
+    async def _get_data(self, url: str, params: dict[str, Any] | None = None) -> str:
         """Get data from the given URL."""
         async with self.mass.http_session.get(
             url, headers=self._headers, params=params, cookies=self._cookies
         ) as response:
             return await response.text()
 
-    def _initialize_headers(self) -> dict[str, str]:
-        """Return headers to include in the requests."""
+    def _initialize_headers(self) -> None:
+        """Initialize the headers to include in the requests."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
@@ -788,8 +855,8 @@ class YoutubeMusicProvider(MusicProvider):
         headers["Authorization"] = get_authorization(sapisid + " " + YTM_DOMAIN)
         self._headers = headers
 
-    def _initialize_context(self) -> dict[str, str]:
-        """Return a dict to use as a context in requests."""
+    def _initialize_context(self) -> None:
+        """Initialize the context to use in requests."""
         self._context = {
             "context": {
                 "client": {"clientName": "WEB_REMIX", "clientVersion": "0.1"},
@@ -797,7 +864,7 @@ class YoutubeMusicProvider(MusicProvider):
             }
         }
 
-    def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
+    def _parse_album(self, album_obj: dict[str, Any], album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
 
@@ -861,7 +928,7 @@ class YoutubeMusicProvider(MusicProvider):
 
         return album
 
-    def _parse_artist(self, artist_obj: dict) -> Artist:
+    def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse a YT Artist response to Artist model object."""
         artist_id = None
         if "channelId" in artist_obj:
@@ -893,12 +960,12 @@ class YoutubeMusicProvider(MusicProvider):
             artist.metadata.images = self._parse_thumbnails(artist_obj["thumbnails"])
         return artist
 
-    def _parse_playlist(self, playlist_obj: dict) -> Playlist:
+    def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:
@@ -936,7 +1003,7 @@ class YoutubeMusicProvider(MusicProvider):
             playlist.owner = self.name
         return playlist
 
-    def _parse_track(self, track_obj: dict, track_number: int = 0) -> Track:
+    def _parse_track(self, track_obj: dict[str, Any], track_number: int = 0) -> Track:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             msg = "Track is missing videoId"
@@ -961,21 +1028,21 @@ class YoutubeMusicProvider(MusicProvider):
                 )
             },
             favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
-            # Disc info is not available in YTM
-            disc_number=0,
+            # Disc info is not available in YTM, assume a single disc
+            disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
             # by counting album tracks when fetching full album details
             track_number=track_obj.get("trackNumber") or track_number or 0,
         )
 
         if track_obj.get("artists"):
-            track.artists = [
+            track.artists = UniqueList(
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
                 if artist.get("id")
                 or artist.get("channelId")
                 or artist.get("name") == "Various Artists"
-            ]
+            )
         # guard that track has valid artists
         if not track.artists:
             msg = "Track is missing artists"
@@ -997,7 +1064,7 @@ class YoutubeMusicProvider(MusicProvider):
             track.duration = int(track_obj["duration_seconds"])
         return track
 
-    def _parse_podcast(self, podcast_obj: dict) -> Podcast:
+    def _parse_podcast(self, podcast_obj: dict[str, Any]) -> Podcast:
         """Parse a YTM Podcast into a MA Podcast."""
         podcast = Podcast(
             item_id=podcast_obj["podcastId"],
@@ -1013,13 +1080,25 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if description := podcast_obj.get("description"):
             podcast.metadata.description = description
-        if author := podcast_obj.get("author"):
+        if author := podcast_obj.get("author") or podcast_obj.get("channel"):
             podcast.publisher = author["name"]
         if thumbnails := podcast_obj.get("thumbnails"):
             podcast.metadata.images = self._parse_thumbnails(thumbnails)
         return podcast
 
-    def _parse_podcast_episode(self, episode_obj: dict, podcast: Podcast | None) -> PodcastEpisode:
+    def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:
+        """Parse a podcast from a browse or search item."""
+        browse_id: str = item_obj.get("browseId") or ""
+        if not browse_id.startswith("MPSP"):
+            return None
+        podcast_obj = dict(item_obj)
+        # Match the unprefixed IDs used by library podcasts.
+        podcast_obj["podcastId"] = item_obj.get("podcastId") or browse_id.removeprefix("MPSP")
+        return self._parse_podcast(podcast_obj)
+
+    def _parse_podcast_episode(
+        self, episode_obj: dict[str, Any], podcast: Podcast
+    ) -> PodcastEpisode:
         """Parse a raw episode into a PodcastEpisode."""
         episode_id = episode_obj.get("videoId")
         if not episode_id:
@@ -1029,7 +1108,8 @@ class YoutubeMusicProvider(MusicProvider):
         episode = PodcastEpisode(
             item_id=item_id,
             provider=self.instance_id,
-            name=episode_obj.get("title"),
+            name=episode_obj.get("title", ""),
+            position=0,
             podcast=podcast,
             provider_mappings={
                 ProviderMapping(
@@ -1045,9 +1125,12 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if duration := episode_obj.get("duration"):
             duration_sec = parse_str_duration(duration)
-            episode.duration = duration_sec
+            episode.duration = int(duration_sec)
         if description := episode_obj.get("description"):
-            episode.metadata.description = description
+            # the single episode endpoint returns a Description object instead of a string
+            episode.metadata.description = (
+                description.text if isinstance(description, Description) else description
+            )
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
@@ -1084,7 +1167,9 @@ class YoutubeMusicProvider(MusicProvider):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
-                stream_format = next(format_selector({"formats": info["formats"]}), None)
+                stream_format: dict[str, Any] | None = next(
+                    format_selector({"formats": info["formats"]}), None
+                )
                 if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
                 return stream_format
@@ -1099,11 +1184,14 @@ class YoutubeMusicProvider(MusicProvider):
             name=name,
         )
 
-    def _get_artist_item_mapping(self, artist_obj: dict) -> ItemMapping:
+    def _get_artist_item_mapping(self, artist_obj: dict[str, Any]) -> ItemMapping:
         artist_id = artist_obj.get("id") or artist_obj.get("channelId")
         if not artist_id and artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
-        return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
+        # callers only pass artists with a valid id
+        return self._get_item_mapping(
+            MediaType.ARTIST, cast("str", artist_id), artist_obj.get("name", "")
+        )
 
     async def _verify_po_token_url(self) -> bool:
         """Ping the PO Token server and verify the response."""
@@ -1113,18 +1201,20 @@ class YoutubeMusicProvider(MusicProvider):
                 response.raise_for_status()
                 self.logger.debug("PO Token server responded with %s", response.status)
                 return response.status == 200
-        except ClientConnectorError:
+        except (ClientError, TimeoutError) as err:
+            self.logger.debug("PO Token server ping failed: %s", err)
             return False
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
         stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
         # Only premium users can stream the HQ stream of this song
-        return stream_format["format_id"] == "141"
+        format_id: str = stream_format["format_id"]
+        return format_id == "141"
 
-    def _parse_thumbnails(self, thumbnails_obj: dict) -> list[MediaItemImage]:
+    def _parse_thumbnails(self, thumbnails_obj: list[dict[str, Any]]) -> UniqueList[MediaItemImage]:
         """Parse and YTM thumbnails to MediaItemImage."""
-        result: list[MediaItemImage] = []
+        result: UniqueList[MediaItemImage] = UniqueList()
         processed_images = set()
         for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
@@ -1165,6 +1255,6 @@ class YoutubeMusicProvider(MusicProvider):
             await install_package(package_name)
         # verify if the yt_dlp package is usable
         try:
-            await asyncio.to_thread(importlib.import_module, "yt_dlp")
+            await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")

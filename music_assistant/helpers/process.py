@@ -13,11 +13,12 @@ import logging
 import os
 
 # if TYPE_CHECKING:
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from signal import SIGINT
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -56,7 +57,8 @@ class AsyncProcess:
         name: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Initialize AsyncProcess.
+        """
+        Initialize AsyncProcess.
 
         :param args: Command and arguments to execute.
         :param stdin: Stdin configuration (True for PIPE, False for None, or custom).
@@ -67,7 +69,7 @@ class AsyncProcess:
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
-            name = args[0].split(os.sep)[-1]
+            name = Path(args[0]).name
         self.name = name
         self.logger = LOGGER.getChild(name)
         self._args = args
@@ -128,7 +130,7 @@ class AsyncProcess:
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
         )
 
-    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
@@ -136,7 +138,7 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
@@ -157,7 +159,8 @@ class AsyncProcess:
                 return err.partial
 
     async def read(self, n: int) -> bytes:
-        """Read up to n bytes from the stdout stream.
+        """
+        Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.
@@ -179,6 +182,33 @@ class AsyncProcess:
         async with self._stdin_lock:
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
+
+    @asynccontextmanager
+    async def stdin_quiesced(self, timeout: float = 5.0) -> AsyncIterator[bool]:
+        """
+        Hold stdin quiet for a block, with what was already written seen through to the pipe.
+
+        :meth:`write` only waits while the transport is paused, which it is only
+        above the high-water mark, so it returns with up to that much still queued
+        locally (64 KiB by default). This first sees those bytes through to the
+        kernel pipe -- as far as it can guarantee; whether the process has read
+        them is its own business -- and then keeps the write lock for the body, so
+        no :meth:`write` or :meth:`write_eof` can interleave. For a caller telling
+        the process something about the bytes it has been handed -- out of band,
+        and in a sequence the process must not see a write inside -- that turns
+        "we happen to have stopped writing" into something the block enforces.
+
+        Yields True when stdin was emptied, False when it could not be: the
+        process is then still owed bytes, so a caller whose message depends on it
+        having received everything must give up rather than send it.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        """
+        if self._close_called or self.proc is None or self.proc.stdin is None:
+            yield True
+            return
+        async with self._stdin_lock:
+            yield await self._drain_stdin_locked(timeout)
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -207,30 +237,27 @@ class AsyncProcess:
             return b""
         assert self.proc is not None  # for type checking
         assert self.proc.stderr is not None  # for type checking
-        async with self._stderr_lock:
-            try:
-                return await self.proc.stderr.readline()
-            except ValueError as err:
-                # we're waiting for a line (separator found), but the line was too big
-                # this may happen with ffmpeg during a long (radio) stream where progress
-                # gets outputted to the stderr but no newline
-                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
-                # NOTE: this consumes the line that was too big
-                if "chunk exceed the limit" in str(err):
-                    return await self.proc.stderr.readline()
-                # raise for all other (value) errors
-                raise
+        return await self._readline(self.proc.stderr, self._stderr_lock)
 
-    async def iter_stderr(self) -> AsyncGenerator[str, None]:
+    async def read_stdout(self) -> bytes:
+        """Read line from stdout."""
+        # keyed on the close flag rather than the returncode (like read() and
+        # readexactly()): a process that already exited still has its last
+        # lines sitting in the stream buffer, and those must still be readable
+        if self._close_called:
+            return b""
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdout is not None  # for type checking
+        return await self._readline(self.proc.stdout, self._stdout_lock)
+
+    async def iter_stderr(self) -> AsyncGenerator[str]:
         """Iterate lines from the stderr stream as string."""
-        line: str | bytes
-        while True:
-            line = await self.read_stderr()
-            if line == b"":
-                break
-            line = line.decode("utf-8", errors="ignore").strip()
-            if not line:
-                continue
+        async for line in self._iter_lines(self.read_stderr):
+            yield line
+
+    async def iter_stdout(self) -> AsyncGenerator[str]:
+        """Iterate lines from the stdout stream as string."""
+        async for line in self._iter_lines(self.read_stdout):
             yield line
 
     async def communicate(
@@ -250,6 +277,11 @@ class AsyncProcess:
 
     async def close(self) -> None:
         """Close/terminate the process and wait for exit."""
+        if self._close_called and self.returncode is not None:
+            # Already closed and reaped, so there is nothing left to signal or
+            # drain. The stream locks below are still held by that first call
+            # and would only be waited out again (5s each).
+            return
         self._close_called = True
         if not self.proc:
             return
@@ -277,7 +309,10 @@ class AsyncProcess:
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         elif not self.proc.stdin and self.proc.returncode is None:
-            self.proc.send_signal(SIGINT)
+            # the process may exit between the returncode check and the signal; guard the
+            # race the same way the SIGKILL delivery below does
+            with suppress(ProcessLookupError, OSError):
+                self.proc.send_signal(SIGINT)
 
         # ensure we have no more readers active and stdout is drained
         with suppress(TimeoutError, asyncio.CancelledError):
@@ -411,16 +446,96 @@ class AsyncProcess:
         """Attach a stderr reader task to this process."""
         self._stderr_reader_task = task
 
+    async def _readline(self, stream: asyncio.StreamReader, lock: asyncio.Lock) -> bytes:
+        """
+        Read a single line from one of the process' output streams.
 
-async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """Run subprocess and return returncode and output."""
+        :param stream: The stream to read the line from.
+        :param lock: The lock guarding that stream's readers.
+        """
+        async with lock:
+            try:
+                return await stream.readline()
+            except ValueError as err:
+                # we're waiting for a line (separator found), but the line was too big
+                # this may happen with ffmpeg during a long (radio) stream where progress
+                # gets outputted to the stderr but no newline
+                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
+                # NOTE: this consumes the line that was too big
+                if "chunk exceed the limit" in str(err):
+                    return await stream.readline()
+                # raise for all other (value) errors
+                raise
+
+    async def _iter_lines(
+        self, read_line: Callable[[], Coroutine[Any, Any, bytes]]
+    ) -> AsyncGenerator[str]:
+        """
+        Yield decoded, non-empty lines until the underlying stream reaches EOF.
+
+        :param read_line: Coroutine function returning the next raw line.
+        """
+        while True:
+            raw = await read_line()
+            if raw == b"":
+                break
+            if line := raw.decode("utf-8", errors="ignore").strip():
+                yield line
+
+    async def _drain_stdin_locked(self, timeout: float) -> bool:
+        """
+        Empty the stdin write buffer, with the write lock already held.
+
+        :param timeout: Seconds to wait for the buffer to empty.
+        :return: True once the buffer is empty, False when the wait timed out.
+        """
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdin is not None  # for type checking
+        transport = self.proc.stdin.transport
+        low, high = transport.get_write_buffer_limits()
+        try:
+            # Pausing the transport at a zero high-water mark is what makes
+            # drain() resolve only once the buffer is completely empty: it
+            # otherwise resolves as soon as the transport is not paused.
+            transport.set_write_buffer_limits(high=0)
+            await asyncio.wait_for(self.proc.stdin.drain(), timeout)
+        except TimeoutError:
+            return False
+        except BrokenPipeError, RuntimeError, ConnectionResetError:
+            # already exited, race condition: nothing is left to arrive
+            return True
+        finally:
+            # Restore what this process was configured with rather than the
+            # asyncio defaults a bare call would reinstate.
+            with suppress(RuntimeError):
+                transport.set_write_buffer_limits(high=high, low=low)
+        return True
+
+
+async def check_output(
+    *args: str, env: dict[str, str] | None = None, timeout: float | None = None
+) -> tuple[int, bytes]:
+    """
+    Run subprocess and return returncode and output.
+
+    :param env: Optional environment overrides for the subprocess.
+    :param timeout: Maximum seconds to wait for the process to exit. On expiry the
+        process is killed and TimeoutError is raised; None (default) waits forever.
+    """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stderr=asyncio.subprocess.STDOUT,
         stdout=asyncio.subprocess.PIPE,
         env=get_subprocess_env(env),
     )
-    stdout, _ = await proc.communicate()
+    try:
+        async with asyncio.timeout(timeout):
+            stdout, _ = await proc.communicate()
+    except TimeoutError:
+        proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
+        raise
     assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout)
 

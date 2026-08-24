@@ -1,4 +1,5 @@
-"""Music Assistant Snapcast source stream.
+"""
+Music Assistant Snapcast source stream.
 
 This module implements a Music Assistant-managed Snapcast stream that is exposed to the
 Snapcast server as a TCP source. The stream is produced by running an FFmpeg pipeline
@@ -17,23 +18,34 @@ import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.controllers.streams.audio_processing import (
+    AudioOutputPlan,
+    get_media_session_id,
+)
+from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
 from .constants import (
     CONTROL_SOCKET_PATH_TEMPLATE,
-    DEFAULT_SNAPCAST_FORMAT,
+    snapcast_sampleformat_query,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
+
+    from music_assistant.helpers.dsp import ComplexFilter
 
     from .provider import SnapCastProvider
     from .snap_cntrl_proto import SnapstreamProto
 
 
 class SnapcastMAStream:
-    """A Music Assistant-managed Snapcast stream.
+    """
+    A Music Assistant-managed Snapcast stream.
 
     The stream lifecycle is:
     - setup: ensure required server resources exist (Snapcast source, optional socket server)
@@ -55,7 +67,8 @@ class SnapcastMAStream:
         use_cntrl_script: bool = False,
         destroy_on_stop: bool = False,
     ) -> None:
-        """Initialize the stream.
+        """
+        Initialize the stream.
 
         Args:
             provider: The Snapcast provider instance.
@@ -85,6 +98,7 @@ class SnapcastMAStream:
         self._restart_requested: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
+        self._output_plan: AudioOutputPlan | None = None
 
         self._socket_server: SnapcastSocketServer | None = None
         self._socket_path: str | None = None
@@ -93,7 +107,7 @@ class SnapcastMAStream:
         self._streamer_started_evt = asyncio.Event()
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
-        self._filter_settings: list[str] | None = None
+        self._filter_settings: list[str | ComplexFilter] | None = None
 
     @property
     def source_id(self) -> str | None:
@@ -114,7 +128,8 @@ class SnapcastMAStream:
 
     @property
     def playback_started_at(self) -> float | None:
-        """Return when the playback started at the clients.
+        """
+        Return when the playback started at the clients.
 
         return The (UTC) timestamp when the playback was started on the client
         or None if not started yet or not streaming.
@@ -129,7 +144,8 @@ class SnapcastMAStream:
         return self._streaming_started_at
 
     async def setup(self) -> None:
-        """Prepare the Snapcast stream resources.
+        """
+        Prepare the Snapcast stream resources.
 
         Ensures a Snapcast source exists on the server. If `cntrl_queue_id` is set,
         also starts the Unix socket server used by the control script.
@@ -149,7 +165,8 @@ class SnapcastMAStream:
             self._setup_done = True
 
     async def destroy(self) -> None:
-        """Stop streaming and tear down all resources.
+        """
+        Stop streaming and tear down all resources.
 
         This stops the streamer task (if running), removes the Snapcast source,
         and stops the optional control socket server.
@@ -165,7 +182,8 @@ class SnapcastMAStream:
         await self._stop_socket_server()
 
     async def start_stream(self, allow_restart: bool = False) -> None:
-        """Start streaming the configured media to the Snapcast source.
+        """
+        Start streaming the configured media to the Snapcast source.
 
         Raises:
             RuntimeError: If the streamer task is already running.
@@ -175,7 +193,11 @@ class SnapcastMAStream:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
-                self._restart_if_running()
+                if self._stop_requested or self._stop_streamer_evt.is_set():
+                    # stop in flight; _on_streamer_done will start the fresh run
+                    self._restart_requested = True
+                else:
+                    self._restart_if_running()
                 return
 
             self._stop_requested = False
@@ -186,7 +208,8 @@ class SnapcastMAStream:
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
     async def wait_for_started(self, timeout_sec: float | None = None) -> None:
-        """Wait until the streamer task signals it has started.
+        """
+        Wait until the streamer task signals it has started.
 
         Args:
             timeout_sec: Optional timeout in seconds.
@@ -210,18 +233,24 @@ class SnapcastMAStream:
         take_from = from_player or self._filter_settings_owner
         if not take_from:
             raise RuntimeError("No player provided to read filter settings from.")
-        new_settings = self._mass.streams.audio.get_player_filter_params(
+        stream_format = self._provider.stream_audio_format
+        output_format = self._get_transport_format()
+        self._output_plan = self._mass.streams.audio.get_player_output_plan(
             take_from,
-            DEFAULT_SNAPCAST_FORMAT,
-            DEFAULT_SNAPCAST_FORMAT,
+            stream_format,
+            output_format,
+            handoff_format=stream_format,
         )
+        self._register_output_plan()
+        new_settings = self._output_plan.filter_params
         if from_player:
             self._filter_settings_owner = from_player
         if new_settings != self._filter_settings:
             self._restart_if_running()
 
     def request_stop_stream(self) -> None:
-        """Request the streamer task to stop.
+        """
+        Request the streamer task to stop.
 
         This is cooperative: the streamer task will stop when it observes the stop event.
         Any pending inactivity stop timer is canceled.
@@ -235,7 +264,8 @@ class SnapcastMAStream:
             self._stop_timer.cancel()
 
     def set_in_use(self, in_use: bool) -> None:
-        """Mark the stream as in-use or idle.
+        """
+        Mark the stream as in-use or idle.
 
         When marked idle, a delayed stop is scheduled. When marked in-use, any pending
         delayed stop is canceled.
@@ -244,12 +274,13 @@ class SnapcastMAStream:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif self._stop_timer_started_at is None:
+        elif self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
-            self._stop_timer = self._mass.loop.call_later(60.0, self.request_stop_stream)
+            self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
-        """Wait for the streamer task to finish.
+        """
+        Wait for the streamer task to finish.
 
         If the task does not finish within the timeout, it is canceled and awaited.
 
@@ -272,7 +303,8 @@ class SnapcastMAStream:
             await asyncio.gather(curr_task, return_exceptions=True)
 
     async def _streamer_task_impl(self) -> None:
-        """Streamer task implementation.
+        """
+        Streamer task implementation.
 
         Runs FFmpeg to push audio to the Snapcast TCP source until FFmpeg exits or a stop
         request is received. After exit, waits briefly for the Snapcast stream to report
@@ -286,22 +318,33 @@ class SnapcastMAStream:
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
-            self._filter_settings = self._mass.streams.audio.get_player_filter_params(
+            stream_format = self._provider.stream_audio_format
+            output_format = self._get_transport_format()
+            self._output_plan = self._mass.streams.audio.get_player_output_plan(
                 self._filter_settings_owner,
-                DEFAULT_SNAPCAST_FORMAT,
-                DEFAULT_SNAPCAST_FORMAT,
+                stream_format,
+                output_format,
+                handoff_format=stream_format,
             )
-        audio_source = self._mass.streams.get_stream(
-            self.media,
-            DEFAULT_SNAPCAST_FORMAT,
-            self._filter_settings_owner,
-            use_flow_stream_buffering=True,
+            self._register_output_plan()
+            self._filter_settings = self._output_plan.filter_params
+        stream_format = self._provider.stream_audio_format
+        # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
+        # so buffer here to give the source room to hiccup without starving the server
+        audio_source = buffered(
+            self._mass.streams.get_stream(
+                self.media,
+                stream_format,
+                self._filter_settings_owner,
+            ),
+            buffer_size=30,
+            min_buffer_before_yield=1,
         )
         try:
             async with FFMpeg(
                 audio_input=audio_source,
-                input_format=DEFAULT_SNAPCAST_FORMAT,
-                output_format=DEFAULT_SNAPCAST_FORMAT,
+                input_format=stream_format,
+                output_format=stream_format,
                 filter_params=self._filter_settings or [],
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
@@ -421,6 +464,54 @@ class SnapcastMAStream:
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
+    def _get_transport_format(self) -> AudioFormat:
+        """Return the format Snapserver sends to its clients."""
+        stream_format = self._provider.stream_audio_format
+        if self._provider._use_builtin_server:
+            codec_name = str(self._provider._snapcast_server_transport_codec)
+        else:
+            stream_data = self.snap_stream._stream if self.snap_stream else {}
+            uri_data = stream_data.get("uri", {})
+            query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
+            codec_name = str(query_data.get("codec", "") if isinstance(query_data, dict) else "")
+        codec_name = codec_name.partition(":")[0].lower()
+        pcm_type = ContentType.PCM_S24LE if stream_format.bit_depth == 24 else ContentType.PCM_S16LE
+        content_type, codec_type = {
+            "flac": (ContentType.FLAC, ContentType.FLAC),
+            "ogg": (ContentType.OGG, ContentType.VORBIS),
+            "opus": (ContentType.OPUS, ContentType.OPUS),
+            "pcm": (pcm_type, pcm_type),
+        }.get(codec_name, (ContentType.UNKNOWN, ContentType.UNKNOWN))
+        return AudioFormat(
+            content_type=content_type,
+            codec_type=codec_type,
+            sample_rate=stream_format.sample_rate,
+            bit_depth=stream_format.bit_depth,
+            channels=stream_format.channels,
+        )
+
+    def _register_output_plan(self) -> None:
+        """Register the shared Snapcast path for every connected group member."""
+        queue_id = self.media.source_id
+        session_id = get_media_session_id(self.media)
+        if self._output_plan is None or queue_id is None or session_id is None:
+            return
+        player_ids = set(self._output_plan.output_details.player_ids)
+        if self.snap_stream:
+            for group in self._provider._snapserver.groups:
+                if group.stream != self.snap_stream.identifier:
+                    continue
+                for client_id in group.clients:
+                    if player_id := self._provider._get_ma_id(client_id):
+                        player_ids.add(player_id)
+        for player_id in player_ids:
+            self._mass.streams.audio_processing.update_output(
+                player_id,
+                self._output_plan,
+                queue_id=queue_id,
+                session_id=session_id,
+            )
+
     def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
         """
         Look up a snapserver stream by its name (not id) in the local cache.
@@ -432,6 +523,26 @@ class SnapcastMAStream:
             if getattr(s, "name", None) == name:
                 return s
         return None
+
+    def _stream_matches_configured_format(self, stream: SnapstreamProto) -> bool:
+        """
+        Return whether a snapserver stream uses the configured PCM sample format.
+
+        :param stream: Existing snapserver stream that may be adopted.
+        """
+        expected = self._provider.stream_audio_format
+        expected_sampleformat = f"{expected.sample_rate}:{expected.bit_depth}:{expected.channels}"
+        stream_data = getattr(stream, "_stream", None)
+        uri_data = stream_data.get("uri", {}) if isinstance(stream_data, dict) else {}
+        query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
+        if not isinstance(query_data, dict):
+            return False
+        if str(query_data.get("sampleformat", "")) != expected_sampleformat:
+            return False
+        if expected.bit_depth == 24:
+            packed = str(query_data.get("packed_s24le", "")).lower()
+            return packed in {"1", "true", "yes"}
+        return True
 
     @staticmethod
     def _is_name_collision_error(result: object) -> bool:
@@ -502,9 +613,8 @@ class SnapcastMAStream:
                     break
                 tried_ports.add(port)
                 result = await self._provider._snapserver.stream_add_stream(
-                    # NOTE: setting the sampleformat to something else
-                    # (like 24 bits bit depth) does not seem to work at all!
-                    f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
+                    # 24-bit requires Snapserver packed_s24le support (snapcast/snapcast#1532)
+                    f"tcp://0.0.0.0:{port}?{snapcast_sampleformat_query(self._provider.stream_audio_format)}"
                     f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
                     f"{extra_args}&name={self.stream_name}"
                 )
@@ -523,6 +633,17 @@ class SnapcastMAStream:
                             self._provider._snapserver.synchronize(status)
                         adopted = self._find_local_stream_by_name(self.stream_name)
                     if adopted is not None:
+                        if not self._stream_matches_configured_format(adopted):
+                            self._logger.info(
+                                "Orphaned snapserver stream %s (name=%s) has a different "
+                                "sample format; removing it so it can be recreated",
+                                adopted.identifier,
+                                self.stream_name,
+                            )
+                            await self._provider._snapserver.stream_remove_stream(
+                                adopted.identifier
+                            )
+                            continue
                         self._logger.info(
                             "Adopted orphaned snapserver stream %s (name=%s)",
                             adopted.identifier,
@@ -594,9 +715,11 @@ class SnapcastMAStream:
             if snap_group.stream != self.snap_stream.identifier:
                 continue
             self._provider.poke_group_members(snap_group)
+        self._register_output_plan()
 
     async def _start_socket_server(self) -> str:
-        """Get or create a socket server for the given queue.
+        """
+        Get or create a socket server for the given queue.
 
         :return: The path to the Unix socket.
         """

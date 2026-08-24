@@ -1,4 +1,4 @@
-"""Tests for the cross-provider dispatcher hooks (get_similar_tracks / recommendations)."""
+"""Tests for the cross-provider hooks (get_similar_tracks / recommendations rows + items)."""
 
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ import pytest
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import RecommendationFolder
 
+from tests.common import use_real_create_task
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
+
+ROW_ID = "inspired_by_recently_played"
 
 
 class TestGetSimilarTracks:
@@ -60,7 +63,7 @@ class TestGetSimilarTracks:
 
         assert result == [resolved_track]
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="seed_id", seed_provider="spotify", limit=10
+            item_id="seed_id", seed_provider="spotify", limit=10, preset="balanced", diversity=0.0
         )
         mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
 
@@ -84,7 +87,7 @@ class TestGetSimilarTracks:
 
         assert len(result) == 1
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="track_a", seed_provider=None, limit=25
+            item_id="track_a", seed_provider=None, limit=25, preset="balanced", diversity=0.0
         )
 
     @pytest.mark.asyncio
@@ -137,8 +140,73 @@ class TestGetSimilarTracks:
         plugin._handle_similar.assert_not_called()
 
 
-class TestRecommendations:
-    """Tests for SonicSimilarityPlugin.recommendations."""
+class TestGetRecommendations:
+    """Tests for SonicSimilarityPlugin.get_recommendations (rows, without items)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_static_row_without_backend_io(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """The row descriptor is returned with empty items and zero backend calls."""
+        plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
+        result = await plugin.get_recommendations()
+        assert len(result) == 1
+        folder = result[0]
+        assert isinstance(folder, RecommendationFolder)
+        assert folder.item_id == ROW_ID
+        assert folder.provider == plugin.instance_id
+        assert folder.name == "Inspired by recently played"
+        assert folder.translation_key == ROW_ID
+        assert folder.icon == "mdi-shimmer"
+        assert len(folder.items) == 0
+        # Rows are contractually I/O-free.
+        assert mock_mass.music.recently_played.await_count == 0
+        assert mock_mass.music.tracks.get.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_disabled_via_config(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """When CONF_ENABLE_DISCOVER_ROW is False, no row is advertised."""
+        plugin = make_plugin(
+            discover_row_enabled=False,
+            signatures={("spotify", "seed_id"): [0.1] * 18},
+        )
+        result = await plugin.get_recommendations()
+        assert result == []
+        assert mock_mass.music.recently_played.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_row_advertised_even_when_corpus_not_ready(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """Engine readiness is an items-time concern; the row itself is still advertised."""
+        plugin = make_plugin()
+        result = await plugin.get_recommendations()
+        assert len(result) == 1
+        assert result[0].item_id == ROW_ID
+        assert mock_mass.music.recently_played.await_count == 0
+
+
+class TestGetRecommendationItems:
+    """Tests for SonicSimilarityPlugin.get_recommendation_items."""
+
+    @pytest.fixture(autouse=True)
+    def _real_create_task(self, mock_mass: MagicMock) -> None:
+        """Let the @use_cache decorator on the row fetch dispatch through a real task."""
+        use_real_create_task(mock_mass)
+
+    @pytest.mark.asyncio
+    async def test_unknown_item_id_returns_empty_without_backend_io(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """An item_id we never advertised yields [] and triggers no backend fetch."""
+        plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
+        plugin._handle_similar = AsyncMock(return_value={"items": []})
+        result = await plugin.get_recommendation_items("bogus_row")
+        assert result == []
+        assert mock_mass.music.recently_played.await_count == 0
+        plugin._handle_similar.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_disabled_via_config(
@@ -149,7 +217,7 @@ class TestRecommendations:
             discover_row_enabled=False,
             signatures={("spotify", "seed_id"): [0.1] * 18},
         )
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
         assert result == []
         # And we never queried recently_played at all.
         assert mock_mass.music.recently_played.await_count == 0
@@ -158,9 +226,9 @@ class TestRecommendations:
     async def test_returns_empty_when_corpus_not_ready(
         self, make_plugin: Callable[..., Any]
     ) -> None:
-        """Without a corpus, the discover dispatcher should get nothing."""
+        """Without a corpus, the advertised row serves no items."""
         plugin = make_plugin()
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
         assert result == []
 
     @pytest.mark.asyncio
@@ -171,7 +239,7 @@ class TestRecommendations:
         plugin = make_plugin(
             signatures={("spotify", "seed1"): [0.1] * 18},
             discover_preset="vibe",
-            discover_diversity=0.7,
+            discover_diversity=7,
         )
         mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
         recent_track = make_track("seed1", provider="spotify")
@@ -187,7 +255,7 @@ class TestRecommendations:
             }
         )
 
-        await plugin.recommendations()
+        await plugin.get_recommendation_items(ROW_ID)
 
         plugin._handle_similar.assert_awaited()
         # Every call should carry the configured preset + diversity.
@@ -199,16 +267,18 @@ class TestRecommendations:
     async def test_requests_partial_plays_from_recently_played(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """recommendations() asks for partial plays and does NOT filter on user_initiated.
+        """
+        The items build asks for partial plays and does NOT filter on user_initiated.
 
-        MA only sets user_initiated=True on container-level plays (album, artist,
-        playlist, genre); individual tracks always get user_initiated=False from
-        the playback-report hook. Restricting to user_initiated=True therefore
-        excludes the actual track-level plays we want as seeds.
+        MA sets user_initiated=True only for items the user explicitly chose (a
+        container such as an album, artist, playlist or genre, or a single track played
+        directly). Tracks that play as part of a container or as radio fill -- exactly
+        the track-level plays we want as seeds -- stay user_initiated=False, so
+        restricting to user_initiated=True would exclude them.
         """
         plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[])
-        await plugin.recommendations()
+        await plugin.get_recommendation_items(ROW_ID)
         call_kwargs = mock_mass.music.recently_played.await_args.kwargs
         assert call_kwargs["fully_played_only"] is False
         assert "user_initiated_only" not in call_kwargs
@@ -220,14 +290,14 @@ class TestRecommendations:
         """No recent tracks → no seeds → empty result."""
         plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[])
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_seed_intersects_index(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """Recent tracks whose mappings don't intersect the index produce no folder."""
+        """Recent tracks whose mappings don't intersect the index produce no items."""
         plugin = make_plugin(signatures={("spotify", "known_id"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("lib_1")])
         # Resolved track has only a non-matching mapping.
@@ -236,15 +306,15 @@ class TestRecommendations:
         )
         plugin._handle_similar = AsyncMock(return_value={"items": []})
 
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
         assert result == []
         plugin._handle_similar.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_happy_path_yields_single_folder(
+    async def test_happy_path_returns_resolved_items(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """One recent track resolves to one indexed seed and produces one folder."""
+        """One recent track resolves to one indexed seed and produces the row's items."""
         plugin = make_plugin(signatures={("spotify", "seed1"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
         recent_track = make_track("seed1", provider="spotify")
@@ -262,13 +332,9 @@ class TestRecommendations:
             }
         )
 
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
 
-        assert len(result) == 1
-        folder = result[0]
-        assert isinstance(folder, RecommendationFolder)
-        assert folder.translation_key == "inspired_by_recently_played"
-        assert len(folder.items) == 1
+        assert list(result) == [resolved]
 
     @pytest.mark.asyncio
     async def test_dedupes_across_multiple_seeds(
@@ -320,11 +386,42 @@ class TestRecommendations:
 
         plugin._handle_similar = AsyncMock(side_effect=_fake_handle_similar)
 
-        result = await plugin.recommendations()
+        result = await plugin.get_recommendation_items(ROW_ID)
 
-        assert len(result) == 1
-        folder = result[0]
-        assert isinstance(folder, RecommendationFolder)
-        item_ids = [item.item_id for item in folder.items]
+        item_ids = [item.item_id for item in result]
         # Each unique candidate appears exactly once.
         assert sorted(item_ids) == ["cand_a", "cand_b"]
+
+    @pytest.mark.asyncio
+    async def test_clap_engine_routes_discover_through_clap(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """discover_engine=clap fans out via _handle_similar_clap, not the 18-dim path."""
+        plugin = make_plugin(
+            clap_enabled=True,
+            discover_engine="clap",
+            signatures={("spotify", "seed1"): [0.1] * 18},
+        )
+        # CLAP index reports the recent track's mapping as present.
+        plugin._clap_index.contains = MagicMock(return_value=True)
+        mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
+        recent_track = make_track("seed1", provider="spotify")
+        resolved = make_track("r1")
+
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
+            return recent_track if item_id == "recent1" else resolved
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+        plugin._handle_similar_clap = AsyncMock(
+            return_value={"items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}]}
+        )
+        plugin._handle_similar = AsyncMock(return_value={"items": []})
+
+        result = await plugin.get_recommendation_items(ROW_ID)
+
+        assert len(result) == 1
+        plugin._handle_similar.assert_not_called()
+        call = plugin._handle_similar_clap.await_args
+        assert call.kwargs["item_id"] == "seed1"
+        # The provider is forwarded so the seed embedding is fetched in O(1).
+        assert call.kwargs["seed_provider"] == "spotify"

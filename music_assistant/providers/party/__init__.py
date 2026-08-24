@@ -1,4 +1,5 @@
-"""Party Plugin Provider for Music Assistant.
+"""
+Party Plugin Provider for Music Assistant.
 
 Provides guest access with a shareable URL, allowing guests
 to add songs to the queue with configurable rate limiting.
@@ -12,29 +13,30 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.constants import DEFAULT_PORT
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.helpers import guest_access
+from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 # Configuration keys
 CONF_ENABLE_GUEST_ACCESS = "enable_guest_access"
+CONF_PARTY_MODE = "mode"
 CONF_PARTY_PLAYER = "player"
 CONF_PARTY_PLAYER_AUTO = "__auto__"
 CONF_ENABLE_RATE_LIMITING = "enable_rate_limiting"
@@ -61,12 +63,10 @@ CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
 CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
+CONF_PARTY_DURATION = "party_duration"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
 CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
-# Actions
-CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
-CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -130,6 +130,9 @@ class PartyConfig(DataClassDictMixin):
     hide_back_button: bool
     show_progress_bar: bool
     prevent_duplicate_tracks: bool
+    # Shared playback mode: "venue" (a real player plays out loud) or "remote"
+    # (silent disco; every guest device is its own receiver). Drives the listen-in default.
+    mode: str
 
 
 async def setup(
@@ -139,358 +142,234 @@ async def setup(
     return PartyPlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: ID of an existing provider instance (None if new instance setup).
-    :param action: Optional action key called from config entries UI.
-    :param values: The (intermediate) raw values for config entries sent with the action.
-    """
-    if values is None:
-        values = {}
-
-    # Handle guest access toggle actions
-    if action == CONF_ACTION_ENABLE_GUEST_ACCESS:
-        values[CONF_ENABLE_GUEST_ACCESS] = True
-    elif action == CONF_ACTION_DISABLE_GUEST_ACCESS:
-        values[CONF_ENABLE_GUEST_ACCESS] = False
-
-    guest_access_enabled = bool(values.get(CONF_ENABLE_GUEST_ACCESS, False))
-
-    return (
-        ConfigEntry(
-            key=CONF_PARTY_PLAYER,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value=CONF_PARTY_PLAYER_AUTO,
-            label="Party Player",
-            description="Select which player/queue is attached to the party dashboard. "
-            "When set to auto, the first active player will be used.",
-            options=[
-                ConfigValueOption("Auto (last active player)", CONF_PARTY_PLAYER_AUTO),
-                *[
-                    ConfigValueOption(player.display_name, player.player_id)
-                    for player in sorted(
-                        mass.players.all_players(False, False),
-                        key=lambda p: p.display_name.lower(),
-                    )
-                ],
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value="",
-            required=False,
-            label="Party Name",
-            description=(
-                "Custom name/title for the party, displayed in the party dashboard. "
-                "Leave blank to not show a text at all."
-            ),
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Enable Guest Access via QR Code",
-            hidden=True,
-            value=guest_access_enabled,
-            immediate_apply=True,
-        ),
-        # Guest access disabled state
-        ConfigEntry(
-            key="guest_disabled_note",
-            type=ConfigEntryType.LABEL,
-            label="Ready to get the party started? Enable guest access and let "
-            "your friends add songs by scanning a QR code!",
-            required=False,
-            hidden=guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            label="Enable Guest Access",
-            action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            action_label="Enable Guest Access",
-            hidden=guest_access_enabled,
-            immediate_apply=True,
-        ),
-        # Guest access enabled state
-        ConfigEntry(
-            key="guest_enabled_note",
-            type=ConfigEntryType.ALERT,
-            label="Guest mode is enabled. Guests will be able to join your party "
-            "by scanning the QR code (which automatically expires after 8 hours). "
-            "Click the button below to end the party and withdraw guest access.",
-            required=False,
-            hidden=not guest_access_enabled,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            type=ConfigEntryType.ACTION,
-            label="Disable Guest Access",
-            action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            action_label="Disable Guest Access",
-            hidden=not guest_access_enabled,
-            immediate_apply=True,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_QR_TEXT,
-            type=ConfigEntryType.STRING,
-            default_value="",
-            required=False,
-            label="QR Code Text",
-            description=(
-                "Custom text to display alongside the QR code. "
-                "Leave blank to not show a text at all."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-        ),
-        ConfigEntry(
-            key=CONF_HIDE_BACK_BUTTON,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Hide Back Button in Fullscreen Mode",
-            description=(
-                "WARNING: Enabling this option will hide all regular navigation "
-                "elements in fullscreen mode. You will need to use browser controls "
-                "(e.g. Alt+Left or the browser back button) to navigate back to "
-                "Music Assistant."
-            ),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SHOW_PROGRESS_BAR,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Show Progress Bar for the current playing song",
-            description=(
-                "When enabled, a progress bar will be displayed on the current playing song "
-                "in the track list, visually indicating the progress of the currently playing song. "
-            ),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_KARAOKE_MODE,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Karaoke Mode",
-            description=(
-                "When enabled, lyrics are displayed prominently in the center of the screen "
-                "with the track list minimized to current and next song at the bottom."
-            ),
-            category="Karaoke",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_HIGHLIGHT_AHEAD,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Highlight Lyrics Ahead of Time",
-            description=(
-                "When enabled, the lyric line highlight transition finishes exactly "
-                "when the line's timestamp arrives, giving a smooth anticipation effect. "
-                "When disabled, the transition starts at the timestamp instead."
-            ),
-            depends_on=CONF_PARTY_KARAOKE_MODE,
-            category="Karaoke",
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_ANTI_BURN_IN,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Enable Anti Burn-in",
-            description=(
-                "Periodically swap the QR code and track list sides to prevent "
-                "burn-in on OLED or plasma displays. Sides swap every 10 minutes."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_RATE_LIMITING,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Enable Rate Limiting",
-            description=(
-                "Enable token-based rate limiting to prevent guests from overusing features. "
-                "When disabled, guests have unlimited uses (subject to feature toggles below)."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="Guest Features",
-        ),
-        # Add to Queue feature
-        ConfigEntry(
-            key=CONF_ENABLE_ADD_QUEUE,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Allow Add to Queue",
-            description=(
-                "Allow guests to add songs to the end of the queue. "
-                "When disabled, guests cannot add songs to the queue at all."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PREVENT_DUPLICATE_TRACKS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Prevent Duplicate Tracks",
-            description=(
-                "Prevent guests from adding a track that is already in the queue. "
-                "When enabled, duplicate track requests will be rejected."
-            ),
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_ADD_QUEUE_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=10,
-            label="Add to Queue Token Limit",
-            description=(
-                "Maximum number of 'Add to Queue' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            range=(5, 50),
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=2,
-            label="Add to Queue Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Add to Queue' token to refill. "
-                "This controls how often guests can add songs."
-            ),
-            depends_on=CONF_ENABLE_ADD_QUEUE,
-            range=(1, 30),
-            advanced=True,
-            category="Guest Features",
-        ),
-        # Boost feature (priority queue jumping)
-        ConfigEntry(
-            key=CONF_ENABLE_BOOST,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            label="Allow Boost",
-            description=(
-                "Allow guests to boost songs to play next (jump the queue). "
-                "When disabled, guests can only add songs to the end of the queue."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_BOOST_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=1,
-            label="Boost Token Limit",
-            description=(
-                "Maximum number of 'Boost' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
-            depends_on=CONF_ENABLE_BOOST,
-            range=(1, 10),
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_BOOST_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=20,
-            label="Boost Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Boost' token to refill. "
-                "This controls how often guests can skip the queue."
-            ),
-            depends_on=CONF_ENABLE_BOOST,
-            range=(5, 120),
-            advanced=True,
-            category="Guest Features",
-        ),
-        # Skip Song feature
-        ConfigEntry(
-            key=CONF_ENABLE_SKIP_SONG,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            label="Allow Skip Song",
-            description=(
-                "Allow guests to skip the currently playing song. "
-                "When disabled, guests cannot skip songs at all."
-            ),
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_SKIP_SONG_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=1,
-            label="Skip Song Token Limit",
-            description=(
-                "Maximum number of 'Skip Song' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
-            depends_on=CONF_ENABLE_SKIP_SONG,
-            range=(1, 5),
-            advanced=True,
-            category="Guest Features",
-        ),
-        ConfigEntry(
-            key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
-            type=ConfigEntryType.INTEGER,
-            default_value=60,
-            label="Skip Song Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Skip Song' token to refill. "
-                "This controls how often guests can skip the currently playing song."
-            ),
-            depends_on=CONF_ENABLE_SKIP_SONG,
-            range=(15, 180),
-            advanced=True,
-            category="Guest Features",
-        ),
-        # Badge color configuration
-        ConfigEntry(
-            key=CONF_REQUEST_BADGE_COLOR,
-            type=ConfigEntryType.STRING,
-            default_value="#2D6A4F",  # Green
-            label="Request Badge Color",
-            description="Color for the 'Request' badge shown on guest-added queue items.",
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_BOOST_BADGE_COLOR,
-            type=ConfigEntryType.STRING,
-            default_value="#B55522",  # Orange
-            label="Boost Badge Color",
-            description="Color for the 'Boost' badge shown on priority guest requests.",
-            depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
-            advanced=True,
-        ),
-    )
-
-
 class PartyPlugin(PluginProvider):
     """Party plugin provider for Music Assistant."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        guest_access_enabled = bool(self.get_config_value(CONF_ENABLE_GUEST_ACCESS, False))
+
+        return (
+            ConfigEntry(
+                key=CONF_PARTY_MODE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=SharedPlaybackMode.VENUE.value,
+                options=[
+                    ConfigValueOption(SharedPlaybackMode.VENUE.value),
+                    ConfigValueOption(SharedPlaybackMode.REMOTE.value),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_PLAYER,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=CONF_PARTY_PLAYER_AUTO,
+                depends_on=CONF_PARTY_MODE,
+                depends_on_value=SharedPlaybackMode.VENUE.value,
+                options=[
+                    ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
+                    *[
+                        ConfigValueOption(player.player_id, title=player.display_name)
+                        for player in sorted(
+                            self.mass.players.all_players(False, False),
+                            key=lambda p: p.display_name.lower(),
+                        )
+                    ],
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_NAME,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=guest_access.DEFAULT_JOIN_CODE_EXPIRY_HOURS,
+                range=(1, 168),
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GUEST_ACCESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                immediate_apply=True,
+            ),
+            # Guest access disabled state
+            ConfigEntry(
+                key="guest_disabled_note",
+                type=ConfigEntryType.LABEL,
+                required=False,
+                hidden=guest_access_enabled,
+            ),
+            # Guest access enabled state
+            ConfigEntry(
+                key="guest_enabled_note",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not guest_access_enabled,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_QR_TEXT,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+            ),
+            ConfigEntry(
+                key=CONF_HIDE_BACK_BUTTON,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_SHOW_PROGRESS_BAR,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_KARAOKE_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="karaoke",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_HIGHLIGHT_AHEAD,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_PARTY_KARAOKE_MODE,
+                category="karaoke",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANTI_BURN_IN,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RATE_LIMITING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            # Add to Queue feature
+            ConfigEntry(
+                key=CONF_ENABLE_ADD_QUEUE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PREVENT_DUPLICATE_TRACKS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_ADD_QUEUE_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=10,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                range=(1, 50),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=2,
+                depends_on=CONF_ENABLE_ADD_QUEUE,
+                range=(1, 60),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Boost feature (priority queue jumping)
+            ConfigEntry(
+                key=CONF_ENABLE_BOOST,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_BOOST_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                depends_on=CONF_ENABLE_BOOST,
+                range=(1, 10),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_BOOST_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=20,
+                depends_on=CONF_ENABLE_BOOST,
+                range=(5, 120),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Skip Song feature
+            ConfigEntry(
+                key=CONF_ENABLE_SKIP_SONG,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_SKIP_SONG_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                depends_on=CONF_ENABLE_SKIP_SONG,
+                range=(1, 5),
+                advanced=True,
+                category="guest_features",
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
+                type=ConfigEntryType.INTEGER,
+                default_value=60,
+                depends_on=CONF_ENABLE_SKIP_SONG,
+                range=(15, 180),
+                advanced=True,
+                category="guest_features",
+            ),
+            # Badge color configuration
+            ConfigEntry(
+                key=CONF_REQUEST_BADGE_COLOR,
+                type=ConfigEntryType.STRING,
+                default_value="#2D6A4F",  # Green
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                options=[
+                    ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS
+                ],
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BOOST_BADGE_COLOR,
+                type=ConfigEntryType.STRING,
+                default_value="#B55522",  # Orange
+                depends_on=CONF_ENABLE_GUEST_ACCESS,
+                options=[
+                    ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS
+                ],
+                advanced=True,
+            ),
+        )
 
     def __init__(
         self,
@@ -503,32 +382,66 @@ class PartyPlugin(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._unregister_handles: list[Callable[[], None]] = []
         self._queue_lock = asyncio.Lock()
+        self._session: SharedPlaybackSession | None = None
+        self._session_lock = asyncio.Lock()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # Register API commands and store unregister handles
+        # PROVIDERS_READ (held by guests) lets a guest fetch the join URL to display/share
+        # the QR; get_party_url returns None when guest access is disabled, so nothing leaks.
         self._unregister_handles.append(
-            self.mass.register_api_command("party/url", self.get_party_url, required_role="user")
+            self.mass.register_api_command(
+                "party/url", self.get_party_url, required_scope=Scope.PROVIDERS_READ
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/player", self.get_party_player)
+            self.mass.register_api_command(
+                "party/player", self.get_party_player, required_scope=Scope.PLAYERS_READ
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/config", self.get_party_config)
+            self.mass.register_api_command(
+                "party/config", self.get_party_config, required_scope=Scope.PROVIDERS_READ
+            )
         )
         # Guest action commands - these are called by the guest frontend
         self._unregister_handles.append(
-            self.mass.register_api_command("party/add_to_queue", self.add_to_queue)
+            self.mass.register_api_command(
+                "party/add_to_queue", self.add_to_queue, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/boost_queue_item", self.boost_queue_item)
+            self.mass.register_api_command(
+                "party/boost_queue_item", self.boost_queue_item, required_scope=Scope.QUEUES_CONTROL
+            )
         )
         self._unregister_handles.append(
-            self.mass.register_api_command("party/skip", self.skip_current)
+            self.mass.register_api_command(
+                "party/skip", self.skip_current, required_scope=Scope.QUEUES_CONTROL
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/listen_in", self.listen_in, required_scope=Scope.PLAYERS_CONTROL
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/stop_listen_in",
+                self.stop_listen_in,
+                required_scope=Scope.PLAYERS_CONTROL,
+            )
+        )
+        self._unregister_handles.append(
+            self.mass.register_api_command(
+                "party/can_listen_in", self.can_listen_in, required_scope=Scope.PLAYERS_CONTROL
+            )
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Call when the provider is being unloaded.
+        """
+        Call when the provider is being unloaded.
 
         :param is_removed: Whether the provider is being removed (vs just reloaded).
         """
@@ -539,13 +452,23 @@ class PartyPlugin(PluginProvider):
             unregister()
         self._unregister_handles.clear()
 
+        # Tear down the shared playback session (detaches guest listeners and,
+        # in remote mode, removes the virtual player)
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.close()
+                self._session = None
+
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE config value since self.config is a snapshot from init
+        # Note: We read the LIVE stored value, which also covers reloads that are triggered
+        # outside of a config save. The default must match the config entry's default_value:
+        # only values that differ from their default are persisted, so switching guest access
+        # off drops the key entirely.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=True
+            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
         if is_removed or not guest_access_enabled:
             self.logger.debug("Revoking guest tokens...")
@@ -555,52 +478,9 @@ class PartyPlugin(PluginProvider):
 
     # ==================== Configuration API Commands ====================
 
-    async def _get_or_create_party_guest_user(self) -> User:
-        """Get or create the party guest user.
-
-        :returns: The party guest User.
-        """
-        auth = self.mass.webserver.auth
-        user = await auth.get_user_by_username(PARTY_GUEST_USER)
-        if user:
-            return user
-
-        # Create the party guest user
-        user = await auth.create_user(
-            username=PARTY_GUEST_USER,
-            role=UserRole.GUEST,
-            display_name=PARTY_GUEST_DISPLAY_NAME,
-        )
-        self.logger.info("Created party guest user account")
-        return user
-
-    async def _get_join_code(self) -> str:
-        """Get an active join code for party, creating one if needed.
-
-        Looks up an existing non-expired join code via the auth controller.
-        If none exists, generates a new one.
-
-        :returns: The active join code string.
-        """
-        auth = self.mass.webserver.auth
-        guest_user = await self._get_or_create_party_guest_user()
-
-        # Check for an existing active join code
-        existing_code = await auth.get_active_join_code(guest_user)
-        if existing_code:
-            return existing_code
-
-        # No active code found, generate a new one
-        code, _expires_at = await auth.generate_join_code(
-            user=guest_user,
-            expires_in_hours=8,
-            max_uses=0,
-            device_name="Party Guest",
-        )
-        return code
-
     async def get_party_url(self) -> str | None:
-        """Get the guest access URL for party.
+        """
+        Get the guest access URL for party.
 
         When remote access is enabled, returns a URL that works from anywhere via WebRTC.
         Otherwise, returns a local URL that only works on the same network.
@@ -610,21 +490,22 @@ class PartyPlugin(PluginProvider):
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
 
-        code = await self._get_join_code()
-
-        remote_access = self.mass.webserver.remote_access
-        if remote_access.is_enabled and remote_access.remote_id:
-            return (
-                f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
-            )
-
-        base_url_value = self.mass.webserver.config.get_value("base_url")
-        base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
-        return f"{base_url}/?join={code}"
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
+        )
+        code = await guest_access.get_or_create_join_code(
+            self.mass,
+            guest_user,
+            device_name="Party Guest",
+            expires_in_hours=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
+        )
+        return guest_access.build_join_url(self.mass, code)
 
     async def get_party_player(self) -> str | None:
-        """Get the configured party player/queue ID.
+        """
+        Get the configured party player/queue ID.
 
+        In remote mode, returns the queue of the session's virtual player.
         When configured to auto, returns the first active playing queue,
         falling back to any paused queue, then any available queue.
 
@@ -632,6 +513,10 @@ class PartyPlugin(PluginProvider):
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             return None
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            session = await self._get_session()
+            return session.queue_id if session else None
 
         player_id = self.config.get_value(CONF_PARTY_PLAYER)
         if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
@@ -654,7 +539,8 @@ class PartyPlugin(PluginProvider):
         return best_queue
 
     async def get_party_config(self) -> PartyConfig:
-        """Get the party configuration for guest rate limiting.
+        """
+        Get the party configuration for guest rate limiting.
 
         :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
@@ -687,6 +573,7 @@ class PartyPlugin(PluginProvider):
             prevent_duplicate_tracks=cast(
                 "bool", self.config.get_value(CONF_PREVENT_DUPLICATE_TRACKS)
             ),
+            mode=cast("str", self.config.get_value(CONF_PARTY_MODE)),
         )
 
     # ==================== Guest Action API Commands ====================
@@ -696,7 +583,8 @@ class PartyPlugin(PluginProvider):
         uri: str,
         boost: bool = False,
     ) -> dict[str, Any]:
-        """Add a media item to the party queue.
+        """
+        Add a media item to the party queue.
 
         This is the primary API for guests to add songs. The provider handles all
         queue logic including priority positioning for guest items.
@@ -705,8 +593,6 @@ class PartyPlugin(PluginProvider):
         :param boost: If True, insert at the front of the guest section (play next).
         :returns: Result dict with success status and queue position info.
         """
-        self._validate_guest_access()
-
         # Check if guest access is enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -749,7 +635,7 @@ class PartyPlugin(PluginProvider):
                     MediaType.RADIO,
                 ):
                     raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
-                queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+                queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
                 queue_item.extra_attributes[ATTR_PARTY_GUEST] = True
                 if boost:
                     queue_item.extra_attributes[ATTR_PARTY_BOOSTED] = True
@@ -781,7 +667,8 @@ class PartyPlugin(PluginProvider):
         }
 
     async def boost_queue_item(self, queue_item_id: str) -> dict[str, Any]:
-        """Boost an existing queue item by moving it to the boosted section.
+        """
+        Boost an existing queue item by moving it to the boosted section.
 
         Finds the item in the queue, marks it as boosted, and moves it to the
         end of the boosted priority section (right after the currently playing track).
@@ -789,7 +676,6 @@ class PartyPlugin(PluginProvider):
         :param queue_item_id: The queue_item_id of the item to boost.
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
         if not self.config.get_value(CONF_ENABLE_BOOST):
@@ -884,7 +770,8 @@ class PartyPlugin(PluginProvider):
     async def _add_to_priority_section(
         self, queue_id: str, uri: str, extra_attributes: dict[str, Any]
     ) -> None:
-        """Add a media item to the end of a priority section in the queue.
+        """
+        Add a media item to the end of a priority section in the queue.
 
         Resolves the media item, creates a QueueItem with the given extra attributes,
         finds the correct insert position, and loads it into the queue.
@@ -902,7 +789,7 @@ class PartyPlugin(PluginProvider):
             raise InvalidDataError(f"Cannot add {uri} to queue - not a playable item")
 
         # Create a QueueItem from the media item
-        queue_item = QueueItem.from_media_item(queue_id, media_item)  # type: ignore[arg-type]
+        queue_item = build_queue_item(queue_id, media_item)  # type: ignore[arg-type]
         queue_item.extra_attributes.update(extra_attributes)
 
         # Determine the attribute to scan for when finding the section boundary.
@@ -947,23 +834,14 @@ class PartyPlugin(PluginProvider):
             )
 
     @staticmethod
-    def _validate_guest_access() -> None:
-        """Validate the current user is an authenticated party guest.
-
-        :raises InvalidDataError: If the user is not a party guest.
-        """
-        user = get_current_user()
-        if not user or user.username != PARTY_GUEST_USER:
-            raise InvalidDataError("This endpoint is only available to party guests")
-
-    @staticmethod
     def _queue_contains_uri(queue_items: list[QueueItem], uri: str) -> bool:
         """Return whether the queue already contains the given item URI."""
         return any(queue_item.uri == uri for queue_item in queue_items)
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
-        """Find the index where a priority section ends.
+        """
+        Find the index where a priority section ends.
 
         Scans from current_index + 1 forward to find where consecutive items
         with the given attribute end. Returns the position where a new item
@@ -989,12 +867,11 @@ class PartyPlugin(PluginProvider):
         return section_end
 
     async def skip_current(self) -> dict[str, Any]:
-        """Skip the currently playing track.
+        """
+        Skip the currently playing track.
 
         :returns: Result dict with success status.
         """
-        self._validate_guest_access()
-
         # Check if guest access and skip are enabled
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
@@ -1023,33 +900,133 @@ class PartyPlugin(PluginProvider):
             "queue_id": queue_id,
         }
 
+    async def listen_in(self, web_player_id: str) -> dict[str, Any]:
+        """
+        Attach a guest's web player to the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        :returns: Result dict with success status and the party queue ID.
+        """
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            raise InvalidDataError("Party guest access is disabled")
+
+        # hold the session lock across resolving and joining the session so a
+        # guest can never be attached to a session that is being torn down
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            if not session:
+                raise InvalidDataError("Listen-in is not available for this party")
+            await session.add_guest_listener(web_player_id)
+            queue_id = session.queue_id
+
+        self.logger.info("Guest player %s is now listening in", web_player_id)
+        return {
+            "success": True,
+            "queue_id": queue_id,
+        }
+
+    async def stop_listen_in(self, web_player_id: str) -> dict[str, Any]:
+        """
+        Detach a guest's web player from the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        :returns: Result dict with success status.
+        """
+        async with self._session_lock:
+            if self._session is not None:
+                await self._session.remove_guest_listener(web_player_id)
+
+        self.logger.info("Guest player %s stopped listening in", web_player_id)
+        return {"success": True}
+
+    async def can_listen_in(self, web_player_id: str) -> bool:
+        """
+        Return whether the given guest web player can listen in on the party audio.
+
+        :param web_player_id: The player_id of the guest's web player.
+        """
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return False
+
+        async with self._session_lock:
+            session = await self._get_or_create_session_locked()
+            return session is not None and session.can_listen_in(web_player_id)
+
     # ==================== Helper Methods ====================
 
+    async def _get_session(self) -> SharedPlaybackSession | None:
+        """
+        Get the shared playback session for this party, creating it if needed.
+
+        In remote mode the session is backed by a Sendspin virtual player; the
+        session is (re)created here when the virtual player does not exist
+        (e.g. after a Sendspin provider reload). In venue mode a session only
+        exists when a fixed player is configured; with auto player selection
+        there is no session (and thus no listen-in support).
+
+        :returns: The session, or None when no session is available.
+        """
+        async with self._session_lock:
+            return await self._get_or_create_session_locked()
+
+    async def _get_or_create_session_locked(self) -> SharedPlaybackSession | None:
+        """
+        Get or (re)create the shared playback session.
+
+        The caller must hold ``_session_lock``; guest listen-in and session
+        teardown share the lock so a session is never created or joined while it
+        is being closed.
+
+        :returns: The session, or None when no session is available.
+        """
+        # drop a stale session whose player no longer exists
+        if self._session is not None and (
+            self.mass.players.get_player(self._session.player_id) is None
+        ):
+            await self._session.close()
+            self._session = None
+
+        if self._session is not None:
+            return self._session
+
+        if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            party_name = cast("str | None", self.config.get_value(CONF_PARTY_NAME))
+            try:
+                self._session = await SharedPlaybackSession.create_remote(
+                    self.mass,
+                    owner_instance_id=self.instance_id,
+                    display_name=party_name or "Party",
+                    session_id=self.instance_id,
+                )
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create remote party session: %s", err)
+        else:
+            player_id = self.config.get_value(CONF_PARTY_PLAYER)
+            if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
+                try:
+                    self._session = await SharedPlaybackSession.create_venue(
+                        self.mass, str(player_id)
+                    )
+                except SetupFailedError as err:
+                    self.logger.warning("Unable to create venue party session: %s", err)
+        return self._session
+
     async def _revoke_guest_tokens(self) -> None:
-        """Revoke all guest access tokens and codes for party.
+        """
+        Revoke all guest access tokens and codes for party.
 
         This is called when guest access is disabled or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,
         revoke tokens so they can't reconnect, and invalidate pending join codes.
         """
-        auth = self.mass.webserver.auth
-
-        # Find the party guest user
-        guest_user = await auth.get_user_by_username(PARTY_GUEST_USER)
-        if not guest_user:
-            self.logger.debug("No party guest user found, nothing to revoke")
-            return
-
-        # Revoke pending join codes for the guest user
-        codes_revoked = await auth.revoke_join_codes(guest_user)
+        codes_revoked, tokens_revoked = await guest_access.revoke_guest_access(
+            self.mass, PARTY_GUEST_USER
+        )
         if codes_revoked > 0:
             self.logger.info("Revoked %d pending join codes", codes_revoked)
-
-        # Revoke all tokens and disconnect WebSocket connections for the guest user
-        revoked_count = await auth.revoke_tokens_for_user(guest_user)
-        if revoked_count > 0:
+        if tokens_revoked > 0:
             self.logger.info(
                 "Revoked %d guest access tokens for user '%s'",
-                revoked_count,
-                guest_user.username,
+                tokens_revoked,
+                PARTY_GUEST_USER,
             )

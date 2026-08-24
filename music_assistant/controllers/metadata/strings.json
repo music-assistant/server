@@ -1,0 +1,35 @@
+{
+  "config_entries": {
+    "language": {
+      "label": "Preferred language",
+      "description": "Preferred language for metadata.\n\nThis language is also used as the fallback locale for text-based searches, so localized item names (e.g. genres and built-in playlists) can be found by the name shown in this language.\n\nNote that English will always be used as fallback when content in your preferred language is not available."
+    },
+    "enable_online_metadata": {
+      "label": "Enable metadata retrieval from online metadata providers",
+      "description": "Enable online metadata lookups.\n\nThis will allow Music Assistant to fetch additional metadata from (enabled) metadata providers, such as The Audio DB and Fanart.tv.\n\nNote that these online sources are only queried when no information is already available from local files or the music providers and local artwork/metadata will always have preference over online sources so consider metadata from online sources as complementary only.\n\nThe retrieval of additional rich metadata is a process that is executed slowly in the background to not overload these free services with requests. You can speedup the process by storing the images and other metadata locally."
+    },
+    "prefer_local_genres": {
+      "label": "Use local genre metadata only when available",
+      "description": "When enabled, online metadata providers will not add genres to items that already have a genre from a local source such as a file tag or NFO file. Items with no local genre still receive genres from online providers as usual."
+    },
+    "enable_radio_metadata_lookup": {
+      "label": "Enable artist/track artwork lookup for radio streams",
+      "description": "Look up artist and track artwork for radio streams from online sources when the station provides Artist - Track metadata.\n\nWhen disabled, radio streams show only the station logo (when available)."
+    },
+    "thumb_cache_max_size": {
+      "label": "Maximum thumbnail cache size (MB)",
+      "description": "Maximum total size in megabytes for the on-disk thumbnail cache.\n\nOldest thumbnails are automatically removed when this limit is exceeded."
+    }
+  },
+  "background_task": {
+    "update_metadata": "Update metadata for {0}",
+    "scan_missing_artist_metadata": "Scan missing artist metadata",
+    "refresh_playlist_metadata": "Refresh playlist metadata",
+    "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
+    "reconcile_duplicate_albums": "Reconcile duplicate albums"
+  },
+  "manifest": {
+    "name": "Metadata",
+    "description": "Configuration of the core metadata management module"
+  }
+}

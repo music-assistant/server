@@ -1,4 +1,5 @@
-"""Shared fixtures for sonic_similarity plugin-instance unit tests.
+"""
+Shared fixtures for sonic_similarity plugin-instance unit tests.
 
 The existing pure-function tests in this directory don't need scaffolding;
 the tests that exercise SonicSimilarityPlugin behaviour do. This module
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.media_items import Album
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -44,13 +46,18 @@ def logger() -> logging.Logger:
 
 @pytest.fixture
 def mock_mass(tmp_path: Path) -> MagicMock:
-    """Mock MusicAssistant exposing the surfaces sonic_similarity touches.
+    """
+    Mock MusicAssistant exposing the surfaces sonic_similarity touches.
 
     :param tmp_path: pytest-provided temp dir, used as storage_path.
     """
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache = MagicMock()
+    # @use_cache on _get_inspired_recommendations() awaits cache.get_with_freshness; return a
+    # miss so the wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.create_task = MagicMock()  # fire-and-forget; we assert it was called
     mass.get_provider = MagicMock(return_value=None)
 
@@ -97,7 +104,8 @@ def mock_mass(tmp_path: Path) -> MagicMock:
 def make_plugin(
     mock_mass: MagicMock, logger: logging.Logger
 ) -> Callable[..., SonicSimilarityPlugin]:
-    """Return a factory that builds a SonicSimilarityPlugin with a primed corpus.
+    """
+    Return a factory that builds a SonicSimilarityPlugin with a primed corpus.
 
     Bypasses loaded_in_mass — the corpus is populated directly on the
     instance so dispatcher-hook tests don't need to mock out rebuild
@@ -112,7 +120,9 @@ def make_plugin(
     :param discover_row_enabled: Config value for CONF_ENABLE_DISCOVER_ROW
         (default True, matching the production default).
     :param discover_preset: Config value for CONF_DISCOVER_PRESET.
-    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY.
+    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY (0-10 integer scale).
+    :param discover_engine: Config value for CONF_DISCOVER_ENGINE ("18dim"/"clap";
+        None defaults to 18-dim via the provider's fallback).
     :param signatures: Optional dict of {(provider, item_id): vector}
         used to populate ``_signature_cache`` / ``_signatures_by_id`` /
         ``_provider_by_item_id`` and to set non-None corpus_means/stds.
@@ -130,13 +140,15 @@ def make_plugin(
         text_search_enabled: bool = False,
         discover_row_enabled: bool = True,
         discover_preset: str = "discover",
-        discover_diversity: float = 0.2,
+        discover_diversity: int = 2,
+        discover_engine: str | None = None,
         signatures: dict[tuple[str, str], list[float]] | None = None,
     ) -> SonicSimilarityPlugin:
         manifest = MagicMock()
         manifest.instance_id = "test-instance-id"
         manifest.domain = "sonic_similarity"
         config = MagicMock()
+        config.instance_id = "test-instance-id"
         config_values = {
             "log_level": "GLOBAL",
             "enable_clap_index": clap_enabled,
@@ -144,6 +156,7 @@ def make_plugin(
             "enable_discover_row": discover_row_enabled,
             "discover_preset": discover_preset,
             "discover_diversity": discover_diversity,
+            "discover_engine": discover_engine,
         }
         config.get_value = lambda key: config_values.get(key)
         plugin = SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
@@ -182,8 +195,10 @@ def make_track(
     name: str = "Test Track",
     artists: Iterable[str] = (),
     album_year: int | None = None,
+    genres: Iterable[str] = (),
 ) -> MagicMock:
-    """Return a Track-like MagicMock with the attributes our code reads.
+    """
+    Return a Track-like MagicMock with the attributes our code reads.
 
     :param item_id: Underlying provider item id (used as the seed in
         signature cache lookups).
@@ -198,6 +213,8 @@ def make_track(
         with a ``.name`` attribute.
     :param album_year: When given, attaches an Album mock with this year;
         otherwise ``album`` is None.
+    :param genres: Iterable of genre names exposed via ``metadata.genres``;
+        empty leaves ``metadata.genres`` None (matching _track_genres' empty case).
     """
     track = MagicMock()
     track.item_id = item_id
@@ -205,11 +222,15 @@ def make_track(
     track.name = name
     track.artists = [_artist_mock(a) for a in artists]
     if album_year is not None:
-        album = MagicMock()
+        # spec=Album so the rerank's isinstance(track.album, Album) check passes.
+        album = MagicMock(spec=Album)
         album.year = album_year
         track.album = album
     else:
         track.album = None
+    metadata = MagicMock()
+    metadata.genres = list(genres) or None
+    track.metadata = metadata
     mapping = MagicMock()
     mapping.item_id = item_id
     mapping.provider_instance = provider
@@ -226,7 +247,8 @@ def _artist_mock(name: str) -> MagicMock:
 
 
 def make_item_mapping(item_id: str, *, provider: str = "library") -> MagicMock:
-    """Return an ItemMapping-like MagicMock with item_id + provider only.
+    """
+    Return an ItemMapping-like MagicMock with item_id + provider only.
 
     :param item_id: Library item id from ``recently_played``.
     :param provider: Provider slot the mapping belongs to (typically ``"library"``).
@@ -244,7 +266,8 @@ def make_analysis_row(
     clap_embedding: Any = None,
     aa_provider_domain: str = "sonic_analysis",
 ) -> dict[str, Any]:
-    """Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
+    """
+    Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
 
     :param item_id: Track id (matches a key in ``_signature_cache``).
     :param provider: Provider instance the row belongs to.

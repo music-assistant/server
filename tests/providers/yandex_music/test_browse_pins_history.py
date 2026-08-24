@@ -134,7 +134,8 @@ async def test_browse_history_returns_empty_when_no_history(
 
 
 def _hist_item(track_id: int) -> object:
-    """Build a history entry the way MarshalX actually returns it.
+    """
+    Build a history entry the way MarshalX actually returns it.
 
     `data.item_id` is a dict containing track_id, album_id, etc.; `full_model`
     is not populated by the live API. Callers batch-resolve via get_tracks.

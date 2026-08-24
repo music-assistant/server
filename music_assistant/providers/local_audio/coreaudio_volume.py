@@ -1,4 +1,5 @@
-"""CoreAudio hardware volume control for macOS.
+"""
+CoreAudio hardware volume control for macOS.
 
 Uses ctypes to call CoreAudio's AudioObject API directly,
 controlling the actual device hardware volume rather than the system mixer.
@@ -102,7 +103,8 @@ def _find_device_id(ca: ctypes.CDLL, cf: ctypes.CDLL, device_name: str) -> int |
 
 
 def set_device_volume(device_name: str, volume: int) -> bool:
-    """Set the hardware volume for a named CoreAudio device.
+    """
+    Set the hardware volume for a named CoreAudio device.
 
     :param device_name: The device name (must match CoreAudio device name).
     :param volume: Volume level 0-100.
@@ -130,7 +132,8 @@ def set_device_volume(device_name: str, volume: int) -> bool:
 
 
 def set_device_mute(device_name: str, muted: bool) -> bool:
-    """Set the hardware mute state for a named CoreAudio device.
+    """
+    Set the hardware mute state for a named CoreAudio device.
 
     :param device_name: The device name (must match CoreAudio device name).
     :param muted: Whether to mute or unmute.

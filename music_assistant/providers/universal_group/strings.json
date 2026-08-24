@@ -1,0 +1,32 @@
+{
+  "config_entries": {
+    "ugp_note": {
+      "label": "Please note that although the Universal Group allows you to group any player, it will not (and can not) enable audio sync between players of different ecosystems. It is advised to always use native player groups or sync groups when available for your player type(s) and use the Universal Group only to group players of different ecosystems/protocols."
+    },
+    "ugp_output_format": {
+      "label": "Output format for Universal Group playback",
+      "description": "Universal Groups deliver the exact same encoded stream to every member, regardless of each member's capabilities. Pick the format that all members can play; MP3 is the safest default. Use the FLAC options only when every member supports FLAC playback.",
+      "options": {
+        "mp3": "MP3 (320 kbps)",
+        "flac_44100_16": "FLAC 44.1 kHz / 16-bit",
+        "flac_48000_24": "FLAC 48 kHz / 24-bit"
+      }
+    },
+    "group_members": {
+      "label": "Group members",
+      "description": "Select all players you want to be part of this group"
+    },
+    "dynamic_members": {
+      "label": "Enable dynamic members",
+      "description": "Allow members to (temporary) join/leave the group dynamically."
+    }
+  },
+  "manifest": {
+    "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync)."
+  },
+  "errors": {
+    "group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
+    "cannot_add_group_to_itself": "Cannot add {0} to itself as a member.",
+    "cannot_remove_group_from_itself": "Cannot remove {0} from itself as a member."
+  }
+}

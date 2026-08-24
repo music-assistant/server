@@ -37,7 +37,7 @@ SUPPORTED_FEATURES = {
 }
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -51,18 +51,17 @@ async def setup(
     return RadioBrowserProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return ()
-
-
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
+
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -350,36 +349,6 @@ class RadioBrowserProvider(MusicProvider):
                 f"Failed to fetch radio station {prov_radio_id}: {err}"
             ) from err
 
-    async def _parse_radio(self, radio_obj: Station) -> Radio:
-        """Parse Radio object from json obj returned from api."""
-        radio = Radio(
-            item_id=radio_obj.uuid,
-            provider=self.domain,
-            name=radio_obj.name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=radio_obj.uuid,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        radio.metadata.popularity = radio_obj.click_count
-        if radio_obj.homepage:
-            radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
-        if radio_obj.favicon:
-            radio.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=radio_obj.favicon,
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return radio
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         try:
@@ -410,3 +379,33 @@ class RadioBrowserProvider(MusicProvider):
             raise ProviderUnavailableError(
                 f"Failed to get stream details for {item_id}: {err}"
             ) from err
+
+    async def _parse_radio(self, radio_obj: Station) -> Radio:
+        """Parse Radio object from json obj returned from api."""
+        radio = Radio(
+            item_id=radio_obj.uuid,
+            provider=self.domain,
+            name=radio_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=radio_obj.uuid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        radio.metadata.popularity = radio_obj.click_count
+        if radio_obj.homepage:
+            radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
+        if radio_obj.favicon:
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=radio_obj.favicon,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+        return radio

@@ -17,13 +17,20 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import audible
+import audible.exceptions
 import audible.register
 from audible import AsyncClient
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
+
+    from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -37,6 +44,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -56,7 +64,8 @@ _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 async def refresh_access_token_compat(
     refresh_token: str, domain: str, http_session: ClientSession, with_username: bool = False
 ) -> dict[str, Any]:
-    """Refresh tokens with compatibility for new Audible API format.
+    """
+    Refresh tokens with compatibility for new Audible API format.
 
     The Audible API changed from returning 'access_token' to 'actor_access_token'.
     This function handles both formats for backward compatibility.
@@ -85,7 +94,7 @@ async def refresh_access_token_compat(
         resp_dict = await resp.json()
 
     expires_in_sec = int(resp_dict.get("expires_in", 3600))
-    expires = (datetime.now(UTC) + timedelta(seconds=expires_in_sec)).timestamp()
+    expires = (utc() + timedelta(seconds=expires_in_sec)).timestamp()
 
     # Handle new format (actor_access_token) or fall back to legacy (access_token)
     access_token = resp_dict.get("actor_access_token") or resp_dict.get("access_token")
@@ -103,7 +112,8 @@ async def refresh_access_token_compat(
 
 
 async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
-    """Get an authenticator from file with caching and signing auth validation.
+    """
+    Get an authenticator from file with caching and signing auth validation.
 
     :param path: Path to the authenticator JSON file.
     :return: The cached or loaded Authenticator instance.
@@ -137,13 +147,24 @@ class AudibleHelper:
         client: AsyncClient,
         provider_domain: str,
         provider_instance: str,
+        provider: MusicProvider,
         logger: logging.Logger | None = None,
     ):
-        """Initialize the Audible Helper."""
+        """
+        Initialize the Audible Helper.
+
+        :param mass: The MusicAssistant instance.
+        :param client: An authenticated Audible API client.
+        :param provider_domain: Domain of the owning provider.
+        :param provider_instance: Instance id of the owning provider.
+        :param provider: The owning provider, used to report library items it had to skip.
+        :param logger: Logger to use, defaults to a module level logger.
+        """
         self.mass = mass
         self.client = client
         self.provider_domain = provider_domain
         self.provider_instance = provider_instance
+        self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
 
@@ -151,7 +172,7 @@ class AudibleHelper:
         self,
         response_groups: str,
         content_types: tuple[str, ...],
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Fetch items from the library with pagination."""
         page = 1
         page_size = 50
@@ -222,16 +243,11 @@ class AudibleHelper:
             if cached_book is not None:
                 return self._parse_audiobook(cached_book)
             return self._parse_audiobook(audiobook_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid audiobook: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing audiobook {audiobook_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, asin or None, exc)
             return None
 
-    async def get_library(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library(self) -> AsyncGenerator[Audiobook]:
         """Fetch the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -249,7 +265,8 @@ class AudibleHelper:
                 yield album
 
     async def get_audiobook(self, asin: str, use_cache: bool = True) -> Audiobook:
-        """Fetch the full audiobook by asin with all details including chapters.
+        """
+        Fetch the full audiobook by asin with all details including chapters.
 
         This method fetches complete audiobook details including chapters and resume position.
         Use this when the user requests full details for a specific audiobook.
@@ -293,7 +310,8 @@ class AudibleHelper:
         return book
 
     async def _enrich_audiobook(self, book: Audiobook, asin: str) -> None:
-        """Enrich audiobook with chapters and resume position.
+        """
+        Enrich audiobook with chapters and resume position.
 
         This makes additional API calls and should only be used for full audiobook details,
         not during library sync.
@@ -307,19 +325,20 @@ class AudibleHelper:
             book.metadata.chapters = chapters
             # Update duration from chapters if available (more accurate)
             try:
-                duration = sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000
+                duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000)
                 if duration > 0:
                     book.duration = duration
             except Exception as exc:
                 self.logger.warning(f"Error calculating duration from chapters for {asin}: {exc}")
 
         # Fetch resume position
-        book.resume_position_ms = await self.get_last_postion(asin=asin)
+        book.resume_position_ms = await self.get_last_position(asin=asin)
 
     async def get_stream(
         self, asin: str, media_type: MediaType = MediaType.AUDIOBOOK
     ) -> StreamDetails:
-        """Get stream details for an audiobook or podcast episode.
+        """
+        Get stream details for an audiobook or podcast episode.
 
         :param asin: The ASIN of the content.
         :param media_type: The type of media (audiobook or podcast episode).
@@ -334,7 +353,7 @@ class AudibleHelper:
             chapters = await self._fetch_chapters(asin=asin)
             if chapters:
                 try:
-                    duration = sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000
+                    duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000)
                 except Exception as exc:
                     self.logger.warning(f"Error calculating duration for ASIN {asin}: {exc}")
 
@@ -453,44 +472,77 @@ class AudibleHelper:
 
         return chapters_data
 
-    async def get_last_postion(self, asin: str) -> int:
-        """Fetch last position of asin."""
+    @staticmethod
+    def _parse_audible_timestamp(raw_ts: Any) -> datetime | None:
+        """
+        Parse an Audible timestamp value into a timezone-aware datetime.
+
+        :param raw_ts: The raw timestamp value from the Audible annotation payload.
+        """
+        if not raw_ts:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts))
+        except ValueError, TypeError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+
+    async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
+        """
+        Fetch the last-heard position for a single ASIN from Audible.
+
+        :param asin: The audiobook ASIN to query.
+        """
+        response = await self._call_api("annotations/lastpositions", asins=asin)
+        if not response:
+            return None
+
+        annotations = response.get("asin_last_position_heard_annots")
+        if not annotations or not isinstance(annotations, list):
+            return None
+
+        annotation = annotations[0]
+        if not isinstance(annotation, dict):
+            return None
+
+        last_position = annotation.get("last_position_heard")
+        if not isinstance(last_position, dict):
+            return None
+
+        position_ms = int(last_position.get("position_ms", 0))
+
+        timestamp: datetime | None = None
+        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
+            timestamp = self._parse_audible_timestamp(
+                last_position.get(field) or annotation.get(field)
+            )
+            if timestamp is not None:
+                break
+
+        return position_ms, timestamp
+
+    async def get_last_position(self, asin: str) -> int:
+        """
+        Fetch the last-heard position in milliseconds for the given ASIN.
+
+        :param asin: The audiobook ASIN to query.
+        """
         if not asin or asin == "error":
             return 0
-
         try:
-            response = await self._call_api("annotations/lastpositions", asins=asin)
-
-            if not response:
-                self.logger.debug(f"No last position data available for ASIN {asin}")
-                return 0
-
-            annotations = response.get("asin_last_position_heard_annots")
-            if not annotations or not isinstance(annotations, list) or len(annotations) == 0:
-                self.logger.debug(f"No annotations found for ASIN {asin}")
-                return 0
-
-            annotation = annotations[0]
-            if not annotation or not isinstance(annotation, dict):
-                self.logger.debug(f"Invalid annotation for ASIN {asin}")
-                return 0
-
-            last_position = annotation.get("last_position_heard")
-            if not last_position or not isinstance(last_position, dict):
-                self.logger.debug(f"Invalid last_position for ASIN {asin}")
-                return 0
-
-            position_ms = last_position.get("position_ms", 0)
-            return int(position_ms)
-
-        except Exception as exc:
-            self.logger.error(f"Error getting last position for ASIN {asin}: {exc}")
+            result = await self._fetch_last_position(asin)
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
+            self.logger.error("Error getting last position for ASIN %s: %s", asin, exc)
             return 0
+        return result[0] if result else 0
 
     async def set_last_position(
         self, asin: str, pos: int, media_type: MediaType = MediaType.AUDIOBOOK
     ) -> None:
-        """Report last position to Audible.
+        """
+        Report last position to Audible.
 
         :param asin: The content ID (audiobook or podcast episode).
         :param pos: Position in seconds.
@@ -529,6 +581,24 @@ class AudibleHelper:
         except Exception as exc:
             self.logger.error(f"Unexpected error reporting position for ASIN {asin}: {exc}")
 
+    async def get_audible_resume_position(self, asin: str) -> tuple[bool, int, datetime | None]:
+        """
+        Return resume state for the given ASIN from Audible.
+
+        :param asin: The audiobook ASIN to query.
+        """
+        if not asin or asin == "error":
+            raise NotImplementedError
+        try:
+            result = await self._fetch_last_position(asin)
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
+            self.logger.debug("Audible lastpositions fetch failed for %s: %s", asin, exc)
+            raise NotImplementedError from exc
+        if not result or result[0] == 0:
+            raise NotImplementedError
+        position_ms, timestamp = result
+        return False, position_ms, timestamp
+
     async def _call_api(self, path: str, **kwargs: Any) -> Any:
         response = None
         use_cache = kwargs.pop("use_cache", False)
@@ -542,7 +612,12 @@ class AudibleHelper:
                 category=CACHE_CATEGORY_API,
             )
         if not response:
-            response = await self.client.get(path, **kwargs)
+            try:
+                response = await self.client.get(path, **kwargs)
+            except audible.exceptions.RequestError as exc:
+                raise ProviderUnavailableError(
+                    f"Audible API request failed for '{path}': {exc}"
+                ) from exc
             await self.mass.cache.set(
                 key=cache_key_with_params, provider=self.provider_instance, data=response
             )
@@ -586,12 +661,12 @@ class AudibleHelper:
         """Parse chapter data into MediaItemChapter object."""
         try:
             start = int(chapter_data.get("start_offset_sec", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             start = 0
 
         try:
             length = int(chapter_data.get("length_ms", 0)) / 1000
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             length = 0
 
         raw_title = chapter_data.get("title")
@@ -606,7 +681,8 @@ class AudibleHelper:
         return MediaItemChapter(position=index, name=chapter_title, start=start, end=start + length)
 
     def _parse_audiobook(self, audiobook_data: dict[str, Any] | None) -> Audiobook:
-        """Parse audiobook data from API response.
+        """
+        Parse audiobook data from API response.
 
         NOTE: This is a pure parser - no API calls allowed here.
         Chapters and resume position are fetched lazily when needed.
@@ -653,7 +729,8 @@ class AudibleHelper:
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
         if release_date := audiobook_data.get("release_date"):
             with suppress(ValueError):
-                datetime.strptime(release_date, "%Y-%m-%d").astimezone(UTC)
+                parsed_date = datetime.strptime(release_date, "%Y-%m-%d").astimezone(UTC)
+                book.metadata.release_date = parsed_date
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])
@@ -690,16 +767,11 @@ class AudibleHelper:
             if cached_podcast is not None:
                 return self._parse_podcast(cached_podcast)
             return self._parse_podcast(podcast_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid podcast: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing podcast {podcast_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.PODCAST, asin or None, exc)
             return None
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Fetch podcasts from the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -717,7 +789,8 @@ class AudibleHelper:
                 yield podcast
 
     async def get_podcast(self, asin: str, use_cache: bool = True) -> Podcast:
-        """Fetch full podcast details by ASIN.
+        """
+        Fetch full podcast details by ASIN.
 
         :param asin: The ASIN of the podcast.
         :param use_cache: Whether to use cached data if available.
@@ -755,8 +828,9 @@ class AudibleHelper:
         )
         return self._parse_podcast(item_data)
 
-    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode, None]:
-        """Fetch all episodes for a podcast.
+    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode]:
+        """
+        Fetch all episodes for a podcast.
 
         :param podcast_asin: The ASIN of the parent podcast.
         """
@@ -805,7 +879,8 @@ class AudibleHelper:
                 break
 
     async def get_podcast_episode(self, episode_asin: str) -> PodcastEpisode:
-        """Fetch full podcast episode details by ASIN.
+        """
+        Fetch full podcast episode details by ASIN.
 
         :param episode_asin: The ASIN of the podcast episode.
         """
@@ -838,7 +913,8 @@ class AudibleHelper:
         return self._parse_podcast_episode(item_data, podcast, 0)
 
     def _parse_podcast(self, podcast_data: dict[str, Any] | None) -> Podcast:
-        """Parse podcast data from API response.
+        """
+        Parse podcast data from API response.
 
         :param podcast_data: Raw podcast data from the Audible API.
         """
@@ -891,7 +967,8 @@ class AudibleHelper:
         podcast: Podcast | None,
         position: int,
     ) -> PodcastEpisode:
-        """Parse podcast episode data from API response.
+        """
+        Parse podcast episode data from API response.
 
         :param episode_data: Raw episode data from the Audible API.
         :param podcast: Parent podcast object (optional).
@@ -966,7 +1043,8 @@ class AudibleHelper:
         return episode
 
     async def get_authors(self) -> dict[str, str]:
-        """Get all unique authors from the library.
+        """
+        Get all unique authors from the library.
 
         Returns dict mapping author ASIN to author name.
         """
@@ -982,7 +1060,8 @@ class AudibleHelper:
         return authors
 
     async def get_series(self) -> dict[str, str]:
-        """Get all unique series from the library.
+        """
+        Get all unique series from the library.
 
         Returns dict mapping series ASIN to series title.
         """
@@ -998,7 +1077,8 @@ class AudibleHelper:
         return series
 
     async def get_narrators(self) -> dict[str, str]:
-        """Get all unique narrators from the library.
+        """
+        Get all unique narrators from the library.
 
         Returns dict mapping narrator ASIN to narrator name.
         """
@@ -1096,7 +1176,7 @@ class AudibleHelper:
                     sequence = s.get("sequence")
                     try:
                         seq_num = float(sequence) if sequence else 999
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         seq_num = 999
                     audiobooks.append((seq_num, self._parse_audiobook(item)))
                     break
@@ -1117,7 +1197,8 @@ def _html_to_txt(html_text: str) -> str:
 
 
 async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
-    """Generate the login URL and auth info for Audible OAuth flow.
+    """
+    Generate the login URL and auth info for Audible OAuth flow.
 
     :param locale: The locale string (e.g., 'us', 'uk', 'de').
     :return: Tuple of (code_verifier, oauth_url, serial).
@@ -1139,7 +1220,8 @@ async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
 async def audible_custom_login(
     code_verifier: str, response_url: str, serial: str, locale: str
 ) -> audible.Authenticator:
-    """Complete the authentication using the code_verifier, response_url, and serial.
+    """
+    Complete the authentication using the code_verifier, response_url, and serial.
 
     :param code_verifier: The code verifier string used in OAuth flow.
     :param response_url: The response URL containing the authorization code.

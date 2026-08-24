@@ -6,7 +6,8 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import Any, cast
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -25,6 +26,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import enrich_episode_chapters
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -44,10 +46,28 @@ class PodcastIndexProvider(MusicProvider):
     api_key: str = ""
     api_secret: str = ""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_STORED_PODCASTS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                default_value=[],
+                required=False,
+                hidden=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.api_key = str(self.config.get_value(CONF_API_KEY))
-        self.api_secret = str(self.config.get_value(CONF_API_SECRET))
+        self.api_key = str(self.get_setup_value(CONF_API_KEY))
+        self.api_secret = str(self.get_setup_value(CONF_API_SECRET))
 
         if not self.api_key or not self.api_secret:
             raise LoginFailed("API key and secret are required")
@@ -55,7 +75,7 @@ class PodcastIndexProvider(MusicProvider):
         # Test API connection
         try:
             await self._api_request("stats/current")
-        except (LoginFailed, ProviderUnavailableError):
+        except LoginFailed, ProviderUnavailableError:
             # Re-raise these specific errors as they have proper context
             raise
         except aiohttp.ClientConnectorError as err:
@@ -105,18 +125,21 @@ class PodcastIndexProvider(MusicProvider):
                     provider=self.domain,
                     path=f"{base}{BROWSE_TRENDING}",
                     name="Trending Podcasts",
+                    translation_key="trending_podcasts",
                 ),
                 BrowseFolder(
                     item_id=BROWSE_RECENT,
                     provider=self.domain,
                     path=f"{base}{BROWSE_RECENT}",
                     name="Recent Episodes",
+                    translation_key="recent_episodes",
                 ),
                 BrowseFolder(
                     item_id=BROWSE_CATEGORIES,
                     provider=self.domain,
                     path=f"{base}{BROWSE_CATEGORIES}",
                     name="Categories",
+                    translation_key="categories",
                 ),
             ]
 
@@ -151,8 +174,6 @@ class PodcastIndexProvider(MusicProvider):
         if not isinstance(item, Podcast):
             return await super().library_add(item)
 
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL from the podcast via API
         try:
             feed_url = await self._get_feed_url_for_podcast(item.item_id)
@@ -168,12 +189,12 @@ class PodcastIndexProvider(MusicProvider):
             )
             return False
 
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
         if feed_url in stored_podcasts:
             return False
 
         self.logger.debug("Adding podcast %s to library", item.name)
-        stored_podcasts.append(feed_url)
-        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, [*stored_podcasts, feed_url])
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -185,8 +206,6 @@ class PodcastIndexProvider(MusicProvider):
         logs a warning but still returns True to maintain the idempotent contract
         as required by MA convention.
         """
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL for this podcast
         try:
             feed_url = await self._get_feed_url_for_podcast(prov_item_id)
@@ -200,7 +219,11 @@ class PodcastIndexProvider(MusicProvider):
             # Still return True for idempotent operation
             return True
 
-        if not feed_url or feed_url not in stored_podcasts:
+        if not feed_url:
+            return True
+
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
+        if feed_url not in stored_podcasts:
             return True
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)
@@ -218,7 +241,7 @@ class PodcastIndexProvider(MusicProvider):
                 podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -226,9 +249,7 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes for a podcast."""
         self.logger.debug("Getting episodes for podcast ID: %s", prov_podcast_id)
 
@@ -274,7 +295,7 @@ class PodcastIndexProvider(MusicProvider):
                 if episode:
                     yield episode
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -289,20 +310,17 @@ class PodcastIndexProvider(MusicProvider):
 
         Uses the efficient episodes/byid endpoint for direct episode retrieval.
         """
+        episode_data: dict[str, Any] | None = None
+        episode: PodcastEpisode | None = None
         try:
             podcast_id, episode_id = prov_episode_id.split("|", 1)
-
             response = await self._api_request("episodes/byid", params={"id": episode_id})
             episode_data = response.get("episode")
-
             if episode_data:
                 episode = parse_episode_from_data(
                     episode_data, podcast_id, 0, self.instance_id, self.domain
                 )
-                if episode:
-                    return episode
-
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except ValueError as err:
@@ -311,7 +329,19 @@ class PodcastIndexProvider(MusicProvider):
         except Exception as err:
             self.logger.warning("Unexpected error getting episode %s: %s", prov_episode_id, err)
 
-        raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
+        if episode is None or episode_data is None:
+            raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
+
+        # single-episode path only: fetch external podcast:chapters JSON (Podcasting 2.0)
+        # when present, to avoid a request per episode during full-podcast listing. Runs
+        # outside the resolution try so a best-effort chapter failure can never surface as
+        # the episode itself being not found.
+        await enrich_episode_chapters(
+            session=self.mass.http_session,
+            chapters_json_url=episode_data.get("chaptersUrl"),
+            mass_episode=episode,
+        )
+        return episode
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -347,7 +377,7 @@ class PodcastIndexProvider(MusicProvider):
                         allow_seek=True,
                     )
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except ValueError as err:
@@ -385,7 +415,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("podcasts/byfeedid", params={"id": podcast_id})
             feed_data: dict[str, Any] = response.get("feed", {})
             return feed_data.get("url")
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -402,7 +432,7 @@ class PodcastIndexProvider(MusicProvider):
         """Browse trending podcasts."""
         try:
             return await self._fetch_podcasts("podcasts/trending", {"max": 50})
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             raise
         except Exception as err:
             self.logger.warning(
@@ -435,7 +465,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return episodes
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -467,7 +497,7 @@ class PodcastIndexProvider(MusicProvider):
             # Sort by name
             return sorted(categories, key=lambda x: x.name)
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -491,7 +521,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return podcasts
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             raise
         except Exception as err:
             self.logger.warning(

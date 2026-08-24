@@ -8,6 +8,19 @@ music_assistant/testrun.sh
 build/
 dist/
 venv/
+
+# Provider binaries downloaded for local development must not be committed.
+music_assistant/providers/airplay/bin/*
+!music_assistant/providers/airplay/bin/README.md
+# Linux shairport-sync is built in the base image; only the macOS dev binary is bundled.
+music_assistant/providers/airplay_receiver/bin/shairport-sync-linux-*
+
+# Bundled app credentials - injected at build time, or a maintainer's local copy. Never commit.
+music_assistant/helpers/app_secrets.json
+app_vars.json
+
+# Widevine CDM client files - fetched by CI for the base image build, or a maintainer's local copy.
+widevine_cdm/
 .venv
 .venv*
 .mypy_cache/
@@ -28,3 +41,6 @@ docs/superpowers
 .devenv*
 devenv.local.nix
 devenv.local.yaml
+
+# VS Code
+.vscode/launch.json

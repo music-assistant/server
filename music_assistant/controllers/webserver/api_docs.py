@@ -58,7 +58,8 @@ def _format_type_name(type_hint: Any) -> str:
 
 
 def _generate_type_alias_description(type_alias: Any, alias_name: str) -> str:
-    """Generate a human-readable description of a type alias from its definition.
+    """
+    Generate a human-readable description of a type alias from its definition.
 
     :param type_alias: The type alias to describe (e.g., ConfigValueType)
     :param alias_name: The name of the alias for display
@@ -410,7 +411,8 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
 def _parse_docstring(  # noqa: PLR0915
     func: Callable[..., Any],
 ) -> tuple[str, str, dict[str, str]]:
-    """Parse docstring to extract summary, description and parameter descriptions.
+    """
+    Parse docstring to extract summary, description and parameter descriptions.
 
     Returns:
         Tuple of (short_summary, full_description, param_descriptions)
@@ -543,7 +545,8 @@ def generate_openapi_spec(
     server_url: str = "http://localhost:8095",
     version: str = "1.0.0",
 ) -> dict[str, Any]:
-    """Generate simplified OpenAPI 3.0 specification focusing on data models.
+    """
+    Generate simplified OpenAPI 3.0 specification focusing on data models.
 
     This spec documents the single /api endpoint and all data models/schemas.
     For detailed command documentation, see the Commands Reference page.
@@ -826,7 +829,8 @@ def generate_openapi_spec(
 
 
 def _split_union_type(type_str: str) -> list[str]:
-    """Split a union type on | but respect brackets and parentheses.
+    """
+    Split a union type on | but respect brackets and parentheses.
 
     This ensures that list[A | B] and (A | B) are not split at the inner |.
     """
@@ -871,7 +875,8 @@ def _split_union_type(type_str: str) -> list[str]:
 
 
 def _extract_generic_inner_type(type_str: str) -> str | None:
-    """Extract inner type from generic type like list[T] or dict[K, V].
+    """
+    Extract inner type from generic type like list[T] or dict[K, V].
 
     :param type_str: Type string like "list[str]" or "dict[str, int]"
     :return: Inner type string "str" or "str, int", or None if not a complete generic type
@@ -896,7 +901,8 @@ def _extract_generic_inner_type(type_str: str) -> str | None:
 
 
 def _parse_dict_type_params(inner_type: str) -> tuple[str, str] | None:
-    """Parse key and value types from dict inner type string.
+    """
+    Parse key and value types from dict inner type string.
 
     :param inner_type: The content inside dict[...], e.g., "str, ConfigValueType"
     :return: Tuple of (key_type, value_type) or None if parsing fails
@@ -927,7 +933,8 @@ def _parse_dict_type_params(inner_type: str) -> tuple[str, str] | None:
 
 
 def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
-    """Convert Python type string to JSON/JavaScript type string.
+    """
+    Convert Python type string to JSON/JavaScript type string.
 
     Args:
         type_str: The type string to convert
@@ -1046,7 +1053,8 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
 
 
 def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> str:
-    """Convert type string to HTML with links to schemas reference for complex types.
+    """
+    Convert type string to HTML with links to schemas reference for complex types.
 
     Args:
         type_str: The type string to convert
@@ -1085,7 +1093,8 @@ def _make_type_links(type_str: str, server_url: str, as_list: bool = False) -> s
 
 
 def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> list[dict[str, Any]]:
-    """Generate JSON representation of all available API commands.
+    """
+    Generate JSON representation of all available API commands.
 
     This is used by client libraries to sync their methods with the server API.
 
@@ -1105,7 +1114,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
         ],
         "return_type": str,  # Return type
         "authenticated": bool,  # Whether authentication is required
-        "required_role": str | None,  # Required user role (if any)
+        "required_scope": str | None,  # Required scope (if any)
     }
     """
     commands_data = []
@@ -1150,6 +1159,21 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 }
             )
 
+        if handler.allow_impersonation:
+            # the 'user' argument is injected by the command dispatch
+            parameters.append(
+                {
+                    "name": "user",
+                    "type": "string",
+                    "required": False,
+                    "description": (
+                        "Optional user_id or username of the user to execute this "
+                        "command on behalf of. Requires the users.impersonate scope "
+                        "when targeting another user."
+                    ),
+                }
+            )
+
         commands_data.append(
             {
                 "command": command,
@@ -1159,7 +1183,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 "parameters": parameters,
                 "return_type": return_type_str,
                 "authenticated": handler.authenticated,
-                "required_role": handler.required_role,
+                "required_scope": str(handler.required_scope) if handler.required_scope else None,
             }
         )
 
@@ -1167,7 +1191,8 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
 
 
 def generate_schemas_json(command_handlers: dict[str, APICommandHandler]) -> dict[str, Any]:
-    """Generate JSON representation of all schemas/data models.
+    """
+    Generate JSON representation of all schemas/data models.
 
     Returns a dict mapping schema names to their OpenAPI schema definitions.
     """

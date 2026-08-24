@@ -1,0 +1,35 @@
+{
+  "config_entries": {
+    "quality": {
+      "label": "Quality setting for Tidal:",
+      "description": "The maximum streaming quality to request from Tidal.",
+      "options": {
+        "LOSSLESS": "High",
+        "HI_RES_LOSSLESS": "Max"
+      },
+      "option_descriptions": {
+        "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
+        "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
+      }
+    }
+  },
+  "setup_flow": {
+    "device_login": {
+      "title": "Link your Tidal account",
+      "description": "Your code is {0}. Use the button below to open Tidal with the code already filled in, or go to link.tidal.com on another device and enter it there. This screen updates automatically once you approve."
+    },
+    "abort": {
+      "login_failed": "Could not link your Tidal account. Please start the setup again."
+    }
+  },
+  "media": {
+    "playlist": {
+      "favorite_tracks": {
+        "name": "Favorite Tracks"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music, playlists, and exclusives in lossless FLAC quality."
+  }
+}

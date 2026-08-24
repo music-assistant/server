@@ -1,4 +1,5 @@
-"""Validate a single config value against its ConfigEntry definition.
+"""
+Validate a single config value against its ConfigEntry definition.
 
 Wraps ``ConfigEntry.parse_value`` (type coercion + the entry's optional
 ``validate`` callback) and additionally enforces ``range`` and
@@ -21,7 +22,8 @@ if TYPE_CHECKING:
 
 
 def coerce(entry: ConfigEntry, value: Any) -> Any:
-    """Return the parsed/validated value for ``entry`` or raise ``ToolError``.
+    """
+    Return the parsed/validated value for ``entry`` or raise ``ToolError``.
 
     Enforces, in order: type coercion + the entry's ``validate`` callback
     (via ``parse_value``), then ``range`` (numeric bounds) and ``options``

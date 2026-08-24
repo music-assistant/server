@@ -4,29 +4,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 from types import SimpleNamespace
 
 import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album
+from qqmusic_api.modules.song import SongFileType
 
 from music_assistant.providers.qqmusic import (
     SUPPORTED_FEATURES,
     QQMusicProvider,
-    get_config_entries,
 )
 from music_assistant.providers.qqmusic.constants import (
-    CONF_ACTION_CHECK_QR_AUTH,
-    CONF_ACTION_START_QR_AUTH,
-    CONF_ACTION_START_WX_QR_AUTH,
-    CONF_LOGIN_TYPE,
-    CONF_MUSICID,
-    CONF_MUSICKEY,
-    CONF_QR_IDENTIFIER,
-    CONF_QR_TYPE,
     CONF_QUALITY,
     QUALITY_HI_RES,
 )
@@ -74,44 +64,25 @@ def test_extract_song_id_from_track_payload() -> None:
 
 def test_get_candidate_file_types_hires_with_fallback_chain() -> None:
     """Hi-Res preference should fall back to FLAC -> MP3 320 -> MP3 128."""
-
-    class _SongFileType:
-        MASTER = object()
-        FLAC = object()
-        MP3_320 = object()
-        MP3_128 = object()
-
     provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider._qq_song = SimpleNamespace(SongFileType=_SongFileType)  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(  # type: ignore[attr-defined]
         get_value=lambda key: QUALITY_HI_RES if key == CONF_QUALITY else None
     )
 
     candidates = provider._get_candidate_file_types()
     assert candidates == [
-        _SongFileType.MASTER,
-        _SongFileType.FLAC,
-        _SongFileType.MP3_320,
-        _SongFileType.MP3_128,
+        SongFileType.MASTER,
+        SongFileType.FLAC,
+        SongFileType.MP3_320,
+        SongFileType.MP3_128,
     ]
 
 
 def test_get_stream_audio_format_for_master() -> None:
     """MASTER stream type should map to 24-bit/192kHz FLAC format."""
-
-    class _SongFileType:
-        MASTER = object()
-        FLAC = object()
-        MP3_320 = object()
-        MP3_128 = object()
-        ACC_192 = object()
-        ACC_96 = object()
-        ACC_48 = object()
-
     provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider._qq_song = SimpleNamespace(SongFileType=_SongFileType)  # type: ignore[attr-defined]
 
-    stream_format = provider._get_stream_audio_format(_SongFileType.MASTER)
+    stream_format = provider._get_stream_audio_format(SongFileType.MASTER)
     assert stream_format.content_type.value == "flac"
     assert stream_format.bit_depth == 24
     assert stream_format.sample_rate == 192000
@@ -345,125 +316,20 @@ def test_parse_track_album_mapping_accepts_album_id_fallback() -> None:
     assert track.artists[0].name == "周杰伦"
 
 
-class _DummyMass:
-    def __init__(self) -> None:
-        self.events: list[tuple] = []
-
-    def signal_event(self, *args) -> None:
-        self.events.append(args)
-
-
 @pytest.mark.asyncio
-async def test_get_config_entries_start_qr_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Start QR action should store identifier and emit auth-session event."""
-
-    class QRLoginType(Enum):
-        QQ = "qq"
-
-    @dataclass
-    class QR:
-        data: bytes
-        qr_type: QRLoginType
-        mimetype: str
-        identifier: str
-
-    async def get_qrcode(_: QRLoginType) -> QR:
-        return QR(data=b"abc", qr_type=QRLoginType.QQ, mimetype="image/png", identifier="sig123")
-
-    login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
-
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
-    mass = _DummyMass()
-    values = {"session_id": "sess1"}
-    entries = await get_config_entries(mass=mass, action=CONF_ACTION_START_QR_AUTH, values=values)
-    qr_entry = next(entry for entry in entries if entry.key == CONF_QR_IDENTIFIER)
-    assert qr_entry.value == "sig123"
-    assert mass.events
-
-
-@pytest.mark.asyncio
-async def test_get_config_entries_start_wx_qr_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    """WeChat QR action should request and store a WeChat QR login."""
-
-    class QRLoginType(Enum):
-        QQ = "qq"
-        WX = "wx"
-
-    @dataclass
-    class QR:
-        data: bytes
-        qr_type: QRLoginType
-        mimetype: str
-        identifier: str
-
-    async def get_qrcode(login_type: QRLoginType) -> QR:
-        return QR(data=b"abc", qr_type=login_type, mimetype="image/jpeg", identifier="wx123")
-
-    login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
-
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
-    mass = _DummyMass()
-    values = {"session_id": "sess1"}
-    entries = await get_config_entries(
-        mass=mass, action=CONF_ACTION_START_WX_QR_AUTH, values=values
-    )
-    qr_identifier_entry = next(entry for entry in entries if entry.key == CONF_QR_IDENTIFIER)
-    qr_type_entry = next(entry for entry in entries if entry.key == CONF_QR_TYPE)
-    assert qr_identifier_entry.value == "wx123"
-    assert qr_type_entry.value == "wx"
-    assert mass.events
-
-
-@pytest.mark.asyncio
-async def test_get_config_entries_check_qr_auth_done(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Check QR action should persist credential fields when login is done."""
-
-    class QRLoginType(Enum):
-        QQ = "qq"
-
-    class QRCodeLoginEvents(Enum):
-        DONE = 0
-        SCAN = 1
-        CONF = 2
-        TIMEOUT = 3
-        REFUSE = 4
-
-    @dataclass
-    class QR:
-        data: bytes
-        qr_type: QRLoginType
-        mimetype: str
-        identifier: str
-
-    @dataclass
-    class Credential:
-        musicid: int
-        musickey: str
-        login_type: int
-
-    async def check_qrcode(_: QR):
-        return (QRCodeLoginEvents.DONE, Credential(123456, "mk", 2))
-
-    login_mod = SimpleNamespace(
-        QR=QR,
-        QRLoginType=QRLoginType,
-        QRCodeLoginEvents=QRCodeLoginEvents,
-        check_qrcode=check_qrcode,
-    )
-
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
-    mass = _DummyMass()
-    values = {
-        CONF_QR_IDENTIFIER: "sig123",
-        CONF_QR_TYPE: "qq",
-    }
-    entries = await get_config_entries(mass=mass, action=CONF_ACTION_CHECK_QR_AUTH, values=values)
-    musicid_entry = next(entry for entry in entries if entry.key == CONF_MUSICID)
-    musickey_entry = next(entry for entry in entries if entry.key == CONF_MUSICKEY)
-    logintype_entry = next(entry for entry in entries if entry.key == CONF_LOGIN_TYPE)
-    assert musicid_entry.value == "123456"
-    assert musickey_entry.value == "mk"
-    assert logintype_entry.value == "2"
+async def test_get_config_entries_exposes_quality_option_without_actions() -> None:
+    """Migrated config entries expose only the quality option and no auth/QR actions."""
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    entries = await provider.get_config_entries()
+    quality_entry = next(entry for entry in entries if entry.key == CONF_QUALITY)
+    assert [option.value for option in quality_entry.options] == [
+        "mp3_128",
+        "mp3_320",
+        "flac",
+        "hi_res",
+    ]
+    # the action-driven QR/auth pseudo-flow entries are gone after the setup-flow migration
+    assert all(entry.action is None for entry in entries)
 
 
 @pytest.mark.asyncio

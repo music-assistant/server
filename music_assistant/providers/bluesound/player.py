@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
@@ -15,7 +15,7 @@ from pyblu.entities import Input, PairedPlayer, Preset
 from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_3,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
@@ -23,6 +23,7 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
+    MAX_CONNECTING_POLLS,
     PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
     PLAYER_FEATURES_BASE,
@@ -32,7 +33,7 @@ from music_assistant.providers.bluesound.const import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import BluesoundDiscoveryInfo, BluesoundPlayerProvider
 
@@ -56,11 +57,12 @@ class BluesoundPlayer(Player):
         self.ip_address = ip_address
         self.connected: bool = True
         self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
-        self.sync_status = SyncStatus
-        self.status = Status
+        self.sync_status: SyncStatus
+        self.status: Status
         self.poll_state = POLL_STATE_STATIC
         self.dynamic_poll_count: int = 0
-        self._listen_task: asyncio.Task | None = None
+        self._connecting_polls: int = 0
+        self._listen_task: asyncio.Task[None] | None = None
         # Set base player attributes
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
         self._attr_name = name
@@ -89,14 +91,12 @@ class BluesoundPlayer(Player):
         await self.update_attributes()
         await self.mass.players.register_or_update(self)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            # BluOS keeps looping the audio on the other HTTP profiles,
+            # so this is not a choice we can leave to the user.
+            CONF_ENTRY_HTTP_PROFILE_FORCED_3,
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
                 safe_max_sample_rate=192000,
@@ -158,19 +158,19 @@ class BluesoundPlayer(Player):
         self._set_polling_dynamic()
         self.update_state()
 
-    async def next_track(self):
+    async def next_track(self) -> None:
         """Send NEXT TRACK command to BluOS player."""
         await self.client.skip()
         self._set_polling_dynamic()
         self.update_state()
 
-    async def previous_track(self):
+    async def previous_track(self) -> None:
         """Send PREVIOUS TRACK command to BluOS player."""
         await self.client.back()
         self._set_polling_dynamic()
         self.update_state()
 
-    async def seek(self, position) -> None:
+    async def seek(self, position: int) -> None:
         """Send PLAY command to BluOS player."""
         play_state = await self.client.play(seek=position, timeout=1)
         if play_state in ("stream", "play"):
@@ -215,7 +215,10 @@ class BluesoundPlayer(Player):
             return
 
         def player_id_to_paired_player(player_id: str) -> PairedPlayer:
-            client = self.mass.players.get_player(player_id, raise_unavailable=True)
+            client = cast(
+                "BluesoundPlayer",
+                self.mass.players.get_player(player_id, raise_unavailable=True),
+            )
             return PairedPlayer(client.ip_address, client.port)
 
         if player_ids_to_remove:
@@ -230,7 +233,7 @@ class BluesoundPlayer(Player):
                     continue
                 removed_player = self.mass.players.get_player(player_id)
                 if removed_player:
-                    removed_player._set_polling_dynamic()
+                    cast("BluesoundPlayer", removed_player)._set_polling_dynamic()
                     removed_player._attr_current_media = None
                     removed_player.update_state()
 
@@ -245,7 +248,7 @@ class BluesoundPlayer(Player):
                 self._attr_group_members.append(player_id)
                 added_player = self.mass.players.get_player(player_id)
                 if added_player:
-                    added_player._set_polling_dynamic()
+                    cast("BluesoundPlayer", added_player)._set_polling_dynamic()
                     added_player.update_state()
 
         self._set_polling_dynamic()
@@ -253,9 +256,13 @@ class BluesoundPlayer(Player):
 
     async def ungroup(self) -> None:
         """Handle UNGROUP command for BluOS player."""
-        leader = self.client.leader
-        leader_player_id = self.client.provider.player_map((leader.ip, leader.port))
-        await self.mass.players.get_player(leader_player_id).set_members(None, [self.player_id])
+        if not (leader := self.sync_status.leader):
+            return
+        provider = cast("BluesoundPlayerProvider", self.provider)
+        if (leader_player_id := provider.player_map.get((leader.ip, leader.port))) and (
+            leader_player := self.mass.players.get_player(leader_player_id)
+        ):
+            await leader_player.set_members(None, [self.player_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -264,7 +271,7 @@ class BluesoundPlayer(Player):
     def _resolve_source(self) -> None:
         """Check  PLAYER_SOURCE_MAP for known sources, otherwise create a new source."""
 
-        def resolve_analog_digital_source(source_name) -> PlayerMedia:
+        def resolve_analog_digital_source(source_name: str) -> PlayerSource:
             """Resolve Analog/Digital Source here, avoid duplicate entries in PLAYER_SOURCE_MAP."""
             return PlayerSource(
                 id=source_name,
@@ -279,13 +286,13 @@ class BluesoundPlayer(Player):
         mass_url = self.mass.streams.base_url
         if self.status.stream_url and mass_url in self.status.stream_url:
             self._attr_active_source = None
-        elif player_source := PLAYER_SOURCE_MAP.get(self.status.input_id):
+        elif player_source := PLAYER_SOURCE_MAP.get(cast("str", self.status.input_id)):
             self._attr_active_source = self.status.input_id
             self._attr_source_list.append(player_source)
-        elif player_source := PLAYER_SOURCE_MAP.get(self.status.service):
+        elif player_source := PLAYER_SOURCE_MAP.get(cast("str", self.status.service)):
             self._attr_active_source = self.status.service
             self._attr_source_list.append(player_source)
-        elif player_source := PLAYER_SOURCE_MAP.get(self.status.name):
+        elif player_source := PLAYER_SOURCE_MAP.get(cast("str", self.status.name)):
             self._attr_active_source = self.status.name
             self._attr_source_list.append(player_source)
         elif (name := self.status.name) and ("Analog Input" in name or "Digital Input" in name):
@@ -297,8 +304,8 @@ class BluesoundPlayer(Player):
             self.logger.debug("Appending new PlayerSource")
             self._attr_source_list.append(
                 PlayerSource(
-                    id=self.status.input_id,
-                    name=self.status.input_id,
+                    id=cast("str", self.status.input_id),
+                    name=cast("str", self.status.input_id),
                     passive=True,
                     can_play_pause=True,
                     can_seek=self.status.can_seek,
@@ -315,13 +322,29 @@ class BluesoundPlayer(Player):
             image_url = None
 
         self._attr_current_media = PlayerMedia(
-            uri=self.status.stream_url or self.status.name,
+            uri=cast("str", self.status.stream_url or self.status.name),
             title=self.status.name,
             artist=self.status.artist,
             album=self.status.album,
             image_url=image_url,
-            duration=self.status.total_seconds or None,
+            # keep float as-is; int() here would change the stored precision
+            duration=cast("int | None", self.status.total_seconds or None),
         )
+
+    def _resolve_playback_state(self) -> PlaybackState:
+        """Resolve the playback state from the reported BluOS transport state."""
+        # BluOS reports 'connecting' whenever it is (re)filling its buffer, including
+        # while it plays out the tail of a stream that stopped sending. Taking that as
+        # idle would end the queue while the player is still making sound, so we hold on
+        # to the playing state for a few polls. Beyond that the player is not buffering
+        # but stuck, and reporting it idle is what lets playback recover.
+        if self.status.state == "connecting" and self._attr_playback_state == PlaybackState.PLAYING:
+            self._connecting_polls += 1
+            if self._connecting_polls <= MAX_CONNECTING_POLLS:
+                return PlaybackState.PLAYING
+        else:
+            self._connecting_polls = 0
+        return PLAYBACK_STATE_MAP[self.status.state]
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
@@ -343,7 +366,7 @@ class BluesoundPlayer(Player):
             self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
             self.poll_state = POLL_STATE_STATIC
 
-        self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
+        self._attr_playback_state = self._resolve_playback_state()
 
         # Update polling interval
         if self.poll_state != POLL_STATE_DYNAMIC:
@@ -377,13 +400,14 @@ class BluesoundPlayer(Player):
             f"Volume from sync_status: {self.sync_status.volume}, from status: {self.status.volume}"
         )
 
+        provider = cast("BluesoundPlayerProvider", self.provider)
         if not self.sync_status.leader:
             # Player not grouped or player is group leader
             if self.sync_status.followers:
                 self._attr_group_members = [
-                    self.provider.player_map[f.ip, f.port]
+                    provider.player_map[f.ip, f.port]
                     for f in self.sync_status.followers
-                    if (f.ip, f.port) in self.provider.player_map
+                    if (f.ip, f.port) in provider.player_map
                 ]
             else:
                 self._attr_group_members.clear()
@@ -394,7 +418,7 @@ class BluesoundPlayer(Player):
             # Player has group leader
             self._attr_group_members.clear()
             leader = self.sync_status.leader
-            leader_player_id = self.provider.player_map.get((leader.ip, leader.port), None)
+            leader_player_id = provider.player_map.get((leader.ip, leader.port), None)
             self._attr_active_source = leader_player_id
 
         self.update_state()
@@ -409,19 +433,20 @@ class BluesoundPlayer(Player):
         """
         source_type, source_id = source.split("-", 1)
         if source_type == "preset":
-            await self.client.load_preset(preset_id=source_id)
+            await self.client.load_preset(preset_id=int(source_id))
         elif source_type == "input":
             await self.client.play_url(source_id)
         self._set_polling_dynamic()
         self.update_state()
 
-    async def _get_bluesound_sources(self, timeout: float | None = None) -> None:
-        """Resolve Bluesound presets and inputs to MA PlayerSource.
+    async def _get_bluesound_sources(self, timeout: float | None = None) -> list[PlayerSource]:
+        """
+        Resolve Bluesound presets and inputs to MA PlayerSource.
 
         :param timeout: The timeout for getting inputs and presets.
         """
 
-        def _preset_to_ma_source(preset: Preset):
+        def _preset_to_ma_source(preset: Preset) -> PlayerSource:
             return PlayerSource(
                 id=f"preset-{preset.id}",
                 name=f"Preset {preset.id:02d}: {preset.name}",
@@ -431,7 +456,7 @@ class BluesoundPlayer(Player):
                 can_next_previous=True,
             )
 
-        def _input_to_ma_source(bluos_input: Input):
+        def _input_to_ma_source(bluos_input: Input) -> PlayerSource:
             return PlayerSource(
                 id=f"input-{bluos_input.url}",
                 name=f"Input: {bluos_input.text}",
@@ -446,10 +471,11 @@ class BluesoundPlayer(Player):
         inputs_as_sources = [_input_to_ma_source(bluos_input) for bluos_input in inputs]
         return [_preset_to_ma_source(preset) for preset in presets] + inputs_as_sources
 
-    def _set_polling_dynamic(self, poll_count: int = 6, poll_interval: float = 0.5):
+    def _set_polling_dynamic(self, poll_count: int = 6, poll_interval: float = 0.5) -> None:
         self.poll_state = POLL_STATE_DYNAMIC
         self.dynamic_poll_count = poll_count
-        self._attr_poll_interval = poll_interval
+        # sub-second interval for dynamic polling; base attr is typed int
+        self._attr_poll_interval = poll_interval  # type: ignore[assignment]
 
     @property
     def synced_to(self) -> str | None:
@@ -462,5 +488,7 @@ class BluesoundPlayer(Player):
         """
         if self.sync_status.leader:
             leader = self.sync_status.leader
-            return self.provider.player_map.get((leader.ip, leader.port), None)
+            return cast("BluesoundPlayerProvider", self.provider).player_map.get(
+                (leader.ip, leader.port), None
+            )
         return None

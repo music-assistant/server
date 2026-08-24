@@ -25,13 +25,15 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+
 FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.flac"
 
 
 async def _real_get_media_stream(
     sd: StreamDetails, pcm_format: AudioFormat, **_kwargs: object
-) -> AsyncGenerator[bytes, None]:
-    """Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
+) -> AsyncGenerator[bytes]:
+    """
+    Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
 
     Mirrors the wait-then-close pattern in audio.py:466-528 so close() doesn't
     hit the SIGINT path on Windows when the process is still running.
@@ -129,13 +131,14 @@ async def test_streaming_background_scan_loudness_end_to_end() -> None:
     # None is not VolumeNormalizationMode.DISABLED, so loudness analysis proceeds
     streamdetails.volume_normalization_mode = None
 
-    await controller._run_background_streaming_for_track(streamdetails, [provider])
-
-    # Drain any tasks spawned by _finalize_providers (finalize is dispatched via create_task)
-    for _ in range(5):
-        await asyncio.sleep(0.05)
-    if created_tasks:
-        await asyncio.gather(*created_tasks, return_exceptions=True)
+    try:
+        await controller._run_background_streaming_for_track(streamdetails, [provider])
+        finalize_tasks = [
+            task for task in created_tasks if task is not controller._idle_unload_task
+        ]
+        await asyncio.wait_for(asyncio.gather(*finalize_tasks), timeout=5)
+    finally:
+        await controller.close()
 
     # Assertions
     assert len(captured_rows) == 1, f"expected exactly one analysis row; got {len(captured_rows)}"

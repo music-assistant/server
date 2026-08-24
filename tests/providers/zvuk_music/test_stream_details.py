@@ -15,7 +15,8 @@ from music_assistant.providers.zvuk_music.provider import ZvukMusicProvider
 
 
 def _make_mock_track(has_flac: bool = True, duration: int = 240) -> MagicMock:
-    """Create a mock ZvukTrack with configurable has_flac and duration.
+    """
+    Create a mock ZvukTrack with configurable has_flac and duration.
 
     :param has_flac: Whether FLAC is available for this track.
     :param duration: Track duration in seconds.
@@ -28,7 +29,8 @@ def _make_mock_track(has_flac: bool = True, duration: int = 240) -> MagicMock:
 
 
 def _make_provider(quality_pref: str) -> ZvukMusicProvider:
-    """Create a ZvukMusicProvider with mocked MA and config.
+    """
+    Create a ZvukMusicProvider with mocked MA and config.
 
     :param quality_pref: Quality preference string ("lossless" or "high").
     :return: Configured provider instance.

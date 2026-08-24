@@ -1,4 +1,5 @@
-"""18-dimensional semantic vector schema for sonic similarity search.
+"""
+18-dimensional semantic vector schema for sonic similarity search.
 
 Maps AudioAnalysisData to a fixed-size float vector for USearch ANN indexing.
 Dimensions: [0-8] required scalars, [9-12] optional ML scalars, [13-15] key
@@ -54,7 +55,8 @@ FEATURE_GROUPS = {
 
 
 def encode_key_mode(key: str, mode: str) -> tuple[float, float, float]:
-    """Encode musical key and mode as three floats for circular and binary representation.
+    """
+    Encode musical key and mode as three floats for circular and binary representation.
 
     :param key: Pitch class name (e.g. "C", "F#"). Unknown keys default to pitch class 0.
     :param mode: Tonality string — "major" encodes to 1.0, anything else to 0.0.
@@ -69,7 +71,8 @@ def encode_key_mode(key: str, mode: str) -> tuple[float, float, float]:
 
 
 def assemble_vector(analysis: AudioAnalysisData) -> list[float] | None:
-    """Assemble the VECTOR_DIMENSIONS-element feature vector for an analysis row.
+    """
+    Assemble the VECTOR_DIMENSIONS-element feature vector for an analysis row.
 
     :param analysis: Source audio analysis data.
     :returns: List of floats sized to VECTOR_DIMENSIONS, or None when any required
@@ -116,7 +119,8 @@ def normalize_features(
     corpus_means: list[float],
     corpus_stds: list[float],
 ) -> list[float]:
-    """Apply z-score then L2 normalization to a raw feature vector.
+    """
+    Apply z-score then L2 normalization to a raw feature vector.
 
     :param raw_features: Raw feature vector to normalize.
     :param corpus_means: Per-feature means from the corpus.
@@ -139,7 +143,8 @@ def normalize_features(
 def compute_corpus_stats(
     all_features: list[list[float]],
 ) -> tuple[list[float], list[float]]:
-    """Compute per-feature means and standard deviations across a corpus.
+    """
+    Compute per-feature means and standard deviations across a corpus.
 
     :param all_features: List of feature vectors (all same dimensionality).
     :returns: Tuple of (means, stds) as lists of floats.
@@ -159,7 +164,8 @@ def compute_group_distances(
     sig_a: list[float],
     sig_b: list[float],
 ) -> dict[str, float]:
-    """Compute per-group raw (unweighted) Euclidean distance between two feature vectors.
+    """
+    Compute per-group raw (unweighted) Euclidean distance between two feature vectors.
 
     :param sig_a: First feature vector.
     :param sig_b: Second feature vector.
@@ -174,28 +180,62 @@ def compute_group_distances(
     return result
 
 
+def build_dimension_weights(weights: dict[str, float]) -> np.ndarray:
+    """
+    Expand per-group weights into a per-dimension weight vector.
+
+    Callers in a hot loop (e.g. MMR re-ranking) can build this once and reuse it
+    across many compute_weighted_distance_vec calls instead of rebuilding it per call.
+
+    :param weights: Per-group weight overrides keyed by FEATURE_GROUPS name. Groups
+        absent from the dict default to weight 1.0.
+    :returns: Float64 weight array of length VECTOR_DIMENSIONS.
+    """
+    dim_weights = np.ones(VECTOR_DIMENSIONS, dtype=np.float64)
+    for group, (start, end) in FEATURE_GROUPS.items():
+        if group in weights:
+            dim_weights[start:end] = weights[group]
+    return dim_weights
+
+
 def compute_weighted_distance(
-    sig_a: list[float],
-    sig_b: list[float],
+    sig_a: list[float] | np.ndarray,
+    sig_b: list[float] | np.ndarray,
     weights: dict[str, float],
 ) -> float:
-    """Compute per-group weighted Euclidean distance between two feature vectors.
+    """
+    Compute per-group weighted Euclidean distance between two feature vectors.
 
-    :param sig_a: First feature vector.
-    :param sig_b: Second feature vector.
+    :param sig_a: First feature vector (list or numpy array).
+    :param sig_b: Second feature vector (list or numpy array).
     :param weights: Per-group weight overrides keyed by FEATURE_GROUPS name.
     :returns: Weighted normalized distance as a float.
     """
-    group_dists = compute_group_distances(sig_a, sig_b)
-    weighted_sq_sum = 0.0
-    total_weighted_dims = 0.0
-    for group, (start, end) in FEATURE_GROUPS.items():
-        w = weights.get(group, 1.0)
-        dim_count = end - start
-        weighted_sq_sum += w * (group_dists[group] ** 2) * dim_count
-        total_weighted_dims += w * dim_count
+    return compute_weighted_distance_vec(sig_a, sig_b, build_dimension_weights(weights))
+
+
+def compute_weighted_distance_vec(
+    sig_a: list[float] | np.ndarray,
+    sig_b: list[float] | np.ndarray,
+    dim_weights: np.ndarray,
+) -> float:
+    """
+    Compute weighted Euclidean distance from a precomputed per-dimension weight vector.
+
+    :param sig_a: First feature vector (list or numpy array).
+    :param sig_b: Second feature vector (list or numpy array).
+    :param dim_weights: Per-dimension weights as built by build_dimension_weights.
+    :returns: Weighted normalized distance as a float.
+    """
+    total_weighted_dims = float(dim_weights.sum())
     if total_weighted_dims == 0.0:
         return 0.0
+    # np.asarray is a no-op when the caller already holds a float64 array (the
+    # MMR hot path), avoiding the list round-trip the previous version forced.
+    a = np.asarray(sig_a, dtype=np.float64)
+    b = np.asarray(sig_b, dtype=np.float64)
+    diff = a - b
+    weighted_sq_sum = float(np.dot(dim_weights, diff * diff))
     return math.sqrt(weighted_sq_sum / total_weighted_dims)
 
 
@@ -205,7 +245,8 @@ def build_debug_breakdown(
     weights: dict[str, float],
     displayed_dist: float,
 ) -> dict[str, Any]:
-    """Build a per-track diagnostic dict (weighted_distance, metadata_bonus, group_distances).
+    """
+    Build a per-track diagnostic dict (weighted_distance, metadata_bonus, group_distances).
 
     :param seed_normalized: Normalized seed feature vector.
     :param cand_normalized: Normalized candidate feature vector.

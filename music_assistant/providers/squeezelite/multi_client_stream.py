@@ -1,14 +1,20 @@
 """Implementation of a simple multi-client stream task/job."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-
-from music_assistant_models.media_items import AudioFormat
+from typing import TYPE_CHECKING
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
+
+    from music_assistant.helpers.dsp import ComplexFilter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,13 +24,17 @@ class MultiClientStream:
 
     def __init__(
         self,
-        audio_source: AsyncGenerator[bytes, None],
+        audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
+        queue_id: str | None,
+        session_id: str | None,
         expected_clients: int = 0,
     ) -> None:
         """Initialize MultiClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
+        self.queue_id = queue_id
+        self.session_id = session_id
         self.subscribers: list[asyncio.Queue[bytes]] = []
         self.expected_clients = expected_clients
         self.task = asyncio.create_task(self._runner())
@@ -47,8 +57,8 @@ class MultiClientStream:
     async def get_stream(
         self,
         output_format: AudioFormat,
-        filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+        filter_params: Sequence[str | ComplexFilter] | None = None,
+    ) -> AsyncGenerator[bytes]:
         """Get (client specific encoded) ffmpeg stream."""
         async for chunk in get_ffmpeg_stream(
             audio_input=self.subscribe_raw(),
@@ -58,7 +68,7 @@ class MultiClientStream:
         ):
             yield chunk
 
-    async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
+    async def subscribe_raw(self) -> AsyncGenerator[bytes]:
         """Subscribe to the raw/unaltered audio stream."""
         queue: asyncio.Queue[bytes] = asyncio.Queue(2)
         try:

@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+from contextlib import suppress
 from sqlite3 import OperationalError
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, ExternalID, StreamType
+from aiohttp import web
+from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY, OPEN_API_URL
+from .constants import CONF_QUALITY
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Track
-
     from .provider import TidalProvider
+
+# Seconds of idle buffer after which a DASH manifest route is cleaned up.
+# Each time ffmpeg fetches the manifest, the cleanup timer resets — so
+# this is only an idle timeout applied AFTER active playback (or seeks)
+# stops. Set to 300s so that seeks and queue transitions always land on
+# a live route, even when the old ffmpeg process has been dead for
+# minutes before the new one starts fetching.
+_DASH_ROUTE_IDLE_BUFFER: int = 300
 
 
 class TidalStreamingManager:
@@ -33,31 +43,78 @@ class TidalStreamingManager:
         try:
             track = await self.provider.get_track(item_id)
         except MediaNotFoundError:
-            # 2. Fallback to ISRC lookup
-            if isrc_track := await self._get_track_by_isrc(item_id):
-                track = isrc_track
-            else:
+            # 2. Fallback to ISRC-based resolution (also heals the library DB)
+            live_id = await self.provider.resolve_live_track_id(item_id)
+            if not live_id:
                 raise MediaNotFoundError(f"Track {item_id} not found")
+            track = await self.provider.get_track(live_id)
 
         quality = self.provider.config.get_value(CONF_QUALITY)
 
         # 3. Get playback info
-        async with self.api.throttler.bypass():
-            api_result = await self.api.get(
-                f"tracks/{track.item_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                },
-            )
-
-        stream_data = api_result[0] if isinstance(api_result, tuple) else api_result
+        try:
+            stream_data = await self._fetch_playback_info(track.item_id, quality)
+        except MediaNotFoundError:
+            # The track lookup is cached for days, so a track that churned after
+            # being cached passes step 1 and the 404 first surfaces here. Heal
+            # (also rewrites the stored mapping) and retry once with the live id.
+            live_id = await self.provider.resolve_live_track_id(item_id)
+            if not live_id or live_id == track.item_id:
+                raise
+            track = await self.provider.get_track(live_id)
+            stream_data = await self._fetch_playback_info(live_id, quality)
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
         if "dash+xml" in manifest_type and "manifest" in stream_data:
-            url = f"data:application/dash+xml;base64,{stream_data['manifest']}"
+            # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
+            # ffmpeg re-fetches the MPD during playback to read the
+            # segment timeline, but a data: URI can only be read
+            # once. Decode the manifest and serve it from a real HTTP
+            # endpoint on the stream server so re-fetches succeed.
+            manifest_bytes = base64.b64decode(stream_data["manifest"])
+            manifest_hash = hashlib.md5(manifest_bytes, usedforsecurity=False).hexdigest()
+            route_path = f"/tidal-dash/{manifest_hash}"
+            cleanup_id = f"tidal-dash-cleanup-{manifest_hash}"
+
+            # Use track duration + buffer so the route lives through seeks.
+            # ffmpeg's manifest re-fetches extend the deadline further via
+            # _serve_manifest, but seek kills the old ffmpeg — the new one
+            # may not fetch for many seconds so the idle buffer covers that gap.
+            cleanup_ttl: float = _DASH_ROUTE_IDLE_BUFFER + (
+                track.duration or _DASH_ROUTE_IDLE_BUFFER
+            )
+
+            def _schedule_cleanup() -> None:
+                """Schedule (or reschedule) idle cleanup for this manifest route."""
+                self.mass.call_later(
+                    cleanup_ttl,
+                    self._remove_dash_route,
+                    route_path,
+                    task_id=cleanup_id,
+                )
+
+            async def _serve_manifest(_request: web.Request) -> web.Response:
+                # Extend the idle timeout — ffmpeg is still consuming this route.
+                _schedule_cleanup()
+                return web.Response(
+                    body=manifest_bytes,
+                    content_type="application/dash+xml",
+                    headers={"Cache-Control": "no-cache"},
+                )
+
+            # Register the ephemeral route. If the same manifest was already
+            # registered (another track with identical content), this raises
+            # RuntimeError — we reuse the existing route.
+            with suppress(RuntimeError):
+                self.mass.streams.register_dynamic_route(route_path, _serve_manifest, method="GET")
+
+            # Schedule initial cleanup (or extend the existing deadline).
+            # This MUST be outside the except block so the timer is always
+            # set, even when reusing a pre-registered route.
+            _schedule_cleanup()
+
+            url = f"{self.mass.streams.base_url}{route_path}"
         else:
             urls = stream_data.get("urls", [])
             if not urls:
@@ -98,6 +155,18 @@ class TidalStreamingManager:
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
+        """Fetch the (unofficial) playback info for a track."""
+        async with self.api.throttler.bypass():
+            return await self.api.get(
+                f"tracks/{track_id}/playbackinfopostpaywall",
+                params={
+                    "playbackmode": "STREAM",
+                    "assetpresentation": "FULL",
+                    "audioquality": quality,
+                },
+            )
 
     async def _async_update_provider_mapping_audio_format(
         self,
@@ -146,50 +215,7 @@ class TidalStreamingManager:
                 self.provider.instance_id,
             )
 
-    async def _get_track_by_isrc(self, item_id: str) -> Track | None:
-        """Lookup track by ISRC with caching."""
-        # Check cache
-        if cached_id := await self.mass.cache.get(
-            item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
-        ):
-            try:
-                return await self.provider.get_track(cached_id)
-            except MediaNotFoundError:
-                await self.mass.cache.delete(
-                    item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
-                )
-
-        # Get library item to find ISRC
-        lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-            item_id, self.provider.instance_id
-        )
-        if not lib_track:
-            return None
-
-        isrc = next((x[1] for x in lib_track.external_ids if x[0] == ExternalID.ISRC), None)
-        if not isrc:
-            return None
-
-        # Lookup by ISRC
-        api_result = await self.api.get(
-            "tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL
-        )
-        data = api_result[0] if isinstance(api_result, tuple) else api_result
-
-        data_items = data.get("data", [])
-        if not data_items:
-            return None
-
-        track_id = str(data_items[0]["id"])
-
-        # Cache result
-        await self.mass.cache.set(
-            key=item_id,
-            data=track_id,
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_ISRC_MAP,
-            persistent=True,
-            expiration=86400 * 90,
-        )
-
-        return await self.provider.get_track(track_id)
+    def _remove_dash_route(self, route_path: str) -> None:
+        """Remove a DASH manifest route from the stream server."""
+        with suppress(RuntimeError):
+            self.mass.streams.unregister_dynamic_route(route_path, method="GET")

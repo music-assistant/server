@@ -3,22 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
-from typing import TYPE_CHECKING, Any, final
+from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.config_entries import UI_ONLY, ConfigValueType
+from music_assistant_models.enums import ConfigEntryType, EventType
+from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 
-from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 class Provider:
@@ -27,6 +38,9 @@ class Provider:
     mass: MusicAssistant
     manifest: ProviderManifest
     config: ProviderConfig
+    # set to True in providers that capture a mass.streams address or port while loading,
+    # to have them reloaded onto the new one when the streamserver network changes
+    reload_on_streams_network_change: bool = False
 
     def __init__(
         self,
@@ -43,6 +57,10 @@ class Provider:
         self._set_log_level_from_config(config)
         self.cache = mass.cache
         self.available = False
+        # set by the controller once teardown of this provider starts, so work that is
+        # already in flight (e.g. a discovery running in a worker thread) can tell a
+        # provider on its way out apart from one that is not loaded yet
+        self.unloading = False
         self.initialized = asyncio.Event()
 
     @property
@@ -51,8 +69,42 @@ class Provider:
         # should not be overridden in normal circumstances
         return self._supported_features
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries to configure this provider instance.
+
+        Resolved on every load - before ``handle_async_init`` - as well as whenever the
+        options page is opened, so this may not read state that async init assigns. Read
+        the current values via ``self.config``/``self.get_config_value`` and the
+        capabilities via ``self.supported_features``. One-time setup input is collected by
+        the setup flow (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION``
+        entries for one-shot buttons and handle their presses in ``handle_config_action``.
+        """
+        return ()
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """
+        Run the one-shot side effect for a pressed action button from this provider's options.
+
+        Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
+        provider declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning config entries re-renders the options page
+        with those entries instead.
+
+        :param action: The action id of the pressed button (an entry's ``action`` key).
+        """
+        raise ActionUnavailable(f"Unknown action: {action}")
+
     async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
+        """
+        Handle async initialization of the provider.
+
+        Runs after ``get_config_entries`` was already resolved, so state assigned here
+        is not available to it.
+        """
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -94,8 +146,19 @@ class Provider:
                 self.domain,
                 self.instance_id,
             )
-            task_id = f"provider_reload_{self.instance_id}"
+            # armed under the load path's task id so any (re)load starting before it fires
+            # cancels it
+            task_id = f"load_provider_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
+
+    async def get_diagnostics(self) -> dict[str, SerializableType] | None:
+        """
+        Return optional diagnostics info for this provider to include in diagnostics reports.
+
+        Return None (the default) when this provider has nothing to contribute.
+        Keep the returned data small, JSON serializable and free of sensitive values.
+        """
+        return None
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -127,6 +190,12 @@ class Provider:
 
     @property
     @final
+    def translation_owner(self) -> str:
+        """Return the "provider.<domain>" namespace this provider's translation strings resolve under."""
+        return f"provider.{self.domain}"
+
+    @property
+    @final
     def name(self) -> str:
         """Return (custom) friendly name for this provider instance."""
         if self.config.name:
@@ -149,7 +218,7 @@ class Provider:
             # default implementation - simply use the instance number/index
             instance_name_postfix = str(instances.index(self.instance_id) + 1)
         # append instance name to provider name
-        return f"{self.manifest.name} [{self.instance_name_postfix}]"
+        return f"{self.manifest.name} [{instance_name_postfix}]"
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -162,9 +231,14 @@ class Provider:
         """Return the stage of this provider."""
         return self.manifest.stage
 
-    def unload_with_error(self, error: str) -> None:
-        """Unload provider with error message."""
-        self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
+    def unload_with_error(self, error: str | Exception) -> None:
+        """
+        Unload this provider and record an error for the user to act on.
+
+        :param error: The originating exception (preferred, so its error code and localized
+            message are preserved) or a plain string for a generic error message.
+        """
+        self.mass.call_later(1, self.mass.unload_provider_with_error, self.instance_id, error)
 
     def to_dict(self) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
@@ -172,13 +246,11 @@ class Provider:
             "type": self.type.value,
             "domain": self.domain,
             "name": self.name,
-            "default_name": self.default_name,
-            "instance_name_postfix": self.instance_name_postfix,
             "instance_id": self.instance_id,
-            "lookup_key": self.instance_id,  # include for backwards compatibility
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
+            "lookup_key": self.instance_id,  # include for backwards compatibility
         }
 
     def supports_feature(self, feature: ProviderFeature) -> bool:
@@ -192,11 +264,122 @@ class Provider:
                 f"Provider {self.name} does not support feature {feature.name}"
             )
 
-    def _update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
-        """Update a config value."""
-        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
-        # also update the cached copy within the provider instance
-        self.config.values[key].value = value
+    @final
+    def signal_provider_event(self, data: SerializableType, sub_scope: str | None = None) -> None:
+        """
+        Signal a custom provider event to all subscribers (e.g. connected clients).
+
+        Emits a PROVIDER_EVENT with this provider's instance_id as object_id,
+        optionally suffixed with /sub_scope to allow clients to distinguish
+        multiple event streams from the same provider.
+
+        :param data: The JSON serializable event payload, defined by the provider.
+        :param sub_scope: Optional sub scope to append to the object_id.
+        """
+        object_id = f"{self.instance_id}/{sub_scope}" if sub_scope else self.instance_id
+        self.mass.signal_event(EventType.PROVIDER_EVENT, object_id=object_id, data=data)
+
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return the current persisted config value for this provider.
+
+        Falls back to the active config entry value or default when no value is persisted.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the active config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        if (entry := self.config.values.get(key)) is None:
+            return self.config.get_value(key, default)
+        if entry.type in UI_ONLY:
+            # a display-only entry holds label text rather than a value, so reading
+            # through it would shadow the caller's default
+            return default
+        value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if value is None:
+            return self.config.get_value(key, default)
+        if entry.type == ConfigEntryType.SECURE_STRING:
+            assert isinstance(value, str)
+            return self.mass.config.decrypt_string(value)
+        return value
+
+    def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """
+        Return a value collected by this provider's setup flow (from setup_data).
+
+        Encrypted (string) values are decrypted transparently. When the key is not
+        present in setup_data, the active config entry value or the given default is
+        returned.
+
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present anywhere.
+        """
+        setup_data = self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}/setup_data") or {}
+        if key in setup_data:
+            value = setup_data[key]
+            return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        return self.get_config_value(key, default)
+
+    def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
+        """
+        Update a single setup_data value for this provider (e.g. a rotated auth token).
+
+        :param key: The setup data key to update.
+        :param value: The new value; strings are encrypted at rest.
+        :param immediate: Persist to disk right away (the default) instead of on the
+            debounced save timer, so a critical value survives a crash.
+        """
+        if not self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}"):
+            # only allow setting setup data if the main config entry exists
+            msg = f"Invalid provider instance: {self.instance_id}"
+            raise KeyError(msg)
+        stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
+        self.mass.config.set(
+            f"{CONF_PROVIDERS}/{self.instance_id}/setup_data/{key}",
+            stored_value,
+            immediate=immediate,
+        )
+        # keep the in-memory config copy in sync with storage
+        self.config.setup_data[key] = stored_value
+
+    def _update_config_value(
+        self, key: str, value: ConfigValueType, encrypted: bool = False, immediate: bool = False
+    ) -> None:
+        """
+        Update a config value.
+
+        :param immediate: Persist to disk right away instead of on the debounced save timer;
+            use for critical values (e.g. a rotated auth token) that must survive a crash.
+        """
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, key, value, encrypted=encrypted, immediate=immediate
+        )
+        if (entry := self.config.values.get(key)) is not None:
+            entry.value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
 
     def _set_log_level_from_config(self, config: ProviderConfig) -> None:
         """Set log level from config."""
@@ -208,12 +391,11 @@ class Provider:
             # async_init completed
             logging_name = self.name
         self.logger = mass_logger.getChild(logging_name)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        # fall back to the entry's own default: a config that reaches us without its
+        # entries resolved must not take the whole provider down over a log level
+        log_level = str(config.get_value(CONF_LOG_LEVEL) or "GLOBAL")
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)

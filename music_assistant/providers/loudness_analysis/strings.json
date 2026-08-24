@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "write_replaygain_tags": {
+      "label": "Write REPLAYGAIN_TRACK_GAIN tags back to files",
+      "description": "When the background audio-analysis scan produces a loudness measurement, also write the corresponding REPLAYGAIN_TRACK_GAIN tag back into the audio file. Useful if other apps on your network read these tags for their own volume normalization. Requires write access to the file; read-only files are silently skipped."
+    }
+  },
+  "manifest": {
+    "description": "EBU R128 integrated loudness measurement used for volume normalization."
+  }
+}

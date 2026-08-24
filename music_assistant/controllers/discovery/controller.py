@@ -7,12 +7,13 @@ import contextlib
 import inspect
 import logging
 import os
+import re
 from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
     NonUniqueNameException,
@@ -36,11 +37,19 @@ if TYPE_CHECKING:
 
     from music_assistant.models import ProviderInstanceType
 
+# RAOP cache keys prefix the device name with the device MAC, e.g. "aabbccddeeff@Kelder".
+# Cache keys are lowercased, so the hex is matched in lowercase.
+RAOP_MAC_PREFIX = re.compile(r"^[0-9a-f]{12}@")
+
 CONF_UPNP_NETWORK_SCAN = "upnp_network_scan"
 UPNP_DISCOVERY_INTERVAL = 300
 UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
+
+# Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
+HA_ANNOUNCE_INTERVAL = 86400
+HA_ANNOUNCE_TIMER_ID = "discovery_ha_announce_timer"
 
 
 async def async_upnp_search(*args: Any, **kwargs: Any) -> None:
@@ -88,24 +97,17 @@ class DiscoveryController(CoreController):
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
+            self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for the discovery controller."""
-        del action, values
         return (
             CONF_ENTRY_ZEROCONF_INTERFACES,
             ConfigEntry(
                 key=CONF_UPNP_NETWORK_SCAN,
                 type=ConfigEntryType.BOOLEAN,
-                label="Allow network scan for UPnP discovery",
                 default_value=False,
-                description="Enable additional broadcast-based SSDP discovery. "
-                "Use this if some UPnP/DLNA devices do not answer regular discovery.",
                 requires_reload=False,
             ),
         )
@@ -114,6 +116,7 @@ class DiscoveryController(CoreController):
         """Handle logic on server stop."""
         self.mass.cancel_timer(UPNP_DISCOVERY_TIMER_ID)
         self.mass.cancel_task(UPNP_DISCOVERY_TASK_ID)
+        self.mass.cancel_timer(HA_ANNOUNCE_TIMER_ID)
 
         await self._cancel_mdns_browser()
 
@@ -148,10 +151,11 @@ class DiscoveryController(CoreController):
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
-        """Find an mDNS service by partial name match, checking cache first then waiting.
+        """
+        Find an mDNS service by exact device name match, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Substring that must appear in the service name.
+        :param name_filter: Device name that must exactly match the service name portion.
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
@@ -166,14 +170,20 @@ class DiscoveryController(CoreController):
                 event.clear()
                 # Check cache for a matching entry
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                    if (
-                        service_type_lower in mdns_name
-                        and name_filter_lower in mdns_name
-                        and mdns_name != service_type_lower
-                    ):
-                        info = AsyncServiceInfo(service_type, mdns_name)
-                        if await info.async_request(self.aiozc.zeroconf, 3000):
-                            return info
+                    if service_type_lower not in mdns_name or mdns_name == service_type_lower:
+                        continue
+                    # Use exact matching on the device name portion to prevent a device named
+                    # "Foo" from cross-matching another device named "ATV Foo".
+                    # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
+                    # Strip the MAC prefix only when present, so device names that legitimately
+                    # contain "@" are not truncated.
+                    device_part = mdns_name.split(".")[0]
+                    device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
+                    if device_name != name_filter_lower:
+                        continue
+                    info = AsyncServiceInfo(service_type, mdns_name)
+                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                        return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     return None
@@ -187,10 +197,11 @@ class DiscoveryController(CoreController):
 
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
+        library_log_level = (
+            logging.DEBUG if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else self.logger.level + 10
+        )
+        for logger_name in ("async_upnp_client", "zeroconf"):
+            logging.getLogger(logger_name).setLevel(library_log_level)
 
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
@@ -246,7 +257,9 @@ class DiscoveryController(CoreController):
         info = AsyncServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+            addresses=[
+                await get_ip_pton(address) for address in self.mass.webserver.publish_addresses
+            ],
             port=self.mass.webserver.publish_port,
             properties=self.mass.get_server_info().to_dict(),
             server="mass.local.",
@@ -459,3 +472,16 @@ class DiscoveryController(CoreController):
                 )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
+
+    def _schedule_periodic_ha_announce(self) -> None:
+        """Schedule the periodic (re)announce to Home Assistant."""
+
+        def run_announce() -> None:
+            self.mass.create_task(self._announce_to_homeassistant())
+            self._schedule_periodic_ha_announce()
+
+        self.mass.call_later(
+            HA_ANNOUNCE_INTERVAL,
+            run_announce,
+            task_id=HA_ANNOUNCE_TIMER_ID,
+        )

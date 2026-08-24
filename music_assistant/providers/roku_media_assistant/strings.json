@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "roku_app_id": {
+      "label": "App ID of Media Assistant",
+      "description": "By default, Music Assistant will use the Roku Channel Store version of Media Assistant (ID: 782875). If you sideloaded the App on your Roku this will need to be set to (ID: dev)."
+    },
+    "auto_scan": {
+      "label": "Allow automatic Roku discovery",
+      "description": "Enable automatic discovery of Roku players."
+    }
+  },
+  "manifest": {
+    "description": "Support for Roku's running Media Assistant."
+  }
+}

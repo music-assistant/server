@@ -1,0 +1,3 @@
+# Direct datetime.now()/utcnow() call sites that predate the helpers check.
+# New code must use music_assistant.helpers.datetime (utc(), now(), ...).
+# Regenerate with: uv run -m scripts.check_datetime_helpers --update-baseline

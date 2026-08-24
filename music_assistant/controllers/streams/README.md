@@ -6,12 +6,14 @@ This document provides an overview of the Music Assistant Streams Controller arc
 
 - [Overview](#overview)
 - [Network Architecture](#network-architecture)
+- [Inbound Audio](#inbound-audio)
 - [Core Components](#core-components)
 - [AudioBuffer](#audiobuffer)
 - [StreamsAudio](#streamsaudio)
 - [Streaming Pipeline](#streaming-pipeline)
 - [Analyze Callbacks](#analyze-callbacks)
 - [Smart Fades](#smart-fades)
+- [Audio Overlay](#audio-overlay)
 - [Stream Types](#stream-types)
 - [Configuration](#configuration)
 
@@ -23,6 +25,7 @@ The Streams Controller is a core controller that manages all audio streaming to 
 - Volume normalization (dynamic, measurement-based, and fixed gain)
 - Smart crossfading between tracks
 - Flow mode for continuous queue playback
+- Audio overlay: a looping sound effect (e.g. rain) mixed into queue playback
 - Announcement and plugin source streaming
 - Ahead-of-time audio analysis (loudness, beat detection) via buffer callbacks
 
@@ -33,6 +36,19 @@ The streams controller runs its own dedicated HTTP-only webserver on a separate 
 - **No SSL/TLS**: Many audio players (especially embedded devices) have limited resources and struggle with SSL handshakes. Since the stream server only runs on the internal network, encryption is unnecessary.
 - **No authentication**: Players need to access streams without credentials. Instead, stream URLs include a **session ID** that is validated on each request to prevent stale or invalid stream attempts.
 - **Separate port**: Keeps audio streaming isolated from the API, allowing independent scaling and configuration.
+
+## Inbound Audio
+
+Live announcements (`live_announcements.py`) are the one path where audio travels *into* the stream server rather than out of it: a client pushes raw PCM while a user speaks, and it is played on a player as an ordinary announcement.
+
+This splits across both webservers, because neither can do the job alone:
+
+- The **inbound** half is a WebSocket on the main webserver. Audio from a client is a privileged action, so it needs the authentication and the SSL support that the stream server deliberately does not have. Browsers additionally require a secure context to reach a microphone at all, which only the main webserver can offer.
+- The **outbound** half is an ordinary stream server route serving the buffered speech as a WAV. The announcement renderer only ever pulls its audio from a URL, so exposing the clip as one keeps live announcements on exactly the same path as every other announcement.
+
+The announcement is dispatched only once the clip is complete, not while it is still being spoken. Players that announce natively need the whole clip up front: AirPlay renders it to a file and schedules a single synchronized instant across every group member from its exact duration, and Sonos needs the duration to know how long the clip runs. Handing them a clip that is still growing gives one player type a head start and truncates another, so every player gets the same finished clip instead.
+
+A session is identified by an unguessable id that appears only in the stream URL, and it is dropped as soon as the announcement has been played.
 
 ## Core Components
 
@@ -73,11 +89,11 @@ Supporting modules in `helpers/`:
 
 ### Key Methods
 
-- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, attaches analyze callbacks, starts filling
+- `AudioBuffer.get_buffer()` - Static factory that creates or reuses a buffer. Reads config, determines mode, starts the analysis reader, starts filling
 - `AudioBuffer.get_stream()` - Get processed audio with optional filters/resampling applied
-- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio
+- `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio (playback consumer)
+- `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
-- `AudioBuffer.register_chunk_callback()` - Register a callback to observe chunks as they are buffered
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle
@@ -85,9 +101,9 @@ Supporting modules in `helpers/`:
 ```
 1. _load_item() fetches stream details, creates buffer with wait_ready=True
 2. Buffer starts filling from get_media_stream() in background
-3. Analyze callbacks (loudness, smart fades) process chunks as they arrive
+3. Analysis (loudness, smart fades) reads the same buffer in parallel, at lower priority
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
-5. ~30s before track end: _prepare_next_audio_buffer() pre-fills next track
+5. ~30s before track end: prepare_next_audio_buffer() pre-fills next track
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory
 ```
 
@@ -104,9 +120,13 @@ Supporting modules in `helpers/`:
 - **Stream acquisition**: `get_media_stream`, `get_stream_details`, radio/HTTP/file stream helpers
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
-- **DSP and filters**: `get_player_filter_params`, `get_player_dsp_details`, `get_stream_dsp_details`
+- **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
 - **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
+
+`AudioProcessingManager`, initialized as `self.audio_processing` on the
+StreamsController, combines queue processing and per-player output plans into complete
+`AudioProcessingChain` snapshots attached to `StreamDetails`.
 
 ## Streaming Pipeline
 
@@ -149,13 +169,32 @@ The smart fades system provides intelligent crossfading between tracks:
 - **Standard Crossfade**: Fixed-duration overlap crossfade with silence stripping
 - Operates in both flow mode (continuous stream) and per-item mode (gapless playback)
 
+## Audio Overlay
+
+The audio overlay is a per-queue feature (configured via `player_queues/overlay`) that mixes a
+looping sound effect — any `sound_effect` media item offered by a provider — into the queue's
+audio stream:
+
+- Mixing happens once per queue stream (ffmpeg `amix`, overlay looped via `-stream_loop -1`),
+  so all (synced) players consuming the stream hear the identical mix.
+- An active overlay forces flow mode: the overlay must play continuously across track
+  boundaries, which is impossible with per-item stream requests. Radio is the exception —
+  it always plays as a single long-lived stream and is wrapped per-request instead.
+- The internal PCM format is upgraded to F32 (like crossfade/DSP) for clipping-free headroom.
+- Failures degrade gracefully: when the overlay source can not be resolved, playback simply
+  continues without overlay; when the overlay input dies mid-stream, ffmpeg keeps passing
+  the main audio. Music playback is never interrupted by the overlay.
+- Note: audio already sitting in a player's (pre)buffer is unaffected by overlay changes,
+  which is why the queue controller restarts playback on an audible change. For the same
+  reason a seek can momentarily shift the overlay position — acceptable for ambient content.
+
 ## Stream Types
 
 | Type | AudioBuffer | Description |
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | No | Short one-off audio (TTS), streamed directly |
+| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration

@@ -5,32 +5,27 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import Final, cast
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 import pylast
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-    ProviderConfig,
-)
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.enums import EventType, MediaType, ProviderFeature
+from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
-from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
+
 # Built-in Last.fm API credentials (not available for Libre.fm)
-_DEFAULT_API_KEY: str = app_var(12)
-_DEFAULT_API_SECRET: str = app_var(13)
+_DEFAULT_API_KEY: str = app_var("lastfm_api_key")
+_DEFAULT_API_SECRET: str = app_var("lastfm_api_secret")
 
 
 # we don't have any special supported features (yet)
@@ -47,12 +42,10 @@ CONF_SESSION_KEY: Final[str] = "_api_session_key"
 CONF_USERNAME: Final[str] = "_username"
 CONF_PROVIDER: Final[str] = "_provider"
 
-# Configuration actions
-CONF_ACTION_AUTH: Final[str] = "_auth"
-
 
 class _NetworkType(enum.Enum):
-    """Available scrobbling network provider types.
+    """
+    Available scrobbling network provider types.
 
     This is a plain Enum class with string values.
     Use ``.value`` when passing to ``ConfigEntry`` or ``ConfigValueOption``
@@ -67,7 +60,8 @@ def _resolve_credentials(
     values: Mapping[str, ConfigValueType],
     network_type: _NetworkType = _NetworkType.LASTFM,
 ) -> tuple[str, str]:
-    """Resolve the effective API key and secret.
+    """
+    Resolve the effective API key and secret.
 
     Uses user-provided values if present, otherwise falls back to the
     built-in Last.fm credentials. Libre.fm always requires user-provided values.
@@ -100,7 +94,8 @@ def _resolve_credentials(
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration.
+    """
+    Initialize provider(instance) with given configuration.
 
     :returns: A configured LastFMScrobbleProvider instance.
     """
@@ -122,12 +117,22 @@ class LastFMScrobbleProvider(PluginProvider):
     _network: pylast._Network | None
     _on_unload: list[Callable[[], None]]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return config entries to configure this provider.
+
+        Authentication (network, credentials and session key) is handled by the setup
+        flow (see setup_flow.py); only the genuine scrobble-filter options are
+        configurable here.
+        """
+        return tuple(await ScrobblerConfig.get_shared_config_entries(self.mass, None))
+
     async def handle_async_init(self) -> None:
         """Handle async setup."""
         self._on_unload: list[Callable[[], None]] = []
         self._network = None
 
-        if not self.config.get_value(CONF_SESSION_KEY):
+        if not self.get_setup_value(CONF_SESSION_KEY):
             self.logger.info("No session key available, don't forget to authenticate!")
             return
         # creating the network instance is (potentially) blocking IO
@@ -148,7 +153,8 @@ class LastFMScrobbleProvider(PluginProvider):
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
+        """
+        Handle unload/close of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -156,21 +162,25 @@ class LastFMScrobbleProvider(PluginProvider):
             unload_cb()
 
     def _get_network_config(self) -> dict[str, ConfigValueType]:
-        """Build the network configuration dict from provider config values.
+        """
+        Build the network configuration dict from the provider's setup data.
 
         :returns: Dict of config keys to their current stored values.
         """
         return {
-            CONF_API_KEY: self.config.get_value(CONF_API_KEY),
-            CONF_API_SECRET: self.config.get_value(CONF_API_SECRET),
-            CONF_PROVIDER: self.config.get_value(CONF_PROVIDER),
-            CONF_USERNAME: self.config.get_value(CONF_USERNAME),
-            CONF_SESSION_KEY: self.config.get_value(CONF_SESSION_KEY),
+            CONF_API_KEY: self.get_setup_value(CONF_API_KEY),
+            CONF_API_SECRET: self.get_setup_value(CONF_API_SECRET),
+            CONF_PROVIDER: self.get_setup_value(CONF_PROVIDER),
+            CONF_USERNAME: self.get_setup_value(CONF_USERNAME),
+            CONF_SESSION_KEY: self.get_setup_value(CONF_SESSION_KEY),
         }
 
 
 class LastFMEventHandler(ScrobblerHelper):
     """Handle Last.fm event processing for scrobbling and now-playing updates."""
+
+    # pylast wraps every failure — including network errors — in PyLastError.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)
 
     def __init__(
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
@@ -213,142 +223,12 @@ class LastFMEventHandler(ScrobblerHelper):
         )
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return config entries to setup this provider.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: ID of an existing provider instance (None if new instance setup).
-    :param action: Optional action key called from config entries UI.
-    :param values: The (intermediate) raw values for config entries sent with the action.
-    :returns: Tuple of ConfigEntry objects for the frontend to render.
-    """
-    logger = logging.getLogger(MASS_LOGGER_NAME).getChild("lastfm")
-
-    network_type: _NetworkType
-    if values is not None and (provider_val := values.get(CONF_PROVIDER)) is not None:
-        network_type = _NetworkType(str(provider_val))
-    else:
-        network_type = _NetworkType.LASTFM
-
-    entries: list[ConfigEntry] = await ScrobblerConfig.get_shared_config_entries(mass, values)
-    entries += [
-        ConfigEntry(
-            key=CONF_PROVIDER,
-            type=ConfigEntryType.STRING,
-            label="Provider",
-            required=True,
-            description="The endpoint to use, defaults to Last.fm",
-            options=[
-                ConfigValueOption(title="Last.FM", value=_NetworkType.LASTFM.value),
-                ConfigValueOption(title="LibreFM", value=_NetworkType.LIBREFM.value),
-            ],
-            default_value=network_type.value,
-            value=network_type.value,
-        ),
-        ConfigEntry(
-            key=CONF_API_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="API Key",
-            required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm API key. Required for Libre.fm.",
-            value=values.get(CONF_API_KEY) if values else None,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_API_SECRET,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Shared secret",
-            required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm shared secret. Required for Libre.fm.",
-            value=values.get(CONF_API_SECRET) if values else None,
-            advanced=True,
-        ),
-    ]
-
-    # early return so we can assume values are present
-    if values is None:
-        return tuple(entries)
-
-    if action == CONF_ACTION_AUTH and values.get("session_id") is not None:
-        session_id = str(values.get("session_id"))
-
-        async with AuthenticationHelper(mass, session_id) as auth_helper:
-            api_key, api_secret = _resolve_credentials(values, network_type)
-            network = get_network({**values, CONF_API_KEY: api_key, CONF_API_SECRET: api_secret})
-            skg = pylast.SessionKeyGenerator(network)
-
-            # pylast says it does web auth, but actually does desktop auth
-            # so we need to do some URL juggling ourselves
-            # to get a proper web auth flow with a callback
-            url = (
-                f"{network.homepage}/api/auth/"
-                f"?api_key={network.api_key}"
-                f"&cb={auth_helper.callback_url}"
-            )
-
-            logger.info("authenticating on %s", url)
-            response = await auth_helper.authenticate(url)
-            if response.get("token") is None:
-                raise LoginFailed(f"no token available in {network_type.value} response")
-
-            session_key, username = skg.get_web_auth_session_key_username(
-                url, str(response.get("token"))
-            )
-            values[CONF_USERNAME] = username
-            values[CONF_SESSION_KEY] = session_key
-
-            entries.append(
-                ConfigEntry(
-                    key="save_reminder",
-                    type=ConfigEntryType.ALERT,
-                    required=False,
-                    default_value=None,
-                    label=f"Successfully logged in as {username}, "
-                    "don't forget to hit save to complete the setup",
-                ),
-            )
-
-    if not values.get(CONF_SESSION_KEY):
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_AUTH,
-                type=ConfigEntryType.ACTION,
-                label=f"Authorize with {network_type.value}",
-                action=CONF_ACTION_AUTH,
-            ),
-        )
-
-    entries += [
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Logged in user",
-            hidden=True,
-            value=values.get(CONF_USERNAME) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_SESSION_KEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Session key",
-            hidden=True,
-            required=False,
-            value=values.get(CONF_SESSION_KEY) if values else None,
-        ),
-    ]
-
-    return tuple(entries)
-
-
 def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
-    """Create a pylast network instance with resolved credentials.
+    """
+    Create a pylast network instance with resolved credentials.
 
     Called in two contexts:
-    1. during the auth flow (from ``get_config_entries``)
+    1. during the setup flow (from ``setup_flow.run_setup``)
        to build the authorization URL before any session exists
     2. during provider startup (from ``handle_async_init``)
        for scrobbling with a stored session.

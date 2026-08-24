@@ -1,14 +1,13 @@
 name: Auto Release
 
-# Automatically creates releases with proper version increments
-# - Nightly: runs at 02:00 UTC daily if there are 2+ commits (format: 1.2.3.dev20251025HH)
-# - Beta: manual trigger (format: 1.2.0b1, 1.2.0b2, etc.)
-# - Stable: manual trigger (format: 1.2.3, 1.2.4, etc.)
+# Automatically creates releases with proper version increments.
+# - Nightly: runs at 05:00 Europe/Amsterdam with 2+ commits
+# - Beta, RC, stable: manually triggered
 
 on:
   schedule:
-    # Run at 03:00 UTC every day for nightly releases
-    - cron: "0 3 * * *"
+    - cron: "0 5 * * *"
+      timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
       channel:
@@ -26,336 +25,101 @@ on:
         required: false
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
+
+concurrency:
+  group: auto-release-${{ inputs.channel || 'nightly' }}
+  cancel-in-progress: false
 
 jobs:
-  check-and-release:
+  resolve-release:
+    name: Resolve release source and version
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.next_version.outputs.version }}
-      should_release: ${{ steps.check_commits.outputs.has_commits }}
-      channel: ${{ steps.set_channel.outputs.channel }}
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release }}
+      channel: ${{ steps.channel.outputs.channel }}
+      branch: ${{ steps.branch.outputs.branch }}
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
-      - name: Set release channel
-        id: set_channel
-        run: |
-          # Use input channel for manual runs, default to nightly for scheduled runs
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            CHANNEL="${{ inputs.channel }}"
-          else
-            CHANNEL="nightly"
-          fi
-          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
-          echo "Release channel: $CHANNEL"
-
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0 # Fetch all history for proper comparison
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
 
-      - name: Check for new commits
-        id: check_commits
-        run: |
-          CHANNEL="${{ steps.set_channel.outputs.channel }}"
-
-          # Define search patterns for each channel
-          case "$CHANNEL" in
-            nightly)
-              SEARCH_PATTERN="dev"
-              ;;
-            beta)
-              SEARCH_PATTERN="b"
-              ;;
-            rc)
-              SEARCH_PATTERN="rc"
-              ;;
-            stable)
-              # For stable, we want versions that don't contain dev or beta suffixes
-              SEARCH_PATTERN="stable"
-              ;;
-          esac
-
-          # Get the latest release for the channel
-          if [ "$CHANNEL" = "stable" ]; then
-            # For stable, get releases that don't contain dev, beta, or rc suffixes
-            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not) | select(.tagName | contains("rc") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
-          else
-            # For nightly and beta, filter by pattern
-            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq ".[] | select(.tagName | contains(\"$SEARCH_PATTERN\"))" 2>/dev/null | jq -s '.[0]' || echo "")
-          fi
-
-          if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" == "null" ]; then
-            echo "No previous $CHANNEL releases found"
-            echo "has_commits=true" >> $GITHUB_OUTPUT
-            echo "last_tag=" >> $GITHUB_OUTPUT
-          else
-            RELEASE_DATE=$(echo "$LATEST_RELEASE" | jq -r '.createdAt')
-            LAST_TAG=$(echo "$LATEST_RELEASE" | jq -r '.tagName')
-            echo "Latest $CHANNEL release: $LAST_TAG at $RELEASE_DATE"
-            echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
-
-            # Check if there are commits since the latest release
-            COMMITS_SINCE=$(git log --since="$RELEASE_DATE" --oneline | wc -l)
-            echo "Commits since last $CHANNEL release: $COMMITS_SINCE"
-
-            # Require at least 2 commits for auto-release (nightly only)
-            # For manual beta/stable releases, always proceed
-            if [ "$CHANNEL" = "nightly" ]; then
-              if [ "$COMMITS_SINCE" -ge 2 ]; then
-                echo "has_commits=true" >> $GITHUB_OUTPUT
-              else
-                echo "has_commits=false" >> $GITHUB_OUTPUT
-                echo "Only $COMMITS_SINCE commit(s) found. Need at least 2 commits for auto-release."
-              fi
-            else
-              # Manual releases (beta/stable) always proceed
-              echo "has_commits=true" >> $GITHUB_OUTPUT
-            fi
-          fi
+      - name: Set release channel
+        id: channel
         env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Get last stable release (for beta and nightly versioning)
-        id: last_stable
-        if: ${{ steps.set_channel.outputs.channel == 'beta' || steps.set_channel.outputs.channel == 'nightly' }}
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          # Get the latest stable release (no dev, beta, or rc suffixes)
-          LATEST_STABLE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not) | select(.tagName | contains("rc") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
-
-          if [ -z "$LATEST_STABLE" ] || [ "$LATEST_STABLE" == "null" ]; then
-            echo "No previous stable releases found"
-            echo "stable_tag=" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            channel="$DISPATCH_CHANNEL"
           else
-            STABLE_TAG=$(echo "$LATEST_STABLE" | jq -r '.tagName')
-            echo "Latest stable release: $STABLE_TAG"
-            echo "stable_tag=$STABLE_TAG" >> $GITHUB_OUTPUT
+            channel="nightly"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "Release channel: $channel"
 
-      - name: Get last beta release (for RC versioning)
-        id: last_beta
-        if: ${{ steps.set_channel.outputs.channel == 'rc' }}
+      - name: Resolve source branch
+        id: branch
+        run: >-
+          python3 .release-workflow/scripts/release_workflow.py branch
+          --channel "${{ steps.channel.outputs.channel }}"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Capture source commit
+        id: source
         run: |
-          # Get the latest beta release
-          LATEST_BETA=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | test("b[0-9]"))' 2>/dev/null | jq -s '.[0]' || echo "")
-
-          if [ -z "$LATEST_BETA" ] || [ "$LATEST_BETA" == "null" ]; then
-            echo "No previous beta releases found"
-            echo "beta_tag=" >> $GITHUB_OUTPUT
-          else
-            BETA_TAG=$(echo "$LATEST_BETA" | jq -r '.tagName')
-            echo "Latest beta release: $BETA_TAG"
-            echo "beta_tag=$BETA_TAG" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+          source_sha=$(git -C source rev-parse HEAD)
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "Release source: ${{ steps.branch.outputs.branch }}@$source_sha"
 
       - name: Calculate next version
-        id: next_version
-        if: steps.check_commits.outputs.has_commits == 'true'
-        run: |
-          LAST_TAG="${{ steps.check_commits.outputs.last_tag }}"
-          CHANNEL="${{ steps.set_channel.outputs.channel }}"
-
-          case "$CHANNEL" in
-            nightly)
-              # Nightly: format 1.2.3.devYYYYMMDDHH
-              # Always one minor version ahead of the last stable release
-              TODAY=$(date -u +%Y%m%d)
-              HOUR=$(date -u +%H)
-              LAST_STABLE_TAG="${{ steps.last_stable.outputs.stable_tag }}"
-
-              # Determine the base version (should be one minor version ahead of stable)
-              if [ -n "$LAST_STABLE_TAG" ]; then
-                STABLE_VERSION=$(echo "$LAST_STABLE_TAG" | sed 's/^v//')
-
-                if [[ "$STABLE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-                  MAJOR="${BASH_REMATCH[1]}"
-                  MINOR="${BASH_REMATCH[2]}"
-                  NEXT_MINOR=$((MINOR + 1))
-                  BASE_VERSION="${MAJOR}.${NEXT_MINOR}.0"
-                else
-                  BASE_VERSION="0.1.0"
-                fi
-              else
-                # No stable release found, start with default
-                BASE_VERSION="0.1.0"
-              fi
-
-              NEW_VERSION="${BASE_VERSION}.dev${TODAY}${HOUR}"
-              echo "Nightly version based on stable ${LAST_STABLE_TAG}: ${NEW_VERSION}"
-              ;;
-
-            beta)
-              # Beta: format 1.2.0b1, 1.2.0b2, etc.
-              # Always base the version on the last STABLE release, not dev versions
-              LAST_BETA_TAG="${{ steps.check_commits.outputs.last_tag }}"
-              LAST_STABLE_TAG="${{ steps.last_stable.outputs.stable_tag }}"
-
-              # Check if there's an existing beta version
-              if [ -n "$LAST_BETA_TAG" ]; then
-                BETA_VERSION=$(echo "$LAST_BETA_TAG" | sed 's/^v//')
-
-                # Check if it's already a beta version (e.g., 2.7.0b1)
-                if [[ "$BETA_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
-                  BETA_BASE="${BASH_REMATCH[1]}"
-                  BETA_NUM="${BASH_REMATCH[2]}"
-
-                  # Extract major.minor from beta base
-                  if [[ "$BETA_BASE" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
-                    BETA_MAJOR="${BASH_REMATCH[1]}"
-                    BETA_MINOR="${BASH_REMATCH[2]}"
-                  fi
-
-                  # Check if stable has caught up to or surpassed the beta base version
-                  NEED_NEW_CYCLE=false
-                  if [ -n "$LAST_STABLE_TAG" ]; then
-                    STABLE_VERSION=$(echo "$LAST_STABLE_TAG" | sed 's/^v//')
-                    if [[ "$STABLE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-                      STABLE_MAJOR="${BASH_REMATCH[1]}"
-                      STABLE_MINOR="${BASH_REMATCH[2]}"
-
-                      if [ "$STABLE_MAJOR" -gt "$BETA_MAJOR" ] || \
-                         ([ "$STABLE_MAJOR" -eq "$BETA_MAJOR" ] && [ "$STABLE_MINOR" -ge "$BETA_MINOR" ]); then
-                        NEED_NEW_CYCLE=true
-                      fi
-                    fi
-                  fi
-
-                  if [ "$NEED_NEW_CYCLE" = true ]; then
-                    # Stable has caught up or surpassed beta — start new beta cycle
-                    NEXT_MINOR=$((STABLE_MINOR + 1))
-                    NEW_VERSION="${STABLE_MAJOR}.${NEXT_MINOR}.0b1"
-                    echo "Starting new beta cycle: stable ${LAST_STABLE_TAG} >= beta base ${BETA_BASE} -> ${NEW_VERSION}"
-                  else
-                    # Beta is still ahead of stable, increment beta number
-                    NEXT_BETA=$((BETA_NUM + 1))
-                    NEW_VERSION="${BETA_BASE}b${NEXT_BETA}"
-                    echo "Incrementing existing beta: ${LAST_BETA_TAG} -> ${NEW_VERSION}"
-                  fi
-                else
-                  # Should not happen, but fallback
-                  NEW_VERSION="0.1.0b1"
-                fi
-              elif [ -n "$LAST_STABLE_TAG" ]; then
-                # No beta exists, increment minor from last stable and start at b1
-                STABLE_VERSION=$(echo "$LAST_STABLE_TAG" | sed 's/^v//')
-
-                if [[ "$STABLE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-                  MAJOR="${BASH_REMATCH[1]}"
-                  MINOR="${BASH_REMATCH[2]}"
-                  NEXT_MINOR=$((MINOR + 1))
-                  NEW_VERSION="${MAJOR}.${NEXT_MINOR}.0b1"
-                  echo "Creating first beta based on stable ${LAST_STABLE_TAG}: ${NEW_VERSION}"
-                else
-                  NEW_VERSION="0.1.0b1"
-                fi
-              else
-                # No stable or beta found, start fresh
-                NEW_VERSION="0.1.0b1"
-              fi
-              ;;
-
-            rc)
-              # RC: format X.Y.ZrcN
-              # Base version comes from the latest beta tag
-              LAST_BETA_TAG="${{ steps.last_beta.outputs.beta_tag }}"
-              LAST_RC_TAG="${{ steps.check_commits.outputs.last_tag }}"
-
-              if [ -n "$LAST_BETA_TAG" ]; then
-                BETA_VERSION=$(echo "$LAST_BETA_TAG" | sed 's/^v//')
-
-                # Extract base version from beta tag (e.g., 2.8.0b22 -> 2.8.0)
-                if [[ "$BETA_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b[0-9]+$ ]]; then
-                  BETA_BASE="${BASH_REMATCH[1]}"
-                else
-                  echo "Error: Cannot parse beta version: $BETA_VERSION"
-                  exit 1
-                fi
-
-                # Check if there's an existing RC tag for this base version
-                if [ -n "$LAST_RC_TAG" ]; then
-                  RC_VERSION=$(echo "$LAST_RC_TAG" | sed 's/^v//')
-
-                  if [[ "$RC_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
-                    RC_BASE="${BASH_REMATCH[1]}"
-                    RC_NUM="${BASH_REMATCH[2]}"
-
-                    if [ "$RC_BASE" = "$BETA_BASE" ]; then
-                      # Same base version, increment RC number
-                      NEXT_RC=$((RC_NUM + 1))
-                      NEW_VERSION="${BETA_BASE}rc${NEXT_RC}"
-                      echo "Incrementing existing RC: ${LAST_RC_TAG} -> ${NEW_VERSION}"
-                    else
-                      # Different base version (new beta cycle), start at rc1
-                      NEW_VERSION="${BETA_BASE}rc1"
-                      echo "New RC cycle based on beta ${LAST_BETA_TAG}: ${NEW_VERSION}"
-                    fi
-                  else
-                    # Last RC tag doesn't parse, start fresh
-                    NEW_VERSION="${BETA_BASE}rc1"
-                  fi
-                else
-                  # No RC exists, start at rc1
-                  NEW_VERSION="${BETA_BASE}rc1"
-                  echo "Creating first RC based on beta ${LAST_BETA_TAG}: ${NEW_VERSION}"
-                fi
-              else
-                # No beta found, fallback
-                NEW_VERSION="0.1.0rc1"
-              fi
-              ;;
-
-            stable)
-              # Stable: format 1.2.3, increment patch version
-              if [ -z "$LAST_TAG" ]; then
-                NEW_VERSION="0.1.0"
-              else
-                VERSION=$(echo "$LAST_TAG" | sed 's/^v//')
-
-                # Extract major.minor.patch and increment patch
-                if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-                  MAJOR="${BASH_REMATCH[1]}"
-                  MINOR="${BASH_REMATCH[2]}"
-                  PATCH="${BASH_REMATCH[3]}"
-                  NEXT_PATCH=$((PATCH + 1))
-                  NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-                else
-                  NEW_VERSION="0.1.0"
-                fi
-              fi
-              ;;
-          esac
-
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "New $CHANNEL version: $NEW_VERSION"
+        id: version
+        working-directory: source
+        run: >-
+          python3 ../.release-workflow/scripts/release_workflow.py auto-version
+          --channel "${{ steps.channel.outputs.channel }}"
+          --source-sha "${{ steps.source.outputs.sha }}"
+          --github-output "$GITHUB_OUTPUT"
 
       - name: Log release decision
+        env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+          COMMITS_SINCE: ${{ steps.version.outputs.commits_since }}
+          SHOULD_RELEASE: ${{ steps.version.outputs.should_release }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          CHANNEL="${{ steps.set_channel.outputs.channel }}"
-          if [ "${{ steps.check_commits.outputs.has_commits }}" == "true" ]; then
-            echo "✅ Will create $CHANNEL release ${{ steps.next_version.outputs.version }}"
+          if [ "$SHOULD_RELEASE" = "true" ]; then
+            echo "Will create $CHANNEL release $VERSION from $COMMITS_SINCE new commit(s)"
           else
-            echo "⏭️ Skipping release - not enough commits"
+            echo "Skipping $CHANNEL release with only $COMMITS_SINCE new commit(s)"
           fi
 
   trigger-release:
-    name: Trigger Release Workflow
-    needs: check-and-release
-    if: needs.check-and-release.outputs.should_release == 'true'
+    name: Create release
+    needs: resolve-release
+    if: needs.resolve-release.outputs.should_release == 'true'
     permissions:
-      actions: write
       contents: write
-      pull-requests: read
       packages: write
-      id-token: write # Required for PyPI publishing
+      pull-requests: read
     uses: ./.github/workflows/release.yml
     with:
-      version: ${{ needs.check-and-release.outputs.version }}
-      channel: ${{ needs.check-and-release.outputs.channel }}
+      version: ${{ needs.resolve-release.outputs.version }}
+      channel: ${{ needs.resolve-release.outputs.channel }}
+      source_sha: ${{ needs.resolve-release.outputs.source_sha }}
       important_notes: ${{ inputs.important_notes }}
     secrets:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-      PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}

@@ -1,4 +1,5 @@
-"""Tests for ``provider.prompts.register_prompts``.
+"""
+Tests for ``provider.prompts.register_prompts``.
 
 The prompts module shipped without tests; a refactor that dropped a prompt
 or broke the ``CONF_RES_PROMPTS`` gate would land unobserved. This file
@@ -61,7 +62,12 @@ async def test_find_and_play_references_expected_tools(mcp_with_prompts: FastMCP
     async with Client(mcp_with_prompts) as client:
         result = await client.get_prompt("find_and_play", {"query": "test", "target_player": "p1"})
     text = " ".join(m.content.text for m in result.messages if hasattr(m.content, "text"))
-    for tool_name in ("library_search_tracks", "playback_play_media", "queue_get_active_queue"):
+    for tool_name in (
+        "library_search_tracks",
+        "playback_play_media",
+        "queue_get_active_queue",
+        "players_list_players",
+    ):
         assert tool_name in text, f"missing tool ref {tool_name!r} in find_and_play"
 
 

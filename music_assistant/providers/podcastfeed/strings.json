@@ -1,0 +1,10 @@
+{
+  "config_entries": {
+    "feed_url": {
+      "label": "RSS Feed URL"
+    }
+  },
+  "manifest": {
+    "description": "Subscribe to and play any podcast via its RSS feed."
+  }
+}

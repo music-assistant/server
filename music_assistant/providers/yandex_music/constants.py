@@ -6,21 +6,17 @@ from typing import Final
 
 # Configuration Keys
 CONF_TOKEN: Final[str] = "token"
+CONF_MANUAL_TOKEN: Final[str] = "manual_token"
 CONF_QUALITY: Final[str] = "quality"
 CONF_BASE_URL: Final[str] = "base_url"
 
 # Actions
-CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
-CONF_ACTION_AUTH_DEVICE: Final[str] = "auth_device"
 CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
-# QR authentication config keys
+# Stored authentication credentials
 CONF_X_TOKEN: Final[str] = "x_token"
 CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
 CONF_REMEMBER_SESSION: Final[str] = "remember_session"
-
-# Session-id key handed to the QR / Device-flow handlers from the MA config flow.
-CONF_SESSION_ID: Final[str] = "session_id"
 
 # Advanced toggle: enable a token-wide concurrency cap to keep MA below
 # Yandex's per-token edge concurrency limit on datacenter / VPN IPs
@@ -257,186 +253,6 @@ WAVE_MODE_ORDER: Final[tuple[str, ...]] = (
     "not_russian",
     "without_words",
 )
-
-# Browse folder names by locale (item_id -> display name)
-BROWSE_NAMES_RU: Final[dict[str, str]] = {
-    "my_wave": "Моя волна",
-    "artists": "Мои исполнители",
-    "albums": "Мои альбомы",
-    "tracks": "Мне нравится",
-    "playlists": "Мои плейлисты",
-    "audiobooks": "Мои аудиокниги",
-    "podcasts": "Мои подкасты",
-    "feed": "Для вас",
-    "chart": "Чарт",
-    "new_releases": "Новинки",
-    "new_playlists": "Новые плейлисты",
-    # Picks & Mixes
-    "picks": "Подборки",
-    "mixes": "Миксы",
-    "mood": "Настроение",
-    "activity": "Активность",
-    "era": "Эпоха",
-    "genres": "Жанры",
-    # Mood tags
-    "chill": "Расслабляющее",
-    "sad": "Грустное",
-    "romantic": "Романтическое",
-    "party": "Вечеринка",
-    "relax": "Релакс",
-    # Activity tags
-    "workout": "Тренировка",
-    "focus": "Концентрация",
-    "morning": "Утро",
-    "evening": "Вечер",
-    "driving": "В дороге",  # noqa: RUF001
-    # Era tags
-    "80s": "80-е",  # noqa: RUF001
-    "90s": "90-е",  # noqa: RUF001
-    "2000s": "2000-е",  # noqa: RUF001
-    "retro": "Ретро",
-    # Genre tags
-    "rock": "Рок",
-    "jazz": "Джаз",
-    "classical": "Классика",
-    "electronic": "Электроника",
-    "rnb": "R&B",
-    "hiphop": "Хип-хоп",
-    "top": "Топ",
-    "newbies": "По жанру",
-    # Landing-discovered tags
-    "in the mood": "В настроение",  # noqa: RUF001
-    "background": "Послушать фоном",
-    # Seasonal tags
-    "winter": "Зима",
-    "summer": "Лето",
-    "autumn": "Осень",
-    "spring": "Весна",
-    "newyear": "Новый год",
-    # Liked Tracks
-    "liked_tracks": "Мне нравится",
-    # Discovery
-    "top_picks": "Топ подборки",
-    "mood_mix": "Настроение",
-    "activity_mix": "Активность",
-    "seasonal_mix": "Сезонное",
-    # Top-level browse groups
-    "for_you": "Для вас",
-    "collection": "Коллекция",
-    "pinned": "Закреплённое",
-    "history": "История прослушиваний",
-    # Waves / Radio (rotor station categories)
-    "waves": "Радио",
-    "radio": "Радио",
-    "my_waves": "Персональные",
-    "my_waves_set": "AI Сеты",
-    "waves_landing": "Избранные волны",
-    "genre": "Жанры",
-    "epoch": "Эпоха",
-    "local": "Местное",
-    # Wave-mode folder + presets (P4)
-    "my_wave_modes": "Режимы волны",
-    "my_wave_presets": "Мои пресеты",
-    "wave_mode_discover": "Открытия",
-    "wave_mode_favorite": "Любимое",
-    "wave_mode_popular": "Популярное",
-    "wave_mode_calm": "Спокойнее",
-    "wave_mode_active": "Активнее",
-    "wave_mode_fun": "Весёлое",
-    "wave_mode_sad": "Грустное",
-    "wave_mode_russian": "Русское",
-    "wave_mode_not_russian": "Не русское",  # noqa: RUF001
-    "wave_mode_without_words": "Без слов",
-}
-BROWSE_NAMES_EN: Final[dict[str, str]] = {
-    "my_wave": "My Wave",
-    "artists": "My Artists",
-    "albums": "My Albums",
-    "tracks": "My Favorites",
-    "playlists": "My Playlists",
-    "audiobooks": "My Audiobooks",
-    "podcasts": "My Podcasts",
-    "feed": "Made for You",
-    "chart": "Chart",
-    "new_releases": "New Releases",
-    "new_playlists": "New Playlists",
-    # Picks & Mixes
-    "picks": "Picks",
-    "mixes": "Mixes",
-    "mood": "Mood",
-    "activity": "Activity",
-    "era": "Era",
-    "genres": "Genres",
-    # Mood tags
-    "chill": "Chill",
-    "sad": "Sad",
-    "romantic": "Romantic",
-    "party": "Party",
-    "relax": "Relax",
-    # Activity tags
-    "workout": "Workout",
-    "focus": "Focus",
-    "morning": "Morning",
-    "evening": "Evening",
-    "driving": "Driving",
-    # Era tags
-    "80s": "80s",
-    "90s": "90s",
-    "2000s": "2000s",
-    "retro": "Retro",
-    # Genre tags
-    "rock": "Rock",
-    "jazz": "Jazz",
-    "classical": "Classical",
-    "electronic": "Electronic",
-    "rnb": "R&B",
-    "hiphop": "Hip-Hop",
-    "top": "Top",
-    "newbies": "By Genre",
-    # Landing-discovered tags
-    "in the mood": "In the Mood",
-    "background": "Background",
-    # Seasonal tags
-    "winter": "Winter",
-    "summer": "Summer",
-    "autumn": "Autumn",
-    "spring": "Spring",
-    "newyear": "New Year",
-    # Liked Tracks
-    "liked_tracks": "My Favorites",
-    # Discovery
-    "top_picks": "Top Picks",
-    "mood_mix": "Mood Mix",
-    "activity_mix": "Activity Mix",
-    "seasonal_mix": "Seasonal",
-    # Top-level browse groups
-    "for_you": "For You",
-    "collection": "Collection",
-    "pinned": "Pinned",
-    "history": "Listening History",
-    # Waves / Radio (rotor station categories)
-    "waves": "Radio",
-    "radio": "Radio",
-    "my_waves": "Personal",
-    "my_waves_set": "AI Wave Sets",
-    "waves_landing": "Featured Waves",
-    "genre": "Genres",
-    "epoch": "Era",
-    "local": "Local",
-    # Wave-mode folder + presets (P4)
-    "my_wave_modes": "Wave Modes",
-    "my_wave_presets": "My Presets",
-    "wave_mode_discover": "Discover",
-    "wave_mode_favorite": "Favorites",
-    "wave_mode_popular": "Popular",
-    "wave_mode_calm": "Calm",
-    "wave_mode_active": "Active",
-    "wave_mode_fun": "Fun",
-    "wave_mode_sad": "Sad",
-    "wave_mode_russian": "Russian",
-    "wave_mode_not_russian": "Non-Russian",
-    "wave_mode_without_words": "Without Words",
-}
 
 # Tag categories for Picks and Recommendations
 # Used by _get_valid_tags_for_category to validate tags at runtime.

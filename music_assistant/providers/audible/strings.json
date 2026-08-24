@@ -1,0 +1,47 @@
+{
+  "config_entries": {
+    "locale": {
+      "label": "Marketplace",
+      "options": {
+        "us": "US and all other countries not listed",
+        "ca": "Canada",
+        "uk": "UK and Ireland",
+        "au": "Australia and New Zealand",
+        "fr": "France, Belgium, Switzerland",
+        "de": "Germany, Austria, Switzerland",
+        "jp": "Japan",
+        "it": "Italy",
+        "in": "India",
+        "es": "Spain",
+        "br": "Brazil"
+      }
+    },
+    "post_login_url": {
+      "label": "Redirect URL"
+    },
+    "auth_link": {
+      "label": "Open the [Audible sign-in page]({0}) and log in. Afterwards you land on a 'page not found' page — that is expected. Copy its full address from your browser and paste it below."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose your Audible marketplace"
+    },
+    "authenticate": {
+      "title": "Sign in to Audible",
+      "description": "Open the sign-in page, log in, then paste the resulting redirect URL."
+    }
+  },
+  "media": {
+    "folder": {
+      "authors": { "name": "Authors" },
+      "series": { "name": "Series" },
+      "narrators": { "name": "Narrators" },
+      "genres": { "name": "Genres" },
+      "publishers": { "name": "Publishers" }
+    }
+  },
+  "manifest": {
+    "description": "Access Audible's extensive audiobook library and podcast catalogue — perfect for spoken-word listening."
+  }
+}

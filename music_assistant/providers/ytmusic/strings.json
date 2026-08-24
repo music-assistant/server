@@ -1,0 +1,25 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]"
+    },
+    "cookie": {
+      "label": "Login Cookie",
+      "description": "The Login cookie you grabbed from an existing session, see the documentation."
+    },
+    "po_token_server_url": {
+      "label": "PO Token Server URL",
+      "description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**"
+    }
+  },
+  "media": {
+    "recommendations": {
+      "mixed_for_you": {
+        "name": "Mixed for you"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream songs and podcasts from YouTube Music."
+  }
+}

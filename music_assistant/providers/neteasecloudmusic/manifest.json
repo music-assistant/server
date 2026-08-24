@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "neteasecloudmusic",
-  "stage": "beta",
+  "stage": "stable",
   "name": "NetEase Cloud Music",
   "description": "Stream NetEase Cloud Music catalog, playlists, lyrics, and recommendations.",
   "codeowners": ["@xiasi0"],

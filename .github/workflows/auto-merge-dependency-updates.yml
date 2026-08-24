@@ -8,6 +8,18 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - dev
+  push:
+    branches:
+      - dev
+  # Manual escape hatch to drain a stranded bump PR without a human merge commit
+  workflow_dispatch:
+
+env:
+  EXPECTED_APP_BOT_LOGIN: musicassistant-bot[bot]
+  EXPECTED_APP_BOT_LOGIN_ENCODED: musicassistant-bot%5Bbot%5D
+  EXPECTED_APP_BOT_ID: "304008617"
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
 
 # CRITICAL SECURITY: This workflow uses pull_request_target which runs in the context
 # of the base repository and has access to secrets. Multiple security checks ensure
@@ -19,35 +31,53 @@ jobs:
     runs-on: ubuntu-latest
     # Only run if branch name matches the expected pattern
     if: |
-      startsWith(github.event.pull_request.head.ref, 'auto-update-frontend-') ||
-      startsWith(github.event.pull_request.head.ref, 'auto-update-models-')
+      github.event_name == 'pull_request_target' && (
+        startsWith(github.event.pull_request.head.ref, 'auto-update-frontend-') ||
+        startsWith(github.event.pull_request.head.ref, 'auto-update-models-')
+      )
 
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      # Security check 1: Verify PR is from user with write access
+      # Security check 1: Verify PR is from the exact expected GitHub App bot
       - name: Verify PR is from trusted source
         id: verify_pr_author
         run: |
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-
-          # Check if PR author has write access to the repository (includes org members and bots)
-          if gh api "/repos/${{ github.repository }}/collaborators/$PR_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-            echo "✅ PR is from user with write access: $PR_AUTHOR"
-          else
-            echo "❌ PR author does not have write access: $PR_AUTHOR"
+          # GitHub App bots are not collaborators. Trust only the known App account
+          # when the event also proves it is a same-repository Bot PR.
+          if [ "$PR_AUTHOR" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$PR_AUTHOR_TYPE" != "Bot" ] || \
+             [ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] || \
+             [ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then
+            echo "❌ GitHub App PR identity does not match the trusted source"
             exit 1
           fi
+
+          if ! BOT_PROFILE=$(gh api "/users/$EXPECTED_APP_BOT_LOGIN_ENCODED" 2>/dev/null); then
+            echo "❌ Could not verify the GitHub App bot profile"
+            exit 1
+          fi
+          if [ "$(jq -r '.login' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$(jq -r '.type' <<< "$BOT_PROFILE")" != "Bot" ] || \
+             [ "$(jq -r '.id' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_ID" ]; then
+            echo "❌ GitHub App bot profile does not match the trusted identity"
+            exit 1
+          fi
+          echo "✅ PR is from the trusted GitHub App bot"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
 
       # Security check 2: Verify PR labels and source branch
       - name: Verify PR labels and source
         run: |
           LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
-          BRANCH="$BRANCH"
 
           if [[ "$LABELS" != *"dependencies"* ]]; then
             echo "❌ PR does not have 'dependencies' label"
@@ -63,41 +93,58 @@ jobs:
 
         env:
           BRANCH: ${{ github.event.pull_request.head.ref }}
-      # IMPORTANT: Checkout the PR's head to validate file changes
-      # This is required for the git commands in security check 5
-      - name: Checkout PR branch
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 2
 
-      # Security check 3: Get PR details for validation
+      # NOTE: The PR is intentionally never checked out. All validation below
+      # uses the GitHub API, so no untrusted code ever reaches this privileged
+      # workflow's filesystem.
+
       - name: Get PR details
         id: pr
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
-          # Get commit author
-          COMMIT_AUTHOR=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[0].authors[0].login')
-          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
-
-          echo "PR #$PR_NUMBER with commits from $COMMIT_AUTHOR"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Security check 4: Verify commit author has write access
-      - name: Verify commit author
+      # Security check 4: Verify every commit is authored by the expected GitHub App bot
+      - name: Verify commit authors
         run: |
-          COMMIT_AUTHOR="${{ steps.pr.outputs.commit_author }}"
-
-          # Check if commit author has write access to the repository
-          if gh api "/repos/${{ github.repository }}/collaborators/$COMMIT_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-            echo "✅ Commit author has write access: $COMMIT_AUTHOR"
-          else
-            echo "❌ Commit author does not have write access: $COMMIT_AUTHOR"
+          # A dependency bump PR only ever needs a handful of commits
+          COMMIT_COUNT="${{ github.event.pull_request.commits }}"
+          if [ "$COMMIT_COUNT" -gt 20 ]; then
+            echo "❌ PR has $COMMIT_COUNT commits, too many for a dependency update"
             exit 1
           fi
+
+          COMMITS=$(gh api "/repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/commits" --paginate --jq '.[]' | jq -s '.')
+
+          # Guard against API truncation: we must have seen every commit
+          FETCHED_COUNT=$(echo "$COMMITS" | jq 'length')
+          if [ "$FETCHED_COUNT" -ne "$COMMIT_COUNT" ]; then
+            echo "❌ Fetched $FETCHED_COUNT commits but the PR reports $COMMIT_COUNT"
+            exit 1
+          fi
+
+          # Commits whose author email is not linked to a GitHub account have
+          # no login to verify, so they must be rejected
+          UNATTRIBUTED=$(echo "$COMMITS" | jq '[.[] | select(.author.login == null)] | length')
+          if [ "$UNATTRIBUTED" -gt 0 ]; then
+            echo "❌ $UNATTRIBUTED commit(s) have no linked GitHub author"
+            exit 1
+          fi
+
+          UNTRUSTED_AUTHORS=$(echo "$COMMITS" | jq \
+            --arg login "$EXPECTED_APP_BOT_LOGIN" \
+            --argjson id "$EXPECTED_APP_BOT_ID" \
+            '[.[] | select(
+              .author.login != $login or
+              .author.type != "Bot" or
+              .author.id != $id
+            )] | length')
+          if [ "$UNTRUSTED_AUTHORS" -gt 0 ]; then
+            echo "❌ $UNTRUSTED_AUTHORS commit(s) are not authored by the trusted GitHub App bot"
+            exit 1
+          fi
+
+          echo "✅ All commits are authored by the trusted GitHub App bot"
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -105,7 +152,12 @@ jobs:
       - name: Verify only dependency files were changed
         run: |
           # Only pyproject.toml and requirements_all.txt should be modified
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          CHANGED_FILES=$(gh api "/repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/files" --paginate --jq '.[].filename')
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "❌ Could not determine changed files"
+            exit 1
+          fi
 
           echo "Changed files:"
           echo "$CHANGED_FILES"
@@ -119,25 +171,44 @@ jobs:
           done
 
           echo "✅ Only expected dependency files were changed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Security check 6: Verify changes are only version bumps
       - name: Verify changes are version bumps
         run: |
-          # Check that only music-assistant-frontend or music-assistant-models version changed
-          DIFF=$(git diff HEAD~1 HEAD pyproject.toml requirements_all.txt)
+          DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}")
 
-          if ! echo "$DIFF" | grep -qE "music-assistant-(frontend|models)=="; then
-            echo "❌ Changes do not appear to be version bumps"
+          # Every added/removed line (excluding file headers) must be a version
+          # pin of an allowed package, in either pyproject.toml or
+          # requirements_all.txt format.
+          UNEXPECTED=$(echo "$DIFF" \
+            | grep -E '^[+-]' \
+            | grep -vE '^(\+\+\+|---)' \
+            | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+            || true)
+
+          if [[ -n "$UNEXPECTED" ]]; then
+            echo "❌ Diff contains changes that are not version bumps:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+
+          # A pin must be added, not just removed
+          if ! echo "$DIFF" | grep -qE '^\+.*music-assistant-(frontend|models)=='; then
+            echo "❌ No added version pin found"
             exit 1
           fi
 
           echo "✅ Changes are version bumps"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Security check 7: Wait for package to be available on PyPI
       - name: Wait for package availability on PyPI
         run: |
-          # Extract the package name and version from the changes
-          DIFF=$(git diff HEAD~1 HEAD pyproject.toml)
+          # Extract the package name and version from the added lines of the diff
+          DIFF=$(gh pr diff "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" | grep '^+' || true)
 
           if echo "$DIFF" | grep -q "music-assistant-frontend=="; then
             PACKAGE="music-assistant-frontend"
@@ -196,24 +267,239 @@ jobs:
           echo "  - PyPI is experiencing delays"
           echo "  - The version number in the PR is incorrect"
           exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # All security checks passed - approve the PR
       - name: Auto-approve PR
         run: |
-          gh pr review "${{ steps.pr.outputs.number }}" --approve --body "✅ Automated dependency update - all security checks passed"
+          gh pr review "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --approve --body "✅ Automated dependency update - all security checks passed"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The merge must be enabled with the App token: the merge actor is whoever
+      # enabled auto-merge, and GitHub never triggers workflows for pushes made by
+      # GITHUB_TOKEN, so the discover-stale job below would not run on the merge.
+      - name: Create merge token
+        id: merge_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.merge_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.merge_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
 
       # Enable auto-merge with squash
       - name: Enable auto-merge
         run: |
-          gh pr merge "${{ steps.pr.outputs.number }}" --auto --squash
+          gh pr merge "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --auto --squash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.merge_token.outputs.token }}
 
       - name: Comment on success
         if: success()
         run: |
-          gh pr comment "${{ steps.pr.outputs.number }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
+          gh pr comment "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Re-cutting raises a synchronize event, which puts the PR back through the job above.
+  discover-stale:
+    name: Find stale dependency PRs
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      prs: ${{ steps.find.outputs.prs }}
+      any: ${{ steps.find.outputs.any }}
+    steps:
+      - name: List open bump PRs that are behind dev
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # a fork PR with a matching branch name has no such ref here and would 404 the compare
+          CANDIDATES=$(gh pr list -R "$REPO" --base dev --state open --limit 50 \
+            --json number,headRefName,author,isCrossRepository \
+            | jq -c --arg bot "$EXPECTED_APP_BOT_LOGIN" --arg slug "$EXPECTED_APP_SLUG" '[.[]
+              | select(.isCrossRepository | not)
+              # gh renders the App as app/<slug>, the REST API as <slug>[bot]; accept either
+              | select(.author.login == $bot or .author.login == "app/\($slug)")
+              | select(.headRefName | test("^auto-update-(models|frontend)-[0-9][0-9a-zA-Z.]*$"))
+              | .number]')
+
+          SELECTED='[]'
+          for NUMBER in $(echo "$CANDIDATES" | jq -r '.[]'); do
+            BRANCH=$(gh pr view "$NUMBER" -R "$REPO" --json headRefName --jq '.headRefName')
+
+            # the branch can vanish when its PR merges, and a 404 body lands on stdout not stderr
+            BEHIND=$(gh api "/repos/$REPO/compare/dev...$BRANCH" --jq '.behind_by' 2>/dev/null || true)
+            if ! [[ "$BEHIND" =~ ^[0-9]+$ ]] || [ "$BEHIND" -eq 0 ]; then
+              echo "PR #$NUMBER is gone or up to date with dev, skipping"
+              continue
+            fi
+
+            # Re-cutting discards the branch, so leave any PR that carries more than a pin alone.
+            EXTRA=$(gh pr diff "$NUMBER" -R "$REPO" \
+              | grep -E '^[+-]' \
+              | grep -vE '^(\+\+\+|---)' \
+              | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+              || true)
+            if [ -n "$EXTRA" ]; then
+              echo "PR #$NUMBER carries non-pin changes, skipping:"
+              echo "$EXTRA"
+              continue
+            fi
+
+            echo "PR #$NUMBER ($BRANCH) is $BEHIND commit(s) behind dev, queueing refresh"
+            SELECTED=$(echo "$SELECTED" | jq -c --argjson n "$NUMBER" '. + [$n]')
+          done
+
+          echo "prs=$SELECTED" >> "$GITHUB_OUTPUT"
+          if [ "$(echo "$SELECTED" | jq 'length')" -gt 0 ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  refresh-stale:
+    name: Re-cut PR #${{ matrix.pr }}
+    needs: discover-stale
+    if: needs.discover-stale.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    concurrency:
+      # Serialise per branch so two dev pushes in quick succession cannot race on the same ref.
+      group: refresh-stale-${{ matrix.pr }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.discover-stale.outputs.prs) }}
+    steps:
+      - name: Read PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ matrix.pr }}
+        run: |
+          gh pr view "$NUMBER" -R "$REPO" --json headRefName,title,body > /tmp/pr.json
+          BRANCH=$(jq -r '.headRefName' /tmp/pr.json)
+          TITLE=$(jq -r '.title' /tmp/pr.json)
+          # via a file: release notes carry backticks and newlines the shell would re-interpret
+          jq -r '.body' /tmp/pr.json > /tmp/body
+
+          if [[ "$BRANCH" == auto-update-models-* ]]; then
+            PACKAGE="music-assistant-models"
+            VERSION="${BRANCH#auto-update-models-}"
+          else
+            PACKAGE="music-assistant-frontend"
+            VERSION="${BRANCH#auto-update-frontend-}"
+          fi
+
+          # the version reaches a sed program below, so it must carry no metacharacters
+          if ! [[ "$VERSION" =~ ^[0-9][0-9a-zA-Z.]*$ ]]; then
+            echo "Refusing to act on malformed version '$VERSION' from branch '$BRANCH'"
+            exit 1
+          fi
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Check out dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Apply the version pin
+        id: pin
+        env:
+          PACKAGE: ${{ steps.pr.outputs.package }}
+          VERSION: ${{ steps.pr.outputs.version }}
+        run: |
+          # in-place edit keeps requirements_all.txt in the order gen_requirements_all produces
+          sed -i.bak "s/$PACKAGE==.*/$PACKAGE==$VERSION\",/" pyproject.toml
+          sed -i.bak "s/$PACKAGE==.*/$PACKAGE==$VERSION/" requirements_all.txt
+          rm -f pyproject.toml.bak requirements_all.txt.bak
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "dev already pins $PACKAGE==$VERSION, nothing to re-cut"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # Defense in depth against a sed that matched more than intended.
+          UNEXPECTED=$(git diff -U0 \
+            | grep -E '^[+-]' \
+            | grep -vE '^(\+\+\+|---)' \
+            | grep -vE '^[+-][[:space:]]*"?music-assistant-(frontend|models)==[0-9][0-9a-zA-Z.]*"?,?[[:space:]]*$' \
+            || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "Refusing to push, the pin edit touched more than a version:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+          git diff --stat
+
+      - name: Create branch token
+        if: steps.pin.outputs.changed == 'true'
+        id: push_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Verify GitHub App identity
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          APP_SLUG: ${{ steps.push_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.push_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Re-cut the branch on top of dev
+        if: steps.pin.outputs.changed == 'true'
+        # commits through the API, so the author is the App bot and the gate above still passes
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.push_token.outputs.token }}
+          commit-message: ${{ steps.pr.outputs.title }}
+          branch: ${{ steps.pr.outputs.branch }}
+          base: dev
+          delete-branch: true
+          sign-commits: true
+          title: ${{ steps.pr.outputs.title }}
+          body-path: /tmp/body
+          labels: |
+            dependencies

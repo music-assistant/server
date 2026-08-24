@@ -14,12 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -32,9 +32,10 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
@@ -52,7 +53,7 @@ from music_assistant.providers.sonos.const import (
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
     from aiosonos.group import SonosGroup
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import SonosPlayerProvider
 
@@ -71,13 +72,15 @@ class SonosQueue:
     """Simple representation of a Sonos (cloud) Queue."""
 
     items: list[PlayerMedia] = field(default_factory=list)
-    last_updated: float = time.time()
+    last_updated: float = field(default_factory=time.time)
     includes_beginning: bool = False
     includes_end: bool = False
 
 
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
+
+    _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
 
     def __init__(
         self,
@@ -190,15 +193,28 @@ class SonosPlayer(Player):
             )
         )
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        for task_id in (
+            f"sonos_reconnect_{self.player_id}",
+            f"restore_airplay_group_{self.player_id}",
+        ):
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        try:
+            await self._disconnect()
+        except Exception:
+            self.logger.exception("Error disconnecting from Sonos player %s", self.name)
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -218,19 +234,29 @@ class SonosPlayer(Player):
 
         :param muted: bool if player should be muted.
         """
-        if not muted and self.volume_level:
-            # when Sonos is playing via Airplay and is muted, we will need to explicitly
-            # send the volume level after unmute as the Airplay cli is still at volume 0
-            await self.client.player.set_volume(volume=self.volume_level, muted=muted)
-        else:
-            await self.client.player.set_volume(muted=muted)
+        await self.client.player.set_volume(muted=muted)
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         if self.client.player.is_passive:
             self.logger.debug("Ignore PLAY command: Player is synced to another player.")
             return
-        await self.group_controller.play()
+        try:
+            await self.group_controller.play()
+        except FailedCommand as err:
+            if self._attr_active_source is None or "groupCoordinatorChanged" in str(err):
+                # only a source Sonos loaded itself can go away like this, and a coordinator
+                # change is a race condition rather than a source that disappeared
+                raise
+            # the loaded source refused to resume, so it is not merely paused after all
+            self.logger.debug(
+                "Source %s on Sonos player %s can not be resumed: %s",
+                self._attr_active_source,
+                self.player_id,
+                err,
+            )
+            self.mark_external_source_ended()
+            self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -315,7 +341,12 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="player_synced_cannot_play",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
         # for now always reset the active session
         self.group_controller.active_session_id = None
         if media.source_id:
@@ -324,10 +355,7 @@ class SonosPlayer(Player):
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
             # as duration less radio streams and will retry/loop them.
-            if not media.duration and media.custom_data:
-                announcement_url = media.custom_data.get("announcement_url", media.uri)
-                media_info = await async_parse_tags(announcement_url, require_duration=True)
-                media.duration = int(media_info.duration) if media_info.duration else None
+            media.duration = await self.mass.streams.get_announcement_duration(media)
             media.queue_item_id = "announcement"
             self.sonos_queue.items = [media]
             self.sonos_queue.last_updated = time.time()
@@ -470,21 +498,20 @@ class SonosPlayer(Player):
         # Wait until the announcement is finished playing
         # This is helpful for people who want to play announcements in a sequence
         # yeah we can also setup a subscription on the sonos player for this, but this is easier
-        media_info = await async_parse_tags(announcement.uri, require_duration=True)
-        duration = media_info.duration or 10
-        await asyncio.sleep(duration)
+        duration = await self.mass.streams.get_announcement_duration(announcement)
+        await asyncio.sleep(duration or 10)
 
     def on_player_event(self, event: SonosEvent | None) -> None:
         """Handle incoming event from player."""
         try:
             self.update_attributes()
-        except Exception as err:
-            self.logger.exception("Failed to update player attributes: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player attributes")
             return
         try:
             self.update_state()
-        except Exception as err:
-            self.logger.exception("Failed to update player state: %s", err)
+        except Exception:
+            self.logger.exception("Failed to update player state")
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
@@ -699,47 +726,6 @@ class SonosPlayer(Player):
         self._attr_elapsed_time_last_updated = last_updated
         self.update_state()
 
-    async def _connect(self, retry_on_fail: int = 0) -> None:
-        """Connect to the Sonos player."""
-        if self.mass.closing:
-            return
-        if self._listen_task and not self._listen_task.done():
-            self.logger.debug("Already connected to Sonos player: %s", self.player_id)
-            return
-        try:
-            await self.client.connect()
-        except (ConnectionFailed, ClientConnectorError) as err:
-            self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass.players.get_player(self.player_id):
-                raise
-            self._attr_available = False
-            self.update_state()
-            self.reconnect(min(retry_on_fail + 30, 3600))
-            return
-        self.connected = True
-        self.logger.debug("Connected to player API")
-        init_ready = asyncio.Event()
-
-        async def _listener() -> None:
-            try:
-                await self.client.start_listening(init_ready)
-            except Exception as err:
-                if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                    self.logger.exception("Error in Sonos player listener: %s", err)
-            finally:
-                self.logger.info("Disconnected from player API")
-                if self.connected and not self.mass.closing:
-                    # we didn't explicitly disconnect, try to reconnect
-                    # this should simply try to reconnect once and if that fails
-                    # we rely on mdns to pick it up again later
-                    await self._disconnect()
-                    self._attr_available = False
-                    self.update_state()
-                    self.reconnect(5)
-
-        self._listen_task = self.mass.create_task(_listener())
-        await init_ready.wait()
-
     def reconnect(self, delay: float = 1) -> None:
         """Reconnect the player."""
         if self.mass.closing:
@@ -747,15 +733,6 @@ class SonosPlayer(Player):
         # use a task_id to prevent multiple reconnects
         task_id = f"sonos_reconnect_{self.player_id}"
         self.mass.call_later(delay, self._connect, delay, task_id=task_id)
-
-    async def _disconnect(self) -> None:
-        """Disconnect the client and cleanup."""
-        self.connected = False
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
-        if self.client:
-            await self.client.disconnect()
-        self.logger.debug("Disconnected from player API")
 
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
@@ -781,6 +758,56 @@ class SonosPlayer(Player):
                     # this may happen at race conditions
                     raise
 
+    async def _connect(self, retry_on_fail: int = 0) -> None:
+        """Connect to the Sonos player."""
+        if self.mass.closing:
+            return
+        if self._listen_task and not self._listen_task.done():
+            self.logger.debug("Already connected to Sonos player: %s", self.player_id)
+            return
+        try:
+            await self.client.connect()
+        except (ConnectionFailed, CannotConnect, ClientError) as err:
+            self.logger.warning("Failed to connect to Sonos player: %s", err)
+            if not retry_on_fail or not self.mass.players.get_player(self.player_id):
+                raise
+            self._attr_available = False
+            self.update_state()
+            self.reconnect(min(retry_on_fail + 30, 3600))
+            return
+        self.connected = True
+        self.logger.debug("Connected to player API")
+        init_ready = asyncio.Event()
+
+        async def _listener() -> None:
+            try:
+                await self.client.start_listening(init_ready)
+            except Exception as err:
+                if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
+                    self.logger.exception("Error in Sonos player listener")
+            finally:
+                self.logger.info("Disconnected from player API")
+                if self.connected and not self.mass.closing:
+                    # we didn't explicitly disconnect, try to reconnect
+                    # this should simply try to reconnect once and if that fails
+                    # we rely on mdns to pick it up again later
+                    await self._disconnect()
+                    self._attr_available = False
+                    self.update_state()
+                    self.reconnect(5)
+
+        self._listen_task = self.mass.create_task(_listener())
+        await init_ready.wait()
+
+    async def _disconnect(self) -> None:
+        """Disconnect the client and cleanup."""
+        self.connected = False
+        if self._listen_task and not self._listen_task.done():
+            self._listen_task.cancel()
+        if self.client:
+            await self.client.disconnect()
+        self.logger.debug("Disconnected from player API")
+
     async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
         """Set the SonosQueue items from the given MA PlayerQueue."""
         items: list[PlayerMedia] = []
@@ -789,6 +816,7 @@ class SonosPlayer(Player):
             self.sonos_queue.items.clear()
             self.sonos_queue.includes_beginning = False
             self.sonos_queue.includes_end = False
+            self._bump_queue_version()
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -832,6 +860,9 @@ class SonosPlayer(Player):
         self.sonos_queue.items = items
         self.sonos_queue.includes_beginning = offset == 0
         self.sonos_queue.includes_end = includes_end
+        # bump only after the new window is assigned (no await in between) so Sonos never sees a
+        # new version while itemWindow still serves the previous items
+        self._bump_queue_version()
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
@@ -841,7 +872,8 @@ class SonosPlayer(Player):
         )
 
     def _extract_mac_from_player_id(self) -> str | None:
-        """Extract MAC address from Sonos player_id.
+        """
+        Extract MAC address from Sonos player_id.
 
         Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
         the middle 12 hex characters represent the MAC address.
@@ -866,3 +898,13 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    def _bump_queue_version(self) -> None:
+        """
+        Advance the Sonos cloud-queue version to the current time.
+
+        The version is exposed as the queueVersion in the cloud-queue endpoints; advancing it on
+        every window rebuild is what makes Sonos refetch the window instead of replaying a stale
+        cached one.
+        """
+        self.sonos_queue.last_updated = time.time()

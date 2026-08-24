@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 from typing import TYPE_CHECKING
 
-import aiohttp.client_exceptions
+import aiohttp
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.external_ids import barcode_to_upc
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import Album
     from music_assistant_models.provider import ProviderManifest
 
@@ -24,22 +27,6 @@ SUPPORTED_FEATURES = {
 }
 
 ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return ()
 
 
 async def setup(
@@ -55,6 +42,10 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
 
     Fetches high-resolution album artwork from the iTunes catalog using UPC barcode lookup.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
 
     @property
     def priority(self) -> int:
@@ -99,25 +90,17 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
 
         :param barcode: UPC/EAN barcode for the album.
         """
-        # iTunes expects a UPC (12 digits), strip leading zero from EAN-13 if present
-        upc = barcode.lstrip("0").zfill(12) if len(barcode) == 13 else barcode
+        upc = barcode_to_upc(barcode)
         try:
             async with self.mass.http_session.get(
                 ITUNES_LOOKUP_URL, params={"upc": upc}
             ) as response:
-                if response.status != 200:
-                    self.logger.debug(
-                        "iTunes lookup failed for barcode %s (status %d)", barcode, response.status
-                    )
-                    return None
+                response.raise_for_status()
                 data = await response.json(content_type=None)
-        except (
-            aiohttp.client_exceptions.ClientConnectorError,
-            aiohttp.client_exceptions.ServerDisconnectedError,
-            TimeoutError,
-        ):
-            self.logger.debug("Failed to connect to iTunes API for barcode %s", barcode)
-            return None
+        except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:
+            # non-2xx / network / parse failure is transient — surface it as
+            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no artwork"
+            raise ResourceTemporarilyUnavailable("iTunes request failed") from err
 
         if not data.get("resultCount"):
             self.logger.debug("No results from iTunes for barcode %s", barcode)

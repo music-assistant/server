@@ -1,0 +1,14 @@
+{
+  "type": "player",
+  "domain": "amplipi",
+  "stage": "beta",
+  "name": "AmpliPi",
+  "description": "Control AmpliPi multi-zone audio controllers, exposing each zone as a Music Assistant player with native zone grouping and source management.",
+  "codeowners": ["@micro-nova"],
+  "credits": ["[pyamplipi](https://github.com/micro-nova/pyamplipi)"],
+  "requirements": ["pyamplipi==0.4.12"],
+  "documentation": "https://music-assistant.io/player-support/amplipi/",
+  "icon": "speaker-multiple",
+  "multi_instance": true,
+  "builtin": false
+}

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from music_assistant_models.enums import (
     ContentType,
-    ImageType,
     MediaType,
     StreamType,
 )
@@ -18,15 +18,11 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
-    MediaItemImage,
-    MediaItemMetadata,
     Playlist,
-    ProviderMapping,
     SearchResults,
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import now
@@ -34,7 +30,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ENDPOINTS,
-    FALLBACK_ALBUM_IMAGE,
     MAX_SEARCH_RESULTS,
     PHISH_ARTIST_ID,
 )
@@ -42,6 +37,7 @@ from .helpers import (
     api_request,
     get_phish_artist,
     parse_search_results,
+    playlist_to_ma_playlist,
     show_to_album,
     track_to_ma_track,
 )
@@ -49,6 +45,7 @@ from .helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.media_items import MediaItemType
 
 
@@ -56,9 +53,24 @@ class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
 
     @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
+
+    @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # full catalogue access via search/browse, but only the artist as library item
+        return {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST}
 
     async def search(
         self,
@@ -77,7 +89,8 @@ class PhishInProvider(MusicProvider):
             return SearchResults()
 
         try:
-            endpoint = ENDPOINTS["search"].format(term=search_query)
+            # encode the term so values with "/" etc. don't break the URL path
+            endpoint = ENDPOINTS["search"].format(term=quote(search_query, safe=""))
             search_data = await api_request(
                 self, endpoint, params={"audio_status": "complete_or_partial"}
             )
@@ -143,7 +156,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Search failed for query '%s': %s", search_query, err)
             raise ProviderUnavailableError(f"Search error: {err}") from err
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield await get_phish_artist(self)
 
@@ -190,7 +203,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get artist albums: %s", err)
@@ -202,48 +215,56 @@ class PhishInProvider(MusicProvider):
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
-        try:
-            all_tracks: list[Track] = []
-            page = 1
-            max_pages = 5  # 2500 tracks max for UI performance
+        # single ranked page, mirroring Phish.in's own top-tracks page
+        tracks_data = await api_request(
+            self,
+            ENDPOINTS["tracks"],
+            params={
+                "page": 1,
+                "per_page": 50,
+                "sort": "likes_count:desc",
+                "audio_status": "complete_or_partial",
+            },
+        )
+        return [track_to_ma_track(self, track_data) for track_data in tracks_data.get("tracks", [])]
 
-            while len(all_tracks) < (max_pages * 500) and page <= max_pages:
-                tracks_data = await api_request(
-                    self,
-                    ENDPOINTS["tracks"],
-                    params={
-                        "page": page,
-                        "per_page": 500,
-                        "sort": "likes_count:desc",
-                        "audio_status": "complete_or_partial",
-                    },
-                )
+    @use_cache(expiration=86400)  # 24 hours - new performances can be added as shows are uploaded
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """Get a list of all tracks for the given artist."""
+        if prov_artist_id != PHISH_ARTIST_ID:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
-                tracks_on_page = tracks_data.get("tracks", [])
-                if not tracks_on_page:
-                    break
+        all_tracks: list[Track] = []
+        page = 1
+        per_page = 500
+        max_pages = 5  # cap at 2500 tracks for UI performance
 
-                for track_data in tracks_on_page:
-                    show_data = {
-                        "date": track_data.get("show_date"),
-                        "album_cover_url": track_data.get("show_album_cover_url"),
-                        "venue": {"name": track_data.get("venue_name")},
-                    }
-                    track = track_to_ma_track(self, track_data, show_data)
-                    all_tracks.append(track)
+        while page <= max_pages:
+            tracks_data = await api_request(
+                self,
+                ENDPOINTS["tracks"],
+                params={
+                    "page": page,
+                    "per_page": per_page,
+                    "sort": "likes_count:desc",
+                    "audio_status": "complete_or_partial",
+                },
+            )
 
-                if len(tracks_on_page) < 50:
-                    break
+            tracks_on_page = tracks_data.get("tracks", [])
+            if not tracks_on_page:
+                break
 
-                page += 1
+            for track_data in tracks_on_page:
+                all_tracks.append(track_to_ma_track(self, track_data))
 
-            return all_tracks
+            # short page means the last page was reached
+            if len(tracks_on_page) < per_page:
+                break
 
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
-            self.logger.error("Failed to get artist top tracks: %s", err)
-            raise ProviderUnavailableError(f"Top tracks error: {err}") from err
+            page += 1
+
+        return all_tracks
 
     @use_cache(expiration=2592000)  # 30 days - Show details from specific dates never change
     async def get_album(self, prov_album_id: str) -> Album:
@@ -340,7 +361,7 @@ class PhishInProvider(MusicProvider):
                 can_seek=True,
             )
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get stream details for %s: %s", item_id, err)
@@ -360,47 +381,13 @@ class PhishInProvider(MusicProvider):
             params={"per_page": 20, "sort": "date:desc", "audio_status": "complete_or_partial"},
         )
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         try:
-            playlists_data = await api_request(
-                self, ENDPOINTS["playlists"], params={"per_page": 100, "sort": "likes_count:desc"}
-            )
-
-            for playlist_data in playlists_data.get("playlists", []):
-                track_count = playlist_data.get("tracks_count", 0)
-                if track_count > 0:
-                    playlist_id = str(playlist_data.get("id"))
-
-                    metadata = MediaItemMetadata(
-                        images=UniqueList(
-                            [
-                                MediaItemImage(
-                                    type=ImageType.THUMB,
-                                    path=FALLBACK_ALBUM_IMAGE,
-                                    provider=self.instance_id,
-                                    remotely_accessible=True,
-                                )
-                            ]
-                        )
-                    )
-                    yield Playlist(
-                        item_id=playlist_id,
-                        provider=self.instance_id,
-                        name=playlist_data.get("name", ""),
-                        owner=playlist_data.get("username", ""),
-                        is_editable=False,
-                        metadata=metadata,
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=playlist_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                                available=True,
-                            )
-                        },
-                    )
-        except (MediaNotFoundError, ProviderUnavailableError):
+            for playlist_data in await self._get_playlists():
+                if playlist_data.get("tracks_count", 0) > 0:
+                    yield playlist_to_ma_playlist(self, playlist_data)
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get library playlists: %s", err)
@@ -410,35 +397,10 @@ class PhishInProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         try:
-            playlists_data = await api_request(self, ENDPOINTS["playlists"])
-            playlist_slug = None
-            playlist_info = None
-
-            for playlist in playlists_data.get("playlists", []):
-                if str(playlist.get("id")) == prov_playlist_id:
-                    playlist_slug = playlist.get("slug")
-                    playlist_info = playlist
-                    break
-
-            if not playlist_slug or not playlist_info:
+            playlist_info = await self._resolve_playlist(prov_playlist_id)
+            if not playlist_info:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
-
-            return Playlist(
-                item_id=prov_playlist_id,
-                provider=self.instance_id,
-                name=playlist_info.get("name", ""),
-                owner=playlist_info.get("username", ""),
-                is_editable=False,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=prov_playlist_id,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                        available=True,
-                    )
-                },
-            )
-
+            return playlist_to_ma_playlist(self, playlist_info)
         except MediaNotFoundError:
             raise
         except Exception as err:
@@ -450,31 +412,23 @@ class PhishInProvider(MusicProvider):
         if page > 0:
             return []
         try:
-            playlists_data = await api_request(self, ENDPOINTS["playlists"])
-            playlist_slug = None
-
-            for playlist in playlists_data.get("playlists", []):
-                if str(playlist.get("id")) == prov_playlist_id:
-                    playlist_slug = playlist.get("slug")
-                    break
-
-            if not playlist_slug:
+            playlist_info = await self._resolve_playlist(prov_playlist_id)
+            if not playlist_info:
                 return []
 
             playlist_data = await api_request(
-                self, ENDPOINTS["playlist_by_slug"].format(slug=playlist_slug)
+                self, ENDPOINTS["playlist_by_slug"].format(slug=playlist_info["slug"])
             )
 
-            all_tracks = []
+            tracks = []
             for entry in playlist_data.get("entries", []):
                 track_data = entry.get("track")
                 if track_data and track_data.get("mp3_url"):
-                    track = track_to_ma_track(self, track_data)
-                    all_tracks.append(track)
+                    tracks.append(track_to_ma_track(self, track_data))
 
-            return all_tracks
+            return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get playlist tracks for %s: %s", prov_playlist_id, err)
@@ -523,54 +477,63 @@ class PhishInProvider(MusicProvider):
                 provider=self.domain,
                 path=path + "years",
                 name="Browse by Year",
+                translation_key="browse_by_year",
             ),
             BrowseFolder(
                 item_id="today",
                 provider=self.domain,
                 path=path + "today",
                 name="This Day in Phish History",
+                translation_key="this_day_in_history",
             ),
             BrowseFolder(
                 item_id="recent",
                 provider=self.domain,
                 path=path + "recent",
                 name="Recent Shows",
+                translation_key="recent_shows",
             ),
             BrowseFolder(
                 item_id="venues",
                 provider=self.domain,
                 path=path + "venues",
                 name="Browse by Venue",
+                translation_key="browse_by_venue",
             ),
             BrowseFolder(
                 item_id="tags",
                 provider=self.domain,
                 path=path + "tags",
                 name="Browse by Tag",
+                translation_key="browse_by_tag",
             ),
             BrowseFolder(
                 item_id="playlists",
                 provider=self.domain,
                 path=path + "playlists",
                 name="User Playlists",
+                translation_key="user_playlists",
             ),
             BrowseFolder(
                 item_id="top_shows",
                 provider=self.domain,
                 path=path + "top_shows",
                 name="Top 46 Shows",
+                translation_key="top_shows",
             ),
             BrowseFolder(
                 item_id="top_tracks",
                 provider=self.domain,
                 path=path + "top_tracks",
                 name="Top 46 Tracks",
+                translation_key="top_tracks",
             ),
             BrowseFolder(
                 item_id="random",
                 provider=self.domain,
                 path=path + "random",
                 name="Random Show",
+                translation_key="random_show",
             ),
         ]
 
@@ -591,12 +554,14 @@ class PhishInProvider(MusicProvider):
                                 provider=self.domain,
                                 path=f"phishin://years/{period}",
                                 name=f"{period} ({show_count} shows)",
+                                translation_key="year",
+                                translation_params=[str(period), str(show_count)],
                             )
                         )
 
                 return sorted(folders, key=lambda x: x.name, reverse=True)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse years: %s", err)
@@ -617,7 +582,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse recent shows: %s", err)
@@ -632,7 +597,7 @@ class PhishInProvider(MusicProvider):
                 return [album]
             return []
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get random show: %s", err)
@@ -689,12 +654,14 @@ class PhishInProvider(MusicProvider):
                                 provider=self.domain,
                                 path=f"phishin://venues/{venue.get('slug')}",
                                 name=f"{venue.get('name')} ({audio_count} shows)",
+                                translation_key="venue",
+                                translation_params=[str(venue.get("name")), str(audio_count)],
                             )
                         )
 
                 return folders[:50]
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse venues: %s", err)
@@ -714,23 +681,32 @@ class PhishInProvider(MusicProvider):
                     track_count = tag.get("tracks_count", 0)
                     show_count = tag.get("shows_count", 0)
                     if track_count > 0 or show_count > 0:
-                        count_str = (
-                            f"{show_count} shows, {track_count} tracks"
-                            if show_count > 0
-                            else f"{track_count} tracks"
-                        )
+                        if show_count > 0:
+                            count_str = f"{show_count} shows, {track_count} tracks"
+                            translation_key = "tag_summary_shows_tracks"
+                            translation_params = [
+                                str(tag.get("name")),
+                                str(show_count),
+                                str(track_count),
+                            ]
+                        else:
+                            count_str = f"{track_count} tracks"
+                            translation_key = "tag_summary_tracks"
+                            translation_params = [str(tag.get("name")), str(track_count)]
                         folders.append(
                             BrowseFolder(
                                 item_id=f"tag_{tag.get('slug')}",
                                 provider=self.domain,
                                 path=f"phishin://tags/{tag.get('slug')}",
                                 name=f"{tag.get('name')} ({count_str})",
+                                translation_key=translation_key,
+                                translation_params=translation_params,
                             )
                         )
 
                 return sorted(folders, key=lambda x: x.name)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse tags: %s", err)
@@ -756,6 +732,8 @@ class PhishInProvider(MusicProvider):
                             provider=self.domain,
                             path=f"phishin://tags/{tag_slug}/shows",
                             name=f"Shows with {tag_name} ({show_count})",
+                            translation_key="tag_shows",
+                            translation_params=[str(tag_name), str(show_count)],
                         )
                     )
 
@@ -766,12 +744,14 @@ class PhishInProvider(MusicProvider):
                             provider=self.domain,
                             path=f"phishin://tags/{tag_slug}/tracks",
                             name=f"All {tag_name} Tracks ({track_count})",
+                            translation_key="tag_tracks",
+                            translation_params=[str(tag_name), str(track_count)],
                         )
                     )
 
                 return subfolders
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to get tag subfolders: %s", err)
@@ -807,7 +787,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get tracks for tag %s: %s", tag_slug, err)
@@ -834,7 +814,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top shows: %s", err)
@@ -861,7 +841,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top tracks: %s", err)
@@ -894,7 +874,7 @@ class PhishInProvider(MusicProvider):
 
             return sorted(albums, key=lambda x: x.name)
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse period %s: %s", period, err)
@@ -923,7 +903,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for venue %s: %s", venue_slug, err)
@@ -952,8 +932,25 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for tag %s: %s", tag_slug, err)
             raise ProviderUnavailableError(f"Tag shows error: {err}") from err
+
+    @use_cache(expiration=86400)  # 24 hours - the playlist list changes rarely
+    async def _get_playlists(self) -> list[dict[str, Any]]:
+        """Fetch the full list of Phish.in playlists (single cached request)."""
+        # cached and shared by all playlist methods to avoid repeated list fetches
+        playlists_data = await api_request(
+            self, ENDPOINTS["playlists"], params={"per_page": 100, "sort": "likes_count:desc"}
+        )
+        playlists: list[dict[str, Any]] = playlists_data.get("playlists", [])
+        return playlists
+
+    async def _resolve_playlist(self, prov_playlist_id: str) -> dict[str, Any] | None:
+        """Return the raw playlist data for the given id from the cached list."""
+        for playlist in await self._get_playlists():
+            if str(playlist.get("id")) == prov_playlist_id:
+                return playlist
+        return None

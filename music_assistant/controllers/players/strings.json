@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "volume_step": {
+      "label": "Volume step size",
+      "description": "How much the volume changes per step when using volume up/down commands, For example within the web interface by using the scroll wheel, tapping the ends of a volume slider or when using Home Assistant to issue a volume up or down command.\n\nLeave at 0 to use the adaptive default, which takes smaller steps near the ends of the range."
+    },
+    "announce_tts_engine": {
+      "label": "Announcement text-to-speech engine",
+      "description": "The engine used to speak an announcement that is sent as a text message instead of an audio link."
+    }
+  },
+  "manifest": {
+    "name": "Players",
+    "description": "Configuration of the core player management module"
+  }
+}

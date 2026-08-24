@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,8 @@ SCALAR_PROMPT_PAIRS: dict[str, tuple[str, str]] = {
 
 
 def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]) -> np.ndarray:
-    """Run a CLAP model's text encoder over a SCALAR_PROMPT_PAIRS-shaped mapping.
+    """
+    Run a CLAP model's text encoder over a SCALAR_PROMPT_PAIRS-shaped mapping.
 
     :param model: An object exposing ``get_text_embeddings(list[str]) -> torch.Tensor``.
     :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
@@ -53,7 +55,8 @@ def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]
 def save_precomputed_prompt_embeddings(
     path: Path, embeddings: np.ndarray, prompts_hash: str
 ) -> None:
-    """Persist the (N, D) prompt-embedding matrix and its prompts-hash to .npz.
+    """
+    Persist the (N, D) prompt-embedding matrix and its prompts-hash to .npz.
 
     :param path: Destination .npz path; parent must exist.
     :param embeddings: float32 array of shape (N_prompts, embedding_dim).
@@ -68,7 +71,8 @@ def save_precomputed_prompt_embeddings(
 
 
 def load_precomputed_prompt_embeddings(path: Path) -> tuple[np.ndarray, str]:
-    """Load (embeddings, prompts_hash) from an .npz written by save_precomputed_prompt_embeddings.
+    """
+    Load (embeddings, prompts_hash) from an .npz written by save_precomputed_prompt_embeddings.
 
     :param path: Source .npz path.
     """
@@ -81,7 +85,8 @@ def load_precomputed_prompt_embeddings(path: Path) -> tuple[np.ndarray, str]:
 
 
 def hash_scalar_prompt_pairs(prompts: dict[str, tuple[str, str]]) -> str:
-    """Stable SHA-256 hex digest of a SCALAR_PROMPT_PAIRS-shaped mapping.
+    """
+    Stable SHA-256 hex digest of a SCALAR_PROMPT_PAIRS-shaped mapping.
 
     :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
     """
@@ -118,3 +123,29 @@ CALIBRATION: dict[str, tuple[float, float]] = {
     "instrumentalness": (0.761, -3.538),
     "acousticness": (0.549, +0.453),
 }
+
+
+def score_scalars(
+    mean_similarities: np.ndarray,
+    calibration: dict[str, tuple[float, float]] = CALIBRATION,
+) -> dict[str, float]:
+    """
+    Map mean per-window CLAP similarity logits to calibrated 0-1 scalars.
+
+    :param mean_similarities: Per-prompt similarity logits averaged across
+        windows, ordered as SCALAR_PROMPT_PAIRS flattens its (pos, neg) pairs.
+    :param calibration: scalar name -> (a, b) Platt coefficients.
+    """
+    expected = 2 * len(SCALAR_PROMPT_PAIRS)
+    if mean_similarities.shape != (expected,):
+        raise ValueError(
+            f"mean_similarities must have shape ({expected},), got {mean_similarities.shape}"
+        )
+    scores: dict[str, float] = {}
+    for idx, scalar_name in enumerate(SCALAR_PROMPT_PAIRS):
+        pos_logit = float(mean_similarities[idx * 2])
+        neg_logit = float(mean_similarities[idx * 2 + 1])
+        a, b = calibration[scalar_name]
+        margin = pos_logit - neg_logit
+        scores[scalar_name] = 1.0 / (1.0 + math.exp(-(a * margin + b)))
+    return scores

@@ -39,7 +39,7 @@ class YouSeeAccessToken:
 class YouSeeAuthManager:
     """YouSee Musik authentication manager."""
 
-    def __init__(self, provider: "YouSeeMusikProvider"):
+    def __init__(self, provider: YouSeeMusikProvider):
         """Initialize YouSeeAuthManager."""
         self._access_token: YouSeeAccessToken | None = None
         self._refresh_token: str | None = None
@@ -87,8 +87,8 @@ class YouSeeAuthManager:
             async with self.mass.http_session.post(
                 f"https://login.yousee.dk{post_action_re.group(1)}",
                 data={
-                    "pf.username": self.provider.config.get_value(CONF_USERNAME),
-                    "pf.pass": self.provider.config.get_value(CONF_PASSWORD),
+                    "pf.username": self.provider.get_setup_value(CONF_USERNAME),
+                    "pf.pass": self.provider.get_setup_value(CONF_PASSWORD),
                     "pf.ok": "clicked",
                     "pf.adapterId": "MusicUsernamePasswordAdapter",
                 },

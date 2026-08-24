@@ -1,0 +1,40 @@
+{
+  "config_entries": {
+    "token": {
+      "label": "Zvuk Music Token",
+      "description": "Enter your Zvuk Music X-Auth-Token. See the documentation for how to obtain it."
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Select preferred audio quality.",
+      "options": {
+        "high": "High (320 kbps)",
+        "lossless": "Lossless (FLAC)"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Zvuk",
+      "description": "Music Assistant needs your personal Zvuk X-Auth-Token to reach your account and library."
+    }
+  },
+  "errors": {
+    "login_failed": "Could not sign in to Zvuk Music with this token. See the documentation for how to obtain a fresh X-Auth-Token."
+  },
+  "media": {
+    "recommendations": {
+      "editorial": {
+        "name": "Collections",
+        "subtitle": "Editorial playlists from Zvuk by genre"
+      }
+    },
+    "folder": {
+      "made_for_you": { "name": "Made for you" },
+      "editorial": { "name": "Collections" }
+    }
+  },
+  "manifest": {
+    "description": "Stream music from Zvuk Music service."
+  }
+}

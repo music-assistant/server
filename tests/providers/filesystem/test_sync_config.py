@@ -17,6 +17,7 @@ from music_assistant.providers.filesystem_local.constants import (
     PODCAST_EPISODE_EXTENSIONS,
     TRACK_EXTENSIONS,
 )
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 
 def _create_provider(
@@ -26,7 +27,8 @@ def _create_provider(
     sync_audiobooks: bool = True,
     sync_podcasts: bool = True,
 ) -> LocalFileSystemProvider:
-    """Create a LocalFileSystemProvider with mocked dependencies.
+    """
+    Create a LocalFileSystemProvider with mocked dependencies.
 
     :param content_type: The media content type ("music", "audiobooks", "podcasts").
     :param sync_tracks: Whether the tracks sync checkbox is enabled.
@@ -224,3 +226,121 @@ class TestProcessItemRespectsConfig:
 
         assert result is True
         provider.mass.music.podcasts.add_item_to_library.assert_called_once()
+
+
+def _classify(
+    provider: LocalFileSystemProvider,
+    relative_path: str,
+    file_checksums: dict[str, str] | None = None,
+) -> tuple[list[tuple[FileSystemItem, str | None]], set[str]]:
+    """Run a single file through _classify_scan_item and return its scan buckets."""
+    item = FileSystemItem(
+        filename=relative_path.rsplit("/", 1)[-1],
+        relative_path=relative_path,
+        absolute_path=f"/media/{relative_path}",
+        is_dir=False,
+        checksum="1",
+    )
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    cur_filenames: set[str] = set()
+    provider._classify_scan_item(
+        item,
+        file_checksums=file_checksums or {},
+        cue_file_checksums={},
+        cur_filenames=cur_filenames,
+        items_to_process=items_to_process,
+        unchanged_cue_items=[],
+        cue_stems=set(),
+        ignore_album_playlists=False,
+    )
+    return items_to_process, cur_filenames
+
+
+class TestClassifyScanItemSkipsUnimportedFiles:
+    """
+    The scan must only queue files this provider actually imports.
+
+    The walker looks for the union of every content type's extensions, so a file
+    that this content type never imports gets no provider mapping and would be
+    queued again on every single sync.
+    """
+
+    def test_music_skips_audiobook_only_extension(self) -> None:
+        """An .m4b in a music library is never imported, so it must not be queued."""
+        provider = _create_provider(content_type="music")
+        items, _ = _classify(provider, "Boeken/luisterboek.m4b")
+        assert items == []
+
+    def test_skipped_file_still_counts_as_present(self) -> None:
+        """A skipped file is still on disk, so the deletion pass must not claim it."""
+        provider = _create_provider(content_type="music")
+        _, cur_filenames = _classify(provider, "Boeken/luisterboek.m4b")
+        assert cur_filenames == {"Boeken/luisterboek.m4b"}
+
+    def test_indexed_track_survives_disabling_track_sync(self) -> None:
+        """
+        Turning off track sync must not delete the tracks already in the library.
+
+        The deletion pass removes everything the scan did not report as present.
+        """
+        provider = _create_provider(content_type="music", sync_tracks=False)
+        path = "Artist/Album/track.mp3"
+        items, cur_filenames = _classify(provider, path, file_checksums={path: "1"})
+        assert items == []
+        assert cur_filenames == {path}
+
+    def test_indexed_playlist_survives_disabling_playlist_sync(self) -> None:
+        """Turning off playlist sync must not delete the playlists already in the library."""
+        provider = _create_provider(content_type="music", sync_playlists=False)
+        path = "playlists/favorites.m3u"
+        items, cur_filenames = _classify(provider, path, file_checksums={path: "1"})
+        assert items == []
+        assert cur_filenames == {path}
+
+    def test_music_queues_track(self) -> None:
+        """A regular track file is still queued."""
+        provider = _create_provider(content_type="music")
+        items, _ = _classify(provider, "Artist/Album/track.mp3")
+        assert [item.relative_path for item, _ in items] == ["Artist/Album/track.mp3"]
+
+    def test_music_queues_cue(self) -> None:
+        """A CUE sheet is still queued."""
+        provider = _create_provider(content_type="music")
+        items, _ = _classify(provider, "Artist/Album/album.cue")
+        assert [item.relative_path for item, _ in items] == ["Artist/Album/album.cue"]
+
+    def test_music_skips_tracks_when_sync_disabled(self) -> None:
+        """Track files are not queued when track sync is off."""
+        provider = _create_provider(content_type="music", sync_tracks=False)
+        items, _ = _classify(provider, "Artist/Album/track.mp3")
+        assert items == []
+
+    def test_music_skips_playlists_when_sync_disabled(self) -> None:
+        """Playlist files are not queued when playlist sync is off."""
+        provider = _create_provider(content_type="music", sync_playlists=False)
+        items, _ = _classify(provider, "playlists/favorites.m3u")
+        assert items == []
+
+    def test_audiobooks_skips_track_only_extension(self) -> None:
+        """A .wav in an audiobooks library is never imported, so it must not be queued."""
+        provider = _create_provider(content_type="audiobooks")
+        items, _ = _classify(provider, "Author/Book/chapter.wav")
+        assert items == []
+
+    def test_audiobooks_skips_playlist(self) -> None:
+        """A playlist in an audiobooks library is never imported, so it must not be queued."""
+        provider = _create_provider(content_type="audiobooks")
+        items, _ = _classify(provider, "Author/Book/book.m3u")
+        assert items == []
+
+    def test_podcasts_skips_cue(self) -> None:
+        """A CUE sheet in a podcasts library is never imported, so it must not be queued."""
+        provider = _create_provider(content_type="podcasts")
+        items, _ = _classify(provider, "Podcast/episode.cue")
+        assert items == []
+
+    def test_podcasts_queues_episode(self) -> None:
+        """A regular episode file is still queued."""
+        provider = _create_provider(content_type="podcasts")
+        items, _ = _classify(provider, "Podcast/episode01.mp3")
+        assert [item.relative_path for item, _ in items] == ["Podcast/episode01.mp3"]

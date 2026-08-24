@@ -1,4 +1,5 @@
-"""Compute a before/after diff for a dry-run config write.
+"""
+Compute a before/after diff for a dry-run config write.
 
 SECURE_STRING values are masked on both sides so a preview never leaks
 a stored or proposed credential.
@@ -28,7 +29,8 @@ def compute_diff(
     current: Mapping[str, Any],
     proposed: Mapping[str, Any],
 ) -> DiffResult:
-    """Build a :class:`DiffResult` for the proposed write.
+    """
+    Build a :class:`DiffResult` for the proposed write.
 
     :param target_type: "provider" | "core" | "player".
     :param target_id: The target identifier.

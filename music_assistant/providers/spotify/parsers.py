@@ -107,7 +107,7 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
         },
     )
     if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"]))
+        album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["upc"]))
     if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
         album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 
@@ -152,7 +152,7 @@ def parse_track(
         provider=provider.instance_id,
         name=name,
         version=version,
-        duration=track_obj["duration_ms"] / 1000,
+        duration=int(track_obj["duration_ms"] / 1000),
         provider_mappings={
             ProviderMapping(
                 item_id=track_obj["id"],
@@ -294,6 +294,7 @@ def parse_podcast_episode(
             item_id="unknown",
             provider=provider.instance_id,
             name="Unknown Podcast",
+            translation_key="unknown_podcast",
             provider_mappings=set(),
         )
 

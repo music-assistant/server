@@ -28,10 +28,12 @@ from music_assistant.constants import (
     CONF_VERIFY_SSL,
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant.models.setup_flow import SetupSession
 
+    from .dashboard import FullyKioskDashboards
     from .provider import FullyKioskProvider
 
 AUDIOMANAGER_STREAM_MUSIC = 3
@@ -86,6 +88,7 @@ class FullyKioskPlayer(Player):
         self.port = port
         self.fully_kiosk: FullyKiosk | None = None
         self._attr_needs_setup = True
+        self._attr_setup_reason = "password_required"
         self._attr_available = False
         self._attr_name = f"Fully Kiosk ({host})"
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
@@ -100,43 +103,24 @@ class FullyKioskPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             ConfigEntry(
-                key=CONF_PASSWORD,
-                type=ConfigEntryType.SECURE_STRING,
-                label="Password",
-                description="Password to use to connect to the Fully Kiosk API.",
-                required=True,
-            ),
-            ConfigEntry(
                 key=CONF_USE_SSL,
                 type=ConfigEntryType.BOOLEAN,
-                label="Use HTTPS when connecting to the Fully Kiosk API.",
                 default_value=False,
                 advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VERIFY_SSL,
                 type=ConfigEntryType.BOOLEAN,
-                label="Verify HTTPS certificates (recommended).",
                 default_value=True,
-                description="Disabling verification trusts any certificate (no validation).",
                 advanced=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_FINGERPRINT,
                 type=ConfigEntryType.STRING,
-                label="TLS certificate fingerprint",
-                description=(
-                    "Optional SHA-256 hex fingerprint. When provided it must "
-                    "match the device certificate and overrides the verify setting."
-                ),
                 required=False,
                 advanced=True,
             ),
@@ -145,14 +129,30 @@ class FullyKioskPlayer(Player):
 
     async def on_config_updated(self) -> None:
         """Reconnect to the Fully Kiosk device when player configuration changes."""
-        password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
+        password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         if not password:
             self.fully_kiosk = None
             self._attr_needs_setup = True
+            self._attr_setup_reason = "password_required"
             self._attr_available = False
+            self._dashboards.unregister(self.player_id)
             self.update_state()
             return
         await self._connect()
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """Run the setup flow: collect the Fully Kiosk API password."""
+        entries = [
+            ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
+        ]
+        errors: dict[str, str] | None = None
+        while True:
+            values = await session.form(entries, step_id="user", errors=errors, last_step=True)
+            try:
+                await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
+                return
+            except SetupFlowError as err:
+                errors = {"base": err.translation_key or str(err)}
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -171,6 +171,7 @@ class FullyKioskPlayer(Player):
             )
             self._attr_available = False
             self.fully_kiosk = None
+            self._dashboards.unregister(self.player_id)
             self.update_state()
             return
         self._sync_state()
@@ -209,49 +210,30 @@ class FullyKioskPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        self._dashboards.unregister(self.player_id)
+
     async def _connect(self) -> None:
         """Establish a connection to the Fully Kiosk device."""
-        password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
+        password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         if not password:
             self._attr_needs_setup = True
+            self._attr_setup_reason = "password_required"
             self._attr_available = False
             self.fully_kiosk = None
+            self._dashboards.unregister(self.player_id)
             self.update_state()
             return
 
-        use_ssl = bool(self.config.get_value(CONF_USE_SSL))
-        fingerprint_value = self.config.get_value(CONF_SSL_FINGERPRINT)
-        fingerprint_raw = fingerprint_value.strip() if isinstance(fingerprint_value, str) else ""
-        if fingerprint_raw and not use_ssl:
-            self.logger.warning(
-                "Fully Kiosk %s: fingerprint validation requires HTTPS to be enabled",
-                self.host,
-            )
+        session_info = self._resolve_http_session()
+        if session_info is None:
             self._attr_available = False
+            self._dashboards.unregister(self.player_id)
             self.update_state()
             return
-
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL)) if use_ssl else False
-        http_session: ClientSession | _FingerprintSessionWrapper
-        if use_ssl:
-            if fingerprint_raw:
-                try:
-                    fingerprint = _build_fingerprint(fingerprint_raw)
-                except ValueError as err:
-                    self.logger.warning(
-                        "Fully Kiosk %s: invalid TLS fingerprint configured: %s", self.host, err
-                    )
-                    self._attr_available = False
-                    self.update_state()
-                    return
-                http_session = _FingerprintSessionWrapper(self.mass.http_session, fingerprint)
-                verify_ssl = True
-            else:
-                http_session = (
-                    self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
-                )
-        else:
-            http_session = self.mass.http_session_no_ssl
+        http_session, use_ssl, verify_ssl = session_info
 
         client = FullyKiosk(
             http_session,
@@ -274,6 +256,7 @@ class FullyKioskPlayer(Player):
             )
             self.fully_kiosk = None
             self._attr_available = False
+            self._dashboards.unregister(self.player_id)
             self.update_state()
             return
 
@@ -286,9 +269,39 @@ class FullyKioskPlayer(Player):
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_needs_setup = False
+        self._attr_setup_reason = None
         self._attr_available = True
         self._sync_state()
+        self._dashboards.register(self)
         self.update_state()
+
+    def _resolve_http_session(
+        self,
+    ) -> tuple[ClientSession | _FingerprintSessionWrapper, bool, bool] | None:
+        """Resolve (http_session, use_ssl, verify_ssl) from config, or None if misconfigured."""
+        use_ssl = bool(self.config.get_value(CONF_USE_SSL))
+        fingerprint_value = self.config.get_value(CONF_SSL_FINGERPRINT)
+        fingerprint_raw = fingerprint_value.strip() if isinstance(fingerprint_value, str) else ""
+        if fingerprint_raw and not use_ssl:
+            self.logger.warning(
+                "Fully Kiosk %s: fingerprint validation requires HTTPS to be enabled",
+                self.host,
+            )
+            return None
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL)) if use_ssl else False
+        if not use_ssl:
+            return self.mass.http_session_no_ssl, use_ssl, verify_ssl
+        if fingerprint_raw:
+            try:
+                fingerprint = _build_fingerprint(fingerprint_raw)
+            except ValueError as err:
+                self.logger.warning(
+                    "Fully Kiosk %s: invalid TLS fingerprint configured: %s", self.host, err
+                )
+                return None
+            return _FingerprintSessionWrapper(self.mass.http_session, fingerprint), use_ssl, True
+        session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
+        return session, use_ssl, verify_ssl
 
     def _sync_state(self) -> None:
         """Refresh player attributes from the latest deviceInfo."""
@@ -303,3 +316,8 @@ class FullyKioskPlayer(Player):
                 break
         if not device_info.get("soundUrlPlaying"):
             self._attr_playback_state = PlaybackState.IDLE
+
+    @property
+    def _dashboards(self) -> FullyKioskDashboards:
+        """Return the owning provider's dashboard adapter."""
+        return cast("FullyKioskProvider", self.provider).dashboards

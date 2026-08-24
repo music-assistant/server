@@ -34,7 +34,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
     """Coordinates finding and initializing speakers on the network."""
 
     def __init__(self, provider: SamsungWamProvider) -> None:
-        """Initialize the discovery handler.
+        """
+        Initialize the discovery handler.
 
         :param provider: The SamsungWamProvider instance.
         """
@@ -55,7 +56,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
         self.mass.cancel_task(PROBE_TASK_ID)
 
     async def on_upnp_discovered(self, udn: str, ip_address: str) -> None:
-        """Handle a UPnP/SSDP presence notification.
+        """
+        Handle a UPnP/SSDP presence notification.
 
         :param udn: The Universal Device Name of the device.
         :param ip_address: The IP address of the discovered device.
@@ -71,7 +73,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await self._handle_presence(canonical_udn, ip_address)
 
     async def probe_ip(self, ip_address: str) -> str | None:
-        """Probe a device to verify it is reachable and a supported WAM model.
+        """
+        Probe a device to verify it is reachable and a supported WAM model.
 
         :param ip_address: The IP address to probe.
         :return: The device UDN, or None if the device is not reachable or unsupported.
@@ -97,11 +100,12 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 return None
 
             return str(udn_el.text.removeprefix("uuid:"))
-        except (TimeoutError, aiohttp.ClientError, ET.ParseError):
+        except TimeoutError, aiohttp.ClientError, ET.ParseError:
             return None
 
     async def _handle_presence(self, udn: str, ip_address: str) -> None:
-        """Process a validated presence event for a device.
+        """
+        Process a validated presence event for a device.
 
         :param udn: The canonical Universal Device Name of the device.
         :param ip_address: The IP address of the device.
@@ -116,7 +120,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 await self._setup_player(udn, ip_address)
 
     async def _probe_ips(self, ips_to_probe: list[str]) -> None:
-        """Actively probe a list of IP addresses.
+        """
+        Actively probe a list of IP addresses.
 
         :param ips_to_probe: List of IP addresses to probe.
         """
@@ -145,7 +150,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 self.logger.warning("Periodic probe failed: %s", err, exc_info=err)
 
     async def _setup_player(self, udn: str, ip_address: str) -> None:
-        """Initialize and register a newly discovered player.
+        """
+        Initialize and register a newly discovered player.
 
         :param udn: The Universal Device Name of the device.
         :param ip_address: The IP address of the device.
@@ -191,7 +197,8 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await temp_speaker.disconnect()
 
     def _get_player_by_udn(self, udn: str) -> WamPlayer | None:
-        """Retrieve an existing player by its UDN.
+        """
+        Retrieve an existing player by its UDN.
 
         :param udn: The Universal Device Name to search for.
         :return: The matching WamPlayer instance or None.

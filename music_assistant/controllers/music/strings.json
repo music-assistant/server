@@ -1,0 +1,34 @@
+{
+  "manifest": {
+    "name": "Music",
+    "description": "Configuration of the core music (library) management module"
+  },
+  "config_entries": {
+    "reset_db": {
+      "label": "Reset library database",
+      "description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database."
+    }
+  },
+  "config_actions": {
+    "reset_db": {
+      "result": "The database has been reset."
+    }
+  },
+  "background_task": {
+    "sync_provider_artists": "Sync Artists for {0}",
+    "sync_provider_albums": "Sync Albums for {0}",
+    "sync_provider_tracks": "Sync Tracks for {0}",
+    "sync_provider_playlists": "Sync Playlists for {0}",
+    "sync_provider_radios": "Sync Radios for {0}",
+    "sync_provider_audiobooks": "Sync Audiobooks for {0}",
+    "sync_provider_podcasts": "Sync Podcasts for {0}",
+    "correct_provider_mappings": "Correct provider mappings",
+    "database_cleanup": "Database cleanup",
+    "scan_genre_mappings": "Scan genre mappings",
+    "add_playlist_tracks": "Add items to playlist {0}",
+    "remove_playlist_tracks": "Remove items from playlist {0}",
+    "import_playlist_matching": "Import playlist {0}",
+    "import_radios": "Import {0} radio stations",
+    "reconcile_duplicate_tracks": "Reconcile duplicate tracks"
+  }
+}

@@ -18,7 +18,7 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from aiomusiccast.pyamaha import System as MCSystem
 from mashumaro import DataClassDictMixin
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -75,7 +75,8 @@ if TYPE_CHECKING:
 
 
 def get_player_option_translation_key(mc_key: str) -> str:
-    """Get translation key for player option.
+    """
+    Get translation key for player option.
 
     MC key has format like 'zone_ENHANCER' or 'zone_TONE_CONTROL_bass'
     """
@@ -91,7 +92,8 @@ def get_player_option_translation_key(mc_key: str) -> str:
 
 @dataclass
 class MusicCastMacAddresses(DataClassDictMixin):
-    """MusicCastMacAddresses.
+    """
+    MusicCastMacAddresses.
 
     The MAC addresses lack the colons.
     """
@@ -112,7 +114,8 @@ class MusicCastNetworkStatus(DataClassDictMixin):
 
 @dataclass(kw_only=True)
 class UpnpUpdateHelper:
-    """UpnpUpdateHelper.
+    """
+    UpnpUpdateHelper.
 
     See _update_player_attributes.
     """
@@ -127,12 +130,13 @@ class MusicCastPlayer(Player):
 
     def __init__(
         self,
-        provider: "MusicCastProvider",
+        provider: MusicCastProvider,
         player_id: str,
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
     ) -> None:
-        """Init MC Player.
+        """
+        Init MC Player.
 
         Keep reference to physical and zone device.
         """
@@ -162,10 +166,8 @@ class MusicCastPlayer(Player):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
-            PlayerFeature.SET_MEMBERS,
             PlayerFeature.NEXT_PREVIOUS,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
@@ -272,20 +274,19 @@ class MusicCastPlayer(Player):
 
         # STATE
 
+        self._attr_elapsed_time = None
         match self.zone_device.state:
             case MusicCastPlayerState.PAUSED:
                 self._attr_playback_state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
+                if self.zone_device.media_position_updated_at is not None:
+                    self._attr_elapsed_time = self.zone_device.media_position
+                    self._attr_elapsed_time_last_updated = (
+                        self.zone_device.media_position_updated_at.timestamp()
+                    )
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 self._attr_playback_state = PlaybackState.IDLE
-        self._attr_elapsed_time = self.zone_device.media_position
-        if self.zone_device.media_position_updated_at is not None:
-            self._attr_elapsed_time_last_updated = (
-                self.zone_device.media_position_updated_at.timestamp()
-            )
-        else:
-            self._attr_elapsed_time_last_updated = None
 
         # UPDATE UPNP HELPER
         now = time.time()
@@ -353,10 +354,14 @@ class MusicCastPlayer(Player):
         # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
+        self._attr_supported_features.add(PlayerFeature.PAUSE)  # we support pause...
         if (
             self.upnp_update_helper.current_uri is not None
             and self.upnp_update_helper.controlled_by_mass
         ):
+            self._attr_supported_features.discard(
+                PlayerFeature.PAUSE
+            )  # ...unless we are controlled by MA
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
@@ -432,6 +437,12 @@ class MusicCastPlayer(Player):
             self._attr_group_members = [
                 self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
+
+        # disallow set members (i.e. a zone to become a group leader) if it is currently grouped to the main zone
+        if self.zone_device.source_id == MC_SOURCE_MAIN_SYNC:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
 
         # PLAYER OPTIONS
         # see https://github.com/vigonotion/aiomusiccast/blob/main/aiomusiccast/capabilities.py
@@ -619,7 +630,8 @@ class MusicCastPlayer(Player):
             ...
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
-        """Handle zone grouping.
+        """
+        Handle zone grouping.
 
         If a device has multiple zones, only a single zone can be net controlled.
         If another zone wants to join the group, the current net zone has to switch
@@ -642,21 +654,13 @@ class MusicCastPlayer(Player):
             return
 
         # skip zone handling if disabled via setting
-        if bool(
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
-            )
-        ):
+        if mass_player.get_config_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED):
             self.logger.debug("Ignoring zone handling for player %s.", player_id)
             return
 
         self.logger.debug("Handling zone for player %s.", player_id)
 
-        _source = str(
-            await self.mass.config.get_player_config_value(
-                player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
-            )
-        )
+        _source = mass_player.get_config_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET, return_type=str)
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         if _source not in _allowed_sources:
@@ -671,9 +675,7 @@ class MusicCastPlayer(Player):
             _source = _allowed_sources.pop()
 
         await mass_player.select_source(_source)
-        _turn_off = bool(
-            await self.mass.config.get_player_config_value(player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE)
-        )
+        _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
         if _turn_off:
             await asyncio.sleep(2)
             await mass_player.power(powered=False)
@@ -716,23 +718,14 @@ class MusicCastPlayer(Player):
                 zone_device_player.update_state()
 
     async def _set_player_available(self) -> None:
-        """Re-enable UDP polling and refresh zone players after recovery."""
+        """Re-enable UDP polling after recovery."""
         assert self.zone_device.zone_name == "main", "Call only from main player!"
         self.logger.debug("Player %s became available again.", self.display_name)
-        await self.physical_device.enable_polling()
-        for zone_device in self.zone_device.other_zones:
-            if zone_device_player := self.mass.players.get_player(
-                self._get_player_id_from_zone_device(zone_device)
-            ):
-                assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
-                async with zone_device_player.update_lock:
-                    await zone_device_player.set_dynamic_attributes()
+        if self.physical_device.device.device.transport is None:
+            await self.physical_device.enable_polling()
 
     async def poll(self) -> None:
         """Poll player."""
-        if self.update_lock.locked():
-            # udp updates come in roughly every second when playing, so discard
-            return
         if self.zone_device.zone_name != "main":
             # we only poll main, which polls the whole device
             return
@@ -740,7 +733,7 @@ class MusicCastPlayer(Player):
             _was_unavailable = not self._attr_available
             try:
                 await self.physical_device.fetch()
-            except (MusicCastConnectionException, MusicCastGroupException):
+            except MusicCastConnectionException, MusicCastGroupException:
                 await self._set_player_unavailable()
                 return
             except ClientError:
@@ -748,6 +741,14 @@ class MusicCastPlayer(Player):
             if _was_unavailable:
                 await self._set_player_available()
             await self.set_dynamic_attributes()
+            # fetch() above covers every zone; push it to the other zone players too
+            for zone_device in self.zone_device.other_zones:
+                if zone_device_player := self.mass.players.get_player(
+                    self._get_player_id_from_zone_device(zone_device)
+                ):
+                    assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
+                    async with zone_device_player.update_lock:
+                        await zone_device_player.set_dynamic_attributes()
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
@@ -908,7 +909,8 @@ class MusicCastPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Set multiple members.
+        """
+        Set multiple members.
 
         This function is called on the server.
         """
@@ -988,13 +990,9 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries = await super().get_config_entries()
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:
@@ -1005,7 +1003,7 @@ class MusicCastPlayer(Player):
                 source_name,
             ) in self.zone_device.source_mapping.items():
                 if source_id in allowed_sources:
-                    source_options.append(ConfigValueOption(title=source_name, value=source_id))
+                    source_options.append(ConfigValueOption(source_id, title=source_name))
             if len(source_options) == 0:
                 # this should never happen
                 self.logger.error(
@@ -1019,42 +1017,25 @@ class MusicCastPlayer(Player):
                     ConfigEntry(
                         key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Disable zone handling completely.",
                         default_value=False,
-                        description="This disables zone handling completely. Other options "
-                        "will be ignored. Enable should you encounter playback issues while "
-                        "e.g. playing to main. You can also hide the player from the UI "
-                        "by taking advantage of 'Hide the player in the user interface' "
-                        "dropdown.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                        label="Switch to this non-net source when leaving a group.",
                         type=ConfigEntryType.STRING,
                         options=source_options,
                         default_value=source_options[0].value,
-                        description="The zone will switch to this source when leaving a  group."
-                        " It must be an input which doesn't require network connectivity.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Turn off the zone when it leaves a group.",
                         default_value=False,
-                        description="Turn off the zone when it leaves a group.",
                     ),
                 ]
 
         auto_advance_entry = ConfigEntry(
             key=CONF_PLAYER_AUTO_ADVANCE,
             type=ConfigEntryType.BOOLEAN,
-            label="Auto-advance queue when the device stops at end of track",
             default_value=True,
-            description="Yamaha receivers occasionally drop the queued next track and "
-            "stop playback. With this enabled, MA detects the stop and advances the "
-            "queue. As a side effect, a user-initiated stop within the last 4 seconds "
-            "of a track will also advance to the next item; disable if you prefer the "
-            "device's stop behaviour to always be respected.",
         )
 
         return base_entries + zone_entries + [auto_advance_entry] + PLAYER_CONFIG_ENTRIES

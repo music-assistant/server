@@ -106,7 +106,8 @@ _EXPECTED_DESCRIPTIONS_CONTAIN = {
 async def test_tool_descriptions_carry_workflow_breadcrumbs(
     mounted_debug: Any, name: str, expected_substrings: list[str]
 ) -> None:
-    """Each debug tool's description must include the planned workflow cross-references.
+    """
+    Each debug tool's description must include the planned workflow cross-references.
 
     Pins the Tool-descriptions sub-section of spec 0005 — agents driving
     the debug surface should be able to follow the chain via descriptions

@@ -1,0 +1,4 @@
+# Blocking, module-qualified calls inside async functions that predate this check.
+# New async code must offload these (asyncio.to_thread / run_in_executor) or use an async client.
+# Regenerate with: uv run -m scripts.check_blocking_io --update-baseline
+music_assistant/controllers/webserver/controller.py	1

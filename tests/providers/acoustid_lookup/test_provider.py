@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
+from music_assistant_models.errors import UnsupportedSystemError
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.acoustid_lookup.provider import (
@@ -17,7 +21,10 @@ from music_assistant.providers.acoustid_lookup.provider import (
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
+    NO_MATCH_ANALYSIS_VERSION,
+    NO_MATCH_RETRY_DAYS,
     AcoustidLookupProvider,
+    _AcoustidSessionData,
     _parse_response,
 )
 
@@ -45,6 +52,7 @@ def _make_provider(
 
     mass.get_provider = MagicMock(side_effect=_default_get_provider)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     mass.music.tracks.set_identifiers = AsyncMock()
     mass.music.albums.set_release_group = AsyncMock()
@@ -121,16 +129,62 @@ class _FakeFingerprinter:
         return b"FAKEFINGERPRINT"
 
 
+class _FakeFingerprintError(Exception):
+    """Stand-in for chromaprint.FingerprintError."""
+
+
 def _install_fake_chromaprint(monkeypatch: pytest.MonkeyPatch, fp: _FakeFingerprinter) -> None:
-    """Patch the lazy chromaprint import so _create_fingerprinter returns our fake."""
+    """
+    Patch _create_fingerprinter to return the given fake, started with the session's format.
+
+    Also registers a stand-in error tuple, mirroring the real fingerprinter setup.
+    """
 
     def fake_create(
-        _self: AcoustidLookupProvider, sample_rate: int, channels: int
+        provider: AcoustidLookupProvider, sample_rate: int, channels: int
     ) -> _FakeFingerprinter:
+        provider._fingerprint_errors = (_FakeFingerprintError,)
         fp.start(int(sample_rate), int(channels))
         return fp
 
     monkeypatch.setattr(AcoustidLookupProvider, "_create_fingerprinter", fake_create)
+
+
+def _install_unidentified_track(provider: AcoustidLookupProvider) -> None:
+    """Make the provider's library lookup return a track with no MBID or ISRC."""
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+
+
+def _install_chromaprint_module(monkeypatch: pytest.MonkeyPatch, *, failing_call: str) -> None:
+    """
+    Inject a stand-in ``chromaprint`` module so the real _create_fingerprinter runs.
+
+    :param failing_call: Fingerprinter method ("start", "feed" or "finish") that
+        raises, letting a test drive one native error path.
+    """
+
+    class _Fingerprinter:
+        def start(self, sample_rate: int, channels: int) -> None:
+            if failing_call == "start":
+                raise _FakeFingerprintError("start failed")
+
+        def feed(self, data: bytes) -> None:
+            if failing_call == "feed":
+                raise _FakeFingerprintError("feed failed")
+
+        def finish(self) -> bytes:
+            if failing_call == "finish":
+                raise _FakeFingerprintError("finish failed")
+            return b"FAKEFINGERPRINT"
+
+    module = ModuleType("chromaprint")
+    module.FingerprintError = _FakeFingerprintError  # type: ignore[attr-defined]
+    module.Fingerprinter = _Fingerprinter  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "chromaprint", module)
 
 
 def _install_lookup_response(
@@ -260,7 +314,8 @@ def _rg(
             id="streaming_toggle_on",
         ),
         pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
-        pytest.param({"api_key": None}, {}, None, None, False, False, id="no_api_key"),
+        # No user-supplied key still proceeds — the shared AcoustID key is used.
+        pytest.param({"api_key": None}, {}, None, None, True, True, id="no_user_api_key"),
     ],
 )
 async def test_start_analysis_gates(
@@ -289,6 +344,129 @@ async def test_start_analysis_gates(
     )
 
     assert accepted is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("track_mbid", "track_isrc", "expected_extra"),
+    [
+        pytest.param(
+            "0000-mbid", None, {"source": "existing_tags", "mbid": "0000-mbid"}, id="mbid_only"
+        ),
+        pytest.param(
+            None,
+            "USRC17607839",
+            {"source": "existing_tags", "isrc": "USRC17607839"},
+            id="isrc_only",
+        ),
+        pytest.param(
+            "0000-mbid",
+            "USRC17607839",
+            {"source": "existing_tags", "mbid": "0000-mbid", "isrc": "USRC17607839"},
+            id="mbid_and_isrc",
+        ),
+    ],
+)
+async def test_start_analysis_records_existing_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    track_mbid: str | None,
+    track_isrc: str | None,
+    expected_extra: dict[str, Any],
+) -> None:
+    """An already-identified track is recorded as analyzed (no fingerprinting, no retry)."""
+    provider = _make_provider()
+    track = MagicMock()
+    track.mbid = track_mbid
+    track.get_external_id.return_value = track_isrc
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    # session is declined (no streaming) but a result row is recorded
+    assert accepted is False
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    assert kwargs["aa_provider_domain"] == provider.domain
+    assert kwargs["item_id"] == "track-1"
+    analysis = kwargs["analysis"]
+    assert analysis.extra_data == expected_extra
+    # permanent result — never re-collected by the background scan
+    assert "retry_after" not in analysis.extra_data
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_skips_within_no_match_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track whose prior no-match result is still inside its cooldown is declined."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) + 3600})
+    )
+    fp = _FakeFingerprinter()
+    _install_fake_chromaprint(monkeypatch, fp)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is False
+    # declined before any fingerprinting work
+    assert fp.start_args is None
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_skips_multichannel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A multichannel (e.g. 5.1) file is declined before any fingerprinting work.
+
+    Feeding chromaprint multichannel audio trips a C-level assertion that aborts the
+    process, so the session must be refused up-front rather than risk the crash.
+    """
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    fp = _FakeFingerprinter()
+    _install_fake_chromaprint(monkeypatch, fp)
+
+    accepted = await provider.start_analysis(
+        "session", _make_streamdetails(), _make_audio_format(channels=6)
+    )
+
+    assert accepted is False
+    # declined before the fingerprinter was ever started
+    assert fp.start_args is None
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_retries_after_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the cooldown has elapsed, the track is accepted for a fresh lookup."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) - 3600})
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is True
 
 
 @pytest.mark.asyncio
@@ -355,7 +533,7 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A best-result score below the threshold yields no analysis."""
+    """A best-result score below the threshold yields a retryable no-match marker."""
     provider = _make_provider(min_score=0.85)
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
     track = MagicMock(mbid=None)
@@ -386,7 +564,112 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
         },
     )
 
+    # _finalize persists a no-match result itself and returns None so the base class
+    # does not overwrite it at the current analysis_version
     assert await provider._finalize(session_id) is None
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    # stored below the current version so it is re-offered, and gated on a future retry_after
+    assert kwargs["analysis_version"] == NO_MATCH_ANALYSIS_VERSION
+    now = int(utc_timestamp())
+    retry_after = kwargs["analysis"].extra_data["retry_after"]
+    assert now < retry_after <= now + NO_MATCH_RETRY_DAYS * 86400 + 5
+
+
+# ---------------------------------------------------------------------------
+# Chromaprint binding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_init_imports_the_native_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing libchromaprint surfaces as a provider load failure, not a per-track error."""
+    provider = _make_provider()
+    imported: list[str] = []
+
+    async def fake_import(name: str, _package: str | None = None) -> ModuleType:
+        imported.append(name)
+        raise ImportError("couldn't find libchromaprint")
+
+    monkeypatch.setattr(
+        "music_assistant.providers.acoustid_lookup.provider.import_module_in_thread", fake_import
+    )
+
+    # UnsupportedSystemError marks the failure as permanent, so the loader reports it
+    # to the user instead of retrying a library that will not appear on its own.
+    with pytest.raises(UnsupportedSystemError):
+        await provider.handle_async_init()
+    assert imported == ["chromaprint"]
+
+
+@pytest.mark.asyncio
+async def test_fingerprinter_start_failure_declines_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chromaprint error while starting the fingerprinter declines the session."""
+    _install_chromaprint_module(monkeypatch, failing_call="start")
+    provider = _make_provider()
+    _install_unidentified_track(provider)
+
+    accepted = await provider._start_analysis(
+        "session", _make_streamdetails(), _make_audio_format()
+    )
+
+    assert accepted is False
+
+
+@pytest.mark.asyncio
+async def test_chromaprint_error_while_feeding_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chromaprint error from feed() marks the session errored instead of propagating."""
+    _install_chromaprint_module(monkeypatch, failing_call="feed")
+    provider = _make_provider()
+    _install_unidentified_track(provider)
+    session_id = "session-feed"
+    assert await provider._start_analysis(session_id, _make_streamdetails(), _make_audio_format())
+
+    await provider.process_pcm_chunk(session_id, b"\x00\x01" * 100)
+
+    assert provider._data[session_id].error is not None
+
+
+@pytest.mark.asyncio
+async def test_chromaprint_error_while_finishing_is_caught(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chromaprint error from finish() yields no result instead of propagating."""
+    _install_chromaprint_module(monkeypatch, failing_call="finish")
+    provider = _make_provider()
+    _install_unidentified_track(provider)
+    session_id = "session-finish"
+    assert await provider._start_analysis(session_id, _make_streamdetails(), _make_audio_format())
+    provider._data[session_id].pcm_seconds_fed = 30.0
+
+    assert await provider._finalize(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_feed_type_error_is_caught_without_a_native_fingerprinter() -> None:
+    """The feed() guard still catches TypeError when no chromaprint errors are registered."""
+    provider = _make_provider()
+    assert provider._fingerprint_errors == ()
+
+    class _RejectingFingerprinter:
+        def feed(self, data: bytes) -> None:
+            raise TypeError("unsupported buffer")
+
+    provider._data["session"] = _AcoustidSessionData(
+        fingerprinter=_RejectingFingerprinter(),
+        sample_rate=44100,
+        channels=2,
+        sample_width=2,
+        track_duration=180,
+    )
+
+    await provider.process_pcm_chunk("session", b"\x00\x01" * 100)
+
+    assert provider._data["session"].error is not None
 
 
 # ---------------------------------------------------------------------------

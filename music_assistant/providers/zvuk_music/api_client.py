@@ -9,6 +9,7 @@ from typing import Any, ParamSpec, TypeVar, cast
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from zvuk_music import Artist as ZvukArtist
@@ -47,7 +48,8 @@ _NOT_FOUND_SENTINEL: Any = object()
 def handle_zvuk_errors(
     not_found_return: Any = _NOT_FOUND_SENTINEL,
 ) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
-    """Decorate async methods to map Zvuk API exceptions to MA errors.
+    """
+    Decorate async methods to map Zvuk API exceptions to MA errors.
 
     :param not_found_return: Value to return on NotFoundError (e.g. None or []).
         If not provided, NotFoundError is not caught.
@@ -62,9 +64,7 @@ def handle_zvuk_errors(
             except NetworkError as err:
                 msg = str(err).lower()
                 if "429" in msg or "too many requests" in msg or "rate limit" in msg:
-                    raise ResourceTemporarilyUnavailable(
-                        "Zvuk Music rate limit", backoff_time=60
-                    ) from err
+                    raise RateLimited("Zvuk Music rate limit", backoff_time=60) from err
                 LOGGER.error("Zvuk API error: %s", err)
                 raise ResourceTemporarilyUnavailable("Zvuk Music request failed") from err
             except TimedOutError as err:
@@ -89,7 +89,8 @@ class ZvukMusicClient:
     """Wrapper around zvuk-music ClientAsync."""
 
     def __init__(self, token: str) -> None:
-        """Initialize the Zvuk Music client.
+        """
+        Initialize the Zvuk Music client.
 
         :param token: Zvuk Music X-Auth-Token.
         """
@@ -106,7 +107,8 @@ class ZvukMusicClient:
         return self._user_id
 
     async def connect(self) -> None:
-        """Initialize the client and verify token validity.
+        """
+        Initialize the client and verify token validity.
 
         :raises LoginFailed: If the token is invalid.
         :raises ResourceTemporarilyUnavailable: If there is a network error.
@@ -130,19 +132,6 @@ class ZvukMusicClient:
         self._client = None
         self._user_id = None
 
-    def _ensure_connected(self) -> ClientAsync:
-        """Ensure the client is connected and return it."""
-        if self._client is None:
-            raise ProviderUnavailableError("Client not connected, call connect() first")
-        return self._client
-
-    async def _get_client(self) -> ClientAsync:
-        """Acquire a throttle slot then return the connected client."""
-        await self._throttler.acquire()
-        return self._ensure_connected()
-
-    # Search
-
     @handle_zvuk_errors(not_found_return=None)
     async def search(
         self,
@@ -154,7 +143,8 @@ class ZvukMusicClient:
         search_releases: bool = True,
         search_playlists: bool = True,
     ) -> ZvukSearch | None:
-        """Search for tracks, albums, artists, or playlists.
+        """
+        Search for tracks, albums, artists, or playlists.
 
         :param query: Search query string.
         :param limit: Maximum number of results per type.
@@ -178,11 +168,10 @@ class ZvukMusicClient:
             books=False,
         )
 
-    # Get single items
-
     @handle_zvuk_errors(not_found_return=None)
     async def get_track(self, track_id: str) -> ZvukTrack | None:
-        """Get a single track by ID.
+        """
+        Get a single track by ID.
 
         :param track_id: Track ID.
         :return: Track object or None if not found.
@@ -192,7 +181,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_tracks(self, track_ids: list[str]) -> list[ZvukTrack]:
-        """Get multiple tracks by IDs.
+        """
+        Get multiple tracks by IDs.
 
         :param track_ids: List of track IDs.
         :return: List of track objects.
@@ -202,7 +192,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_release(self, release_id: str) -> ZvukRelease | None:
-        """Get a single release (album) by ID.
+        """
+        Get a single release (album) by ID.
 
         :param release_id: Release ID.
         :return: Release object or None if not found.
@@ -212,7 +203,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_releases(self, release_ids: list[str]) -> list[ZvukRelease]:
-        """Get multiple releases by IDs.
+        """
+        Get multiple releases by IDs.
 
         :param release_ids: List of release IDs.
         :return: List of release objects.
@@ -222,7 +214,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_artist(self, artist_id: str) -> ZvukArtist | None:
-        """Get a single artist by ID.
+        """
+        Get a single artist by ID.
 
         :param artist_id: Artist ID.
         :return: Artist object or None if not found.
@@ -232,7 +225,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_artists(self, artist_ids: list[str]) -> list[ZvukArtist]:
-        """Get multiple artists by IDs.
+        """
+        Get multiple artists by IDs.
 
         :param artist_ids: List of artist IDs.
         :return: List of artist objects.
@@ -244,7 +238,8 @@ class ZvukMusicClient:
     async def get_artist_releases(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[ZvukArtist]:
-        """Get artist's releases.
+        """
+        Get artist's releases.
 
         :param artist_id: Artist ID.
         :param limit: Maximum number of releases.
@@ -257,7 +252,8 @@ class ZvukMusicClient:
     async def get_artist_top_tracks(
         self, artist_id: str, limit: int = DEFAULT_LIMIT
     ) -> list[ZvukArtist]:
-        """Get artist's top tracks.
+        """
+        Get artist's top tracks.
 
         :param artist_id: Artist ID.
         :param limit: Maximum number of tracks.
@@ -266,11 +262,10 @@ class ZvukMusicClient:
         client = await self._get_client()
         return await client.get_artists([artist_id], with_popular_tracks=True, tracks_limit=limit)
 
-    # Playlists
-
     @handle_zvuk_errors(not_found_return=None)
     async def get_playlist(self, playlist_id: str) -> ZvukPlaylist | None:
-        """Get a playlist by ID.
+        """
+        Get a playlist by ID.
 
         :param playlist_id: Playlist ID.
         :return: Playlist object or None if not found.
@@ -280,7 +275,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_playlists(self, playlist_ids: list[str]) -> list[ZvukPlaylist]:
-        """Get multiple playlists by IDs.
+        """
+        Get multiple playlists by IDs.
 
         :param playlist_ids: List of playlist IDs.
         :return: List of playlist objects.
@@ -292,7 +288,8 @@ class ZvukMusicClient:
     async def get_playlist_tracks(
         self, playlist_id: str, limit: int = 50, offset: int = 0
     ) -> list[ZvukSimpleTrack]:
-        """Get playlist tracks.
+        """
+        Get playlist tracks.
 
         :param playlist_id: Playlist ID.
         :param limit: Maximum number of tracks.
@@ -302,11 +299,10 @@ class ZvukMusicClient:
         client = await self._get_client()
         return await client.get_playlist_tracks(playlist_id, limit=limit, offset=offset)
 
-    # Streaming
-
     @handle_zvuk_errors(not_found_return=[])
     async def get_stream_urls(self, track_id: str) -> list[ZvukStream]:
-        """Get stream URLs for a track.
+        """
+        Get stream URLs for a track.
 
         :param track_id: Track ID.
         :return: List of Stream objects.
@@ -316,7 +312,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_direct_stream_url(self, track_id: str, quality: str) -> str | None:
-        """Get a direct (non-DRM) stream URL for a track.
+        """
+        Get a direct (non-DRM) stream URL for a track.
 
         :param track_id: Track ID.
         :param quality: Quality string — "flac", "high", or "mid".
@@ -330,11 +327,10 @@ class ZvukMusicClient:
             return None
         return result.stream or None
 
-    # Collection (Library)
-
     @handle_zvuk_errors(not_found_return=None)
     async def get_collection(self) -> Collection | None:
-        """Get user's collection (liked items).
+        """
+        Get user's collection (liked items).
 
         :return: Collection object or None.
         """
@@ -343,7 +339,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_liked_tracks(self) -> list[ZvukTrack]:
-        """Get user's liked tracks.
+        """
+        Get user's liked tracks.
 
         :return: List of full Track objects.
         """
@@ -352,7 +349,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_user_playlists(self) -> list[ZvukCollectionItem]:
-        """Get user's playlists.
+        """
+        Get user's playlists.
 
         :return: List of CollectionItem objects with playlist IDs.
         """
@@ -363,7 +361,8 @@ class ZvukMusicClient:
     async def get_short_playlists(
         self, playlist_ids: Sequence[int | str]
     ) -> list[ZvukSimplePlaylist]:
-        """Get playlist metadata (title, image, description) by IDs without tracks.
+        """
+        Get playlist metadata (title, image, description) by IDs without tracks.
 
         Uses the lightweight getShortPlaylist GraphQL query which returns only metadata.
         Works for both regular playlists and synthesis playlists (IDs 3,4,6,11,12,13,14,15).
@@ -376,7 +375,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=[])
     async def get_editorial_playlist_ids(self) -> list[str]:
-        """Get editorial (curated) playlist IDs from Zvuk's grid content API.
+        """
+        Get editorial (curated) playlist IDs from Zvuk's grid content API.
 
         Fetches «Подборки» — genre-focused curated playlists shown on the home page.
 
@@ -387,7 +387,8 @@ class ZvukMusicClient:
 
     @handle_zvuk_errors(not_found_return=None)
     async def get_lyrics(self, track_id: str) -> ZvukLyrics | None:
-        """Get lyrics for a track from Zvuk lyrics API.
+        """
+        Get lyrics for a track from Zvuk lyrics API.
 
         Returns synced LRC text (``is_synced=True``) or plain text.
         Returns ``None`` if the track has no lyrics.
@@ -398,10 +399,9 @@ class ZvukMusicClient:
         client = await self._get_client()
         return await client.get_lyrics(track_id)
 
-    # Library modifications
-
     async def like_track(self, track_id: str) -> bool:
-        """Add a track to liked tracks.
+        """
+        Add a track to liked tracks.
 
         :param track_id: Track ID.
         :return: True if successful.
@@ -414,7 +414,8 @@ class ZvukMusicClient:
             return False
 
     async def unlike_track(self, track_id: str) -> bool:
-        """Remove a track from liked tracks.
+        """
+        Remove a track from liked tracks.
 
         :param track_id: Track ID.
         :return: True if successful.
@@ -427,7 +428,8 @@ class ZvukMusicClient:
             return False
 
     async def like_release(self, release_id: str) -> bool:
-        """Add a release to liked releases.
+        """
+        Add a release to liked releases.
 
         :param release_id: Release ID.
         :return: True if successful.
@@ -440,7 +442,8 @@ class ZvukMusicClient:
             return False
 
     async def unlike_release(self, release_id: str) -> bool:
-        """Remove a release from liked releases.
+        """
+        Remove a release from liked releases.
 
         :param release_id: Release ID.
         :return: True if successful.
@@ -453,7 +456,8 @@ class ZvukMusicClient:
             return False
 
     async def like_artist(self, artist_id: str) -> bool:
-        """Add an artist to liked artists.
+        """
+        Add an artist to liked artists.
 
         :param artist_id: Artist ID.
         :return: True if successful.
@@ -466,7 +470,8 @@ class ZvukMusicClient:
             return False
 
     async def unlike_artist(self, artist_id: str) -> bool:
-        """Remove an artist from liked artists.
+        """
+        Remove an artist from liked artists.
 
         :param artist_id: Artist ID.
         :return: True if successful.
@@ -479,7 +484,8 @@ class ZvukMusicClient:
             return False
 
     async def like_playlist(self, playlist_id: str) -> bool:
-        """Add a playlist to liked playlists.
+        """
+        Add a playlist to liked playlists.
 
         :param playlist_id: Playlist ID.
         :return: True if successful.
@@ -492,7 +498,8 @@ class ZvukMusicClient:
             return False
 
     async def unlike_playlist(self, playlist_id: str) -> bool:
-        """Remove a playlist from liked playlists.
+        """
+        Remove a playlist from liked playlists.
 
         :param playlist_id: Playlist ID.
         :return: True if successful.
@@ -504,11 +511,10 @@ class ZvukMusicClient:
             LOGGER.error("Error unliking playlist %s: %s", playlist_id, err)
             return False
 
-    # Playlist management
-
     @handle_zvuk_errors()
     async def create_playlist(self, name: str, track_ids: list[str] | None = None) -> str:
-        """Create a new playlist.
+        """
+        Create a new playlist.
 
         :param name: Playlist name.
         :param track_ids: Optional list of track IDs to add.
@@ -518,7 +524,8 @@ class ZvukMusicClient:
         return await client.create_playlist(name, track_ids=track_ids)
 
     async def delete_playlist(self, playlist_id: str) -> bool:
-        """Delete a playlist.
+        """
+        Delete a playlist.
 
         :param playlist_id: Playlist ID.
         :return: True if successful.
@@ -531,7 +538,8 @@ class ZvukMusicClient:
             return False
 
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]) -> bool:
-        """Add tracks to a playlist.
+        """
+        Add tracks to a playlist.
 
         :param playlist_id: Playlist ID.
         :param track_ids: List of track IDs to add.
@@ -545,7 +553,8 @@ class ZvukMusicClient:
             return False
 
     async def update_playlist(self, playlist_id: str, track_ids: list[str]) -> bool:
-        """Update playlist tracks (used for removing tracks by providing remaining ones).
+        """
+        Update playlist tracks (used for removing tracks by providing remaining ones).
 
         :param playlist_id: Playlist ID.
         :param track_ids: Complete list of track IDs the playlist should contain.
@@ -557,3 +566,14 @@ class ZvukMusicClient:
         except (BadRequestError, NetworkError, GraphQLError) as err:
             LOGGER.error("Error updating playlist %s: %s", playlist_id, err)
             return False
+
+    def _ensure_connected(self) -> ClientAsync:
+        """Ensure the client is connected and return it."""
+        if self._client is None:
+            raise ProviderUnavailableError("Client not connected, call connect() first")
+        return self._client
+
+    async def _get_client(self) -> ClientAsync:
+        """Acquire a throttle slot then return the connected client."""
+        await self._throttler.acquire()
+        return self._ensure_connected()

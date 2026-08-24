@@ -60,7 +60,8 @@ class YandexMusicStreamingManager:
     """Manages Yandex Music streaming operations."""
 
     def __init__(self, provider: YandexMusicProvider) -> None:
-        """Initialize streaming manager.
+        """
+        Initialize streaming manager.
 
         :param provider: The Yandex Music provider instance.
         """
@@ -69,14 +70,9 @@ class YandexMusicStreamingManager:
         self.mass = provider.mass
         self.logger = provider.logger
 
-    def _track_id_from_item_id(self, item_id: str) -> str:
-        """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
-        if RADIO_TRACK_ID_SEP in item_id:
-            return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
-        return item_id
-
     async def get_stream_details(self, item_id: str) -> StreamDetails:
-        """Get stream details for a track.
+        """
+        Get stream details for a track.
 
         Uses the unified /get-file-info endpoint for all quality tiers.
         Falls back to /tracks/{id}/download-info if get-file-info fails.
@@ -221,525 +217,11 @@ class YandexMusicStreamingManager:
             expiration=50,  # download-info direct links expire after ~60s
         )
 
-    def _select_best_quality(
-        self, download_infos: list[Any], preferred_quality: str | None
-    ) -> DownloadInfo | None:
-        """Select the best quality download info based on user preference.
-
-        Used as fallback when get-file-info is unavailable.
-
-        :param download_infos: List of DownloadInfo objects.
-        :param preferred_quality: User's quality preference (efficient/high/balanced/superb).
-        :return: Best matching DownloadInfo or None.
-        """
-        if not download_infos:
-            return None
-
-        preferred_normalized = (preferred_quality or "").strip().lower()
-
-        # Sort by bitrate descending
-        sorted_infos = sorted(
-            download_infos,
-            key=lambda x: x.bitrate_in_kbps or 0,
-            reverse=True,
-        )
-
-        # Superb: Prefer FLAC. The legacy "lossless" alias still maps to Superb,
-        # but we use an exact-match set so a stray value like "lossless_foo"
-        # doesn't sneak in.
-        if preferred_normalized in {QUALITY_SUPERB, "lossless"}:
-            for codec in ("flac-mp4", "flac"):
-                for info in sorted_infos:
-                    if info.codec and info.codec.lower() == codec:
-                        return info
-            self.logger.warning(
-                "Superb quality (FLAC) requested but not available; using best available"
-            )
-            return sorted_infos[0]
-
-        # Efficient: Prefer lowest bitrate AAC/MP3
-        if preferred_normalized == QUALITY_EFFICIENT:
-            sorted_infos_asc = sorted(
-                download_infos,
-                # ``or float('inf')`` (rather than the previous ``or 999``) makes
-                # the sentinel unambiguous: 999 kbps is conceivably a real
-                # bitrate, but no real Yandex stream reports infinity. Both
-                # ``None`` and ``0`` (which Yandex emits for lossless FLAC) are
-                # falsy and rank last so "efficient" never picks a lossless
-                # stream over a known low-bitrate AAC.
-                key=lambda x: x.bitrate_in_kbps or float("inf"),
-            )
-            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
-                for info in sorted_infos_asc:
-                    if info.codec and info.codec.lower() == codec:
-                        return info
-            return sorted_infos_asc[0]
-
-        # High: Prefer high bitrate MP3 (~320kbps)
-        if preferred_normalized == QUALITY_HIGH:
-            high_quality_mp3 = [
-                info
-                for info in sorted_infos
-                if info.codec
-                and info.codec.lower() == "mp3"
-                and info.bitrate_in_kbps
-                and info.bitrate_in_kbps >= 256
-            ]
-            if high_quality_mp3:
-                return high_quality_mp3[0]
-
-            for info in sorted_infos:
-                if info.codec and info.codec.lower() == "mp3":
-                    return info
-
-            for info in sorted_infos:
-                if info.codec and info.codec.lower() not in ("flac", "flac-mp4"):
-                    return info
-
-            return sorted_infos[0]
-
-        # Balanced (default): Prefer ~192kbps AAC
-        balanced_infos = [
-            info
-            for info in sorted_infos
-            if info.bitrate_in_kbps and 128 <= info.bitrate_in_kbps <= 256
-        ]
-        if balanced_infos:
-            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
-                for info in balanced_infos:
-                    if info.codec and info.codec.lower() == codec:
-                        return info
-            return balanced_infos[0]
-
-        return sorted_infos[0] if sorted_infos else None
-
-    def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
-        """Determine content_type and codec_type from Yandex API codec string.
-
-        Parses the codec string automatically:
-        - Simple codecs ("flac", "mp3", "aac") → (ContentType.<codec>, UNKNOWN)
-        - Compound "codec-container" ("flac-mp4", "aac-mp4") →
-          (ContentType.<codec>, ContentType.<codec>)
-
-        content_type always reflects the audio codec (not the container),
-        so MA's is_lossless() correctly identifies lossless streams and
-        ffmpeg gets the right decoder name via codec_type.
-
-        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "mp3").
-        :return: Tuple of (content_type, codec_type).
-        """
-        if not codec:
-            return ContentType.UNKNOWN, ContentType.UNKNOWN
-
-        codec_lower = codec.lower()
-
-        # Strip container suffix: "flac-mp4" → "flac", "he-aac-mp4" → "he-aac"
-        has_container = codec_lower.endswith("-mp4")
-        audio_part = codec_lower[:-4] if has_container else codec_lower
-
-        # Normalize aliases (he-aac → aac, mpeg → mp3)
-        audio_part = _CODEC_ALIASES.get(audio_part, audio_part)
-
-        try:
-            content_type = ContentType(audio_part)
-        except ValueError:
-            self.logger.debug("Unknown codec from Yandex API: %s", codec)
-            return ContentType.UNKNOWN, ContentType.UNKNOWN
-
-        # For compound formats, set codec_type so ffmpeg knows the decoder
-        codec_type = content_type if has_container else ContentType.UNKNOWN
-        return content_type, codec_type
-
-    def _build_audio_format(
-        self,
-        codec: str | None,
-        *,
-        bit_rate: int = 0,
-        sample_rate: int = 0,
-        bit_depth: int = 0,
-    ) -> AudioFormat:
-        """Build AudioFormat from codec string and optional stream metadata.
-
-        Values of 0 mean "unknown — let MA/ffmpeg detect from the actual stream".
-        Pass real values from the API response when available.
-
-        :param codec: Codec string from Yandex API.
-        :param bit_rate: Bitrate in kbps (0 = unknown).
-        :param sample_rate: Sample rate in Hz (0 = unknown, detect from stream).
-        :param bit_depth: Bit depth (0 = unknown, detect from stream).
-        :return: Configured AudioFormat instance.
-        """
-        content_type, codec_type = self._get_content_type(codec)
-        kwargs: dict[str, Any] = {
-            "content_type": content_type,
-            "codec_type": codec_type,
-        }
-        # Only pass non-zero values; AudioFormat defaults to 44100/16 which
-        # MA/ffmpeg rely on.  Passing 0 would override those defaults.
-        if bit_rate:
-            kwargs["bit_rate"] = bit_rate
-        if sample_rate:
-            kwargs["sample_rate"] = sample_rate
-        if bit_depth:
-            kwargs["bit_depth"] = bit_depth
-        return AudioFormat(**kwargs)
-
-    @staticmethod
-    def _parse_flac_streaminfo(header: bytes) -> tuple[int, int]:
-        """Extract sample_rate and bit_depth from FLAC STREAMINFO block.
-
-        FLAC format: 4-byte magic "fLaC", then metadata blocks.
-        STREAMINFO is always the first block (type 0), 34 bytes payload.
-        Bytes 10-17 of STREAMINFO contain sample_rate (20 bits),
-        channels (3 bits), bit_depth (5 bits), total samples (36 bits).
-
-        :param header: First 42+ bytes of the FLAC stream.
-        :return: (sample_rate, bit_depth) or (0, 0) on parse failure.
-        """
-        if len(header) < 42 or header[:4] != b"fLaC":
-            return 0, 0
-        # STREAMINFO payload: 4 magic + 4 block header = 8 byte offset, 34 bytes long
-        # Bytes 10-13 of payload: sample_rate(20) | channels(3) | bps(5) | total(4 high)
-        payload = header[8:]  # skip "fLaC" + block header
-        if len(payload) < 34:
-            return 0, 0
-        val = int.from_bytes(payload[10:14], "big")
-        sample_rate = (val >> 12) & 0xFFFFF
-        bit_depth = ((val >> 4) & 0x1F) + 1
-        return sample_rate, bit_depth
-
-    @staticmethod
-    def _parse_mp4_audio_params(header: bytes) -> tuple[int, int]:
-        """Extract sample_rate and bit_depth from MP4/fMP4 container.
-
-        Scans for the 'dfLa' (FLAC-in-MP4) box, or falls back to parsing
-        the AudioSampleEntry in an 'mp4a' box to read sample size and sample rate.
-
-        :param header: First 8-32 KB of the MP4 stream.
-        :return: (sample_rate, bit_depth) or (0, 0) if not found.
-        """
-        # Quick scan for dfLa box (FLAC-in-MP4: contains FLAC STREAMINFO)
-        dfl_pos = header.find(b"dfLa")
-        if dfl_pos >= 4:
-            # dfLa box layout after "dfLa" type:
-            #   4 bytes version/flags
-            #   4 bytes STREAMINFO block header (type byte + 3-byte length)
-            #   34 bytes STREAMINFO payload
-            payload_start = dfl_pos + 4 + 4 + 4  # after type + version/flags + block header
-            payload = header[payload_start:]
-            if len(payload) >= 34:
-                val = int.from_bytes(payload[10:14], "big")
-                sample_rate = (val >> 12) & 0xFFFFF
-                bit_depth = ((val >> 4) & 0x1F) + 1
-                if 8000 <= sample_rate <= 384000 and 1 <= bit_depth <= 32:
-                    return sample_rate, bit_depth
-
-        # Scan for mp4a AudioSampleEntry (AAC/generic audio in MP4)
-        mp4a_pos = header.find(b"mp4a")
-        if mp4a_pos >= 4:
-            # AudioSampleEntry: 4-byte size, "mp4a", 6 reserved, 2 data_ref,
-            # 2 version, 2 revision, 4 vendor, 2 channels, 2 sample_size,
-            # 2 compression_id, 2 packet_size, 4 sample_rate (16.16 fixed-point)
-            entry_start = mp4a_pos + 4  # after "mp4a"
-            entry = header[entry_start:]
-            if len(entry) >= 28:
-                sample_size = int.from_bytes(entry[18:20], "big")
-                sr_fixed = int.from_bytes(entry[24:28], "big")
-                sample_rate = sr_fixed >> 16
-                bit_depth = max(0, sample_size)
-                if 8000 <= sample_rate <= 384000:
-                    return sample_rate, bit_depth
-
-        return 0, 0
-
-    async def _probe_stream_params(self, url: str, codec: str) -> tuple[int, int]:
-        """Probe audio params by reading the first bytes of the stream.
-
-        Makes a small Range request to read container/stream headers,
-        then parses FLAC STREAMINFO or MP4 box structure.
-
-        :param url: Stream URL.
-        :param codec: Codec string from API (e.g. "flac-mp4", "flac").
-        :return: (sample_rate, bit_depth) or (0, 0) if probing fails.
-        """
-        codec_lower = (codec or "").lower()
-        # Determine how many bytes to read and which parser to use
-        if codec_lower == "flac":
-            probe_size = 64
-            parser = self._parse_flac_streaminfo
-        elif "-mp4" in codec_lower:
-            probe_size = 32768  # MP4 moov/stsd can be further in
-            parser = self._parse_mp4_audio_params
-        else:
-            return 0, 0  # lossy without container — let MA detect
-
-        try:
-            headers = {"Range": f"bytes=0-{probe_size - 1}"}
-            async with self.mass.http_session.get(
-                url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status not in (200, 206):
-                    return 0, 0
-                header_bytes = await resp.content.read(probe_size)
-                self.logger.debug("Probe read %d bytes for codec=%s", len(header_bytes), codec)
-                result = parser(header_bytes)
-                self.logger.debug("Probe result: sample_rate=%d, bit_depth=%d", *result)
-                return result
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self.logger.debug("Stream probe failed for codec=%s", codec)
-            return 0, 0
-
-    async def _refresh_stream_url(
-        self,
-        streamdetails: StreamDetails,
-        http_status: int,
-        bytes_yielded: int,
-        attempt: int,
-        max_retries: int,
-    ) -> bool:
-        """Re-fetch an expired stream URL (works for both raw and encraw).
-
-        Updates streamdetails.data in-place with new URL (and key for encraw).
-
-        :return: True on success, False if retries exhausted.
-        """
-        if attempt >= max_retries:
-            return False
-        data = streamdetails.data
-        track_id = self._track_id_from_item_id(streamdetails.item_id)
-        self.logger.warning(
-            "Stream URL expired (HTTP %d) at %d bytes (attempt %d/%d) — re-fetching",
-            http_status,
-            bytes_yielded,
-            attempt + 1,
-            max_retries,
-        )
-        token = BYPASS_THROTTLER.set(True)
-        try:
-            file_info = await self.client.get_track_file_info(
-                track_id,
-                quality=data["fi_quality"],
-                codecs=data["fi_codecs"],
-                transport=data.get("transport", TRANSPORT_RAW),
-            )
-        finally:
-            BYPASS_THROTTLER.reset(token)
-        if file_info and file_info.get("url"):
-            data["url"] = file_info["url"]
-            if "decryption_key" in data and file_info.get("key"):
-                data["decryption_key"] = file_info["key"]
-            return True
-        return False
-
-    async def _decrypt_response_stream(
-        self,
-        response: Any,
-        key_bytes: bytes,
-        block_size: int,
-        bytes_delivered: int,
-    ) -> AsyncGenerator[bytes, None]:
-        """Decrypt one HTTP response and yield plaintext chunks.
-
-        Aligns the AES-CTR counter to the correct block for resumption.
-        If the server ignores a Range header (200 instead of 206), resets the
-        counter to 0 and skips the already-delivered prefix transparently.
-
-        :param response: aiohttp ClientResponse (open context manager).
-        :param key_bytes: Raw AES key bytes.
-        :param block_size: AES block size (16 for CTR mode).
-        :param bytes_delivered: Total plaintext bytes already sent to the caller.
-        :return: Async generator yielding decrypted audio bytes.
-        """
-        block_start = (bytes_delivered // block_size) * block_size
-        block_skip = bytes_delivered - block_start
-
-        if block_start > 0 and response.status == 200:
-            self.logger.warning(
-                "Server ignored Range header at %d bytes (200 instead of 206)"
-                " — restarting decrypt from position 0, skipping %d already-sent bytes",
-                block_start,
-                bytes_delivered,
-            )
-            block_skip = bytes_delivered
-            block_num = (0).to_bytes(block_size, "big")
-        else:
-            block_num = (block_start // block_size).to_bytes(block_size, "big")
-
-        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(block_num)).decryptor()
-        carry_skip = block_skip
-        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-            decrypted = decryptor.update(chunk)
-            if carry_skip > 0:
-                skip = min(carry_skip, len(decrypted))
-                decrypted = decrypted[skip:]
-                carry_skip -= skip
-            if decrypted:
-                yield decrypted
-        final = decryptor.finalize()
-        if final:
-            yield final
-
-    def _handle_stream_error(
-        self,
-        err: Exception,
-        attempt: int,
-        max_retries: int,
-        bytes_yielded: int,
-        delays: tuple[float, ...],
-        label: str,
-    ) -> tuple[int, float]:
-        """Increment retry counter, log a warning, or raise if retries are exhausted.
-
-        :param err: The exception that caused the retry.
-        :param attempt: Current retry attempt count (0-based).
-        :param max_retries: Maximum number of retries allowed.
-        :param bytes_yielded: Bytes delivered so far (for log context).
-        :param delays: Backoff delay sequence to pick from.
-        :param label: Short verb describing the failure (e.g. "dropped", "stalled").
-        :return: (new_attempt, retry_delay) tuple when retrying.
-        :raises MediaNotFoundError: When attempt count exceeds max_retries.
-        """
-        delay = delays[min(attempt, len(delays) - 1)]
-        attempt += 1
-        if attempt <= max_retries:
-            self.logger.warning(
-                "Stream %s at %d bytes (attempt %d/%d) — retrying",
-                label,
-                bytes_yielded,
-                attempt,
-                max_retries,
-            )
-            return attempt, delay
-        raise MediaNotFoundError(f"Stream {label} after retries were exhausted") from err
-
-    @staticmethod
-    def _is_content_range_eof(headers: Any, window_end: int) -> bool:
-        """Return True when Content-Range indicates *window_end* reached the last file byte.
-
-        Parses ``Content-Range: bytes start-end/total`` and checks whether
-        ``window_end >= total - 1``.  Returns False on any malformed header so
-        the caller falls back to the next window safely.
-        """
-        content_range = headers.get("Content-Range", "")
-        if not content_range.startswith("bytes "):
-            return False
-        try:
-            _, range_spec = content_range.split(" ", 1)
-            _, total_str = range_spec.split("/", 1)
-            total_str = total_str.strip()
-            return total_str.isdigit() and window_end >= int(total_str) - 1
-        except ValueError:
-            return False
-
-    async def _iter_raw_response(
-        self,
-        response: Any,
-        bytes_delivered: int,
-        block_start: int,
-    ) -> AsyncGenerator[bytes, None]:
-        """Yield raw (unencrypted) chunks from one HTTP response.
-
-        If the server ignored the Range header (200 instead of 206), skips the
-        already-delivered prefix transparently.
-
-        :param response: aiohttp ClientResponse (open context manager).
-        :param bytes_delivered: Total bytes already sent to the caller.
-        :param block_start: Requested Range start offset.
-        :return: Async generator yielding raw audio bytes.
-        """
-        range_ignored = response.status == 200 and block_start > 0
-        skip_bytes = bytes_delivered if range_ignored else 0
-        async for raw_chunk in response.content.iter_chunked(_CHUNK_SIZE):
-            if skip_bytes > 0:
-                if len(raw_chunk) <= skip_bytes:
-                    skip_bytes -= len(raw_chunk)
-                    continue
-                raw_chunk = raw_chunk[skip_bytes:]  # noqa: PLW2901
-                skip_bytes = 0
-            if raw_chunk:
-                yield raw_chunk
-
-    async def _handle_expired_url(
-        self,
-        streamdetails: StreamDetails,
-        response_status: int,
-        bytes_yielded: int,
-        attempt: int,
-        max_retries: int,
-    ) -> bytes:
-        """Handle URL expiry (401/403/410) by refreshing and returning updated key.
-
-        :return: Updated AES key bytes for encrypted streams, or empty ``bytes``
-            for raw streams.
-        :raises MediaNotFoundError: When refresh fails or retries are exhausted.
-        """
-        if not await self._refresh_stream_url(
-            streamdetails,
-            response_status,
-            bytes_yielded,
-            attempt,
-            max_retries,
-        ):
-            raise MediaNotFoundError(
-                f"Stream URL expired (HTTP {response_status}) after retries exhausted"
-            )
-        data = streamdetails.data
-        if "decryption_key" in data:
-            try:
-                return bytes.fromhex(data["decryption_key"])
-            except ValueError as err:
-                raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
-        return b""
-
-    @staticmethod
-    def _validate_encryption_key(data: dict[str, Any]) -> tuple[bool, bytes | None]:
-        """Validate and extract encryption parameters from stream data.
-
-        :return: (is_encrypted, key_bytes) tuple.
-        :raises MediaNotFoundError: If AES key length is invalid.
-        """
-        if "decryption_key" not in data:
-            return False, None
-        try:
-            key_bytes = bytes.fromhex(data["decryption_key"])
-        except ValueError as err:
-            raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
-        if len(key_bytes) not in (16, 24, 32):
-            raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
-        return True, key_bytes
-
-    def _calculate_seek_offset(
-        self, data: dict[str, Any], seek_position: int, is_encrypted: bool
-    ) -> int:
-        """Calculate initial byte offset for raw transport seeking.
-
-        :param data: Stream data dict (must contain 'bit_rate' in kbps).
-        :param seek_position: Seek offset in seconds.
-        :param is_encrypted: Whether the stream uses AES encryption.
-        :return: Byte offset to start streaming from (0 if not applicable).
-        """
-        if seek_position <= 0 or is_encrypted:
-            return 0
-        bit_rate = data.get("bit_rate") or 0
-        if not bit_rate:
-            return 0
-        byte_offset = seek_position * bit_rate * 1000 // 8
-        self.logger.debug(
-            "Seeking to %ds: byte offset %d (bitrate %d kbps)",
-            seek_position,
-            byte_offset,
-            bit_rate,
-        )
-        return byte_offset
-
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream via windowed Range requests.
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio stream via windowed Range requests.
 
         Handles both raw (direct) and encraw (AES-CTR encrypted) transports.
         Downloads in windowed Range requests of _RANGE_WINDOW bytes each to prevent
@@ -855,3 +337,538 @@ class YandexMusicStreamingManager:
                     _STALL_DELAYS,
                     "stalled",
                 )
+
+    def _track_id_from_item_id(self, item_id: str) -> str:
+        """Extract API track ID from item_id (may be track_id@station_id for My Wave)."""
+        if RADIO_TRACK_ID_SEP in item_id:
+            return item_id.split(RADIO_TRACK_ID_SEP, 1)[0]
+        return item_id
+
+    def _select_best_quality(
+        self, download_infos: list[Any], preferred_quality: str | None
+    ) -> DownloadInfo | None:
+        """
+        Select the best quality download info based on user preference.
+
+        Used as fallback when get-file-info is unavailable.
+
+        :param download_infos: List of DownloadInfo objects.
+        :param preferred_quality: User's quality preference (efficient/high/balanced/superb).
+        :return: Best matching DownloadInfo or None.
+        """
+        if not download_infos:
+            return None
+
+        preferred_normalized = (preferred_quality or "").strip().lower()
+
+        # Sort by bitrate descending
+        sorted_infos = sorted(
+            download_infos,
+            key=lambda x: x.bitrate_in_kbps or 0,
+            reverse=True,
+        )
+
+        # Superb: Prefer FLAC. The legacy "lossless" alias still maps to Superb,
+        # but we use an exact-match set so a stray value like "lossless_foo"
+        # doesn't sneak in.
+        if preferred_normalized in {QUALITY_SUPERB, "lossless"}:
+            for codec in ("flac-mp4", "flac"):
+                for info in sorted_infos:
+                    if info.codec and info.codec.lower() == codec:
+                        return info
+            self.logger.warning(
+                "Superb quality (FLAC) requested but not available; using best available"
+            )
+            return sorted_infos[0]
+
+        # Efficient: Prefer lowest bitrate AAC/MP3
+        if preferred_normalized == QUALITY_EFFICIENT:
+            sorted_infos_asc = sorted(
+                download_infos,
+                # ``or float('inf')`` (rather than the previous ``or 999``) makes
+                # the sentinel unambiguous: 999 kbps is conceivably a real
+                # bitrate, but no real Yandex stream reports infinity. Both
+                # ``None`` and ``0`` (which Yandex emits for lossless FLAC) are
+                # falsy and rank last so "efficient" never picks a lossless
+                # stream over a known low-bitrate AAC.
+                key=lambda x: x.bitrate_in_kbps or float("inf"),
+            )
+            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
+                for info in sorted_infos_asc:
+                    if info.codec and info.codec.lower() == codec:
+                        return info
+            return sorted_infos_asc[0]
+
+        # High: Prefer high bitrate MP3 (~320kbps)
+        if preferred_normalized == QUALITY_HIGH:
+            high_quality_mp3 = [
+                info
+                for info in sorted_infos
+                if info.codec
+                and info.codec.lower() == "mp3"
+                and info.bitrate_in_kbps
+                and info.bitrate_in_kbps >= 256
+            ]
+            if high_quality_mp3:
+                return high_quality_mp3[0]
+
+            for info in sorted_infos:
+                if info.codec and info.codec.lower() == "mp3":
+                    return info
+
+            for info in sorted_infos:
+                if info.codec and info.codec.lower() not in ("flac", "flac-mp4"):
+                    return info
+
+            return sorted_infos[0]
+
+        # Balanced (default): Prefer ~192kbps AAC
+        balanced_infos = [
+            info
+            for info in sorted_infos
+            if info.bitrate_in_kbps and 128 <= info.bitrate_in_kbps <= 256
+        ]
+        if balanced_infos:
+            for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
+                for info in balanced_infos:
+                    if info.codec and info.codec.lower() == codec:
+                        return info
+            return balanced_infos[0]
+
+        return sorted_infos[0] if sorted_infos else None
+
+    def _get_content_type(self, codec: str | None) -> tuple[ContentType, ContentType]:
+        """
+        Determine content_type and codec_type from Yandex API codec string.
+
+        Parses the codec string automatically:
+        - Simple codecs ("flac", "mp3", "aac") → (ContentType.<codec>, UNKNOWN)
+        - Compound "codec-container" ("flac-mp4", "aac-mp4") →
+          (ContentType.<codec>, ContentType.<codec>)
+
+        content_type always reflects the audio codec (not the container),
+        so MA's is_lossless() correctly identifies lossless streams and
+        ffmpeg gets the right decoder name via codec_type.
+
+        :param codec: Codec string from Yandex API (e.g. "flac-mp4", "mp3").
+        :return: Tuple of (content_type, codec_type).
+        """
+        if not codec:
+            return ContentType.UNKNOWN, ContentType.UNKNOWN
+
+        codec_lower = codec.lower()
+
+        # Strip container suffix: "flac-mp4" → "flac", "he-aac-mp4" → "he-aac"
+        has_container = codec_lower.endswith("-mp4")
+        audio_part = codec_lower[:-4] if has_container else codec_lower
+
+        # Normalize aliases (he-aac → aac, mpeg → mp3)
+        audio_part = _CODEC_ALIASES.get(audio_part, audio_part)
+
+        try:
+            content_type = ContentType(audio_part)
+        except ValueError:
+            self.logger.debug("Unknown codec from Yandex API: %s", codec)
+            return ContentType.UNKNOWN, ContentType.UNKNOWN
+
+        # For compound formats, set codec_type so ffmpeg knows the decoder
+        codec_type = content_type if has_container else ContentType.UNKNOWN
+        return content_type, codec_type
+
+    def _build_audio_format(
+        self,
+        codec: str | None,
+        *,
+        bit_rate: int = 0,
+        sample_rate: int = 0,
+        bit_depth: int = 0,
+    ) -> AudioFormat:
+        """
+        Build AudioFormat from codec string and optional stream metadata.
+
+        Values of 0 mean "unknown — let MA/ffmpeg detect from the actual stream".
+        Pass real values from the API response when available.
+
+        :param codec: Codec string from Yandex API.
+        :param bit_rate: Bitrate in kbps (0 = unknown).
+        :param sample_rate: Sample rate in Hz (0 = unknown, detect from stream).
+        :param bit_depth: Bit depth (0 = unknown, detect from stream).
+        :return: Configured AudioFormat instance.
+        """
+        content_type, codec_type = self._get_content_type(codec)
+        kwargs: dict[str, Any] = {
+            "content_type": content_type,
+            "codec_type": codec_type,
+        }
+        # Only pass non-zero values; AudioFormat defaults to 44100/16 which
+        # MA/ffmpeg rely on.  Passing 0 would override those defaults.
+        if bit_rate:
+            kwargs["bit_rate"] = bit_rate
+        if sample_rate:
+            kwargs["sample_rate"] = sample_rate
+        if bit_depth:
+            kwargs["bit_depth"] = bit_depth
+        return AudioFormat(**kwargs)
+
+    @staticmethod
+    def _parse_flac_streaminfo(header: bytes) -> tuple[int, int]:
+        """
+        Extract sample_rate and bit_depth from FLAC STREAMINFO block.
+
+        FLAC format: 4-byte magic "fLaC", then metadata blocks.
+        STREAMINFO is always the first block (type 0), 34 bytes payload.
+        Bytes 10-17 of STREAMINFO contain sample_rate (20 bits),
+        channels (3 bits), bit_depth (5 bits), total samples (36 bits).
+
+        :param header: First 42+ bytes of the FLAC stream.
+        :return: (sample_rate, bit_depth) or (0, 0) on parse failure.
+        """
+        if len(header) < 42 or header[:4] != b"fLaC":
+            return 0, 0
+        # STREAMINFO payload: 4 magic + 4 block header = 8 byte offset, 34 bytes long
+        # Bytes 10-13 of payload: sample_rate(20) | channels(3) | bps(5) | total(4 high)
+        payload = header[8:]  # skip "fLaC" + block header
+        if len(payload) < 34:
+            return 0, 0
+        val = int.from_bytes(payload[10:14], "big")
+        sample_rate = (val >> 12) & 0xFFFFF
+        bit_depth = ((val >> 4) & 0x1F) + 1
+        return sample_rate, bit_depth
+
+    @staticmethod
+    def _parse_mp4_audio_params(header: bytes) -> tuple[int, int]:
+        """
+        Extract sample_rate and bit_depth from MP4/fMP4 container.
+
+        Scans for the 'dfLa' (FLAC-in-MP4) box, or falls back to parsing
+        the AudioSampleEntry in an 'mp4a' box to read sample size and sample rate.
+
+        :param header: First 8-32 KB of the MP4 stream.
+        :return: (sample_rate, bit_depth) or (0, 0) if not found.
+        """
+        # Quick scan for dfLa box (FLAC-in-MP4: contains FLAC STREAMINFO)
+        dfl_pos = header.find(b"dfLa")
+        if dfl_pos >= 4:
+            # dfLa box layout after "dfLa" type:
+            #   4 bytes version/flags
+            #   4 bytes STREAMINFO block header (type byte + 3-byte length)
+            #   34 bytes STREAMINFO payload
+            payload_start = dfl_pos + 4 + 4 + 4  # after type + version/flags + block header
+            payload = header[payload_start:]
+            if len(payload) >= 34:
+                val = int.from_bytes(payload[10:14], "big")
+                sample_rate = (val >> 12) & 0xFFFFF
+                bit_depth = ((val >> 4) & 0x1F) + 1
+                if 8000 <= sample_rate <= 384000 and 1 <= bit_depth <= 32:
+                    return sample_rate, bit_depth
+
+        # Scan for mp4a AudioSampleEntry (AAC/generic audio in MP4)
+        mp4a_pos = header.find(b"mp4a")
+        if mp4a_pos >= 4:
+            # AudioSampleEntry: 4-byte size, "mp4a", 6 reserved, 2 data_ref,
+            # 2 version, 2 revision, 4 vendor, 2 channels, 2 sample_size,
+            # 2 compression_id, 2 packet_size, 4 sample_rate (16.16 fixed-point)
+            entry_start = mp4a_pos + 4  # after "mp4a"
+            entry = header[entry_start:]
+            if len(entry) >= 28:
+                sample_size = int.from_bytes(entry[18:20], "big")
+                sr_fixed = int.from_bytes(entry[24:28], "big")
+                sample_rate = sr_fixed >> 16
+                bit_depth = max(0, sample_size)
+                if 8000 <= sample_rate <= 384000:
+                    return sample_rate, bit_depth
+
+        return 0, 0
+
+    async def _probe_stream_params(self, url: str, codec: str) -> tuple[int, int]:
+        """
+        Probe audio params by reading the first bytes of the stream.
+
+        Makes a small Range request to read container/stream headers,
+        then parses FLAC STREAMINFO or MP4 box structure.
+
+        :param url: Stream URL.
+        :param codec: Codec string from API (e.g. "flac-mp4", "flac").
+        :return: (sample_rate, bit_depth) or (0, 0) if probing fails.
+        """
+        codec_lower = (codec or "").lower()
+        # Determine how many bytes to read and which parser to use
+        if codec_lower == "flac":
+            probe_size = 64
+            parser = self._parse_flac_streaminfo
+        elif "-mp4" in codec_lower:
+            probe_size = 32768  # MP4 moov/stsd can be further in
+            parser = self._parse_mp4_audio_params
+        else:
+            return 0, 0  # lossy without container — let MA detect
+
+        try:
+            headers = {"Range": f"bytes=0-{probe_size - 1}"}
+            async with self.mass.http_session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status not in (200, 206):
+                    return 0, 0
+                header_bytes = await resp.content.read(probe_size)
+                self.logger.debug("Probe read %d bytes for codec=%s", len(header_bytes), codec)
+                result = parser(header_bytes)
+                self.logger.debug("Probe result: sample_rate=%d, bit_depth=%d", *result)
+                return result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.debug("Stream probe failed for codec=%s", codec)
+            return 0, 0
+
+    async def _refresh_stream_url(
+        self,
+        streamdetails: StreamDetails,
+        http_status: int,
+        bytes_yielded: int,
+        attempt: int,
+        max_retries: int,
+    ) -> bool:
+        """
+        Re-fetch an expired stream URL (works for both raw and encraw).
+
+        Updates streamdetails.data in-place with new URL (and key for encraw).
+
+        :return: True on success, False if retries exhausted.
+        """
+        if attempt >= max_retries:
+            return False
+        data = streamdetails.data
+        track_id = self._track_id_from_item_id(streamdetails.item_id)
+        self.logger.warning(
+            "Stream URL expired (HTTP %d) at %d bytes (attempt %d/%d) — re-fetching",
+            http_status,
+            bytes_yielded,
+            attempt + 1,
+            max_retries,
+        )
+        token = BYPASS_THROTTLER.set(True)
+        try:
+            file_info = await self.client.get_track_file_info(
+                track_id,
+                quality=data["fi_quality"],
+                codecs=data["fi_codecs"],
+                transport=data.get("transport", TRANSPORT_RAW),
+            )
+        finally:
+            BYPASS_THROTTLER.reset(token)
+        if file_info and file_info.get("url"):
+            data["url"] = file_info["url"]
+            if "decryption_key" in data and file_info.get("key"):
+                data["decryption_key"] = file_info["key"]
+            return True
+        return False
+
+    async def _decrypt_response_stream(
+        self,
+        response: Any,
+        key_bytes: bytes,
+        block_size: int,
+        bytes_delivered: int,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Decrypt one HTTP response and yield plaintext chunks.
+
+        Aligns the AES-CTR counter to the correct block for resumption.
+        If the server ignores a Range header (200 instead of 206), resets the
+        counter to 0 and skips the already-delivered prefix transparently.
+
+        :param response: aiohttp ClientResponse (open context manager).
+        :param key_bytes: Raw AES key bytes.
+        :param block_size: AES block size (16 for CTR mode).
+        :param bytes_delivered: Total plaintext bytes already sent to the caller.
+        :return: Async generator yielding decrypted audio bytes.
+        """
+        block_start = (bytes_delivered // block_size) * block_size
+        block_skip = bytes_delivered - block_start
+
+        if block_start > 0 and response.status == 200:
+            self.logger.warning(
+                "Server ignored Range header at %d bytes (200 instead of 206)"
+                " — restarting decrypt from position 0, skipping %d already-sent bytes",
+                block_start,
+                bytes_delivered,
+            )
+            block_skip = bytes_delivered
+            block_num = (0).to_bytes(block_size, "big")
+        else:
+            block_num = (block_start // block_size).to_bytes(block_size, "big")
+
+        decryptor = Cipher(algorithms.AES(key_bytes), modes.CTR(block_num)).decryptor()
+        carry_skip = block_skip
+        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+            decrypted = decryptor.update(chunk)
+            if carry_skip > 0:
+                skip = min(carry_skip, len(decrypted))
+                decrypted = decrypted[skip:]
+                carry_skip -= skip
+            if decrypted:
+                yield decrypted
+        final = decryptor.finalize()
+        if final:
+            yield final
+
+    def _handle_stream_error(
+        self,
+        err: Exception,
+        attempt: int,
+        max_retries: int,
+        bytes_yielded: int,
+        delays: tuple[float, ...],
+        label: str,
+    ) -> tuple[int, float]:
+        """
+        Increment retry counter, log a warning, or raise if retries are exhausted.
+
+        :param err: The exception that caused the retry.
+        :param attempt: Current retry attempt count (0-based).
+        :param max_retries: Maximum number of retries allowed.
+        :param bytes_yielded: Bytes delivered so far (for log context).
+        :param delays: Backoff delay sequence to pick from.
+        :param label: Short verb describing the failure (e.g. "dropped", "stalled").
+        :return: (new_attempt, retry_delay) tuple when retrying.
+        :raises MediaNotFoundError: When attempt count exceeds max_retries.
+        """
+        delay = delays[min(attempt, len(delays) - 1)]
+        attempt += 1
+        if attempt <= max_retries:
+            self.logger.warning(
+                "Stream %s at %d bytes (attempt %d/%d) — retrying",
+                label,
+                bytes_yielded,
+                attempt,
+                max_retries,
+            )
+            return attempt, delay
+        raise MediaNotFoundError(f"Stream {label} after retries were exhausted") from err
+
+    @staticmethod
+    def _is_content_range_eof(headers: Any, window_end: int) -> bool:
+        """
+        Return True when Content-Range indicates *window_end* reached the last file byte.
+
+        Parses ``Content-Range: bytes start-end/total`` and checks whether
+        ``window_end >= total - 1``.  Returns False on any malformed header so
+        the caller falls back to the next window safely.
+        """
+        content_range = headers.get("Content-Range", "")
+        if not content_range.startswith("bytes "):
+            return False
+        try:
+            _, range_spec = content_range.split(" ", 1)
+            _, total_str = range_spec.split("/", 1)
+            total_str = total_str.strip()
+            return total_str.isdigit() and window_end >= int(total_str) - 1
+        except ValueError:
+            return False
+
+    async def _iter_raw_response(
+        self,
+        response: Any,
+        bytes_delivered: int,
+        block_start: int,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Yield raw (unencrypted) chunks from one HTTP response.
+
+        If the server ignored the Range header (200 instead of 206), skips the
+        already-delivered prefix transparently.
+
+        :param response: aiohttp ClientResponse (open context manager).
+        :param bytes_delivered: Total bytes already sent to the caller.
+        :param block_start: Requested Range start offset.
+        :return: Async generator yielding raw audio bytes.
+        """
+        range_ignored = response.status == 200 and block_start > 0
+        skip_bytes = bytes_delivered if range_ignored else 0
+        async for raw_chunk in response.content.iter_chunked(_CHUNK_SIZE):
+            if skip_bytes > 0:
+                if len(raw_chunk) <= skip_bytes:
+                    skip_bytes -= len(raw_chunk)
+                    continue
+                raw_chunk = raw_chunk[skip_bytes:]  # noqa: PLW2901
+                skip_bytes = 0
+            if raw_chunk:
+                yield raw_chunk
+
+    async def _handle_expired_url(
+        self,
+        streamdetails: StreamDetails,
+        response_status: int,
+        bytes_yielded: int,
+        attempt: int,
+        max_retries: int,
+    ) -> bytes:
+        """
+        Handle URL expiry (401/403/410) by refreshing and returning updated key.
+
+        :return: Updated AES key bytes for encrypted streams, or empty ``bytes``
+            for raw streams.
+        :raises MediaNotFoundError: When refresh fails or retries are exhausted.
+        """
+        if not await self._refresh_stream_url(
+            streamdetails,
+            response_status,
+            bytes_yielded,
+            attempt,
+            max_retries,
+        ):
+            raise MediaNotFoundError(
+                f"Stream URL expired (HTTP {response_status}) after retries exhausted"
+            )
+        data = streamdetails.data
+        if "decryption_key" in data:
+            try:
+                return bytes.fromhex(data["decryption_key"])
+            except ValueError as err:
+                raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
+        return b""
+
+    @staticmethod
+    def _validate_encryption_key(data: dict[str, Any]) -> tuple[bool, bytes | None]:
+        """
+        Validate and extract encryption parameters from stream data.
+
+        :return: (is_encrypted, key_bytes) tuple.
+        :raises MediaNotFoundError: If AES key length is invalid.
+        """
+        if "decryption_key" not in data:
+            return False, None
+        try:
+            key_bytes = bytes.fromhex(data["decryption_key"])
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid decryption key: {err}") from err
+        if len(key_bytes) not in (16, 24, 32):
+            raise MediaNotFoundError(f"Unsupported AES key length: {len(key_bytes)} bytes")
+        return True, key_bytes
+
+    def _calculate_seek_offset(
+        self, data: dict[str, Any], seek_position: int, is_encrypted: bool
+    ) -> int:
+        """
+        Calculate initial byte offset for raw transport seeking.
+
+        :param data: Stream data dict (must contain 'bit_rate' in kbps).
+        :param seek_position: Seek offset in seconds.
+        :param is_encrypted: Whether the stream uses AES encryption.
+        :return: Byte offset to start streaming from (0 if not applicable).
+        """
+        if seek_position <= 0 or is_encrypted:
+            return 0
+        bit_rate = data.get("bit_rate") or 0
+        if not bit_rate:
+            return 0
+        byte_offset = seek_position * bit_rate * 1000 // 8
+        self.logger.debug(
+            "Seeking to %ds: byte offset %d (bitrate %d kbps)",
+            seek_position,
+            byte_offset,
+            bit_rate,
+        )
+        return byte_offset

@@ -61,7 +61,8 @@ async def _start_session(
     session_id: str,
     sample_rate: int = 22050,
 ) -> None:
-    """Seed _sessions and call _start_analysis.
+    """
+    Seed _sessions and call _start_analysis.
 
     :param provider: The provider instance to register the session on.
     :param session_id: The session ID to register.
@@ -132,13 +133,14 @@ def test_decode_resample_extract_returns_three_tuple() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_pcm_chunk_offloads_via_to_thread() -> None:
-    """process_pcm_chunk must call _decode_resample_extract via asyncio.to_thread.
+async def test_process_pcm_chunk_offloads_via_run_offloaded() -> None:
+    """
+    process_pcm_chunk must call _decode_resample_extract off the event loop.
 
     Verified by:
     1. Patching _decode_resample_extract with a MagicMock that returns a valid 3-tuple.
     2. Asserting the mock was called once per block.
-    3. Asserting the source of process_pcm_chunk references 'asyncio.to_thread'.
+    3. Asserting the source of process_pcm_chunk routes through the offload seam.
     """
     provider = _make_provider()
     session_id = "sess-t23-offload"
@@ -157,10 +159,11 @@ async def test_process_pcm_chunk_offloads_via_to_thread() -> None:
         f"_decode_resample_extract must be called once per block; got {mock_helper.call_count}"
     )
 
-    # Structural check: process_pcm_chunk must route through asyncio.to_thread
+    # Structural check: process_pcm_chunk must offload decode+extract off the event loop
+    # (via the concurrency-bounded _run_offloaded seam rather than running it inline).
     source = inspect.getsource(provider.process_pcm_chunk)
-    assert "asyncio.to_thread" in source, (
-        "process_pcm_chunk must call asyncio.to_thread (CPU offload for decode+extract)"
+    assert "_run_offloaded" in source, (
+        "process_pcm_chunk must offload decode+extract via _run_offloaded (CPU offload)"
     )
     assert "_decode_resample_extract" in source, (
         "process_pcm_chunk must reference _decode_resample_extract"

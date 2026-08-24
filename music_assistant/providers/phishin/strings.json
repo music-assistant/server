@@ -1,0 +1,24 @@
+{
+  "media": {
+    "folder": {
+      "browse_by_year": { "name": "Browse by Year" },
+      "this_day_in_history": { "name": "This Day in Phish History" },
+      "recent_shows": { "name": "Recent Shows" },
+      "browse_by_venue": { "name": "Browse by Venue" },
+      "browse_by_tag": { "name": "Browse by Tag" },
+      "user_playlists": { "name": "User Playlists" },
+      "top_shows": { "name": "Top 46 Shows" },
+      "top_tracks": { "name": "Top 46 Tracks" },
+      "random_show": { "name": "Random Show" },
+      "year": { "name": "{0} ({1} shows)" },
+      "venue": { "name": "{0} ({1} shows)" },
+      "tag_summary_shows_tracks": { "name": "{0} ({1} shows, {2} tracks)" },
+      "tag_summary_tracks": { "name": "{0} ({1} tracks)" },
+      "tag_shows": { "name": "Shows with {0} ({1})" },
+      "tag_tracks": { "name": "All {0} Tracks ({1})" }
+    }
+  },
+  "manifest": {
+    "description": "Stream live audience recordings and complete setlists from Phish’s archives."
+  }
+}

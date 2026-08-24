@@ -52,7 +52,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_playlists(
         self,
-    ) -> AsyncGenerator[Playlist, None]:
+    ) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         # Get own mylists (editable playlists)
         own_mylists = await self.service_manager.mylist.get_own_mylists()
@@ -123,7 +123,12 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         )
 
         if not create_result:
-            raise MediaNotFoundError(f"Failed to create playlist '{name}' on nicovideo.")
+            raise MediaNotFoundError(
+                f"Failed to create playlist '{name}' on nicovideo.",
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
 
         # Get the created mylist details
         mylist_id = str(create_result.mylist.id_)
@@ -133,7 +138,10 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         if not playlist_with_tracks:
             raise MediaNotFoundError(
-                f"Failed to retrieve created playlist '{name}' from nicovideo."
+                f"Failed to retrieve created playlist '{name}' from nicovideo.",
+                translation_key="retrieve_created_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
             )
 
         self.logger.info("Successfully created playlist '%s' with ID %s", name, mylist_id)

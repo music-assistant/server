@@ -10,6 +10,12 @@ Sendspin enables:
 - **Real-time metadata** including artwork, track info, and playback state
 - **Bidirectional control** allowing clients to control playback
 
+## Source clients
+
+This provider owns Sendspin client connections and output players. The separate
+[Sendspin Source](../sendspin_source/README.md) plugin exposes audio captured by
+source-role clients through Music Assistant's AudioSource interface.
+
 ## Architecture
 
 ```
@@ -205,7 +211,7 @@ Sendspin players support:
 ## Dependencies
 
 - `aiosendspin` - Async Sendspin protocol implementation
-- `aiortc` - WebRTC implementation for Python (used for WebRTC bridging)
+- `aiolibdatachannel` - WebRTC implementation for Python (used for WebRTC bridging)
 - `PIL/Pillow` - Image processing for artwork
 
 ## External Players (Protocol Bridges)
@@ -237,6 +243,40 @@ To bridge another protocol to Sendspin:
 4. Ensure the client_id matches an identifier the protocol linking system recognizes
 
 See the [AirPlay Sendspin Bridge](../airplay/sendspin_bridge.py) for a complete implementation example.
+
+## Virtual Players
+
+Other providers (typically plugins) can host a shared listening session on a
+hidden, server-side "anchor" player via the public virtual player API:
+
+```python
+sendspin = mass.get_provider("sendspin")
+player_id = await sendspin.create_virtual_player(
+    owner_instance_id=self.instance_id,
+    display_name="My Session",
+)
+...
+await sendspin.remove_virtual_player(player_id)
+```
+
+A virtual player owns its own PlayerQueue and leads a native Sendspin group,
+but never renders audio itself. Guest players (e.g. web players) are attached
+and detached through standard grouping (`mass.players.cmd_set_members`) and
+receive the audio stream, with join-catchup for late joiners. Because the
+anchor is server-side and permanent for the session's lifetime, guests coming
+and going never cause a group leader transfer.
+
+Virtual players are hidden from the UI and not exposed to Home Assistant by
+default, expose no volume controls (member volumes apply instead), and are
+removed automatically when the owning provider unloads. Stale configurations
+of virtual players whose owner no longer exists are swept on provider startup.
+
+Virtual players are never auto-restored: when the Sendspin provider reloads
+(or the server restarts), the owning provider must call `create_virtual_player`
+again to restore its session anchor. The player's configuration (including the
+owner marker) may persist across restarts and is reused when the same owner
+recreates the same player id; it is deleted on `remove_virtual_player` or swept
+at startup once the owner provider no longer exists.
 
 ## Related Documentation
 

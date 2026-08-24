@@ -69,7 +69,8 @@ async def _start_session(
     session_id: str,
     sample_rate: int,
 ) -> None:
-    """Seed _sessions with a base AnalysisSessionData then call _start_analysis.
+    """
+    Seed _sessions with a base AnalysisSessionData then call _start_analysis.
 
     :param provider: The provider instance to register the session on.
     :param session_id: The session ID to register.
@@ -120,7 +121,8 @@ async def test_start_analysis_creates_resampler_at_44100() -> None:
 
 @pytest.mark.asyncio
 async def test_process_pcm_chunk_resamples_before_feature_extraction() -> None:
-    """process_pcm_chunk must resample 44100 Hz audio to 22050 Hz before calling extract_block_features.
+    """
+    process_pcm_chunk must resample 44100 Hz audio to 22050 Hz before calling extract_block_features.
 
     Feeds exactly one 10-second block at 44100 Hz (block_bytes = 44100*2*1*10 bytes).
     extract_block_features must be called with audio whose length is approximately

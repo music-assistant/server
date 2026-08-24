@@ -1,0 +1,48 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "Your Pandora username or email address"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Your Pandora password"
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Audio quality to request from Pandora. High quality is only available with an active Pandora subscription. If your account is not eligible for high-quality streaming, standard quality will be used regardless of this setting.",
+      "options": {
+        "standard": "Standard (64 kbps AAC+)",
+        "high": "High (192 kbps MP3)"
+      },
+      "option_descriptions": {
+        "standard": "Always available, on any account.",
+        "high": "Requires an active Pandora subscription; otherwise playback falls back to Standard."
+      }
+    },
+    "socks_url": {
+      "label": "Socks proxy server",
+      "description": "This socks proxy is only used to route Pandora network traffic through.\n\nThe server address should be written as:\n<code>ip_address:port</code> (or <code>socks5://ip_address:port</code>)"
+    },
+    "takeover_stream": {
+      "label": "Take over stream",
+      "description": "Pandora only allows one active stream at a time per account. You can request that Pandora terminate any existing stream on other devices and allow streaming here. You must manually restart playback after performing this action."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Sign in to Pandora",
+      "description": "Enter the username (or email address) and password of your Pandora account."
+    }
+  },
+  "media": {
+    "radio": {
+      "pandora_station": {
+        "name": "Pandora Station {0}"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists."
+  }
+}

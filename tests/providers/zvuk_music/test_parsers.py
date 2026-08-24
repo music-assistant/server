@@ -18,7 +18,8 @@ from music_assistant.providers.zvuk_music.parsers import (
 
 
 def _create_mock_image(template: str = "https://zvuk.com/image/{width}x{height}") -> Mock:
-    """Create a mock Zvuk Image object.
+    """
+    Create a mock Zvuk Image object.
 
     :param template: URL template with {width} and {height} placeholders.
     :return: Mock Image object.
@@ -37,7 +38,8 @@ def _create_mock_artist(
     description: str | None = None,
     second_image: Mock | None = None,
 ) -> Mock:
-    """Create a mock Zvuk artist object.
+    """
+    Create a mock Zvuk artist object.
 
     :param artist_id: Artist ID.
     :param title: Artist name.
@@ -78,7 +80,8 @@ def _create_mock_release(
     label: Mock | None = None,
     image: Mock | None = None,
 ) -> Mock:
-    """Create a mock Zvuk release object.
+    """
+    Create a mock Zvuk release object.
 
     :param release_id: Release ID.
     :param title: Album title.
@@ -142,7 +145,8 @@ def _create_mock_track(
     genres: list[Mock] | None = None,
     credits_str: str | None = None,
 ) -> Mock:
-    """Create a mock Zvuk track object.
+    """
+    Create a mock Zvuk track object.
 
     :param track_id: Track ID.
     :param title: Track title.
@@ -194,7 +198,8 @@ def _create_mock_playlist(
     user_id: int | None = None,
     image: Mock | None = None,
 ) -> Mock:
-    """Create a mock Zvuk playlist object.
+    """
+    Create a mock Zvuk playlist object.
 
     :param playlist_id: Playlist ID.
     :param title: Playlist title.
@@ -710,7 +715,8 @@ class TestParsePlaylist:
         assert result.name == "Unknown Playlist"
 
     def test_parse_playlist_image_src_none(self, mock_provider: Mock) -> None:
-        """Test parsing a playlist whose Image object has src=None does not raise.
+        """
+        Test parsing a playlist whose Image object has src=None does not raise.
 
         Regression test for AttributeError when image.get_url() is called with src=None.
         Zvuk API returns Image objects with src=None for user-created playlists without covers.
@@ -730,7 +736,8 @@ class TestParsePlaylist:
         assert result.metadata.images is None or len(result.metadata.images) == 0
 
     def test_parse_playlist_simple_playlist_no_user_id(self, mock_provider: Mock) -> None:
-        """Test that SimplePlaylist (no user_id) is parsed as not editable.
+        """
+        Test that SimplePlaylist (no user_id) is parsed as not editable.
 
         Synthesis playlists (IDs 3,4,6,11,12,13,14,15) are returned as SimplePlaylist
         objects by get_short_playlist() — they have no user_id attribute.

@@ -9,6 +9,8 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
+from .conftest import use_real_create_task
+
 
 def _fake_album(*, album_id: int, title: str, meta_type: str | None, type_: str | None) -> Mock:
     """Minimal Yandex Album stand-in sufficient for classify_album + parse_audiobook."""
@@ -57,7 +59,9 @@ def provider_mock() -> Mock:
     provider.mass = Mock()
     provider.mass.cache = AsyncMock()
     provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     return provider
 
 
@@ -102,7 +106,8 @@ async def test_search_album_and_audiobook_split(provider_mock: Mock) -> None:
 async def test_search_audiobook_not_dropped_by_limit_when_music_dominates(
     provider_mock: Mock,
 ) -> None:
-    """Limit applied per bucket after classification, not before.
+    """
+    Limit applied per bucket after classification, not before.
 
     Audiobooks tail-listed by Yandex must still appear when top ``limit``
     results are music albums.

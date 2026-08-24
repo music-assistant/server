@@ -10,10 +10,10 @@ from contextlib import suppress
 from datetime import datetime
 from functools import partial
 from threading import get_ident
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.auth import User, UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.background_task import (
     BackgroundTask,
     TaskMetadata,
@@ -23,7 +23,14 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.constants import (
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+    CONF_MAX_CONCURRENT_TASKS,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.models.core_controller import CoreController
 
@@ -34,6 +41,7 @@ from .constants import (
     DEFAULT_TASK_LOG_LINES,
     MAX_FINISHED_TASK_HISTORY,
     TASK_ACTIVITY_UPDATE_INTERVAL,
+    TASK_CANCEL_TIMEOUT,
     TASK_LIFECYCLE_UPDATE_DEBOUNCE,
     TASK_STATE_CONFIG_KEY,
     TASK_UPDATE_TIMER_ID,
@@ -55,9 +63,13 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        CoreConfig,
+    )
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.json import SerializableType
 
 
 class TasksController(CoreController):
@@ -81,10 +93,16 @@ class TasksController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Set up the controller."""
         self.config = config
-        self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = cast(
+            "int", config.get_value(CONF_MAX_CONCURRENT_TASKS, DEFAULT_MAX_CONCURRENT_TASKS)
+        )
         if self._log_handler is None:
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
         """Clean up the controller."""
@@ -94,7 +112,21 @@ class TasksController(CoreController):
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
 
-    @api_command("tasks/list")
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        by_status: dict[str, int] = {}
+        for managed in self._tasks.values():
+            status = managed.task_info.status.value
+            by_status[status] = by_status.get(status, 0) + 1
+        return {
+            "total": len(self._tasks),
+            "by_status": by_status,
+            "scheduled": sum(managed.is_scheduled for managed in self._tasks.values()),
+            "pending_queue": len(self._pending_task_ids),
+            "max_concurrent": self._max_concurrent_tasks,
+        }
+
+    @api_command("tasks/list", required_scope=Scope.SYSTEM_READ)
     def list_tasks(self) -> list[BackgroundTask]:
         """Return all visible managed tasks."""
         return self.list_tasks_for_user(get_current_user())
@@ -103,17 +135,17 @@ class TasksController(CoreController):
         """Return tasks visible to the given user."""
         return [managed.task_info for managed in get_visible_tasks(self._tasks.values(), user)]
 
-    @api_command("tasks/get")
+    @api_command("tasks/get", required_scope=Scope.SYSTEM_READ)
     def get_task(self, task_id: str) -> BackgroundTask:
         """Return a single task by id."""
         return self._get_visible_managed_task(task_id, get_current_user()).task_info
 
-    @api_command("tasks/log")
+    @api_command("tasks/log", required_scope=Scope.SYSTEM_READ)
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
         return "\n".join(self._get_visible_managed_task(task_id, get_current_user()).task_info.logs)
 
-    @api_command("tasks/run", required_role=UserRole.ADMIN)
+    @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
         """Queue a task for immediate execution."""
         managed = self._get_managed_task(task_id)
@@ -127,7 +159,7 @@ class TasksController(CoreController):
         )
         return managed.task_info
 
-    @api_command("tasks/retry", required_role=UserRole.ADMIN)
+    @api_command("tasks/retry", required_scope=Scope.SYSTEM_MANAGE)
     def retry_task(self, task_id: str) -> BackgroundTask:
         """Retry a failed or cancelled task."""
         managed = self._get_managed_task(task_id)
@@ -147,14 +179,14 @@ class TasksController(CoreController):
         )
         return managed.task_info
 
-    @api_command("tasks/cancel", required_role=UserRole.ADMIN)
+    @api_command("tasks/cancel", required_scope=Scope.SYSTEM_MANAGE)
     def cancel_task(self, task_id: str) -> BackgroundTask:
         """Cancel a pending or running task."""
         managed = self._get_managed_task(task_id)
         self._cancel_managed_task(managed)
         return managed.task_info
 
-    @api_command("tasks/set_enabled", required_role=UserRole.ADMIN)
+    @api_command("tasks/set_enabled", required_scope=Scope.SYSTEM_MANAGE)
     def set_task_enabled(self, task_id: str, enabled: bool) -> BackgroundTask:
         """Enable or disable automatic scheduling for a recurring task."""
         managed = self._get_managed_task(task_id)
@@ -177,7 +209,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/update_schedule", required_role=UserRole.ADMIN)
+    @api_command("tasks/update_schedule", required_scope=Scope.SYSTEM_MANAGE)
     def update_task_schedule(
         self,
         task_id: str,
@@ -202,7 +234,7 @@ class TasksController(CoreController):
             self._schedule_task_update(force=True)
         return managed.task_info
 
-    @api_command("tasks/remove", required_role=UserRole.ADMIN)
+    @api_command("tasks/remove", required_scope=Scope.SYSTEM_MANAGE)
     def remove_task(self, task_id: str) -> None:
         """Remove a finished task from history."""
         managed = self._get_managed_task(task_id)
@@ -211,7 +243,7 @@ class TasksController(CoreController):
         self._tasks.pop(task_id, None)
         self._schedule_task_update(force=True)
 
-    @api_command("tasks/clear_finished", required_role=UserRole.ADMIN)
+    @api_command("tasks/clear_finished", required_scope=Scope.SYSTEM_MANAGE)
     def clear_finished_tasks(self) -> None:
         """Remove finished non-scheduled tasks from history."""
         for task_id in [task_id for task_id, task in self._tasks.items() if task.can_remove]:
@@ -226,6 +258,7 @@ class TasksController(CoreController):
         task_id: str | None = None,
         translation_key: str | None = None,
         translation_args: list[Any] | None = None,
+        translation_owner: str | None = None,
         user_id: str | None = None,
         metadata: TaskMetadata | None = None,
         allow_retry: bool = False,
@@ -233,7 +266,8 @@ class TasksController(CoreController):
         priority: bool = False,
         max_log_lines: int = DEFAULT_TASK_LOG_LINES,
     ) -> BackgroundTask:
-        """Create and queue a long running background task.
+        """
+        Create and queue a long running background task.
 
         :param name: Human-readable display name for the task.
         :param handler: Async callable that performs the actual work.
@@ -242,6 +276,8 @@ class TasksController(CoreController):
             the existing task is returned as-is. If inactive, it is replaced.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
+        :param translation_owner: Owner namespace the (relative) translation_key resolves under,
+            e.g. the calling module's ``translation_owner`` ("core.<domain>"/"provider.<domain>").
         :param user_id: Optional user id that initiated the task.
         :param metadata: Optional key/value metadata attached to the task.
         :param allow_retry: Whether the task can be retried after failure.
@@ -261,8 +297,9 @@ class TasksController(CoreController):
             id=resolved_task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
+            translation_owner=translation_owner,
             user_id=user_id,
             metadata=metadata or {},
             allow_retry=allow_retry,
@@ -278,7 +315,7 @@ class TasksController(CoreController):
         self._queue_task(managed, reset_logs=True, run_user_id=user_id)
         return task_info
 
-    def register_scheduled_task(
+    def register_scheduled_task(  # noqa: PLR0913
         self,
         *,
         task_id: str,
@@ -288,11 +325,13 @@ class TasksController(CoreController):
         initial_delay: float | None = None,
         translation_key: str | None = None,
         translation_args: list[Any] | None = None,
+        translation_owner: str | None = None,
         metadata: TaskMetadata | None = None,
         allow_retry: bool = False,
         allow_cancel: bool = True,
     ) -> BackgroundTask:
-        """Register or update a recurring scheduled task.
+        """
+        Register or update a recurring scheduled task.
 
         :param task_id: Deterministic id for the scheduled task.
         :param name: Human-readable display name for the task.
@@ -301,6 +340,8 @@ class TasksController(CoreController):
         :param initial_delay: Optional delay in seconds before the first run.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
+        :param translation_owner: Owner namespace the (relative) translation_key resolves under,
+            e.g. the calling module's ``translation_owner`` ("core.<domain>"/"provider.<domain>").
         :param metadata: Optional key/value metadata attached to the task.
         :param allow_retry: Whether the task can be retried after failure.
         :param allow_cancel: Whether the task can be cancelled by a user.
@@ -309,8 +350,9 @@ class TasksController(CoreController):
         if existing := self._tasks.get(task_id):
             task_info = existing.task_info
             task_info.name = name
-            task_info.translation_key = translation_key
+            task_info.translation_key = _namespaced_translation_key(translation_key)
             task_info.translation_args = translation_args or []
+            task_info.translation_owner = translation_owner
             task_info.metadata = metadata or {}
             if task_info.schedule is not None:
                 task_info.schedule = merge_task_schedule_state(
@@ -334,8 +376,9 @@ class TasksController(CoreController):
             id=task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
+            translation_owner=translation_owner,
             metadata=metadata or {},
             schedule=resolved_schedule,
             allow_retry=allow_retry,
@@ -350,7 +393,8 @@ class TasksController(CoreController):
         return task_info
 
     def unregister_scheduled_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a recurring scheduled task and cancel any active work.
+        """
+        Unregister a recurring scheduled task and cancel any active work.
 
         If a stale ad-hoc task exists with the same deterministic task id,
         remove that too so provider/task re-registration can recover cleanly.
@@ -360,26 +404,49 @@ class TasksController(CoreController):
         """
         self._unregister_task(task_id, clear_persisted_state)
 
-    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a managed task and cancel any active work."""
-        if not (managed := self._tasks.get(task_id)):
-            return
-        managed.removed = True
-        managed.clear_persisted_state_on_remove = clear_persisted_state
-        self.mass.cancel_timer(get_task_timer_id(task_id))
-        self._remove_from_pending(task_id)
-        if managed.current_task and not managed.current_task.done():
-            managed.current_task.cancel()
-            return
-        self._tasks.pop(task_id, None)
-        if clear_persisted_state:
-            self._clear_scheduled_task_state(task_id)
-        self._schedule_task_update(force=True)
+    async def unregister_scheduled_task_and_wait(
+        self,
+        task_id: str,
+        clear_persisted_state: bool = True,
+        timeout: float = TASK_CANCEL_TIMEOUT,
+    ) -> bool:
+        """
+        Unregister a recurring scheduled task and wait for a running task to unwind.
+
+        Cancellation is only a request: with plain ``unregister_scheduled_task`` the task
+        can still be running (unwinding) when the caller continues. Use this variant from
+        teardown paths that destroy state the task may still be touching, such as unloading
+        a provider.
+
+        Note that a task blocked in a thread (``asyncio.to_thread`` and friends) unwinds
+        immediately while its thread keeps running, so this does not guarantee that all
+        work of the task has stopped.
+
+        :param task_id: The id of the scheduled task to unregister.
+        :param clear_persisted_state: Whether to remove persisted state from config.
+        :param timeout: Maximum number of seconds to wait for the task to unwind.
+        :return: True if no task was left running, False if the wait timed out.
+        """
+        cancelled_task = self._unregister_task(task_id, clear_persisted_state)
+        if cancelled_task is None:
+            return True
+        if cancelled_task is asyncio.current_task():
+            # the task is cancelling itself (e.g. a sync task that triggers a provider
+            # unload); asyncio refuses a task awaiting itself so just let it unwind
+            return True
+        done, _pending = await asyncio.wait({cancelled_task}, timeout=timeout)
+        if not done:
+            self.logger.warning(
+                "Timeout while waiting for task %s to stop after cancellation", task_id
+            )
+            return False
+        return True
 
     def update_task_progress(
         self, task_id: str, progress: int | None, text: str | None = None
     ) -> None:
-        """Update progress for a task.
+        """
+        Update progress for a task.
 
         :param task_id: The id of the task to update.
         :param progress: Progress percentage (0-100) or None to clear.
@@ -396,7 +463,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def update_task_progress_text(self, task_id: str, text: str | None) -> None:
-        """Update progress text for a task without changing the percentage.
+        """
+        Update progress text for a task without changing the percentage.
 
         :param task_id: The id of the task to update.
         :param text: Progress description text or None to clear.
@@ -411,7 +479,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def update_current_task_progress(self, progress: int | None, text: str | None = None) -> None:
-        """Update progress for the task active in the current async context.
+        """
+        Update progress for the task active in the current async context.
 
         :param progress: Progress percentage (0-100) or None to clear.
         :param text: Optional progress description text.
@@ -420,8 +489,32 @@ class TasksController(CoreController):
             return
         self.update_task_progress(task_id, progress, text)
 
+    def set_task_report(self, task_id: str, markdown: str | None) -> None:
+        """
+        Set the Markdown report for a task.
+
+        :param task_id: The id of the task to update.
+        :param markdown: Markdown report content or None to clear.
+        """
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(self.set_task_report, task_id, markdown)
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        self._update_task_report(managed, markdown)
+
+    def set_current_task_report(self, markdown: str | None) -> None:
+        """
+        Set the Markdown report for the task active in the current async context.
+
+        :param markdown: Markdown report content or None to clear.
+        """
+        if task_context := ACTIVE_TASK_CONTEXT.get():
+            task_context.set_report(markdown)
+
     def add_task_failure(self, task_id: str, message: str) -> None:
-        """Record a non-fatal failure for a task.
+        """
+        Record a non-fatal failure for a task.
 
         :param task_id: The id of the task to record the failure on.
         :param message: Human-readable failure description.
@@ -444,7 +537,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def get_tasks_by_metadata(self, **metadata: TaskMetadataValue) -> list[BackgroundTask]:
-        """Return tasks matching the given metadata key/value pairs.
+        """
+        Return tasks matching the given metadata key/value pairs.
 
         :param metadata: Key/value pairs that must all match on a task's metadata.
         """
@@ -453,6 +547,30 @@ class TasksController(CoreController):
             if all(managed.task_info.metadata.get(key) == value for key, value in metadata.items()):
                 result.append(managed.task_info)
         return result
+
+    def _unregister_task(
+        self, task_id: str, clear_persisted_state: bool = True
+    ) -> asyncio.Task[Any] | None:
+        """
+        Unregister a managed task and cancel any active work.
+
+        Returns the cancelled asyncio task if one was still running, so callers can wait
+        for it to unwind. Final bookkeeping for such a task happens in _finalize_task_run.
+        """
+        if not (managed := self._tasks.get(task_id)):
+            return None
+        managed.removed = True
+        managed.clear_persisted_state_on_remove = clear_persisted_state
+        self.mass.cancel_timer(get_task_timer_id(task_id))
+        self._remove_from_pending(task_id)
+        if managed.current_task and not managed.current_task.done():
+            managed.current_task.cancel()
+            return managed.current_task
+        self._tasks.pop(task_id, None)
+        if clear_persisted_state:
+            self._clear_scheduled_task_state(task_id)
+        self._schedule_task_update(force=True)
+        return None
 
     def _get_managed_task(self, task_id: str) -> ManagedTask:
         """Return runtime state for a managed task."""
@@ -465,7 +583,7 @@ class TasksController(CoreController):
         managed = self._get_managed_task(task_id)
         if (
             user is not None
-            and user.role != UserRole.ADMIN
+            and not has_scope(user, Scope.SYSTEM_MANAGE)
             and managed.task_info.user_id != user.user_id
         ):
             raise InvalidDataError(f"Task {task_id} not found")
@@ -483,6 +601,37 @@ class TasksController(CoreController):
         if len(logs) > managed.max_log_lines:
             del logs[: len(logs) - managed.max_log_lines]
         managed.task_info.updated_at = utcnow()
+        self._schedule_task_update()
+
+    def _set_task_report_for_run(
+        self,
+        task_id: str,
+        markdown: str | None,
+        *,
+        run_token: str,
+    ) -> None:
+        """Set a task report only while its originating run is active."""
+        if get_ident() != self.mass.loop_thread_id:
+            self.mass.loop.call_soon_threadsafe(
+                partial(
+                    self._set_task_report_for_run,
+                    task_id,
+                    markdown,
+                    run_token=run_token,
+                )
+            )
+            return
+        if not (managed := self._tasks.get(task_id)):
+            return
+        if managed.run_token != run_token or managed.task_info.status != TaskStatus.RUNNING:
+            return
+        self._update_task_report(managed, markdown)
+
+    def _update_task_report(self, managed: ManagedTask, markdown: str | None) -> None:
+        """Update a managed task report and notify task consumers."""
+        managed.task_info.report = markdown
+        managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         self._schedule_task_update()
 
     def _append_task_lifecycle_log(
@@ -550,6 +699,7 @@ class TasksController(CoreController):
         if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
+        managed.run_token = uuid4().hex
         if reset_logs:
             managed.task_info.logs.clear()
             managed.task_info.progress = None
@@ -557,12 +707,14 @@ class TasksController(CoreController):
             managed.task_info.last_error = None
             managed.task_info.failure_count = 0
             managed.task_info.failure_messages.clear()
+            managed.task_info.report = None
             managed.task_info.finished_at = None
         managed.task_info.status = TaskStatus.PENDING
         managed.task_info.last_run_user_id = run_user_id
         managed.task_info.started_at = None
         managed.task_info.next_run = None
         managed.task_info.updated_at = utcnow()
+        self._persist_scheduled_task_state(managed)
         if managed.task_info.id not in self._pending_task_ids:
             if managed.priority:
                 self._pending_task_ids.appendleft(managed.task_info.id)
@@ -598,6 +750,10 @@ class TasksController(CoreController):
             update_progress=self.update_task_progress,
             update_progress_text=self.update_task_progress_text,
             add_failure=self.add_task_failure,
+            update_report=partial(
+                self._set_task_report_for_run,
+                run_token=managed.run_token,
+            ),
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
@@ -608,7 +764,10 @@ class TasksController(CoreController):
             task_info.last_error = None
             now = utcnow()
             self._append_task_lifecycle_log(
-                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
+                task_info.id,
+                level=logging.WARNING,
+                message="Task cancelled",
+                created_at=now,
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED
@@ -794,3 +953,16 @@ class TasksController(CoreController):
         self._scheduled_task_update_at = None
         self._last_task_update_signal = self.mass.loop.time()
         self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None))
+
+
+def _namespaced_translation_key(translation_key: str | None) -> str | None:
+    """
+    Namespace a bare task key under the shared ``background_task`` group.
+
+    Callers pass just the task key (e.g. ``database_cleanup``); the ``background_task`` group is
+    implicit for tasks and added here. A key that already carries a namespace (anything containing
+    a ``.``, e.g. a fully-qualified key) is returned unchanged.
+    """
+    if translation_key and "." not in translation_key:
+        return f"background_task.{translation_key}"
+    return translation_key

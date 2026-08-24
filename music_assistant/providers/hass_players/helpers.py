@@ -6,42 +6,95 @@ import logging
 import os
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
-from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
+from music_assistant.providers.hass.constants import (
+    MediaPlayerEntityFeature,
+    parse_supported_features,
+)
 
-from .constants import BLOCKLISTED_HASS_INTEGRATIONS
+from .constants import BLOCKLISTED_HASS_INTEGRATIONS, DOMAIN
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.providers.hass import HomeAssistantProvider
+
+
+async def get_media_player_entity_registry(
+    hass_prov: HomeAssistantProvider,
+) -> dict[str, HassEntity]:
+    """
+    Return the full registry entries of all Home Assistant media_player entities.
+
+    :param hass_prov: The Home Assistant provider to read the registry from.
+    :return: The registry entries keyed by entity ID.
+    """
+    registry = await hass_prov.get_entity_registry()
+    return await hass_prov.get_entity_registry_entries(
+        [entity_id for entity_id in registry if entity_id.startswith("media_player.")]
+    )
 
 
 async def get_hass_media_players(
     hass_prov: HomeAssistantProvider,
-) -> AsyncGenerator[HassState, None]:
-    """Return all HA state objects for (valid) media_player entities."""
-    entity_registry = {x["entity_id"]: x for x in await hass_prov.hass.get_entity_registry()}
-    for state in await hass_prov.hass.get_states():
-        if not state["entity_id"].startswith("media_player"):
-            continue
+    entity_registry: dict[str, HassEntity],
+) -> AsyncGenerator[tuple[HassState, HassEntity | None]]:
+    """
+    Return all HA state objects (with registry entry) for (valid) media_player entities.
+
+    :param hass_prov: The Home Assistant provider to fetch the entity states from.
+    :param entity_registry: The registry entries of the media_player entities to consider.
+    """
+    # discover via the registry instead of a full state dump; entities without a
+    # unique_id are not registered and are therefore not discovered here
+    media_player_ids = list(entity_registry)
+    for state in await hass_prov.get_states(entity_ids=media_player_ids):
         if "mass_player_type" in state["attributes"]:
             # filter out mass players
             continue
         if "friendly_name" not in state["attributes"]:
             # filter out invalid/unavailable players
             continue
-        supported_features = MediaPlayerEntityFeature(state["attributes"]["supported_features"])
+        supported_features = parse_supported_features(
+            state["attributes"].get("supported_features"),
+            state["entity_id"],
+            hass_prov.logger,
+        )
         if MediaPlayerEntityFeature.PLAY_MEDIA not in supported_features:
             continue
-        if entity_registry_entry := entity_registry.get(state["entity_id"]):
+        entity_registry_entry = entity_registry.get(state["entity_id"])
+        if entity_registry_entry is not None:
             hass_domain = entity_registry_entry["platform"]
             if hass_domain in BLOCKLISTED_HASS_INTEGRATIONS:
                 continue
-        yield state
+        yield state, entity_registry_entry
+
+
+def normalized_mac(mac: str) -> str:
+    """Normalize a MAC address for comparison (lowercase, no separators)."""
+    return mac.replace(":", "").replace("-", "").lower()
+
+
+def native_player_macs(mass: MusicAssistant) -> set[str]:
+    """
+    Collect the normalized MAC addresses of all natively registered players.
+
+    Used to detect HA entities that point to a device that is already available
+    as a native Music Assistant player (e.g. an ESPHome device using Sendspin).
+    """
+    macs: set[str] = set()
+    for player in mass.players:
+        if player.provider.domain == DOMAIN:
+            continue
+        if mac := player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS):
+            macs.add(normalized_mac(mac))
+    return macs
 
 
 class ESPHomeSupportedAudioFormat(TypedDict):

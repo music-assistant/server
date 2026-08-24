@@ -17,7 +17,8 @@ class DeviceConfigHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def set_name(self, name: str) -> None:
-        """Set the friendly name on the device.
+        """
+        Set the friendly name on the device.
 
         :param name: The desired friendly name.
         """

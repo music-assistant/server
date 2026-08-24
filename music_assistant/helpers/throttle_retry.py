@@ -1,7 +1,6 @@
 """Context manager using asyncio_throttle that catches and re-raises RetriesExhausted."""
 
 import asyncio
-import datetime
 import functools
 import logging
 import random
@@ -12,14 +11,16 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate
+from typing import Any, Concatenate, Protocol
 
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.errors import (
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
 from music_assistant.constants import MASS_LOGGER_NAME
-
-if TYPE_CHECKING:
-    from music_assistant.models.provider import Provider
+from music_assistant.helpers.datetime import utc
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
@@ -28,9 +29,13 @@ BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=Fals
 # Cap exponential backoff to prevent absurd wait times
 MAX_BACKOFF = 120
 
+# Cap a server-provided Retry-After, in case it is absurd or hostile
+MAX_RETRY_AFTER = 3600
+
 
 def parse_retry_after(value: str | None) -> int:
-    """Parse a Retry-After header value per RFC 9110 Section 10.2.3.
+    """
+    Parse a Retry-After header value per RFC 9110 Section 10.2.3.
 
     Supports both valid formats: delay-seconds (integer) and HTTP-date.
 
@@ -42,19 +47,20 @@ def parse_retry_after(value: str | None) -> int:
     # Try delay-seconds (non-negative integer) first — the common case
     try:
         return max(0, int(value))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
     try:
         target = parsedate_to_datetime(value)
-        delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+        delta = (target - utc()).total_seconds()
         return max(0, int(delta))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0
 
 
 class Throttler:
-    """asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
+    """
+    asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
 
     With improvements:
     - Accurate sleep without "busy waiting" (PR #4)
@@ -66,14 +72,6 @@ class Throttler:
         self.rate_limit = rate_limit
         self.period = period
         self._task_logs: deque[float] = deque()
-
-    def _flush(self) -> None:
-        now = time.monotonic()
-        while self._task_logs:
-            if now - self._task_logs[0] > self.period:
-                self._task_logs.popleft()
-            else:
-                break
 
     async def acquire(self) -> float:
         """Acquire a free slot from the Throttler, returns the throttled time."""
@@ -103,6 +101,14 @@ class Throttler:
     ) -> bool | None:
         """Nothing to do on exit."""
 
+    def _flush(self) -> None:
+        now = time.monotonic()
+        while self._task_logs:
+            if now - self._task_logs[0] > self.period:
+                self._task_logs.popleft()
+            else:
+                break
+
 
 class ThrottlerManager:
     """Throttler manager that extends asyncio Throttle by retrying."""
@@ -116,7 +122,7 @@ class ThrottlerManager:
         self.throttler = Throttler(rate_limit, period)
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[float, None]:
+    async def acquire(self) -> AsyncGenerator[float]:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         if BYPASS_THROTTLER.get():
             yield 0
@@ -124,7 +130,7 @@ class ThrottlerManager:
             yield await self.throttler.acquire()
 
     @asynccontextmanager
-    async def bypass(self) -> AsyncGenerator[None, None]:
+    async def bypass(self) -> AsyncGenerator[None]:
         """Bypass the throttler."""
         try:
             token = BYPASS_THROTTLER.set(True)
@@ -133,7 +139,17 @@ class ThrottlerManager:
             BYPASS_THROTTLER.reset(token)
 
 
-def throttle_with_retries[ProviderT: "Provider", **P, R](
+class _Throttleable(Protocol):
+    """Protocol for objects that can use the @throttle_with_retries decorator."""
+
+    @property
+    def logger(self) -> logging.Logger: ...
+
+    @property
+    def throttler(self) -> ThrottlerManager: ...
+
+
+def throttle_with_retries[ProviderT: _Throttleable, **P, R](
     func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
 ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
     """Call async function using the throttler with retries."""
@@ -141,8 +157,7 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
     @functools.wraps(func)
     async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
-        # the throttler attribute must be present on the class
-        throttler: ThrottlerManager = self.throttler  # type: ignore[attr-defined]
+        throttler = self.throttler
         exp_backoff = throttler.initial_backoff
         async with throttler.acquire() as delay:
             if delay != 0:
@@ -157,9 +172,16 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
                     if attempt < throttler.retry_attempts - 1:
-                        if e.backoff_time > 0:
-                            # Server told us exactly how long to wait — respect it
-                            sleep_time = float(e.backoff_time)
+                        server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
+                        if isinstance(e, RateLimited):
+                            # Retry-After is a floor, not a target: escalate above it,
+                            # jittering up only so we never retry sooner than asked
+                            base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
+                            sleep_time = base * random.uniform(1.0, 1.1)
+                            exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
+                        elif server_wait:
+                            # Server named a recovery time — respect it, with citizen jitter
+                            sleep_time = server_wait * random.uniform(1.0, 1.1)
                         else:
                             # No server guidance — exponential backoff with jitter
                             sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)

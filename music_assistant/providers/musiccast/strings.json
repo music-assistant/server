@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "auto_advance_on_idle": {
+      "label": "Auto-advance queue when the device stops at end of track",
+      "description": "Yamaha receivers occasionally drop the queued next track and stop playback. With this enabled, MA detects the stop and advances the queue. As a side effect, a user-initiated stop within the last 4 seconds of a track will also advance to the next item; disable if you prefer the device's stop behaviour to always be respected."
+    },
+    "handle_source_allowed": {
+      "label": "Disable zone handling completely.",
+      "description": "This disables zone handling completely. Other options will be ignored. Enable should you encounter playback issues while e.g. playing to main. You can also hide the player from the UI by taking advantage of 'Hide the player in the user interface' dropdown."
+    },
+    "main_switch_source": {
+      "label": "Switch to this non-net source when leaving a group.",
+      "description": "The zone will switch to this source when leaving a  group. It must be an input which doesn't require network connectivity."
+    },
+    "turn_off_on_leave": {
+      "label": "Turn off the zone when it leaves a group.",
+      "description": "Turn off the zone when it leaves a group."
+    }
+  },
+  "manifest": {
+    "description": "Stream audio to Yamaha MusicCast speakers — supports multiroom playback."
+  }
+}

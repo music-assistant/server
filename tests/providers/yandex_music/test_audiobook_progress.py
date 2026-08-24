@@ -267,7 +267,8 @@ async def test_on_streamed_audiobook_without_data_still_cleans_up(
 async def test_on_streamed_audiobook_branch_taken_even_without_chapter_data(
     provider_mock: Mock,
 ) -> None:
-    """AUDIOBOOK stream without chapter_ids still routes to audiobook cleanup.
+    """
+    AUDIOBOOK stream without chapter_ids still routes to audiobook cleanup.
 
     Previously the gate required ``"chapter_ids" in data`` and fell through
     to the radio path when data was missing, leaving caches stale.

@@ -1,0 +1,11 @@
+{
+  "type": "player",
+  "domain": "bose_soundtouch",
+  "stage": "alpha",
+  "name": "Bose SoundTouch",
+  "description": "Control Bose SoundTouch speakers and map their physical preset buttons to Music Assistant content.",
+  "codeowners": ["@Odn0", "@fmunkes"],
+  "requirements": ["defusedxml==0.7.1"],
+  "documentation": "https://music-assistant.io/player-support/bose-soundtouch/",
+  "mdns_discovery": ["_soundtouch._tcp.local."]
+}

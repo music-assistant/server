@@ -1,12 +1,12 @@
 {
   "type": "music",
   "domain": "qqmusic",
-  "stage": "beta",
+  "stage": "stable",
   "name": "QQ Music",
   "description": "Stream QQ Music catalog, playlists, lyrics, and personalized recommendations.",
   "codeowners": ["@xiasi0"],
   "credits": ["[QQMusicApi](https://github.com/L-1124/QQMusicApi)"],
-  "requirements": ["qqmusic-api-python==0.4.1"],
+  "requirements": ["qqmusic-api-python==0.7.2"],
   "documentation": "https://music-assistant.io/music-providers/qqmusic",
   "multi_instance": true
 }

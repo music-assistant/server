@@ -5,6 +5,17 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
+* libchromaprint and PortAudio, also at OS level. Install both if you want to run the `acoustid_lookup` and `local_audio` providers: without libchromaprint AcoustID refuses to load, and without PortAudio local audio loads but finds no output devices. The test suite does not need either: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
+
+      # macOS
+      brew install chromaprint portaudio
+
+      # Debian/Ubuntu
+      sudo apt-get install libchromaprint1 libportaudio2
+
+    On Apple Silicon, Homebrew installs into `/opt/homebrew`, which is not on the dynamic loader's default search path. `pyacoustid` opens libchromaprint by bare filename, so installing the package is not enough — add this to your shell profile as well:
+
+      export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:/usr/local/lib:/usr/lib"
 
 We recommend developing on a (recent) macOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
@@ -108,6 +119,36 @@ Create a file called `__init__.py` inside the folder of your provider. This file
     2. Streaming a direct URL, see the [Youtube Music](./music_assistant/providers/ytmusic/__init__.py) provider as an example
     3. Streaming an https stream that uses an expiring URL, see the [Qobuz](./music_assistant/providers/qobuz/__init__.py) provider as an example
 
+
+**Rules for providers that stream from a music service**
+
+Music Assistant plays music to your own speakers; it is not a way to download or keep
+copies of it. See the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
+A provider that talks to a music service must therefore:
+
+* **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
+  account the user configured. Do not bypass a subscription tier or regional availability.
+* **Decode only what the user is entitled to.** Where a service protects its audio, obtain the
+  key or licence the way its own client does, for the account the user configured. Decode in
+  order to play, never to produce a file. Where there is no licence path for the account, skip
+  the item rather than reaching for one.
+* **Be a well-behaved client of the API.** Put a
+  [`Throttler` or `ThrottlerManager`](./music_assistant/helpers/throttle_retry.py) in front of a
+  service's API and set it to what that service actually tolerates, and put
+  [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
+  instead of asking again. Back off on a 429 rather than retrying into it.
+  A provider that hammers a service puts every Music Assistant user's account at risk, not just
+  the developer's.
+* **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
+  does not serialize it. Never place it on a media item, an API result, or a route that hands
+  it to a caller.
+* **Do not persist decoded audio.** Streaming providers must return a stream, not bytes cached
+  to disk.
+* **Honour the service's own limits.** Where a service states how many streams one account may
+  run at once, override `max_concurrent_streams` with that number — see
+  [`MusicProvider`](./music_assistant/models/music_provider.py).
+
+Changes that weaken any of these will not be accepted, however useful they are otherwise.
 
 ## ▶️ Building your own Player Provider
 A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and AirPlay are examples of a Player Provider.

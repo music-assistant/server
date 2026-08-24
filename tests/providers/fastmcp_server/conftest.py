@@ -1,4 +1,5 @@
-"""Shared pytest fixtures for the FastMCP server provider.
+"""
+Shared pytest fixtures for the FastMCP server provider.
 
 Most tests run without a real Music Assistant install — they exercise pure
 logic (URI parsing, tag mapping, config entries shape) or use ``MagicMock``
@@ -30,7 +31,8 @@ from music_assistant.providers.fastmcp_server.debug import log_reader
 
 
 class FakeWebserver:
-    """Captures every dynamic-route registration so tests can drive them through aiohttp.
+    """
+    Captures every dynamic-route registration so tests can drive them through aiohttp.
 
     Mirrors the surface of ``mass.webserver`` that this plugin uses, without
     depending on a real Music Assistant install. Exposed via the
@@ -67,7 +69,8 @@ class FakeWebserver:
 
 
 def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
-    """Translate captured ``(path, handler, method)`` tuples into an aiohttp app.
+    """
+    Translate captured ``(path, handler, method)`` tuples into an aiohttp app.
 
     Mirrors MA's real dynamic-route matching
     (``helpers/webserver.py::_handle_catch_all``): a path registered as
@@ -119,19 +122,25 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     mass.webserver.register_dynamic_route = MagicMock(return_value=lambda: None)
 
+    mass.translations.get_translation = MagicMock(return_value=None)
+
     mass.music = MagicMock()
     mass.music.search = AsyncMock()
     mass.music.recently_added_tracks = AsyncMock(return_value=[])
     mass.music.recently_played = AsyncMock(return_value=[])
-    mass.music.recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations = MagicMock()
+    mass.music.recommendations.get_recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations.get_recommendation_items = AsyncMock(return_value=[])
     mass.music.get_item_by_uri = AsyncMock()
 
     mass.music.tracks.library_items = AsyncMock(return_value=[])
     mass.music.tracks.get_library_item = AsyncMock()
     mass.music.albums.library_items = AsyncMock(return_value=[])
     mass.music.albums.get_library_item = AsyncMock()
+    mass.music.albums.tracks = AsyncMock(return_value=[])
     mass.music.artists.library_items = AsyncMock(return_value=[])
     mass.music.artists.get_library_item = AsyncMock()
+    mass.music.artists.albums = AsyncMock(return_value=[])
     mass.music.playlists.library_items = AsyncMock(return_value=[])
     mass.music.playlists.get_library_item = AsyncMock()
     mass.music.playlists.create_playlist = AsyncMock()
@@ -152,6 +161,8 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.items = MagicMock(return_value=[])
     mass.player_queues.play_media = AsyncMock()
     mass.player_queues.play_pause = AsyncMock()
+    mass.player_queues.pause = AsyncMock()
+    mass.player_queues.resume = AsyncMock()
     mass.player_queues.stop = AsyncMock()
     mass.player_queues.next = AsyncMock()
     mass.player_queues.previous = AsyncMock()
@@ -159,14 +170,20 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.seek = AsyncMock()
     mass.player_queues.play_index = AsyncMock()
     mass.player_queues.set_shuffle = AsyncMock()
+    mass.player_queues.set_repeat = AsyncMock()
     mass.player_queues.transfer_queue = AsyncMock()
     mass.player_queues.clear = MagicMock()
+    mass.player_queues.delete_item = MagicMock()
+    mass.player_queues.move_item = MagicMock()
+    mass.player_queues.move_item_end = MagicMock()
+    mass.player_queues.index_by_id = MagicMock(return_value=None)
 
     mass.players = MagicMock()
     mass.players.all_players = MagicMock(return_value=[])
     mass.players.get_player = MagicMock(return_value=None)
     mass.players.cmd_power = AsyncMock()
     mass.players.cmd_group = AsyncMock()
+    mass.players.cmd_ungroup = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.cmd_volume_up = AsyncMock()
     mass.players.cmd_volume_down = AsyncMock()
@@ -224,7 +241,8 @@ def have_fastmcp() -> bool:
 
 @pytest.fixture
 def tmp_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_mass: MagicMock) -> Path:
-    """Sandboxed log root for SafeLogTail tests.
+    """
+    Sandboxed log root for SafeLogTail tests.
 
     Copies the fixture log into ``tmp_path`` and (a) patches the class-level
     ``SafeLogTail.ROOT`` so bare ``SafeLogTail()`` callers see ``tmp_path``,
@@ -244,7 +262,8 @@ def tmp_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_mass: Magi
 
 @pytest.fixture
 def fake_event_emitter(mock_mass: MagicMock) -> Any:
-    """Capture the EventBuffer subscriber and let tests emit synthetic events.
+    """
+    Capture the EventBuffer subscriber and let tests emit synthetic events.
 
     Replaces ``mock_mass.subscribe`` so the first call stores the callback;
     tests then call ``emitter.emit(event)`` to drive it.
@@ -279,6 +298,30 @@ def fake_event_emitter(mock_mass: MagicMock) -> Any:
 
 
 @pytest.fixture
+def library_server(mock_mass: Any) -> Any:
+    """Build a root FastMCP with only the library sub-server mounted."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.library import build_library_server
+
+    mcp = FastMCP(name="t")
+    mcp.mount(build_library_server(mock_mass), namespace="library")
+    return mcp
+
+
+@pytest.fixture
+def mounted_queue(mock_mass: Any) -> Any:
+    """Build a root FastMCP with the queue sub-server mounted, no confirmation gate."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.queue import build_queue_server
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass, require_confirmation=False), namespace="queue")
+    return mcp
+
+
+@pytest.fixture
 def mounted_debug(mock_mass: MagicMock) -> Any:
     """Build a root FastMCP with the debug sub-server mounted, all debug tags allowed."""
     import contextlib
@@ -303,7 +346,8 @@ def mounted_debug(mock_mass: MagicMock) -> Any:
 
 @pytest.fixture
 def mounted_debug_off(mock_mass: MagicMock) -> Any:
-    """Debug sub-server mounted with the TagFilterMiddleware allowing zero debug tags.
+    """
+    Debug sub-server mounted with the TagFilterMiddleware allowing zero debug tags.
 
     Uses the project's own ``TagFilterMiddleware`` (provider/middleware.py),
     not FastMCP's built-in ``restrict_tag`` — the latter is scope-based
@@ -331,7 +375,8 @@ def mounted_debug_off(mock_mass: MagicMock) -> Any:
 
 @pytest.fixture
 def mounted_debug_with_events(mock_mass: MagicMock, fake_event_emitter: Any) -> Any:
-    """Debug server with a started EventBuffer wired in.
+    """
+    Debug server with a started EventBuffer wired in.
 
     Yields ``(mcp, buffer, emitter)`` — tests drive synthetic events
     through ``emitter.emit(...)`` and read back via either the MCP
@@ -430,7 +475,8 @@ def mounted_config_no_secret(mock_mass: Any) -> Any:
 
 @pytest.fixture
 def mock_config_targets(mock_mass: Any) -> Any:
-    """Wire mock_mass.config with provider/core/player config + entries.
+    """
+    Wire mock_mass.config with provider/core/player config + entries.
 
     Provides a SECURE_STRING entry (token, requires_reload), an
     INTEGER-with-range (http_port), and a STRING (log_level). to_dict
@@ -484,6 +530,7 @@ def mock_config_targets(mock_mass: Any) -> Any:
 
     mock_mass.config.get_provider_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_provider_config_entries = AsyncMock(return_value=list(entries.values()))
+    mock_mass.config.invoke_provider_config_action = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_core_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_core_config_entries = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_player_config = AsyncMock(return_value=cfg)

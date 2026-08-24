@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -9,12 +10,14 @@ import pytest
 import torch
 
 from music_assistant.providers.sonic_analysis.clap_prompts import (
+    CALIBRATION,
     CALIBRATION_PROMPTS_HASH,
     SCALAR_PROMPT_PAIRS,
     compute_prompt_embeddings,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
     save_precomputed_prompt_embeddings,
+    score_scalars,
 )
 
 
@@ -139,3 +142,28 @@ def test_clap_calibration_hash_matches_prompts() -> None:
         "CLAP prompts changed but CALIBRATION_PROMPTS_HASH was not updated. "
         "Re-run calibration on the 50-track sample set and update the hash + scalars."
     )
+
+
+def test_score_scalars_zero_margin_returns_sigmoid_of_bias() -> None:
+    """All similarities equal -> margin 0 for every scalar -> score == sigmoid(b)."""
+    mean = np.zeros(2 * len(SCALAR_PROMPT_PAIRS), dtype=np.float32)
+    scores = score_scalars(mean)
+    assert set(scores) == set(SCALAR_PROMPT_PAIRS)
+    for name, (_a, b) in CALIBRATION.items():
+        assert math.isclose(scores[name], 1.0 / (1.0 + math.exp(-b)), rel_tol=1e-9)
+
+
+def test_score_scalars_uses_pos_minus_neg_margin() -> None:
+    """Danceability is index 0: set pos=1.0, neg=0.0 -> margin 1.0."""
+    mean = np.zeros(2 * len(SCALAR_PROMPT_PAIRS), dtype=np.float32)
+    mean[0] = 1.0  # danceability pos
+    mean[1] = 0.0  # danceability neg
+    a, b = CALIBRATION["danceability"]
+    expected = 1.0 / (1.0 + math.exp(-(a * 1.0 + b)))
+    assert math.isclose(score_scalars(mean)["danceability"], expected, rel_tol=1e-9)
+
+
+def test_score_scalars_rejects_wrong_shape() -> None:
+    """A too-long array would otherwise be silently truncated -> fail fast instead."""
+    with pytest.raises(ValueError, match="must have shape"):
+        score_scalars(np.zeros(2 * len(SCALAR_PROMPT_PAIRS) + 2, dtype=np.float32))

@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 
 
 def get_canonical_provider_name(provider: KionMusicProvider) -> str:
-    """Return the locale-aware canonical display name for the KION Music system account.
+    """
+    Return the locale-aware canonical display name for the KION Music system account.
 
     :param provider: The KION Music provider instance.
     :return: Localized provider display name.
@@ -56,7 +57,8 @@ def get_canonical_provider_name(provider: KionMusicProvider) -> str:
 
 
 def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert Kion cover URI to full URL.
+    """
+    Convert Kion cover URI to full URL.
 
     :param cover_uri: Kion cover URI template.
     :param size: Image size (e.g., '1000x1000').
@@ -75,7 +77,8 @@ def parse_artist(
     *,
     about: object | None = None,
 ) -> Artist:
-    """Parse Kion artist object to MA Artist model.
+    """
+    Parse Kion artist object to MA Artist model.
 
     :param provider: The KION Music provider instance.
     :param artist_obj: Kion artist object.
@@ -140,7 +143,8 @@ def parse_artist(
 
 
 def parse_album(provider: KionMusicProvider, album_obj: KionAlbum) -> Album:
-    """Parse Kion album object to MA Album model.
+    """
+    Parse Kion album object to MA Album model.
 
     :param provider: The KION Music provider instance.
     :param album_obj: Kion album object.
@@ -241,7 +245,8 @@ def parse_track(
     lyrics: str | None = None,
     lyrics_synced: bool = False,
 ) -> Track:
-    """Parse Kion track object to MA Track model.
+    """
+    Parse Kion track object to MA Track model.
 
     :param provider: The KION Music provider instance.
     :param track_obj: Kion track object.
@@ -333,7 +338,8 @@ def parse_track(
 def parse_playlist(
     provider: KionMusicProvider, playlist_obj: KionPlaylist, owner_name: str | None = None
 ) -> Playlist:
-    """Parse Kion playlist object to MA Playlist model.
+    """
+    Parse Kion playlist object to MA Playlist model.
 
     :param provider: The KION Music provider instance.
     :param playlist_obj: Kion playlist object.

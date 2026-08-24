@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,24 @@ from music_assistant.providers.sonic_similarity.constants import SIMILARITY_PRES
 from music_assistant.providers.sonic_similarity.models import SimilarParams
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 
+_MUSIC_WORD = re.compile(r"\bmusic\b", re.IGNORECASE)
+
+
+def format_text_query(query: str) -> str:
+    """
+    Frame a bare query as ``<query> music`` for the CLAP text encoder.
+
+    Skipped when the query already contains the word "music" (case-insensitive);
+    an empty or whitespace-only query returns "".
+
+    :param query: Raw user query.
+    """
+    # CLAP was trained on audio captions, so the " music" suffix matches that form.
+    cleaned = query.strip()
+    if not cleaned or _MUSIC_WORD.search(cleaned):
+        return cleaned
+    return f"{cleaned} music"
+
 
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
     """Coerce a stored embedding (list/tuple) into a 1024-dim float32 array, or None."""
@@ -18,7 +37,7 @@ def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
         return None
     try:
         arr = np.asarray(raw, dtype=np.float32).reshape(-1)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if arr.shape != (CLAP_EMBEDDING_DIM,):
         return None
@@ -34,7 +53,7 @@ def _parse_weights(params: dict[str, Any]) -> dict[str, float]:
     def _clamp(val: str, fallback: float) -> float:
         try:
             return max(0.0, min(1.0, float(val)))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return fallback
 
     for group, default in result.items():
@@ -55,7 +74,7 @@ def _parse_similar_params(  # noqa: PLR0913
     seed_weights: list[float] | None = None,
     diversity: float = 0.0,
     preset: str = "balanced",
-    candidates: int = 50,
+    candidates: int = 200,
     filter_genres: list[str] | None = None,
     filter_providers: list[str] | None = None,
     exclude_track_ids: list[str] | None = None,
@@ -116,7 +135,8 @@ def apply_filters(
     exclude_track_ids: set[str] | None,
     filter_providers: set[str] | None,
 ) -> list[ScoredCandidate]:
-    """Apply cheap post-ANN filters to candidate list.
+    """
+    Apply cheap post-ANN filters to candidate list.
 
     :param candidates: ScoredCandidate results from the ANN search.
     :param seed_ids: Seed track IDs to exclude.

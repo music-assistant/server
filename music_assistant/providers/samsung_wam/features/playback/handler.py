@@ -69,7 +69,8 @@ class PlaybackHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def play_media(self, media: PlayerMedia) -> None:
-        """Stream a media URI to the speaker.
+        """
+        Stream a media URI to the speaker.
 
         :param media: The details of the media stream to play.
         """
@@ -83,11 +84,12 @@ class PlaybackHandler(WamPlayerFeatureBase):
 
         stream_url = await self.mass.streams.resolve_stream_url(self.player.player_id, media)
 
+        duration = media.stream_duration or media.duration
         item = UrlMediaItem(
             url=stream_url,
             title=media.title,
             description=media.artist,
-            duration=str(int(media.duration)) if media.duration else "0",
+            duration=str(int(duration)) if duration else "0",
             thumbnail=media.image_url,
         )
 
@@ -107,7 +109,8 @@ class PlaybackHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def select_source(self, source: WamSource | str) -> None:
-        """Change the input source on the speaker.
+        """
+        Change the input source on the speaker.
 
         :param source: The target source identifier.
         """

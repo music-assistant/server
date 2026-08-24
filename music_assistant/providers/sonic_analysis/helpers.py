@@ -38,7 +38,8 @@ _CHROMA_FILTERBANK = torch.from_numpy(
 def _compute_contrast_band_masks(
     sample_rate: int, n_fft: int, n_bands: int, fmin: float
 ) -> list[torch.Tensor]:
-    """Return a list of boolean bin-masks, one per (n_bands+1) contrast bands.
+    """
+    Return a list of boolean bin-masks, one per (n_bands+1) contrast bands.
 
     Band 0: [0, fmin]. Bands 1..n_bands: octave intervals starting at fmin.
     The final band extends to Nyquist regardless of fmin * 2**n_bands.
@@ -96,7 +97,8 @@ MIN_BLOCK_SAMPLES: int = 4096
 
 
 def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures | None:
-    """Extract per-frame features from a single audio block, or None if too short.
+    """
+    Extract per-frame features from a single audio block, or None if too short.
 
     :param audio: Mono float32 audio samples for this block.
     :param sample_rate: Sample rate in Hz. Must equal ``_CHROMA_SR`` (22050) — the filterbanks
@@ -136,7 +138,8 @@ def extract_block_features(audio: np.ndarray, sample_rate: int) -> BlockFeatures
 
 
 def _chroma_stft_torch(power: torch.Tensor) -> np.ndarray:
-    """Torch-native chroma_stft equivalent to librosa.feature.chroma_stft(S=power).
+    """
+    Torch-native chroma_stft equivalent to librosa.feature.chroma_stft(S=power).
 
     :param power: Power spectrogram (magnitude**2), shape (n_freqs, n_frames).
     """
@@ -147,7 +150,8 @@ def _chroma_stft_torch(power: torch.Tensor) -> np.ndarray:
 
 
 def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
-    """Torch-native spectral_contrast matching librosa defaults (n_bands=6, quantile=0.02).
+    """
+    Torch-native spectral_contrast matching librosa defaults (n_bands=6, quantile=0.02).
 
     :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
     """
@@ -174,7 +178,8 @@ def _spectral_contrast_torch(mag: torch.Tensor) -> np.ndarray:
 
 
 def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
-    """Torch-native onset strength envelope matching librosa.onset.onset_strength defaults.
+    """
+    Torch-native onset strength envelope matching librosa.onset.onset_strength defaults.
 
     :param audio: 1D time-domain audio tensor.
     """
@@ -193,7 +198,8 @@ def _onset_strength_torch(audio: torch.Tensor) -> np.ndarray:
 
 
 def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
-    """Per-frame spectral centroid (Hz), shape (1, n_frames) matching librosa.
+    """
+    Per-frame spectral centroid (Hz), shape (1, n_frames) matching librosa.
 
     :param mag: Magnitude spectrogram, shape (n_freqs, n_frames).
     :param sample_rate: Sample rate in Hz.
@@ -207,7 +213,8 @@ def _spectral_centroid_torch(mag: torch.Tensor, sample_rate: int) -> np.ndarray:
 
 
 def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
-    """Per-frame spectral flatness (geom/arith mean), shape (1, n_frames).
+    """
+    Per-frame spectral flatness (geom/arith mean), shape (1, n_frames).
 
     :param mag: Magnitude spectrogram (NOT power; this function squares
         internally to match librosa's default behavior), shape (n_freqs, n_frames).
@@ -223,7 +230,8 @@ def _spectral_flatness_torch(mag: torch.Tensor) -> np.ndarray:
 
 
 def _rms_torch(audio: torch.Tensor) -> np.ndarray:
-    """Per-frame RMS, shape (1, n_frames), matching librosa.feature.rms defaults.
+    """
+    Per-frame RMS, shape (1, n_frames), matching librosa.feature.rms defaults.
 
     :param audio: 1D time-domain audio tensor.
     """
@@ -237,7 +245,8 @@ def _rms_torch(audio: torch.Tensor) -> np.ndarray:
 
 
 def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
-    """Merge source block features into target (in place).
+    """
+    Merge source block features into target (in place).
 
     :param target: Accumulator to merge into.
     :param source: New block features to add.
@@ -251,17 +260,20 @@ def merge_block_features(target: BlockFeatures, source: BlockFeatures) -> None:
 
 
 def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioAnalysisData:
-    """Collapse accumulated per-block features into a populated AudioAnalysisData.
+    """
+    Collapse accumulated per-block features into a populated AudioAnalysisData.
 
     :param accumulated: All block features accumulated during streaming.
     :param sample_rate: Sample rate used during extraction.
     """
-    onset_env = np.concatenate([[0.0], np.concatenate(accumulated.onset_env_frames)])
-    chroma = np.concatenate(accumulated.chroma_frames, axis=1)
-    rms = np.concatenate(accumulated.rms_frames, axis=1).squeeze()
-    centroid = np.concatenate(accumulated.centroid_frames, axis=1).squeeze()
-    contrast = np.concatenate(accumulated.contrast_frames, axis=1)
-    flatness = np.concatenate(accumulated.flatness_frames, axis=1).squeeze()
+    onset_env = _replace_non_finite(
+        np.concatenate([[0.0], np.concatenate(accumulated.onset_env_frames)])
+    )
+    chroma = _replace_non_finite(np.concatenate(accumulated.chroma_frames, axis=1))
+    rms = _replace_non_finite(np.concatenate(accumulated.rms_frames, axis=1).squeeze())
+    centroid = _replace_non_finite(np.concatenate(accumulated.centroid_frames, axis=1).squeeze())
+    contrast = _replace_non_finite(np.concatenate(accumulated.contrast_frames, axis=1))
+    flatness = _replace_non_finite(np.concatenate(accumulated.flatness_frames, axis=1).squeeze())
 
     energy = _derive_energy(rms)
     loudness_integrated, loudness_range = _derive_loudness(rms)
@@ -280,9 +292,16 @@ def collapse_to_analysis(accumulated: BlockFeatures, sample_rate: int) -> AudioA
         harmonic_complexity=harmonic_complexity,
         roughness=roughness,
         rhythmic_regularity=rhythmic_regularity,
-        rms_energy=rms_energy_series,
-        spectral_centroid=spectral_centroid_series,
+        # the model stores plain float lists (numpy-free); convert the analysis arrays
+        rms_energy=rms_energy_series.tolist(),
+        spectral_centroid=spectral_centroid_series.tolist(),
     )
+
+
+def _replace_non_finite(values: np.ndarray) -> np.ndarray:
+    """Replace non-finite feature values with neutral zeros."""
+    np.nan_to_num(values, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return values
 
 
 def _clamp(value: float) -> float:
@@ -291,7 +310,8 @@ def _clamp(value: float) -> float:
 
 
 def _derive_energy(rms: np.ndarray) -> float:
-    """Compute normalized mean RMS energy in [0, 1].
+    """
+    Compute normalized mean RMS energy in [0, 1].
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """
@@ -299,7 +319,8 @@ def _derive_energy(rms: np.ndarray) -> float:
 
 
 def _derive_loudness(rms: np.ndarray) -> tuple[float, float]:
-    """Compute RMS-based loudness approximations (NOT EBU R128).
+    """
+    Compute RMS-based loudness approximations (NOT EBU R128).
 
     Returns (loudness_integrated, loudness_range) as RMS-derived proxies.
     loudness_integrated is mean RMS in dB (not gated LUFS), and loudness_range
@@ -315,7 +336,8 @@ def _derive_loudness(rms: np.ndarray) -> tuple[float, float]:
 
 
 def _derive_brightness(centroid: np.ndarray, sample_rate: int) -> float:
-    """Compute mean spectral centroid normalized against the Nyquist frequency.
+    """
+    Compute mean spectral centroid normalized against the Nyquist frequency.
 
     :param centroid: Per-frame spectral centroid values in Hz (1D after squeeze).
     :param sample_rate: Sample rate in Hz.
@@ -328,7 +350,8 @@ def _derive_brightness(centroid: np.ndarray, sample_rate: int) -> float:
 
 
 def _derive_harmonic_complexity(chroma: np.ndarray) -> float:
-    """Compute normalized Shannon entropy of the mean chroma vector.
+    """
+    Compute normalized Shannon entropy of the mean chroma vector.
 
     :param chroma: Concatenated chroma feature matrix (12 x N_frames).
     """
@@ -344,7 +367,8 @@ def _derive_harmonic_complexity(chroma: np.ndarray) -> float:
 
 
 def _derive_roughness(contrast: np.ndarray, flatness: np.ndarray) -> float:
-    """Combine spectral contrast range and spectral flatness into a roughness measure.
+    """
+    Combine spectral contrast range and spectral flatness into a roughness measure.
 
     :param contrast: Spectral contrast matrix (7 x N_frames).
     :param flatness: Per-frame spectral flatness values (1D after squeeze).
@@ -358,7 +382,8 @@ def _derive_roughness(contrast: np.ndarray, flatness: np.ndarray) -> float:
 
 
 def _derive_rhythmic_regularity(onset_env: np.ndarray, sample_rate: int) -> float:
-    """Estimate rhythmic regularity as 1 minus the normalized CV of inter-onset intervals.
+    """
+    Estimate rhythmic regularity as 1 minus the normalized CV of inter-onset intervals.
 
     :param onset_env: Concatenated onset strength envelope.
     :param sample_rate: Sample rate in Hz.
@@ -372,7 +397,8 @@ def _derive_rhythmic_regularity(onset_env: np.ndarray, sample_rate: int) -> floa
 
 
 def _derive_rms_energy_series(rms: np.ndarray) -> npt.NDArray[np.float32]:
-    """Interpolate per-frame RMS onto fixed 1800 bins and peak-normalize.
+    """
+    Interpolate per-frame RMS onto fixed 1800 bins and peak-normalize.
 
     :param rms: Per-frame RMS values (1D after squeeze).
     """
@@ -390,7 +416,8 @@ def _derive_rms_energy_series(rms: np.ndarray) -> npt.NDArray[np.float32]:
 def _derive_spectral_centroid_series(
     centroid: np.ndarray, rms_energy: npt.NDArray[np.float32]
 ) -> npt.NDArray[np.float32]:
-    """Interpolate per-frame centroid onto fixed 1800 bins, zeroing silent regions.
+    """
+    Interpolate per-frame centroid onto fixed 1800 bins, zeroing silent regions.
 
     :param centroid: Per-frame spectral centroid values in Hz (1D after squeeze).
     :param rms_energy: Normalized RMS energy series (1800 bins) used to mask silence.

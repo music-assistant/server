@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
@@ -41,7 +42,7 @@ from music_assistant.constants import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -75,6 +76,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.SIMILAR_TRACKS,
 }
 
 
@@ -85,72 +87,60 @@ async def setup(
     return TestProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        ConfigEntry(
-            key=CONF_KEY_NUM_ARTISTS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) artists",
-            description="Number of test artists to generate",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_ALBUMS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) albums per artist",
-            description="Number of test albums to generate per artist",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) tracks per album",
-            description="Number of test tracks to generate per artist-album",
-            default_value=20,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_PODCASTS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) podcasts",
-            description="Number of test podcasts to generate",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_AUDIOBOOKS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) audiobooks",
-            description="Number of test audiobooks to generate",
-            default_value=5,
-            required=False,
-        ),
-    )
-
-
 class TestProvider(MusicProvider):
     """Test/Demo provider that creates a collection of fake media items."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_KEY_NUM_ARTISTS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) artists",
+                description="Number of test artists to generate",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_ALBUMS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) albums per artist",
+                description="Number of test albums to generate per artist",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) tracks per album",
+                description="Number of test tracks to generate per artist-album",
+                default_value=20,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_PODCASTS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) podcasts",
+                description="Number of test podcasts to generate",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_AUDIOBOOKS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) audiobooks",
+                description="Number of test audiobooks to generate",
+                default_value=5,
+                required=False,
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
 
-    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+    async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         for genre in DEFAULT_GENRES:
             yield genre
@@ -191,10 +181,36 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 ),
             },
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
+            metadata=MediaItemMetadata(
+                images=UniqueList([DEFAULT_THUMB]),
+                genres={genre},
+                release_date=datetime(2021, 6, 15, tzinfo=UTC),
+            ),
             disc_number=1,
             track_number=int(track_idx),
         )
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Return a deterministic set of similar tracks (the catalogue neighbours of the seed)."""
+        num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
+        num_albums = self.config.get_value(CONF_KEY_NUM_ALBUMS) or 5
+        num_tracks = self.config.get_value(CONF_KEY_NUM_TRACKS) or 20
+        assert isinstance(num_artists, int)
+        assert isinstance(num_albums, int)
+        assert isinstance(num_tracks, int)
+        total = num_artists * num_albums * num_tracks
+        artist_idx, album_idx, track_idx = (int(part) for part in prov_track_id.split("_", 3))
+        seed_ordinal = (artist_idx * num_albums + album_idx) * num_tracks + track_idx
+        # walk the catalogue starting just after the seed so the result is stable and seed-excluded
+        similar: list[Track] = []
+        for step in range(1, total):
+            if len(similar) >= limit:
+                break
+            ordinal = (seed_ordinal + step) % total
+            artist, remainder = divmod(ordinal, num_albums * num_tracks)
+            album, track = divmod(remainder, num_tracks)
+            similar.append(await self.get_track(f"{artist}_{album}_{track}"))
+        return similar
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -234,6 +250,16 @@ class TestProvider(MusicProvider):
             },
             metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
         )
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get all tracks for the given album id."""
+        num_tracks = self.config.get_value(CONF_KEY_NUM_TRACKS) or 20
+        assert isinstance(num_tracks, int)
+        artist_idx, album_idx = prov_album_id.split("_", 2)
+        return [
+            await self.get_track(f"{artist_idx}_{album_idx}_{track_idx}")
+            for track_idx in range(num_tracks)
+        ]
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
@@ -283,14 +309,14 @@ class TestProvider(MusicProvider):
             duration=60,
         )
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS)
         assert isinstance(num_artists, int)
         for artist_idx in range(num_artists):
             yield await self.get_artist(str(artist_idx))
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
         assert isinstance(num_artists, int)
@@ -301,7 +327,7 @@ class TestProvider(MusicProvider):
                 album_item_id = f"{artist_idx}_{album_idx}"
                 yield await self.get_album(album_item_id)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
         assert isinstance(num_artists, int)
@@ -315,14 +341,14 @@ class TestProvider(MusicProvider):
                     track_item_id = f"{artist_idx}_{album_idx}_{track_idx}"
                     yield await self.get_track(track_item_id)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library tracks from the provider."""
         num_podcasts = self.config.get_value(CONF_KEY_NUM_PODCASTS)
         assert isinstance(num_podcasts, int)
         for podcast_idx in range(num_podcasts):
             yield await self.get_podcast(str(podcast_idx))
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from the provider."""
         num_audiobooks = self.config.get_value(CONF_KEY_NUM_AUDIOBOOKS)
         assert isinstance(num_audiobooks, int)
@@ -332,7 +358,7 @@ class TestProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         num_episodes = 25
         for episode_idx in range(num_episodes):

@@ -4,20 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.providers.filesystem_local.constants import (
-    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-    CONF_ENTRY_MISSING_ALBUM_ARTIST,
-)
-
-from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .provider import WebDAVFileSystemProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -38,58 +30,3 @@ async def setup(
     prov = WebDAVFileSystemProvider(mass, manifest, config)
     await prov.handle_async_init()
     return prov
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_CONTENT_TYPE,
-            type=ConfigEntryType.STRING,
-            label="Content type",
-            options=[
-                ConfigValueOption("Music", "music"),
-                ConfigValueOption("Audiobooks", "audiobooks"),
-                ConfigValueOption("Podcasts", "podcasts"),
-            ],
-            default_value="music",
-            description="The type of content stored on this WebDAV server",
-            hidden=instance_id is not None,
-        ),
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            label="WebDAV URL",
-            required=True,
-            description="The base URL of your WebDAV server (e.g., https://example.com/webdav)",
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=False,
-            description="Username for WebDAV authentication (leave empty for no authentication)",
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=False,
-            description="Password for WebDAV authentication",
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL certificate",
-            default_value=False,
-            description="Verify SSL certificates when connecting to HTTPS WebDAV servers",
-        ),
-        CONF_ENTRY_MISSING_ALBUM_ARTIST,
-        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-    )

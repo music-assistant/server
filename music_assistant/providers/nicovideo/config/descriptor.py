@@ -25,7 +25,8 @@ class ConfigDescriptor[T]:
         cast: Callable[[ConfigValueType], T],
         config_entry: ConfigEntry,
     ) -> None:
-        """Initialize descriptor.
+        """
+        Initialize descriptor.
 
         Args:
             cast: Transformation/validation applied to raw value.

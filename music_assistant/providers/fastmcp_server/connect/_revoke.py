@@ -1,4 +1,5 @@
-"""Sanctioned-API helpers for wizard-side token management.
+"""
+Sanctioned-API helpers for wizard-side token management.
 
 The wizard mints (and therefore wants to revoke / list) MA auth tokens, but
 the public ``auth.revoke_token`` / ``auth.get_user_tokens`` methods are
@@ -37,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 # install the import succeeds (it's the same module MA's own tests use —
 # tests/test_webserver_auth.py:19-22). In this repo's minimal dev venv the
 # transitive ``music_assistant.controllers.webserver`` package can't be
-# loaded (frontend / chardet / torch are not installed), so fall back to
+# loaded (frontend / torch are not installed), so fall back to
 # no-op shims for collect-time imports. Tests mock the API methods that
 # would actually read ``current_user``, so a no-op context manager is safe
 # there. Production always hits the real branch.
@@ -66,7 +67,8 @@ except ImportError:
 
 @contextmanager
 def _as_user(user: User) -> Iterator[None]:
-    """Briefly impersonate ``user`` for an ``@api_command`` call.
+    """
+    Briefly impersonate ``user`` for an ``@api_command`` call.
 
     ``current_user`` is a ContextVar — save/restore is task-local, so
     concurrent requests on other users are unaffected.
@@ -83,7 +85,8 @@ def _as_user(user: User) -> Iterator[None]:
 
 
 async def revoke_token_by_id(mass: MusicAssistant, user: User, token_id: str) -> bool:
-    """Revoke a token via the sanctioned ``auth.revoke_token`` API.
+    """
+    Revoke a token via the sanctioned ``auth.revoke_token`` API.
 
     MA's ``revoke_token`` enforces ownership internally — the impersonated
     ``user`` must own the token (or be admin), or the call raises
@@ -111,7 +114,8 @@ async def revoke_token_by_id(mass: MusicAssistant, user: User, token_id: str) ->
 
 
 async def list_user_tokens(mass: MusicAssistant, user: User) -> list[AuthToken]:
-    """List ``user``'s auth tokens via the sanctioned ``auth.get_user_tokens`` API.
+    """
+    List ``user``'s auth tokens via the sanctioned ``auth.get_user_tokens`` API.
 
     Returns typed ``AuthToken`` dataclasses — no raw ``sqlite3.Row``
     objects leak across the boundary. Best-effort: an error returns ``[]``.

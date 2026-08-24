@@ -1,0 +1,48 @@
+{
+  "config_entries": {
+    "host": {
+      "label": "Server",
+      "description": "The (fqdn) hostname of the SMB/CIFS/DFS server to connect to. For example mynas.local."
+    },
+    "share": {
+      "label": "Share",
+      "description": "The name of the share/service you'd like to connect to on the remote host, For example 'media'."
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "The username to authenticate to the remote server. Leave as 'guest' or empty for anonymous access."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "The password to authenticate to the remote server. Leave empty for anonymous/guest access."
+    },
+    "subfolder": {
+      "label": "Subfolder",
+      "description": "[optional] Use if your music is stored in a sublevel of the share. E.g. 'collections' or 'albums/A-K'."
+    },
+    "smb_version": {
+      "label": "SMB Version",
+      "description": "The SMB protocol version to use. SMB 3.0 or higher is recommended for better performance and security. Use Auto to let the system negotiate.",
+      "options": {
+        "": "Auto",
+        "1.0": "SMB 1.0",
+        "2.0": "SMB 2.0",
+        "2.1": "SMB 2.1",
+        "3.0": "SMB 3.0",
+        "3.1.1": "SMB 3.1.1"
+      }
+    },
+    "cache_mode": {
+      "label": "Cache Mode",
+      "description": "Cache mode affects performance and consistency. 'Loose' provides better performance for read-heavy workloads and is recommended for music libraries.",
+      "options": {
+        "strict": "Strict",
+        "loose": "Loose (Recommended)",
+        "none": "None"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Play music and audiobooks stored on SMB connected network drives."
+  }
+}

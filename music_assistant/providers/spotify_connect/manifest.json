@@ -1,11 +1,15 @@
 {
   "type": "plugin",
   "domain": "spotify_connect",
-  "stage": "alpha",
+  "stage": "beta",
   "name": "Spotify Connect",
   "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["pkce==1.0.3"],
+  "credits": [
+    "[Spotify Soloist (by Spotify)](https://developer.spotify.com/documentation/soloist)",
+    "[go-librespot (by devgianlu)](https://github.com/devgianlu/go-librespot)"
+  ],
+  "requirements": [],
   "documentation": "https://music-assistant.io/plugins/spotify-connect/",
   "multi_instance": true
 }
