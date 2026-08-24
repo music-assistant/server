@@ -1086,6 +1086,11 @@ class StreamsController(CoreController):
                     source_player_id,
                     stream_session_id,
                 )
+                if (
+                    self.mass.players.get_audio_source_session(source_player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                ):
+                    raise web.HTTPNotFound(reason="AudioSource session was superseded")
                 session.stream_session_id = stream_session_id
             except RuntimeError as err:
                 # the plugin refuses this player (e.g. it just redirected playback
@@ -1124,7 +1129,12 @@ class StreamsController(CoreController):
             try:
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
-                        if session.stream_session_id != stream_session_id:
+                        if (
+                            self.mass.players.get_audio_source_session(source_player_id)
+                            is not session
+                            or session.playback_session_id != playback_session_id
+                            or session.stream_session_id != stream_session_id
+                        ):
                             self.logger.debug(
                                 "Ending stream for %s: a newer request took the source over",
                                 session.source.name,
@@ -1909,6 +1919,11 @@ class StreamsController(CoreController):
             except RuntimeError as err:
                 # the plugin refuses this consumer, e.g. it just redirected playback
                 raise AudioError(str(err)) from err
+            if (
+                self.mass.players.get_audio_source_session(session.player_id) is not session
+                or session.playback_session_id != playback_session_id
+            ):
+                raise AudioError("AudioSource session was superseded")
             session.stream_session_id = stream_session_id
             if (streamdetails := session.streamdetails) is None:
                 streamdetails = await prov.get_stream_details(
@@ -1922,6 +1937,12 @@ class StreamsController(CoreController):
                 raise_on_error=False,
                 display_name=session.source.name,
             ):
+                if (
+                    self.mass.players.get_audio_source_session(session.player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                    or session.stream_session_id != stream_session_id
+                ):
+                    break
                 yield chunk
         finally:
             try:

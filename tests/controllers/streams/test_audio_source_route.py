@@ -8,6 +8,7 @@ same holds for the direct-PCM consumers, which never reach the route at all.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -255,3 +256,60 @@ async def test_a_reselected_session_is_not_released_after_setup_failure() -> Non
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
     ctrl.mass.players.deselect_source.assert_not_awaited()
+
+
+async def test_http_setup_stops_when_the_session_is_reselected() -> None:
+    """HTTP setup cannot stamp its stream token onto a newer source selection."""
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+    request_session_id = session.playback_session_id
+
+    async def supersede_session(*_args: Any) -> None:
+        session.playback_session_id = "replacement-session"
+
+    provider.on_source_selected = AsyncMock(side_effect=supersede_session)
+    ctrl._prepare_audio_source_stream = AsyncMock()
+
+    with pytest.raises(web.HTTPNotFound, match="superseded"):
+        await ctrl.serve_audio_source_stream(_request(session_id=request_session_id))
+
+    ctrl._prepare_audio_source_stream.assert_not_awaited()
+    ctrl.mass.players.deselect_source.assert_not_awaited()
+
+
+async def test_direct_pcm_setup_stops_when_the_session_is_reselected() -> None:
+    """PCM setup cannot stamp its stream token onto a newer source selection."""
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+
+    async def supersede_session(*_args: Any) -> None:
+        session.playback_session_id = "replacement-session"
+
+    provider.on_source_selected = AsyncMock(side_effect=supersede_session)
+    stream = ctrl._get_audio_source_session_stream(session, AudioFormat(), CONSUMER_ID)
+
+    with pytest.raises(AudioError, match="superseded"):
+        await anext(stream)
+
+    ctrl.mass.players.deselect_source.assert_not_awaited()
+
+
+async def test_direct_pcm_stream_stops_when_the_session_is_reselected() -> None:
+    """A running PCM stream ends before yielding audio for a newer selection."""
+    session = _session()
+    session.streamdetails = MagicMock()
+    ctrl, _provider, _player = _controller(session)
+    ctrl.audio = MagicMock()
+
+    async def chunks() -> AsyncGenerator[bytes]:
+        yield b"first"
+        yield b"stale"
+
+    ctrl.audio.get_audio_source_stream = MagicMock(return_value=chunks())
+    stream = ctrl._get_audio_source_session_stream(session, AudioFormat(), CONSUMER_ID)
+
+    assert await anext(stream) == b"first"
+    session.playback_session_id = "replacement-session"
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
