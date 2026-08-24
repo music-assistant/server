@@ -29,7 +29,6 @@ from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
-    ALBUM_CONTENT_EXTENSIONS,
     AUDIOBOOK_EXTENSIONS,
     CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
@@ -37,13 +36,9 @@ from music_assistant.providers.filesystem_local.constants import (
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
+    WALK_EXTENSIONS,
 )
-from music_assistant.providers.filesystem_local.helpers import (
-    FileSystemItem,
-    ScanErrors,
-    SidecarIndex,
-    strip_cache_buster,
-)
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -55,10 +50,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
 
-# (id, name, is_dir, checksum, size, sidecar_token) as returned by _api_list_children
-# sidecar_token is an optional higher-precision content/revision token (e.g. a stable content
-# hash) used only for sidecar-signature precision; it never displaces the primary checksum.
-RawItem = tuple[str, str, bool, str, int | None, str | None]
+# (id, name, is_dir, checksum, size) as returned by _api_list_children
+RawItem = tuple[str, str, bool, str, int | None]
 
 # extensions the stream route will serve; playlists/cue/images are read
 # server-side and never fetched over HTTP, so audio is all it needs to proxy
@@ -214,7 +207,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Return raw image bytes for a cloud image file or embedded cover art."""
         # drop the cache-busting suffix the parent appends for embedded images
-        path = strip_cache_buster(path)
+        path = path.split("?cs=", 1)[0]
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:
             # audio file: extract the embedded art with ffmpeg over our stream URL
@@ -234,7 +227,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         List the children of a cloud folder, following pagination if needed.
 
         :param folder_id: The cloud provider's opaque folder ID.
-        :return: One (id, name, is_dir, checksum, size, sidecar_token) tuple per child.
+        :return: One (id, name, is_dir, checksum, size) tuple per child.
         """
         raise NotImplementedError
 
@@ -328,7 +321,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
-        sidecar_index: SidecarIndex | None = None,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -362,13 +355,8 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     if scan_errors.aborted:
                         return
                     continue
-                # the API listing already includes sidecars, so record them for free
-                if sidecar_index is not None and sidecar_index.record(item):
+                if item.ext not in WALK_EXTENSIONS:
                     continue
-                if item.ext not in SUPPORTED_EXTENSIONS:
-                    continue
-                if sidecar_index is not None and item.ext in ALBUM_CONTENT_EXTENSIONS:
-                    sidecar_index.record_track_dir(item.relative_parent_path)
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
                     update_current_task_progress_text(f"Scanning files: {scanned[0]} found")
@@ -381,6 +369,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await _walk("", is_root=True)
@@ -496,7 +485,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     def _to_item(self, raw: RawItem, parent_path: str, name: str) -> FileSystemItem:
         """Convert a raw API listing entry to a FileSystemItem."""
-        _, _, is_dir, checksum, size, sidecar_token = raw
+        _, _, is_dir, checksum, size = raw
         relative_path = f"{parent_path}/{name}" if parent_path else name
         return FileSystemItem(
             filename=name,
@@ -508,5 +497,4 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             is_dir=is_dir,
             checksum=checksum,
             file_size=size,
-            sidecar_token=sidecar_token,
         )

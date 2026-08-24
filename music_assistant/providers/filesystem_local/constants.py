@@ -146,8 +146,6 @@ TRACK_EXTENSIONS = {
 }
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 CUE_EXTENSIONS = {"cue"}
-# folders holding any of these are treated as album track folders (for disc-artwork detection)
-ALBUM_CONTENT_EXTENSIONS = TRACK_EXTENSIONS | CUE_EXTENSIONS
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
@@ -160,17 +158,19 @@ SUPPORTED_EXTENSIONS = {
     *CUE_EXTENSIONS,
 }
 
-# Music metadata sidecars. NFO files are Kodi-style and only meaningful in their item's
-# mapping directory (album folder / artist folder); disc-subfolder album.nfo is ignored.
-NFO_SIDECAR_NAMES: Final[frozenset[str]] = frozenset({"album.nfo", "artist.nfo"})
-# Image stems the folder-image parser recognizes: the typed image names plus the generic
-# thumbnail fallbacks. Kept in sync with LocalFileSystemProvider._get_local_images.
-RECOGNIZED_IMAGE_STEMS: Final[frozenset[str]] = frozenset(
-    {*(image_type.value for image_type in ImageType), "folder", "cover", "album", "artist"}
-)
-# Extensions the music sync walk additionally surfaces (on top of SUPPORTED_EXTENSIONS) so
-# sidecar changes are detectable from the listings the walk already produces.
-SIDECAR_SCAN_EXTENSIONS: Final[set[str]] = {*IMAGE_EXTENSIONS, "nfo"}
+# local metadata files (Kodi-style NFO and recognized folder images) are never imported as
+# media: they carry no provider mapping of their own and only feed the lightweight change
+# detection that reparses their representative track when one of them changes on disk
+NFO_FILENAMES = {"album.nfo", "artist.nfo"}
+METADATA_IMAGE_STEMS = {image_type.value for image_type in ImageType} | {
+    "folder",
+    "cover",
+    "album",
+    "artist",
+}
+METADATA_FILE_EXTENSIONS = {"nfo", *IMAGE_EXTENSIONS}
+# the walk collects both imported media and local metadata files in a single pass
+WALK_EXTENSIONS = SUPPORTED_EXTENSIONS | METADATA_FILE_EXTENSIONS
 
 
 class IsChapterFile(Exception):
@@ -185,6 +185,13 @@ CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
+# tracks the current change token + representative track of a local metadata file (NFO or
+# folder image); derivative and non-authoritative, so a cache miss is simply ignored
+CACHE_CATEGORY_METADATA_FILE: Final[int] = 9
+
+# how long a local metadata file's registered token is remembered for; long-lived since it is
+# only ever refreshed by actually reading the file again, not on a timer
+METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 30  # 30 days
 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this

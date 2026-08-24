@@ -20,7 +20,6 @@ from music_assistant.controllers.tasks.context import update_current_task_progre
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
-    ALBUM_CONTENT_EXTENSIONS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
@@ -30,14 +29,10 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
+    WALK_EXTENSIONS,
     content_type_config_entry,
 )
-from music_assistant.providers.filesystem_local.helpers import (
-    FileSystemItem,
-    ScanErrors,
-    SidecarIndex,
-    strip_cache_buster,
-)
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
 from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_connection
@@ -188,7 +183,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             is_dir=webdav_item.is_dir,
             checksum=webdav_item.last_modified or "unknown",
             file_size=webdav_item.size,
-            sidecar_token=webdav_item.etag,
+            metadata_token=webdav_item.etag,
         )
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
@@ -228,15 +223,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         session = self._session
         auth_header = self._auth_header
         headers = {"Authorization": auth_header} if auth_header else None
-        try:
-            async with session.get(webdav_url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise MediaNotFoundError(f"File not found: {path}")
-                return await resp.read()
-        except aiohttp.ClientError as err:
-            # a transport failure is transient, not a missing file: surface it as a provider
-            # error so callers (e.g. sidecar reads) can defer and retry instead of aborting
-            raise ProviderUnavailableError(f"WebDAV request failed for {path}: {err}") from err
+        async with session.get(webdav_url, headers=headers) as resp:
+            if resp.status != 200:
+                raise MediaNotFoundError(f"File not found: {path}")
+            return await resp.read()
 
     def _convert_webdav_items(
         self,
@@ -285,15 +275,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     is_dir=item.is_dir,
                     checksum=item.last_modified or "unknown",
                     file_size=item.size,
-                    sidecar_token=item.etag,
+                    metadata_token=item.etag,
                 )
             )
         return result
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
-        # drop the cache-busting suffix appended for versioned local images
-        path = strip_cache_buster(path)
         # Check if this is an audio file with embedded image
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in SUPPORTED_EXTENSIONS:
@@ -323,7 +311,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
-        sidecar_index: SidecarIndex | None = None,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -357,13 +345,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     if scan_errors.aborted:
                         return
                     continue
-                # the PROPFIND listing already includes sidecars, so record them for free
-                if sidecar_index is not None and sidecar_index.record(item):
+                if item.ext not in WALK_EXTENSIONS:
                     continue
-                if item.ext not in SUPPORTED_EXTENSIONS:
-                    continue
-                if sidecar_index is not None and item.ext in ALBUM_CONTENT_EXTENSIONS:
-                    sidecar_index.record_track_dir(item.relative_parent_path)
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
                     update_current_task_progress_text(f"Scanning files: {scanned[0]} found")
@@ -376,6 +359,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await _walk("", is_root=True)

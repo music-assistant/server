@@ -868,6 +868,7 @@ class TestClassifyScanItemCue:
             unchanged_cue_items=unchanged_cue_items,
             cue_stems=cue_stems,
             ignore_album_playlists=False,
+            metadata_files=[],
         )
         return items_to_process, unchanged_cue_items, cur_filenames, cue_stems
 

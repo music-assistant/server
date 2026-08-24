@@ -5,15 +5,11 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote, urljoin
 
 import aiohttp
 from defusedxml import ElementTree
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError, SetupFailedError
-
-if TYPE_CHECKING:
-    from xml.etree.ElementTree import Element
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,8 +21,8 @@ PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
         <d:resourcetype/>
         <d:getcontentlength/>
         <d:getlastmodified/>
-        <d:getetag/>
         <d:displayname/>
+        <d:getetag/>
     </d:prop>
 </d:propfind>"""
 
@@ -119,21 +115,16 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         if href.rstrip("/") == base_url_normalized:
             continue
 
-        # a response may carry multiple propstat blocks: a 2xx block holding the properties the
-        # server returned and, when the PROPFIND names an optional property the server lacks (e.g.
-        # getetag), a separate 404 block. Their order is not guaranteed, so read only the
-        # successful block(s); using the first block blindly can lose resourcetype/size/etag data
-        props = [
-            prop
-            for propstat in response_elem.findall("d:propstat", DAV_NAMESPACE)
-            if _propstat_ok(propstat)
-            and (prop := propstat.find("d:prop", DAV_NAMESPACE)) is not None
-        ]
-        if not props:
+        propstat = response_elem.find("d:propstat", DAV_NAMESPACE)
+        if propstat is None:
+            continue
+
+        prop = propstat.find("d:prop", DAV_NAMESPACE)
+        if prop is None:
             continue
 
         # Check if it's a directory
-        resourcetype = _find_prop(props, "d:resourcetype")
+        resourcetype = prop.find("d:resourcetype", DAV_NAMESPACE)
         is_collection = (
             resourcetype is not None
             and resourcetype.find("d:collection", DAV_NAMESPACE) is not None
@@ -142,24 +133,23 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
         # Get size (only for files)
         size = None
         if not is_collection:
-            contentlength = _find_prop(props, "d:getcontentlength")
+            contentlength = prop.find("d:getcontentlength", DAV_NAMESPACE)
             if contentlength is not None and contentlength.text:
                 with contextlib.suppress(ValueError):
                     size = int(contentlength.text)
 
         # Get last modified
-        lastmodified = _find_prop(props, "d:getlastmodified")
+        lastmodified = prop.find("d:getlastmodified", DAV_NAMESPACE)
         last_modified = lastmodified.text if lastmodified is not None else None
 
-        # Get ETag: the strongest change token, changes on content change even within the same
-        # HTTP-date second; normalize the weak prefix and quotes servers wrap it in
-        etagelem = _find_prop(props, "d:getetag")
+        # Get etag (used only as a higher-precision metadata-file change token)
+        etagelem = prop.find("d:getetag", DAV_NAMESPACE)
         etag = None
         if etagelem is not None and etagelem.text:
             etag = etagelem.text.strip().removeprefix("W/").strip('"') or None
 
         # Get display name or extract from href
-        displayname = _find_prop(props, "d:displayname")
+        displayname = prop.find("d:displayname", DAV_NAMESPACE)
         if displayname is not None and displayname.text:
             name = displayname.text
         else:
@@ -220,22 +210,3 @@ def build_webdav_url(base_url: str, path: str) -> str:
     # left unencoded they would be misread as URL params/query/fragment/scheme.
     quoted_path = quote(path.removeprefix("/"), safe="/")
     return urljoin(normalized_base, quoted_path)
-
-
-def _propstat_ok(propstat: Element) -> bool:
-    """Return whether a propstat block reports a successful (2xx) status."""
-    status = propstat.find("d:status", DAV_NAMESPACE)
-    if status is None or not status.text:
-        # a propstat without a status is unusual; keep it rather than dropping its properties
-        return True
-    parts = status.text.split()
-    # a status line reads "HTTP/1.1 200 OK"; treat an unparsable line as usable
-    return len(parts) < 2 or parts[1].startswith("2")
-
-
-def _find_prop(props: list[Element], tag: str) -> Element | None:
-    """Return the first matching property element across the given successful prop blocks."""
-    for prop in props:
-        if (found := prop.find(tag, DAV_NAMESPACE)) is not None:
-            return found
-    return None
