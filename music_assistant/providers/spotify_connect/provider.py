@@ -348,6 +348,22 @@ class SpotifyConnectProvider(PluginProvider):
                 return  # audio pipe closed (backend exited / restarting)
             yield chunk
 
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether Spotify applies loudness normalization to this source.
+
+        :param streamdetails: Stream details of the active Spotify Connect source.
+        """
+        return self._resolve_loudness_normalization()
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether Spotify applies crossfade to this source.
+
+        :param streamdetails: Stream details of the active Spotify Connect source.
+        """
+        return self._resolve_crossfade_ms() > 0
+
     async def on_source_selected(
         self,
         source_id: str,
