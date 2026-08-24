@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
-
-import aiofiles
-import shortuuid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.filters import (
@@ -28,7 +26,6 @@ from music_assistant.controllers.streams.smart_fades.renderer import TransitionR
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import get_ffmpeg_channel_args
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import remove_file
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -42,6 +39,35 @@ __all__ = [
     "SmartFadeNotApplicable",
     "StandardCrossFade",
 ]
+
+
+def _close_if_open(*fds: int) -> None:
+    """Close the given fds, ignoring ones already handed off (marked -1)."""
+    for fd in fds:
+        if fd != -1:
+            os.close(fd)
+
+
+def _feed_pipe_blocking(write_fd: int, payload: bytes) -> None:
+    """
+    Write a payload into a pipe fd with plain blocking writes, then close it.
+
+    Blocking on purpose (run in a thread): the pipe applies the backpressure,
+    and a consumer that went away surfaces as a broken pipe, which simply ends
+    the feed — the consumer's own exit status tells the story.
+
+    :param write_fd: Write end of the pipe; closed when done, whatever happens.
+    :param payload: The bytes to deliver.
+    """
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(write_fd, view[: 1024 * 1024])
+            view = view[written:]
+    except BrokenPipeError, OSError:
+        pass
+    finally:
+        os.close(write_fd)
 
 
 class SmartFade(ABC):
@@ -86,70 +112,33 @@ class SmartFade(ABC):
         :param fade_in_part: Raw PCM bytes or async generator for the incoming track's head.
         :param pcm_format: Audio format of both input parts and the output.
         """
-        # Write the fade_out_part to a temporary file
-        fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
-        async with aiofiles.open(fadeout_filename, "wb") as outfile:
-            await outfile.write(fade_out_part)
+        # The fade-out side goes in through its own pipe: ffmpeg takes any number
+        # of pipe:<fd> inputs, so no temp file has to touch the disk. The pipe far
+        # exceeds the kernel buffer, so it is fed alongside the stdin feeder below.
+        fadeout_read_fd, fadeout_write_fd = os.pipe()
 
-        args = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            # Input 1: fadeout part (as file)
-            "-acodec",
-            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
-            *get_ffmpeg_channel_args(pcm_format),
-            "-ar",
-            str(pcm_format.sample_rate),
-            "-f",
-            pcm_format.content_type.value,
-            "-i",
-            fadeout_filename,
-            # Input 2: fade_in part (stdin). The format is fully specified, so kill
-            # the raw demuxer's probe buffer: it would swallow seconds of a
-            # streamed fade-in before the filter graph produces its first frame.
-            "-probesize",
-            "32",
-            "-analyzeduration",
-            "0",
-            "-acodec",
-            pcm_format.content_type.name.lower(),
-            *get_ffmpeg_channel_args(pcm_format),
-            "-ar",
-            str(pcm_format.sample_rate),
-            "-f",
-            pcm_format.content_type.value,
-            "-i",
-            "-",
-        ]
-        smart_fade_filters = self._get_ffmpeg_filters()
         self.logger.debug(
             "Applying smartfade: %s",
             self,
         )
-        args.extend(
-            [
-                "-filter_complex",
-                ";".join(smart_fade_filters),
-                # Output format specification - must match input codec format
-                "-acodec",
-                pcm_format.content_type.name.lower(),
-                *get_ffmpeg_channel_args(pcm_format),
-                "-ar",
-                str(pcm_format.sample_rate),
-                "-f",
-                pcm_format.content_type.value,
-                "-",
-            ]
-        )
+        args = self._mix_ffmpeg_args(pcm_format, fadeout_read_fd)
         self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
         got_output = False
         stderr_lines: list[str] = []
         try:
-            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
+            proc = AsyncProcess(
+                args,
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                name="smartfade",
+                pass_fds=(fadeout_read_fd,),
+            )
             async with proc:
+                # the child holds its own copy of the read end now
+                os.close(fadeout_read_fd)
+                fadeout_read_fd = -1
 
                 async def _feed_stdin() -> None:
                     if isinstance(fade_in_part, bytes):
@@ -164,6 +153,10 @@ class SmartFade(ABC):
                     async for line in proc.iter_stderr():
                         stderr_lines.append(line)
 
+                fadeout_task = asyncio.create_task(
+                    asyncio.to_thread(_feed_pipe_blocking, fadeout_write_fd, fade_out_part)
+                )
+                fadeout_write_fd = -1  # the feeder owns and closes it now
                 feed_task = asyncio.create_task(_feed_stdin())
                 stderr_task = asyncio.create_task(_drain_stderr())
                 try:
@@ -175,6 +168,12 @@ class SmartFade(ABC):
                         feed_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await feed_task
+                    # Bounded wait: on consumer abort a paused-but-alive ffmpeg can
+                    # leave the writer blocked on a full pipe until proc.close()
+                    # (in __aexit__, after this finally) breaks it — the orphaned
+                    # thread then ends on its own, a completed write closed already.
+                    with suppress(TimeoutError, asyncio.CancelledError):
+                        await asyncio.wait_for(fadeout_task, timeout=2)
                     # Bounded wait on stderr_task so its output is still captured
                     # for error reporting on the happy/error paths, but we don't
                     # hang on consumer abort — ffmpeg is still alive then and
@@ -193,8 +192,8 @@ class SmartFade(ABC):
                     msg += f": {'; '.join(stderr_lines)}"
                 raise RuntimeError(msg)
         finally:
-            # Always cleanup temp file, even if ffmpeg fails
-            await remove_file(fadeout_filename)
+            # close whichever pipe ends this coroutine still owns (spawn failures)
+            _close_if_open(fadeout_read_fd, fadeout_write_fd)
 
     def __repr__(self) -> str:
         """Return string representation of SmartFade showing the filter chain."""
@@ -203,6 +202,54 @@ class SmartFade(ABC):
 
         chain = " → ".join(repr(f) for f in self.filters)
         return f"<{self.__class__.__name__}: {len(self.filters)} filters> {chain}"
+
+    def _mix_ffmpeg_args(self, pcm_format: AudioFormat, fadeout_read_fd: int) -> list[str]:
+        """
+        Build the mix's ffmpeg argv: fade-out on its own pipe, fade-in on stdin.
+
+        Both inputs are fully specified raw PCM, so the demuxer's probe buffer is
+        disabled — it would otherwise swallow seconds of a streamed fade-in
+        before the filter graph produces its first frame.
+
+        :param pcm_format: Audio format of both inputs and the output.
+        :param fadeout_read_fd: Read end of the fade-out pipe (passed to the child).
+        """
+        input_format = [
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-acodec",
+            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
+            *get_ffmpeg_channel_args(pcm_format),
+            "-ar",
+            str(pcm_format.sample_rate),
+            "-f",
+            pcm_format.content_type.value,
+        ]
+        return [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *input_format,
+            "-i",
+            f"pipe:{fadeout_read_fd}",
+            *input_format,
+            "-i",
+            "-",
+            "-filter_complex",
+            ";".join(self._get_ffmpeg_filters()),
+            # output format matches the input codec format
+            "-acodec",
+            pcm_format.content_type.name.lower(),
+            *get_ffmpeg_channel_args(pcm_format),
+            "-ar",
+            str(pcm_format.sample_rate),
+            "-f",
+            pcm_format.content_type.value,
+            "-",
+        ]
 
     def _get_ffmpeg_filters(
         self,

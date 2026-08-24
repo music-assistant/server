@@ -61,6 +61,7 @@ class AsyncProcess:
         stderr: bool | int | None = False,
         name: str | None = None,
         env: dict[str, str] | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         """
         Initialize AsyncProcess.
@@ -71,6 +72,8 @@ class AsyncProcess:
         :param stderr: Stderr configuration (True for PIPE, False for DEVNULL, or custom).
         :param name: Process name for logging.
         :param env: Environment variables for the subprocess (None inherits parent env).
+        :param pass_fds: Extra file descriptors kept open in the child (e.g. an
+            input pipe the command reads as ``pipe:<fd>``); the caller owns them.
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
@@ -82,6 +85,7 @@ class AsyncProcess:
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
         self._env = get_subprocess_env(env)
+        self._pass_fds = pass_fds
         self._stderr_lock = asyncio.Lock()
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -130,6 +134,7 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
             bufsize=0,
+            pass_fds=self._pass_fds,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
