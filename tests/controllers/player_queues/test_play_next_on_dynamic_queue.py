@@ -160,10 +160,8 @@ async def test_play_next_on_dynamic_queue_places_track_next() -> None:
 
     items = ctrl._queue_data["q1"].items
     ids = [item.media_item.item_id for item in items if item.media_item is not None]
-    # inserted directly after the buffered index, and no source changed so the pool tail
-    # is left untouched (no rebuilt pool tracks appear)
+    # inserted right after the buffered index; no source changed so the tail stays untouched
     assert ids == ["current", "wish"], f"expected only ['current', 'wish'], got: {ids}"
-    # the carved-out track is inserted, not folded into the pool as a source
     assert wish not in ctrl._queue_data["q1"].source_items
 
 
@@ -236,9 +234,8 @@ async def test_add_track_on_dynamic_queue_still_feeds_pool() -> None:
 
     items = ctrl._queue_data["q1"].items
     ids = [item.media_item.item_id for item in items if item.media_item is not None]
-    # fed into the pool as a source and mixed into the rebuilt tail, not inserted literally at
-    # index 1 like NEXT would (a one-shot track source is retired from `source_items` right after
-    # the pool dispatches it, so its trace is the mixed-in position, not lasting source membership)
+    # fed to the pool and mixed into the rebuilt tail, not inserted at index 1 like NEXT
+    # (a one-shot track source is retired from source_items right after dispatch)
     assert "seed" in ids, f"expected 'seed' mixed into the pool tail: {ids}"
     assert ids[1] != "seed", f"expected 'seed' mixed into the pool tail, not at index 1: {ids}"
     # the pool actually ran (proving _enter_dynamic_mode fired), not left untouched
@@ -308,8 +305,7 @@ async def test_play_next_mixed_batch_transition_plays_track_once() -> None:
         for item in ctrl._queue_data["q1"].items
         if item.media_item is not None
     ]
-    # the radio becomes the pool source while the play-next track is inserted literally after
-    # the buffered index, exactly once (never also fed to the pool)
+    # the radio feeds the new pool; the play-next track is inserted next, exactly once
     assert ids.count("wish") == 1, f"'wish' must appear exactly once: {ids}"
     assert ids[1] == "wish", f"expected 'wish' at index 1 (play next), got: {ids}"
     assert not any(item.item_id == "wish" for item in ctrl._queue_data["q1"].source_items), (
