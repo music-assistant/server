@@ -451,14 +451,19 @@ async def audio_source_silence_keepalive(
     raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
     silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
     silence_chunk = b"\x00" * silence_bytes
-    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
+    queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
         try:
             async with aclosing(inner) as managed_inner:
                 async for chunk in managed_inner:
                     await queue.put(chunk)
-        except Exception as err:
+        except (Exception, asyncio.CancelledError) as err:
+            task = asyncio.current_task()
+            assert task is not None
+            # Cancellation must not wait for a queue the closing consumer no longer drains.
+            if task.cancelling():
+                raise
             await queue.put(err)
         else:
             await queue.put(None)
@@ -473,7 +478,7 @@ async def audio_source_silence_keepalive(
                 continue
             if item is None:
                 break
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 raise item
             yield item
     finally:

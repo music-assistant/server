@@ -771,6 +771,47 @@ class TestAudioSourceSilenceKeepalive:
         assert source_closed.is_set()
 
     @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_propagates_cleanup_error(self) -> None:
+        """Source cleanup errors propagate without blocking wrapper cancellation."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                raise RuntimeError("cleanup failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await asyncio.wait_for(stream.aclose(), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_propagates_source_cancelled_error(self) -> None:
+        """A source-raised cancellation reaches the stream consumer."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise asyncio.CancelledError
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format())
+        assert await anext(stream) == b"one"
+        with pytest.raises(asyncio.CancelledError):
+            await anext(stream)
+
+    @pytest.mark.asyncio
     async def test_custom_audio_source_path_applies_wrapper(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
