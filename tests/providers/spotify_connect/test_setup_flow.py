@@ -128,14 +128,17 @@ async def test_new_setup_go_librespot_path() -> None:
     session, collected = _make_session()
     task, step = await _start_flow(session)
 
-    # the flow opens with the backend choice, defaulting to go-librespot
+    # the flow opens with an expanded backend choice, defaulting to soloist
     assert step.step_id == "backend"
+    assert [entry.key for entry in step.entries] == [CONF_BACKEND]
     backend_entry = _entry(step, CONF_BACKEND)
     assert [option.value for option in backend_entry.options] == [
         BACKEND_SOLOIST,
         BACKEND_GO_LIBRESPOT,
     ]
-    assert backend_entry.value == BACKEND_GO_LIBRESPOT
+    assert backend_entry.expanded_options is True
+    assert backend_entry.default_value == BACKEND_SOLOIST
+    assert backend_entry.value == BACKEND_SOLOIST
 
     step = await _submit(session, {CONF_BACKEND: BACKEND_GO_LIBRESPOT})
     assert step.step_id == "user"
