@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +9,12 @@ import pytest
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
-from music_assistant.providers.filesystem_local.constants import CACHE_CATEGORY_METADATA_FILE
+from music_assistant.providers.filesystem_local.constants import (
+    CACHE_CATEGORY_ALBUM_INFO,
+    CACHE_CATEGORY_ARTIST_INFO,
+    CACHE_CATEGORY_FOLDER_IMAGES,
+    CACHE_CATEGORY_METADATA_FILE,
+)
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 INSTANCE_ID = "filesystem_local--test"
@@ -27,24 +30,7 @@ def _provider() -> Any:
     provider.media_content_type = "music"
     provider._sync_tracks = True
     provider.cache = MagicMock()
-    provider.mass.cache.handle_refresh = _recording_handle_refresh([])
     return provider
-
-
-def _recording_handle_refresh(calls: list[bool]) -> Any:
-    """
-    Build a fake `CacheController.handle_refresh` that records the bypass flag it's given.
-
-    The recorded flags are readable back via the returned callable's `.calls` attribute.
-    """
-
-    @asynccontextmanager
-    async def _handle_refresh(bypass: bool) -> AsyncGenerator[None]:
-        calls.append(bypass)
-        yield None
-
-    _handle_refresh.calls = calls  # type: ignore[attr-defined]
-    return _handle_refresh
 
 
 def _item(relative_path: str, checksum: str = "1") -> FileSystemItem:
@@ -412,6 +398,7 @@ async def test_parse_artist_does_not_register_when_nfo_read_fails() -> None:
     provider = _provider()
     provider.manifest = MagicMock(domain="filesystem_local")
     provider.exists = AsyncMock(return_value=True)
+    provider.resolve = AsyncMock(return_value=_item("Artist/artist.nfo"))
     provider._read_file = AsyncMock(side_effect=OSError("network blip"))
     provider.cache.get = AsyncMock(return_value=None)
     provider.cache.set = AsyncMock()
@@ -434,6 +421,7 @@ async def test_parse_artist_does_not_register_on_malformed_nfo() -> None:
     provider = _provider()
     provider.manifest = MagicMock(domain="filesystem_local")
     provider.exists = AsyncMock(return_value=True)
+    provider.resolve = AsyncMock(return_value=_item("Artist/artist.nfo"))
     provider._read_file = AsyncMock(return_value=b"not xml at all <<<")
     provider._get_local_images = AsyncMock(return_value=UniqueList())
     provider.cache.get = AsyncMock(return_value=None)
@@ -457,6 +445,7 @@ async def test_parse_album_does_not_register_on_malformed_nfo() -> None:
     provider = _provider()
     provider.manifest = MagicMock(domain="filesystem_local")
     provider.exists = AsyncMock(return_value=True)
+    provider.resolve = AsyncMock(return_value=_item("Artist/Album/album.nfo"))
     provider._read_file = AsyncMock(return_value=b"not xml at all <<<")
     provider._get_local_images = AsyncMock(return_value=UniqueList())
     provider.cache.get = AsyncMock(return_value=None)
@@ -486,47 +475,7 @@ async def test_parse_album_does_not_register_on_malformed_nfo() -> None:
     assert meta_calls == []
 
 
-# --- force_refresh bypassing the provider's own short-lived caches ---------
-
-
-async def test_process_item_async_bypasses_cache_when_force_refresh() -> None:
-    """
-    A metadata-triggered reparse must bypass the provider's own album/artist caches.
-
-    Otherwise an unrelated concurrent parse of the same folder within the last 120 seconds
-    could hand back its pre-change cached Album/Artist, silently defeating the whole point
-    of queuing this representative for reparsing.
-    """
-    provider = _provider()
-    track_item = _item("Artist/Album/t1.mp3")
-    provider.mass.metadata.invalidate_image_cache = AsyncMock()
-    provider._parse_track = AsyncMock(return_value=MagicMock())
-    provider.mass.music.tracks.add_item_to_library = AsyncMock()
-
-    with patch(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
-        AsyncMock(return_value=MagicMock()),
-    ):
-        await provider._process_item_async(track_item, "old", force_refresh=True)
-
-    assert provider.mass.cache.handle_refresh.calls == [True]
-
-
-async def test_process_item_async_does_not_bypass_cache_by_default() -> None:
-    """A normally-changed track (not metadata-triggered) keeps the provider's own caching."""
-    provider = _provider()
-    track_item = _item("Artist/Album/t1.mp3")
-    provider.mass.metadata.invalidate_image_cache = AsyncMock()
-    provider._parse_track = AsyncMock(return_value=MagicMock())
-    provider.mass.music.tracks.add_item_to_library = AsyncMock()
-
-    with patch(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
-        AsyncMock(return_value=MagicMock()),
-    ):
-        await provider._process_item_async(track_item, "old")
-
-    assert provider.mass.cache.handle_refresh.calls == [False]
+# --- force_refresh_tracks signals a stale-cache-clearing need -------------
 
 
 async def test_queue_changed_metadata_files_marks_representative_for_force_refresh() -> None:
@@ -546,6 +495,24 @@ async def test_queue_changed_metadata_files_marks_representative_for_force_refre
     )
 
     assert force_refresh_tracks == {"Artist/Album/t1.mp3"}
+
+
+async def test_drop_stale_album_artist_caches_clears_the_three_categories() -> None:
+    """The stale-cache drop targets exactly album/artist/folder-image, scoped to this provider."""
+    provider = _provider()
+    provider.cache.delete = AsyncMock()
+
+    await provider._drop_stale_album_artist_caches()
+
+    calls = provider.cache.delete.await_args_list
+    categories = {call.kwargs["category"] for call in calls}
+    assert categories == {
+        CACHE_CATEGORY_ALBUM_INFO,
+        CACHE_CATEGORY_ARTIST_INFO,
+        CACHE_CATEGORY_FOLDER_IMAGES,
+    }
+    assert all(call.kwargs["key"] is None for call in calls)
+    assert all(call.kwargs["provider"] == INSTANCE_ID for call in calls)
 
 
 # --- get_artist registers a representative for manual "Refresh item" ------
