@@ -352,6 +352,28 @@ async def test_a_fresh_setup_preselects_librespot(
     assert entries[0].value == BACKEND_LIBRESPOT
 
 
+async def test_backend_choice_uses_expanded_options_for_card_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The backend choice shows options as expanded cards with descriptions.
+
+    The single ConfigEntry uses expanded_options=True for visual grouping,
+    preselects the stored choice or librespot by default.
+    """
+    monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
+    session = _make_session(tmp_path, [{CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}])
+    monkeypatch.setattr(setup_flow, "_authorize_playback", AsyncMock(return_value="creds"))
+    await setup_flow._setup_playback(session, {}, "spotify-user")
+    entries = session.form.await_args_list[0].args[0]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.key == CONF_PLAYBACK_BACKEND
+    assert entry.expanded_options is True
+    assert [opt.value for opt in entry.options] == [BACKEND_SOLOIST, BACKEND_LIBRESPOT]
+    assert entry.default_value == BACKEND_LIBRESPOT
+
+
 async def test_a_stored_choice_is_preselected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
