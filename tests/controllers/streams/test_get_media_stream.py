@@ -215,6 +215,14 @@ class _FeederErrorFFMpeg(_FakeFFMpeg):
             yield b""
 
 
+class _FeederErrorAfterOutputFFMpeg(_FeederErrorFFMpeg):
+    """FFMpeg double whose input feeder fails after producing PCM."""
+
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
+        """Yield PCM before the feeder failure ends the stream."""
+        yield b"\x00\x01" * 256
+
+
 class _LimitedProvider(MusicProvider):
     """Music provider with one source-stream slot."""
 
@@ -749,6 +757,21 @@ async def test_provider_capacity_error_from_ffmpeg_feeder_remains_typed(
                 _make_pcm_format(),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_generic_ffmpeg_feeder_error_is_not_treated_as_clean_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source failure after ffmpeg output still fails the media stream."""
+    _FeederErrorAfterOutputFFMpeg.error = RuntimeError("source failed")
+    monkeypatch.setattr(audio_mod, "FFMpeg", _FeederErrorAfterOutputFFMpeg)
+    audio = _make_audio_controller()
+
+    with pytest.raises(AudioError, match="source failed") as err:
+        await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+    assert isinstance(err.value.__cause__, RuntimeError)
 
 
 @pytest.mark.asyncio

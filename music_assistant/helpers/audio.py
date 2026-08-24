@@ -451,32 +451,42 @@ async def audio_source_silence_keepalive(
     raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
     silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
     silence_chunk = b"\x00" * silence_bytes
-    # empty bytes is the end-of-stream sentinel; real PCM frames are never empty
     queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
-        # aclosing ensures inner.aclose() runs on cancellation so the underlying
-        # generator's own finally (e.g. plugin lock release, fd cleanup) fires
-        # instead of leaking until GC.
-        try:
-            async with aclosing(inner) as managed_inner:
-                async for chunk in managed_inner:
-                    await queue.put(chunk)
-        finally:
-            await queue.put(b"")
+        async with aclosing(inner) as managed_inner:
+            async for chunk in managed_inner:
+                await queue.put(chunk)
 
     producer_task = asyncio.create_task(_producer())
+    queue_task: asyncio.Task[bytes] | None = None
     try:
         while True:
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
-            except TimeoutError:
-                yield silence_chunk
+            if queue_task is None:
+                queue_task = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                (queue_task, producer_task),
+                timeout=idle_threshold_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if queue_task in done:
+                chunk = queue_task.result()
+                queue_task = None
+                yield chunk
                 continue
-            if not chunk:
+            if producer_task in done:
+                queue_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await queue_task
+                queue_task = None
+                await producer_task
                 break
-            yield chunk
+            yield silence_chunk
     finally:
+        if queue_task is not None:
+            queue_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await queue_task
         producer_task.cancel()
         with suppress(asyncio.CancelledError):
             await producer_task

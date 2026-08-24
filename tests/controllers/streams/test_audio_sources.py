@@ -744,6 +744,33 @@ class TestAudioSourceSilenceKeepalive:
             await anext(stream)
 
     @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_completes(self) -> None:
+        """Cancelling the wrapper also closes a source blocked on a full queue."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+        source_closed = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                source_closed.set()
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        await asyncio.wait_for(stream.aclose(), timeout=1)
+
+        assert source_closed.is_set()
+
+    @pytest.mark.asyncio
     async def test_custom_audio_source_path_applies_wrapper(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

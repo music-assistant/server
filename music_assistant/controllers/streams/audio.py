@@ -3609,8 +3609,8 @@ class StreamsAudio:
             )
             # a nested source raises through the stdin feeder, where ffmpeg's own exit
             # would otherwise flatten it into a generic AudioError
-            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
-                raise ffmpeg_proc.stdin_feeder_exception
+            if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+                raise feeder_exception
             if ffmpeg_proc.returncode not in (0, None):
                 log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
                 raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
