@@ -342,3 +342,75 @@ async def test_get_library_podcasts_includes_legacy_periodicals(helper: AudibleH
         podcasts = [podcast async for podcast in helper.get_library_podcasts()]
 
     assert [podcast.item_id for podcast in podcasts] == ["P1", "P2"]
+
+
+async def test_podcast_episodes_ranked_by_publication_datetime(helper: AudibleHelper) -> None:
+    """Episodes are positioned by publication time, not the order the API returns them."""
+    # a serialised show: listed oldest-first, with two episodes sharing a release_date
+    episodes = [
+        {
+            "asin": "trailer",
+            "title": "Trailer",
+            "relationships": [],
+            "release_date": "2022-08-17",
+            "publication_datetime": "2022-08-17T04:27:10Z",
+        },
+        {
+            "asin": "ep2",
+            "title": "Ep2",
+            "relationships": [],
+            "release_date": "2022-08-21",
+            "publication_datetime": "2022-08-21T15:02:44Z",
+        },
+        {
+            "asin": "ep3",
+            "title": "Ep3",
+            "relationships": [],
+            "release_date": "2022-08-21",
+            "publication_datetime": "2022-08-21T15:04:34Z",
+        },
+    ]
+
+    async def side_effect(_: str, **kwargs: Any) -> dict[str, Any]:
+        return {"items": episodes} if kwargs.get("page") == 1 else {"items": []}
+
+    helper._call_api = AsyncMock(side_effect=side_effect)  # type: ignore[method-assign]
+    helper.get_podcast = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    parsed = [ep async for ep in helper.get_podcast_episodes("parent")]
+
+    assert {ep.item_id: ep.position for ep in parsed} == {"trailer": 1, "ep2": 2, "ep3": 3}
+
+
+async def test_podcast_episodes_reverse_a_newest_first_listing(helper: AudibleHelper) -> None:
+    """A show listed newest-first gets its newest episode the highest position."""
+    episodes = [
+        {
+            "asin": "new",
+            "title": "Newest",
+            "relationships": [],
+            "publication_datetime": "2026-08-24T04:01:00Z",
+        },
+        {
+            "asin": "mid",
+            "title": "Middle",
+            "relationships": [],
+            "publication_datetime": "2026-08-10T04:01:00Z",
+        },
+        {
+            "asin": "old",
+            "title": "Oldest",
+            "relationships": [],
+            "publication_datetime": "2026-07-27T04:01:00Z",
+        },
+    ]
+
+    async def side_effect(_: str, **kwargs: Any) -> dict[str, Any]:
+        return {"items": episodes} if kwargs.get("page") == 1 else {"items": []}
+
+    helper._call_api = AsyncMock(side_effect=side_effect)  # type: ignore[method-assign]
+    helper.get_podcast = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    parsed = [ep async for ep in helper.get_podcast_episodes("parent")]
+
+    assert {ep.item_id: ep.position for ep in parsed} == {"new": 3, "mid": 2, "old": 1}
