@@ -438,7 +438,11 @@ class PodcastsController(MediaControllerBase[Podcast]):
         }
         if user is not None:
             match["userid"] = user.user_id
-        row = await self.mass.music.database.get_row(DB_TABLE_PLAYLOG, match)
+        # without a userid filter several users can hold a row, the newest one wins
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_PLAYLOG, match=match, order_by="timestamp DESC", limit=1
+        )
+        row = rows[0] if rows else None
         if row is None:
             return
         if row["seconds_played"]:
