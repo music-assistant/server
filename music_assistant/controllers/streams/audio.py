@@ -3623,8 +3623,12 @@ class StreamsAudio:
                 # we were cancelled, just raise
                 cancelled = True
                 raise
-            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
-                raise ffmpeg_proc.stdin_feeder_exception
+            if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+                if isinstance(feeder_exception, ProviderStreamLimitError):
+                    raise ffmpeg_proc.stdin_feeder_exception
+                err = feeder_exception
+            if isinstance(err, ProviderStreamLimitError):
+                raise
             # dump the last 10 lines of the log in case of an unclean exit
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
