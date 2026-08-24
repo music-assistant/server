@@ -830,11 +830,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # A NEXT track carved out of an already-dynamic pool above lands here too: it
-                    # is expanded like on a linear queue but must not become a source, or the pool
-                    # would re-dispatch (replay) it later.
+                    # A play-next track never becomes a source: it is inserted literally below,
+                    # and as a source the pool would re-dispatch (replay) it later.
                     if (
-                        not already_dynamic
+                        not plays_next_track
                         and not isinstance(media_item, BrowseFolder)
                         and media_item.media_type
                         in (
@@ -897,10 +896,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # rebuilt when the sources actually changed, so a NEXT track carved out above (which
                 # adds no source) does not needlessly reshuffle the tail.
                 await self._enter_dynamic_mode(queue_id, option)
-            if not (already_dynamic and option == QueueOption.NEXT and media_items):
-                # only a track carved out of an already-active pool falls through below; on the
-                # enqueue that just made the queue dynamic the track was recorded as a source, so
-                # the rebuilt pool already holds it and inserting it too would duplicate it
+            if not (option == QueueOption.NEXT and media_items):
+                # everything else is fully handled by the pool (rebuilt above when needed)
                 return
             # a NEXT track carved out of the pool above still needs to be inserted; fall through to
             # the normal queue_items build + _enqueue_with_option call below, which inserts it right

@@ -273,7 +273,7 @@ async def test_play_next_container_on_dynamic_queue_feeds_pool() -> None:
 
 
 async def test_play_next_mixed_batch_transition_plays_track_once() -> None:
-    """NEXT of [track, dynamic radio] on a linear queue feeds both to the new pool, track once."""
+    """NEXT of [track, dynamic radio] on a linear queue inserts the track next, exactly once."""
     random.seed(4)
     snapshot = RecencySnapshot(now=NOW)
     ctrl = _controller(snapshot)
@@ -308,7 +308,11 @@ async def test_play_next_mixed_batch_transition_plays_track_once() -> None:
         for item in ctrl._queue_data["q1"].items
         if item.media_item is not None
     ]
-    # the enqueue that makes the queue dynamic feeds the track to the pool as a source, so it
-    # must appear in the mix exactly once (not also literally inserted)
+    # the radio becomes the pool source while the play-next track is inserted literally after
+    # the buffered index, exactly once (never also fed to the pool)
     assert ids.count("wish") == 1, f"'wish' must appear exactly once: {ids}"
+    assert ids[1] == "wish", f"expected 'wish' at index 1 (play next), got: {ids}"
+    assert not any(item.item_id == "wish" for item in ctrl._queue_data["q1"].source_items), (
+        "play-next track must not be recorded as a pool source"
+    )
     assert ctrl._queue_data["q1"].queue.is_dynamic
