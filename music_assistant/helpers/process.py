@@ -26,6 +26,11 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 DEFAULT_CHUNKSIZE = 64000
 
+# Ceiling on draining a pipe while closing. A child wedged in a read syscall never
+# closes its pipes, so an unbounded drain would keep close() from ever reaching the
+# terminate/SIGKILL escalation that actually reaps it.
+PIPE_DRAIN_TIMEOUT = 5
+
 
 def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
@@ -319,7 +324,7 @@ class AsyncProcess:
             await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
             with suppress(Exception):
-                await self.proc.stdout.read(-1)
+                await asyncio.wait_for(self.proc.stdout.read(-1), PIPE_DRAIN_TIMEOUT)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
@@ -329,7 +334,7 @@ class AsyncProcess:
                 await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
             with suppress(Exception):
-                await self.proc.stderr.read(-1)
+                await asyncio.wait_for(self.proc.stderr.read(-1), PIPE_DRAIN_TIMEOUT)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded

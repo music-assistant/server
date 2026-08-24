@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
 
-def _streamdetails(advertised: AudioFormat, arriving: AudioFormat | None) -> StreamDetails:
+
+def _streamdetails(
+    advertised: AudioFormat,
+    arriving: AudioFormat | None,
+    media_type: MediaType = MediaType.TRACK,
+) -> StreamDetails:
     """Return StreamDetails advertising one format while delivering another."""
     return StreamDetails(
         provider="test--1",
         item_id="1",
         audio_format=advertised,
         decoded_audio_format=arriving,
-        media_type=MediaType.TRACK,
+        media_type=media_type,
     )
 
 
@@ -120,3 +127,42 @@ def test_the_flow_depth_follows_the_arriving_audio() -> None:
 
     assert bit_depth == 32
     assert content_type == ContentType.PCM_S32LE
+
+
+def test_the_audio_source_passthrough_follows_the_arriving_audio() -> None:
+    """
+    A live source's passthrough format must not narrow the audio it passes through.
+
+    The passthrough exists to hand the player the source's own samples, so it
+    has to read the format the bytes arrive in - an engine that decoded for us
+    (Spotify Connect) advertises the quality tier it asked for, which is
+    narrower than the PCM it hands over.
+    """
+    from music_assistant.controllers.streams.audio import StreamsAudio  # noqa: PLC0415
+
+    advertised = AudioFormat(
+        content_type=ContentType.OGG,
+        codec_type=ContentType.VORBIS,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+        bit_rate=160,
+    )
+    arriving = AudioFormat(
+        content_type=ContentType.PCM_S32LE,
+        codec_type=ContentType.PCM_S32LE,
+        sample_rate=44100,
+        bit_depth=32,
+        channels=2,
+    )
+
+    pcm_format = StreamsAudio._select_audio_source_pcm_format(
+        cast("StreamsAudio", SimpleNamespace()),
+        player=cast("Player", SimpleNamespace()),
+        streamdetails=_streamdetails(advertised, arriving, MediaType.AUDIO_SOURCE),
+        supported_sample_rates=(44100, 48000),
+    )
+
+    assert pcm_format.bit_depth == 32
+    assert pcm_format.content_type == ContentType.PCM_S32LE
+    assert pcm_format.sample_rate == 44100
