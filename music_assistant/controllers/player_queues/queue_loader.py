@@ -808,6 +808,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         else shuffle,
                     )
 
+                # the user picked this exact track to play next, so it must be inserted literally
+                plays_next_track = (
+                    option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                )
                 # collect media_items to play
                 if is_dynamic_source(media_item):
                     # a dynamic playlist/station supplies its own tracks on demand; just mark it
@@ -821,9 +825,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             user_initiated=True,
                         )
                     )
-                elif already_dynamic and not (
-                    option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
-                ):
+                elif already_dynamic and not plays_next_track:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
