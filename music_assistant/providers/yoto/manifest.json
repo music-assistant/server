@@ -3,7 +3,7 @@
   "domain": "yoto",
   "name": "Yoto",
   "stage": "beta",
-  "description": "Stream music, audiobooks, or podcasts, purchased from the Yoto store or uploaded with the Make-Your-Own feature.",
+  "description": "Stream music, audiobooks, or podcasts, purchased from the Yoto store or provided free by the service.",
   "codeowners": [
     "@pantsman0"
   ],
