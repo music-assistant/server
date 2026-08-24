@@ -7,11 +7,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.providers.filesystem_local import (
+    _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS,
     _RERAISE_INVALID_NFO_TARGET,
     LocalFileSystemProvider,
 )
@@ -95,6 +97,58 @@ async def test_album_image_url_uses_high_resolution_change_token() -> None:
         "Artist/Album", extra_thumb_names=("album",), versioned=True
     )
     assert [img.path for img in images] == ["Artist/Album/folder.jpg?cs=1700000000500000000"]
+
+
+def _cached_folder_images(provider: Any) -> Any:
+    """Wire up an in-memory folder-images cache backed by a plain dict, keyed like the real one."""
+    provider._active_sidecar_index = None  # exercise the on-demand (non-sync) cache path
+    store: dict[str, Any] = {}
+
+    async def _get(key: str, **_kwargs: Any) -> Any:
+        return store.get(key)
+
+    async def _set(key: str, data: Any, **_kwargs: Any) -> None:
+        store[key] = data
+
+    provider.cache.get = AsyncMock(side_effect=_get)
+    provider.cache.set = AsyncMock(side_effect=_set)
+    provider._folder_sidecars = AsyncMock(
+        return_value=[
+            _file("Shared/album.jpg", checksum="1"),
+            _file("Shared/artist.jpg", checksum="1"),
+        ]
+    )
+    return provider._folder_sidecars
+
+
+async def test_album_then_artist_sharing_a_folder_get_independent_images() -> None:
+    """An album resolved first must not leave the artist reusing its cached, filtered images."""
+    provider = _provider()
+    listing = _cached_folder_images(provider)
+
+    album_images = await provider._get_local_images("Shared", extra_thumb_names=("album",))
+    assert {img.path for img in album_images} == {"Shared/album.jpg"}
+
+    artist_images = await provider._get_local_images(
+        "Shared", extra_thumb_names=("artist",), versioned=True
+    )
+    assert {img.path for img in artist_images} == {"Shared/artist.jpg?cs=1"}
+    listing.assert_awaited_once()  # the second call reused the cached raw folder listing
+
+
+async def test_artist_then_album_sharing_a_folder_get_independent_images() -> None:
+    """The reverse order (artist resolved first) must be just as independent."""
+    provider = _provider()
+    listing = _cached_folder_images(provider)
+
+    artist_images = await provider._get_local_images(
+        "Shared", extra_thumb_names=("artist",), versioned=True
+    )
+    assert {img.path for img in artist_images} == {"Shared/artist.jpg?cs=1"}
+
+    album_images = await provider._get_local_images("Shared", extra_thumb_names=("album",))
+    assert {img.path for img in album_images} == {"Shared/album.jpg"}
+    listing.assert_awaited_once()  # the second call reused the cached raw folder listing
 
 
 def test_versioned_image_path_encodes_opaque_change_token() -> None:
@@ -326,6 +380,120 @@ async def test_parse_artist_imports_tag_only_when_nfo_malformed() -> None:
     assert artist.metadata.description is None
 
 
+async def test_parse_artist_propagates_malformed_nfo_for_known_artist_on_changed_file() -> None:
+    """A changed file's malformed artist.nfo must not overwrite an already-known artist."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(
+        return_value=Artist(
+            item_id="Artist", provider="library", name="Artist", provider_mappings=set()
+        )
+    )
+
+    token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(True)
+    try:
+        with pytest.raises(SidecarInvalidError):
+            await provider._parse_artist("Tag Artist", artist_path="Artist")
+    finally:
+        _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(token)
+
+
+async def test_parse_artist_degrades_malformed_nfo_for_new_artist_on_changed_file() -> None:
+    """A changed file's malformed artist.nfo still degrades for a genuinely new import."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/artist.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._read_file = AsyncMock(return_value=b"<artist>just text</artist>")  # malformed
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+
+    token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(True)
+    try:
+        artist = await provider._parse_artist("Tag Artist", artist_path="Artist")
+    finally:
+        _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(token)
+    assert artist.name == "Tag Artist"
+
+
+def _album_tags(album: str = "Album") -> MagicMock:
+    """Build a minimal AudioTags mock sufficient for _parse_album's fallback (no album artist)."""
+    tags = MagicMock(spec=AudioTags)
+    tags.album = album
+    tags.album_artists = []
+    tags.musicbrainz_albumartistids = None
+    tags.album_artist_sort_names = None
+    tags.artists = []
+    tags.album_sort = None
+    tags.barcode = None
+    tags.musicbrainz_albumid = None
+    tags.musicbrainz_releasegroupid = None
+    tags.year = None
+    tags.album_type = AlbumType.UNKNOWN
+    tags.filename = "Artist/Album/track.mp3"
+    return tags
+
+
+async def test_parse_album_propagates_malformed_nfo_for_known_album_on_changed_file() -> None:
+    """A changed file's malformed album.nfo must not overwrite an already-known album."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.config.get_value = MagicMock(return_value="various_artists")
+    provider._parse_artist = AsyncMock(
+        return_value=Artist(
+            item_id="Various", provider=INSTANCE_ID, name="Various Artists", provider_mappings=set()
+        )
+    )
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/Album/album.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._apply_album_nfo = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(
+        return_value=Album(
+            item_id="Artist/Album", provider="library", name="Album", provider_mappings=set()
+        )
+    )
+
+    token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(True)
+    try:
+        with pytest.raises(SidecarInvalidError):
+            await provider._parse_album("Artist/Album/track.mp3", _album_tags())
+    finally:
+        _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(token)
+
+
+async def test_parse_album_degrades_malformed_nfo_for_new_album_on_changed_file() -> None:
+    """A changed file's malformed album.nfo still degrades for a genuinely new import."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider._active_sidecar_index = None
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.config.get_value = MagicMock(return_value="various_artists")
+    provider._parse_artist = AsyncMock(
+        return_value=Artist(
+            item_id="Various", provider=INSTANCE_ID, name="Various Artists", provider_mappings=set()
+        )
+    )
+    provider._folder_sidecars = AsyncMock(return_value=[_file("Artist/Album/album.nfo")])
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider._apply_album_nfo = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
+
+    token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(True)
+    try:
+        album = await provider._parse_album("Artist/Album/track.mp3", _album_tags())
+    finally:
+        _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(token)
+    assert album.name == "Album"
+
+
 async def test_invalid_nfo_propagation_is_scoped_to_the_refreshed_item() -> None:
     """While refreshing one item, an unrelated item's malformed NFO degrades and never propagates."""
     provider = _provider()
@@ -510,20 +678,11 @@ async def test_reparse_artist_from_cue_track_id() -> None:
 async def test_reparse_artist_falls_back_to_album_tracks_for_album_only_artist() -> None:
     """An album-only ALBUMARTIST with no track-artist relationship is rebuilt via its albums."""
     provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])  # no track-artist rows at all
-    track = Track(
-        item_id="1",
-        provider="library",
-        name="t1",
-        provider_mappings={
-            ProviderMapping(
-                item_id="Artist/Album/track.mp3",
-                provider_domain="filesystem_local",
-                provider_instance=INSTANCE_ID,
-            )
-        },
+    provider.mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[{"path": "Artist/Album/track.mp3"}]
     )
-    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(return_value=_file("Artist/Album/track.mp3"))
     album_artist = Artist(
         item_id="Artist", provider=INSTANCE_ID, name="Album Artist", provider_mappings=set()
@@ -540,29 +699,22 @@ async def test_reparse_artist_falls_back_to_album_tracks_for_album_only_artist()
         result = await provider._reparse_artist_from_track("9", "Artist")
 
     assert result is album_artist
-    provider.mass.music.artists.get_library_artist_album_tracks.assert_awaited_once_with(
-        "9", provider_filter=INSTANCE_ID
-    )
+    provider.mass.music.database.get_rows_from_query.assert_awaited_once()
+    query, params = provider.mass.music.database.get_rows_from_query.await_args.args[:2]
+    assert params == {"artist_id": 9, "instance": INSTANCE_ID}
+    assert "album_artists" in query
+    assert "album_tracks" in query
 
 
 async def test_reparse_artist_album_fallback_requires_exact_mapping_path() -> None:
     """The album fallback still only matches a track living under the exact artist path."""
     provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
     # this album track belongs to a different artist's mapping directory entirely
-    track = Track(
-        item_id="1",
-        provider="library",
-        name="t1",
-        provider_mappings={
-            ProviderMapping(
-                item_id="Other Artist/Album/track.mp3",
-                provider_domain="filesystem_local",
-                provider_instance=INSTANCE_ID,
-            )
-        },
+    provider.mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[{"path": "Other Artist/Album/track.mp3"}]
     )
-    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
 
     result = await provider._reparse_artist_from_track("9", "Artist")
 
@@ -572,20 +724,11 @@ async def test_reparse_artist_album_fallback_requires_exact_mapping_path() -> No
 async def test_reparse_artist_album_fallback_propagates_transient_read_failure() -> None:
     """A representative found only through the album fallback still surfaces read failures."""
     provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
-    track = Track(
-        item_id="1",
-        provider="library",
-        name="t1",
-        provider_mappings={
-            ProviderMapping(
-                item_id="Artist/Album/track.mp3",
-                provider_domain="filesystem_local",
-                provider_instance=INSTANCE_ID,
-            )
-        },
+    provider.mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[{"path": "Artist/Album/track.mp3"}]
     )
-    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(side_effect=MediaNotFoundError("gone"))
 
     with pytest.raises(SidecarReadError):
@@ -686,3 +829,80 @@ async def test_changed_track_with_unreadable_nfo_retains_existing_item() -> None
     assert result is False
     provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # existing item untouched
     assert "Artist/Album/track.mp3" in cur_filenames  # kept so deletion never removes it
+
+
+async def test_changed_track_with_malformed_nfo_retains_existing_item() -> None:
+    """A malformed NFO on an already-known album/artist keeps the changed track's item untouched."""
+    provider = _provider()
+    provider._sync_tracks = True
+    captured: dict[str, Any] = {}
+
+    async def _parse_track(*_args: Any, **_kwargs: Any) -> Any:
+        captured["changed_guard"] = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get()
+        raise SidecarInvalidError("album.nfo is malformed")
+
+    provider._parse_track = _parse_track
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    provider._versioned_image_path = MagicMock(return_value="Artist/Album/track.mp3?cs=old")
+    cur_filenames: set[str] = set()
+    track = _file("Artist/Album/track.mp3")
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await provider._process_item_async(track, "old", cur_filenames, set(), set())
+
+    assert result is False
+    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # existing item untouched
+    assert "Artist/Album/track.mp3" in cur_filenames  # kept so deletion never removes it
+    assert captured["changed_guard"] is True  # the guard was active for this changed track
+    assert _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get() is False  # reset afterward
+
+
+async def test_changed_cue_with_malformed_nfo_retains_existing_item() -> None:
+    """A malformed NFO on an already-known album/artist keeps the changed CUE track untouched."""
+    provider = _provider()
+    provider._cue = MagicMock()
+    captured: dict[str, Any] = {}
+
+    async def _parse_tracks(*_args: Any, **_kwargs: Any) -> Any:
+        captured["changed_guard"] = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get()
+        raise SidecarInvalidError("album.nfo is malformed")
+
+    provider._cue.parse_tracks = _parse_tracks
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    cur_filenames: set[str] = set()
+    cue_item = _file("Artist/Album/album.cue")
+
+    result = await provider._process_item_async(cue_item, "old", cur_filenames, set(), set())
+
+    assert result is False
+    provider.mass.music.tracks.add_item_to_library.assert_not_awaited()  # existing item untouched
+    assert "Artist/Album/album.cue" in cur_filenames  # kept so deletion never removes it
+    assert captured["changed_guard"] is True  # the guard was active for this changed CUE sheet
+    assert _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get() is False  # reset afterward
+
+
+async def test_new_track_import_does_not_set_changed_items_guard() -> None:
+    """A brand-new import (no previous checksum) never sets the changed-item propagation guard."""
+    provider = _provider()
+    provider._sync_tracks = True
+    captured: dict[str, Any] = {}
+
+    async def _parse_track(*_args: Any, **_kwargs: Any) -> Any:
+        captured["changed_guard"] = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get()
+        return MagicMock()
+
+    provider._parse_track = _parse_track
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+    track = _file("Artist/Album/track.mp3")
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await provider._process_item_async(track, None, set(), set(), set())
+
+    assert result is True
+    assert captured["changed_guard"] is False

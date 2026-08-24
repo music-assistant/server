@@ -358,20 +358,11 @@ async def test_removed_artist_nfo_reverts_sort_keeps_mbid() -> None:
 
 def _album_only_artist_track(provider: Any) -> None:
     """Wire up an album-only artist: no track-artist rows, one album track under its path."""
+    provider.manifest = MagicMock(domain="filesystem_local")
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
-    track = Track(
-        item_id="1",
-        provider="library",
-        name="t1",
-        provider_mappings={
-            ProviderMapping(
-                item_id="Artist/Album/track.mp3",
-                provider_domain="filesystem_local",
-                provider_instance=INSTANCE_ID,
-            )
-        },
+    provider.mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[{"path": "Artist/Album/track.mp3"}]
     )
-    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(return_value=_fs_file("Artist/Album/track.mp3", "1"))
 
 
@@ -612,8 +603,8 @@ async def test_artist_refresh_defers_when_no_representative_track() -> None:
     provider.mass.music.artists.update_item_in_library.assert_not_awaited()
 
 
-async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
-    """A valid->malformed album.nfo edit keeps the prior metadata instead of wiping it."""
+async def test_album_refresh_adds_image_when_nfo_malformed() -> None:
+    """A valid->malformed album.nfo edit keeps the prior metadata but still adds new artwork."""
     provider = _provider()
     prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
     stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
@@ -622,17 +613,88 @@ async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     provider._invalidate_album_caches = AsyncMock()
     # the single authoritative reparse propagates the malformed NFO
     provider._reparse_album_from_track = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
+    provider._collect_album_images = AsyncMock(
+        return_value=UniqueList([_image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=2")])
+    )
 
     ok = await provider._refresh_album_sidecars(
-        "Artist/Album", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+        "Artist/Album", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
     )
-    assert ok is False  # deferred, non-destructive
-    provider.mass.music.albums.update_item_in_library.assert_not_awaited()  # prior metadata kept
+    assert ok is True  # artwork still reconciles independently of the malformed NFO
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    assert saved.metadata.description == "theaudiodb biography"  # prior metadata kept
+    assert saved.metadata.genres == {"Rock", "Electronic"}
+    assert {img.path for img in saved.metadata.images} == {
+        "remote/art.jpg",
+        "Artist/Album/folder.jpg?cs=2",
+    }
+    # the malformed NFO's signature is not persisted, so it is retried next sync; the new
+    # image signature is, so an already-processed image add/change isn't retried pointlessly
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo1",
+        "img2",
+        prev_snap,
+    )
     assert _RERAISE_INVALID_NFO_TARGET.get() is None  # scope reset after the reparse
 
 
-async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
-    """A valid->malformed artist.nfo edit keeps the prior metadata instead of wiping it."""
+async def test_album_refresh_changes_image_when_nfo_malformed() -> None:
+    """A malformed album.nfo still lets a replaced folder image take effect."""
+    provider = _provider()
+    prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.metadata.images = UniqueList(
+        [
+            _image("theaudiodb", "remote/art.jpg"),
+            _image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=1"),
+        ]
+    )
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._reparse_album_from_track = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
+    provider._collect_album_images = AsyncMock(
+        return_value=UniqueList([_image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=2")])
+    )
+
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    assert {img.path for img in saved.metadata.images} == {
+        "remote/art.jpg",
+        "Artist/Album/folder.jpg?cs=2",  # replaced our stale image, not the other provider's
+    }
+
+
+async def test_album_refresh_removes_image_when_nfo_malformed() -> None:
+    """A malformed album.nfo still lets a deleted folder image be dropped."""
+    provider = _provider()
+    prev_snap = {"description": "our nfo bio", "genres": ["Rock"], "external_ids": []}
+    stored = _stored_album(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.metadata.images = UniqueList(
+        [
+            _image("theaudiodb", "remote/art.jpg"),
+            _image(INSTANCE_ID, "Artist/Album/folder.jpg?cs=1"),
+        ]
+    )
+    provider.mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.albums.update_item_in_library = AsyncMock()
+    provider._invalidate_album_caches = AsyncMock()
+    provider._reparse_album_from_track = AsyncMock(side_effect=SidecarInvalidError("bad album.nfo"))
+    provider._collect_album_images = AsyncMock(return_value=UniqueList())  # image removed
+
+    ok = await provider._refresh_album_sidecars(
+        "Artist/Album", True, "nfo2", EMPTY, ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.albums.update_item_in_library.await_args.args[1]
+    assert {img.path for img in saved.metadata.images} == {"remote/art.jpg"}  # our image is gone
+
+
+async def test_artist_refresh_adds_image_when_nfo_malformed() -> None:
+    """A valid->malformed artist.nfo edit keeps the prior metadata but still adds new artwork."""
     provider = _provider()
     prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
     stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
@@ -642,13 +704,70 @@ async def test_artist_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
     provider._reparse_artist_from_track = AsyncMock(
         side_effect=SidecarInvalidError("bad artist.nfo")
     )
+    provider._get_local_images = AsyncMock(
+        return_value=UniqueList([_image(INSTANCE_ID, "Artist/artist.jpg?cs=2")])
+    )
 
     ok = await provider._refresh_artist_sidecars(
-        "Artist", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+        "Artist", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
     )
-    assert ok is False
-    provider.mass.music.artists.update_item_in_library.assert_not_awaited()
+    assert ok is True  # artwork still reconciles independently of the malformed NFO
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert saved.metadata.description is None  # prior (empty) metadata kept, not wiped
+    assert saved.metadata.genres == {"Jazz", "Ambient"}
+    assert {img.path for img in saved.metadata.images} == {"Artist/artist.jpg?cs=2"}
+    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
+        "nfo1",
+        "img2",
+        prev_snap,
+    )
     assert _RERAISE_INVALID_NFO_TARGET.get() is None  # scope reset after the reparse
+
+
+async def test_artist_refresh_changes_image_when_nfo_malformed() -> None:
+    """A malformed artist.nfo still lets a replaced folder image take effect."""
+    provider = _provider()
+    prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.metadata.images = UniqueList([_image(INSTANCE_ID, "Artist/artist.jpg?cs=1")])
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._reparse_artist_from_track = AsyncMock(
+        side_effect=SidecarInvalidError("bad artist.nfo")
+    )
+    provider._get_local_images = AsyncMock(
+        return_value=UniqueList([_image(INSTANCE_ID, "Artist/artist.jpg?cs=2")])
+    )
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert {img.path for img in saved.metadata.images} == {"Artist/artist.jpg?cs=2"}
+
+
+async def test_artist_refresh_removes_image_when_nfo_malformed() -> None:
+    """A malformed artist.nfo still lets a deleted folder image be dropped."""
+    provider = _provider()
+    prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    stored.metadata.images = UniqueList([_image(INSTANCE_ID, "Artist/artist.jpg?cs=1")])
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._reparse_artist_from_track = AsyncMock(
+        side_effect=SidecarInvalidError("bad artist.nfo")
+    )
+    provider._get_local_images = AsyncMock(return_value=UniqueList())  # image removed
+
+    ok = await provider._refresh_artist_sidecars(
+        "Artist", True, "nfo2", EMPTY, ("nfo1", "img1", prev_snap)
+    )
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert not saved.metadata.images  # our only image is gone
 
 
 async def test_representative_source_scopes_to_mapping_directory() -> None:

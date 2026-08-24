@@ -11,6 +11,7 @@ import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextvars import ContextVar
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -177,6 +178,15 @@ SUPPORTED_FEATURES = {
 # media type disambiguates an album and artist that map to the same folder.
 _RERAISE_INVALID_NFO_TARGET: ContextVar[tuple[str, str] | None] = ContextVar(
     "reraise_invalid_nfo_target", default=None
+)
+
+# Task-local: set while parsing a changed (not newly imported) audio/CUE file. A changed file is
+# parsed before the sidecar-refresh pass reconciles it, so without this guard a malformed NFO on
+# an already-known album/artist would be silently degraded to tag-only and overwrite it before
+# the refresh pass ever gets a chance to protect it. A genuinely new import still degrades, since
+# there is no prior good state to protect.
+_RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS: ContextVar[bool] = ContextVar(
+    "reraise_invalid_nfo_for_changed_items", default=False
 )
 
 
@@ -1410,7 +1420,13 @@ class LocalFileSystemProvider(MusicProvider):
                 )
 
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
-                tracks = await self._cue.parse_tracks(item)
+                changed_token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(
+                    prev_checksum is not None
+                )
+                try:
+                    tracks = await self._cue.parse_tracks(item)
+                finally:
+                    _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(changed_token)
                 for track in tracks:
                     track.favorite = False
                     await self.mass.music.tracks.add_item_to_library(
@@ -1427,7 +1443,13 @@ class LocalFileSystemProvider(MusicProvider):
                 if cue_stems is not None and item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
-                track = await self._parse_track(item, tags)
+                changed_token = _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.set(
+                    prev_checksum is not None
+                )
+                try:
+                    track = await self._parse_track(item, tags)
+                finally:
+                    _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.reset(changed_token)
                 track.favorite = False  # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
@@ -1463,9 +1485,10 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 return True
 
-        except SidecarReadError as err:
-            # a transient sidecar/track read failure while parsing a changed item: keep the
-            # existing library item untouched and retry next sync rather than overwriting it
+        except (SidecarReadError, SidecarInvalidError) as err:
+            # a transient sidecar/track read failure, or a malformed NFO on an already-known
+            # album/artist: keep the existing library item untouched and retry next sync
+            # rather than overwriting it with tag-only data
             self.logger.warning("Deferring %s to next sync: %s", item.relative_path, err)
             self._keep_failed_item(item, cur_filenames, prev_filenames)
         except Exception as err:
@@ -2042,8 +2065,15 @@ class LocalFileSystemProvider(MusicProvider):
                 # propagate so the refresh keeps the prior metadata and retries. An unrelated
                 # artist's NFO parsed in the same reparse still degrades and never blocks this one.
                 raise
+            if _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get() and await self._is_known_artist(
+                artist_path
+            ):
+                # a changed audio/CUE file must not overwrite an already-known artist with
+                # tag-only data just because its NFO happens to be malformed; propagate so the
+                # existing item is retained and retried next sync
+                raise
             # a malformed NFO is not a removal: import the artist from its tags only. This only
-            # affects new imports; a known artist is protected by the refresh pass above.
+            # affects new imports; a known artist is protected by the guards above.
             self.logger.warning("Ignoring malformed artist NFO: %s", err)
         # find local images
         if images := await self._get_local_images(
@@ -2563,8 +2593,15 @@ class LocalFileSystemProvider(MusicProvider):
                 # propagate so the refresh keeps the prior metadata and retries. An unrelated
                 # album's NFO parsed in the same reparse still degrades and never blocks this one.
                 raise
+            if _RERAISE_INVALID_NFO_FOR_CHANGED_ITEMS.get() and await self._is_known_album(
+                album_dir
+            ):
+                # a changed audio/CUE file must not overwrite an already-known album with
+                # tag-only data just because its NFO happens to be malformed; propagate so the
+                # existing item is retained and retried next sync
+                raise
             # a malformed NFO is not a removal: import the album from its tags only. This only
-            # affects new imports; a known album is protected by the refresh pass above.
+            # affects new imports; a known album is protected by the guards above.
             self.logger.warning("Ignoring malformed album NFO: %s", err)
 
         # complete album artwork: the album folder plus its actual disc subfolders
@@ -2605,33 +2642,7 @@ class LocalFileSystemProvider(MusicProvider):
         :param versioned: When True, append the image checksum to each path so replaced bytes
             bypass the global image cache (used for album/artist artwork).
         """
-        index = self._active_sidecar_index
-        image_items: list[FileSystemItem] | None
-        checksum: str | None
-        if index is not None:
-            # during a sync, source images from the walk index and version the cache entry by
-            # their signature, so a replaced/removed image is never served from a stale 120s entry
-            image_items = index.image_items(folder)
-            checksum = get_folder_signature(image_items)
-        else:
-            # on demand the cache key alone is enough (callers own freshness), so a folder listing
-            # only happens on a miss
-            image_items = None
-            checksum = None
-        if (
-            cached := await self.cache.get(
-                key=folder,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_FOLDER_IMAGES,
-                checksum=checksum,
-                base_class=MediaItemImage,
-            )
-        ) is not None:
-            return UniqueList(cached)
-        if image_items is None:
-            image_items = [
-                item for item in await self._folder_sidecars(folder) if item.ext in IMAGE_EXTENSIONS
-            ]
+        image_items = await self._folder_image_items(folder)
         if extra_thumb_names is None:
             extra_thumb_names = ()
 
@@ -2668,16 +2679,52 @@ class LocalFileSystemProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             )
+        return images
 
+    async def _folder_image_items(self, folder: str) -> list[FileSystemItem]:
+        """
+        Return this folder's recognized image files, cached once per folder.
+
+        Cached context-free (the raw files, not a caller's resolved MediaItemImage list) so an
+        album and an artist mapped to the same folder each derive their own images (different
+        ``extra_thumb_names``/``versioned``) from the same entry instead of one reusing the
+        other's cached, already-filtered result.
+        """
+        index = self._active_sidecar_index
+        image_items: list[FileSystemItem] | None
+        checksum: str | None
+        if index is not None:
+            # during a sync, source images from the walk index and version the cache entry by
+            # their signature, so a replaced/removed image is never served from a stale 120s entry
+            image_items = index.image_items(folder)
+            checksum = get_folder_signature(image_items)
+        else:
+            # on demand the cache key alone is enough (callers own freshness), so a folder listing
+            # only happens on a miss
+            image_items = None
+            checksum = None
+        if (
+            cached := await self.cache.get(
+                key=folder,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_FOLDER_IMAGES,
+                checksum=checksum,
+            )
+        ) is not None:
+            return [FileSystemItem(**item) for item in cached]
+        if image_items is None:
+            image_items = [
+                item for item in await self._folder_sidecars(folder) if item.ext in IMAGE_EXTENSIONS
+            ]
         await self.cache.set(
             key=folder,
-            data=[img.to_dict() for img in images],
+            data=[asdict(item) for item in image_items],
             provider=self.instance_id,
             category=CACHE_CATEGORY_FOLDER_IMAGES,
             checksum=checksum,
             expiration=120,
         )
-        return images
+        return image_items
 
     async def _get_stream_details_for_track(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for a track/song."""
@@ -3257,7 +3304,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param nfo_sig: The album's current NFO signature.
         :param img_sig: The album's current image signature.
         :param prev: The album's previously stored ``(nfo_sig, img_sig, snapshot)``.
-        :return: False when a transient read deferred the refresh, True otherwise.
+        :return: False when a transient read deferred the refresh entirely, True otherwise
+            (a malformed NFO still lets artwork reconcile independently).
         """
         stored = await self.mass.music.albums.get_library_item_by_prov_id(
             album_dir, self.instance_id
@@ -3267,6 +3315,9 @@ class LocalFileSystemProvider(MusicProvider):
         await self._invalidate_album_caches(album_dir)
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
+        # the NFO signature actually persisted: advances on a successful reparse, but stays at
+        # its prior value (or unset) while the NFO is malformed, so it is retried next sync
+        persisted_nfo_sig = prev[0] if prev else _EMPTY_SIGNATURE
         if nfo_changed:
             # reparse once with invalid-NFO propagation scoped to this exact album: a
             # present-but-malformed album.nfo then raises instead of degrading, so a
@@ -3279,10 +3330,15 @@ class LocalFileSystemProvider(MusicProvider):
                 self.logger.warning("Deferring album sidecar refresh for %s: %s", album_dir, err)
                 return False
             except SidecarInvalidError as err:
+                # keep the prior NFO-derived metadata and its signature (retried next sync), but
+                # still fall through to reconcile artwork below: a malformed NFO must not block
+                # an independent image add/change/removal from being picked up
                 self.logger.warning(
                     "Keeping previous metadata for %s: album.nfo is malformed (%s)", album_dir, err
                 )
-                return False
+                fresh = None
+            else:
+                persisted_nfo_sig = nfo_sig
             finally:
                 _RERAISE_INVALID_NFO_TARGET.reset(token)
             if fresh is not None:
@@ -3314,16 +3370,18 @@ class LocalFileSystemProvider(MusicProvider):
                     or None
                 )
             else:
-                # no readable filesystem track to rebuild the tag baseline: refresh artwork and
-                # advance the signature, but keep the previous NFO ownership snapshot so a later
-                # removal can still clear the values this NFO contributed
+                # no readable filesystem track to rebuild the tag baseline (or a malformed NFO):
+                # refresh artwork and advance the image signature, but keep the previous NFO
+                # ownership snapshot so a later removal can still clear the values it contributed
                 new_snapshot = prev_snapshot
         fresh_images = await self._collect_album_images(album_dir)
         stored.metadata.images = (
             reconcile_images(stored.metadata.images, fresh_images, self.instance_id) or None
         )
         self._set_mapping_details(
-            stored, self._build_sidecar_details(nfo_sig, img_sig, new_snapshot), item_id=album_dir
+            stored,
+            self._build_sidecar_details(persisted_nfo_sig, img_sig, new_snapshot),
+            item_id=album_dir,
         )
         # with a provenance baseline the reconciliation is authoritative and may clear values the
         # NFO no longer provides; without one it only adds, so never destructively clear
@@ -3352,7 +3410,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param nfo_sig: The artist's current NFO signature.
         :param img_sig: The artist's current image signature.
         :param prev: The artist's previously stored ``(nfo_sig, img_sig, snapshot)``.
-        :return: False when a transient read deferred the refresh, True otherwise.
+        :return: False when a transient read deferred the refresh entirely, True otherwise
+            (a malformed NFO still lets artwork reconcile independently).
         """
         stored = await self.mass.music.artists.get_library_item_by_prov_id(
             artist_path, self.instance_id
@@ -3362,6 +3421,10 @@ class LocalFileSystemProvider(MusicProvider):
         await self._invalidate_artist_caches(artist_path)
         prev_snapshot = prev[2] if prev else {}
         new_snapshot: dict[str, Any] = prev_snapshot
+        # the NFO signature actually persisted: advances on a successful reparse, but stays at
+        # its prior value (or unset) while the NFO is malformed, so it is retried next sync
+        persisted_nfo_sig = prev[0] if prev else _EMPTY_SIGNATURE
+        nfo_malformed = False
         if nfo_changed:
             # reparse once with invalid-NFO propagation scoped to this exact artist (see
             # _refresh_album_sidecars): a present-but-malformed artist.nfo raises instead of
@@ -3373,12 +3436,18 @@ class LocalFileSystemProvider(MusicProvider):
                 self.logger.warning("Deferring artist sidecar refresh for %s: %s", artist_path, err)
                 return False
             except SidecarInvalidError as err:
+                # keep the prior NFO-derived metadata and its signature (retried next sync), but
+                # still fall through to reconcile artwork below: a malformed NFO must not block
+                # an independent image add/change/removal from being picked up
                 self.logger.warning(
                     "Keeping previous metadata for %s: artist.nfo is malformed (%s)",
                     artist_path,
                     err,
                 )
-                return False
+                fresh = None
+                nfo_malformed = True
+            else:
+                persisted_nfo_sig = nfo_sig
             finally:
                 _RERAISE_INVALID_NFO_TARGET.reset(token)
             if fresh is not None:
@@ -3403,6 +3472,10 @@ class LocalFileSystemProvider(MusicProvider):
                     )
                     or None
                 )
+            elif nfo_malformed:
+                # keep the previous NFO ownership snapshot too, so a later removal can still
+                # clear the values the (still malformed) NFO last successfully contributed
+                new_snapshot = prev_snapshot
             else:
                 # no representative track was found, neither directly nor through this
                 # artist's albums: defer instead of advancing the signature, so a later sync
@@ -3420,7 +3493,9 @@ class LocalFileSystemProvider(MusicProvider):
             reconcile_images(stored.metadata.images, fresh_images, self.instance_id) or None
         )
         self._set_mapping_details(
-            stored, self._build_sidecar_details(nfo_sig, img_sig, new_snapshot), item_id=artist_path
+            stored,
+            self._build_sidecar_details(persisted_nfo_sig, img_sig, new_snapshot),
+            item_id=artist_path,
         )
         replace_token = FULL_REPLACE_UPDATE.set(prev is not None)
         try:
@@ -3496,9 +3571,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         source = await self._representative_source(tracks, artist_path)
         if source is None:
-            album_tracks = await self.mass.music.artists.get_library_artist_album_tracks(
-                library_artist_id, provider_filter=self.instance_id
-            )
+            album_tracks = await self._album_artist_track_stubs(library_artist_id)
             source = await self._representative_source(album_tracks, artist_path)
         if source is None:
             return None
@@ -3519,6 +3592,44 @@ class LocalFileSystemProvider(MusicProvider):
             if isinstance(candidate, Artist) and candidate.item_id == artist_path:
                 return candidate
         return None
+
+    async def _album_artist_track_stubs(self, library_artist_id: str) -> list[Track]:
+        """
+        Return a minimal track stand-in for each of this instance's paths on the artist's albums.
+
+        Queries ``album_artists`` joined to ``album_tracks`` and this instance's
+        ``provider_mappings`` directly, so an album-only artist (no track-artist relationship of
+        its own) still yields candidates for :meth:`_representative_source`. The returned tracks
+        carry only the identity needed for that path scoping and read.
+        """
+        assert self.mass.music.database
+        query = (
+            f"SELECT DISTINCT pm.provider_item_id AS path FROM {DB_TABLE_ALBUM_TRACKS} at "
+            f"JOIN {DB_TABLE_ALBUM_ARTISTS} aa ON aa.album_id = at.album_id "
+            f"JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm ON pm.item_id = at.track_id "
+            "AND pm.media_type = 'track' "
+            "WHERE aa.artist_id = :artist_id AND pm.provider_instance = :instance"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query,
+            {"artist_id": int(library_artist_id), "instance": self.instance_id},
+            limit=0,
+        )
+        return [
+            Track(
+                item_id=row["path"],
+                provider=self.instance_id,
+                name="",
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=row["path"],
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+            for row in rows
+        ]
 
     async def _representative_source(
         self, tracks: list[Track], root_dir: str
@@ -3589,4 +3700,18 @@ class LocalFileSystemProvider(MusicProvider):
         )
         await self.cache.delete(
             artist_path, category=CACHE_CATEGORY_FOLDER_IMAGES, provider=self.instance_id
+        )
+
+    async def _is_known_album(self, album_dir: str) -> bool:
+        """Return True when this instance already has a library album mapped to this directory."""
+        return (
+            await self.mass.music.albums.get_library_item_by_prov_id(album_dir, self.instance_id)
+            is not None
+        )
+
+    async def _is_known_artist(self, artist_path: str) -> bool:
+        """Return True when this instance already has a library artist mapped to this path."""
+        return (
+            await self.mass.music.artists.get_library_item_by_prov_id(artist_path, self.instance_id)
+            is not None
         )
