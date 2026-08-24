@@ -895,7 +895,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # rebuilt when the sources actually changed, so a NEXT track carved out above (which
                 # adds no source) does not needlessly reshuffle the tail.
                 await self._enter_dynamic_mode(queue_id, option)
-            if not (option == QueueOption.NEXT and media_items):
+            if not (already_dynamic and option == QueueOption.NEXT and media_items):
+                # only a track carved out of an already-active pool falls through below; on the
+                # enqueue that just made the queue dynamic the track was recorded as a source, so
+                # the rebuilt pool already holds it and inserting it too would duplicate it
                 return
             # a NEXT track carved out of the pool above still needs to be inserted; fall through to
             # the normal queue_items build + _enqueue_with_option call below, which inserts it right

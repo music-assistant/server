@@ -7,8 +7,8 @@ instance wired to a real ``ManagedPool``, mirroring ``test_user_initiated_plays`
 is inserted literally after the buffered index instead of being folded into the pool as a
 source (which would place it at a random position and subject it to the pool's recency gate).
 A control test proves the linear (non-dynamic) path already does this correctly, scoping the
-carve-out to the dynamic path. A fourth test proves ADD onto a dynamic queue keeps feeding the
-pool as before.
+carve-out to the dynamic path. Further tests prove ADD and NEXT-of-a-container keep feeding
+the pool, and that the enqueue transitioning a queue to dynamic plays the track exactly once.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import random
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Radio, Track
+from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Radio, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
@@ -55,6 +55,18 @@ def _radio(item_id: str) -> Radio:
         provider="test",
         name=f"Radio {item_id}",
         is_dynamic=True,
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def _album(item_id: str) -> Album:
+    """Build an Album on the 'test' provider (a container that feeds the pool as a source)."""
+    return Album(
+        item_id=item_id,
+        provider="test",
+        name=f"Album {item_id}",
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
@@ -148,7 +160,9 @@ async def test_play_next_on_dynamic_queue_places_track_next() -> None:
 
     items = ctrl._queue_data["q1"].items
     ids = [item.media_item.item_id for item in items if item.media_item is not None]
-    assert ids[1] == "wish", f"expected 'wish' at index 1 (play next), got: {ids}"
+    # inserted directly after the buffered index, and no source changed so the pool tail
+    # is left untouched (no rebuilt pool tracks appear)
+    assert ids == ["current", "wish"], f"expected only ['current', 'wish'], got: {ids}"
     # the carved-out track is inserted, not folded into the pool as a source
     assert wish not in ctrl._queue_data["q1"].source_items
 
@@ -229,3 +243,72 @@ async def test_add_track_on_dynamic_queue_still_feeds_pool() -> None:
     assert ids[1] != "seed", f"expected 'seed' mixed into the pool tail, not at index 1: {ids}"
     # the pool actually ran (proving _enter_dynamic_mode fired), not left untouched
     assert any(item_id.startswith("d") for item_id in ids), f"pool tail was not rebuilt: {ids}"
+
+
+async def test_play_next_container_on_dynamic_queue_feeds_pool() -> None:
+    """NEXT of a container on a dynamic queue still feeds the pool as a source (unlike a track)."""
+    random.seed(4)
+    snapshot = RecencySnapshot(now=NOW)
+    ctrl = _controller(snapshot)
+    dynamic_candidates = [_track(f"d{i}", artist=f"Artist{i}") for i in range(40)]
+    _dynamic_playing_queue(ctrl, dynamic_candidates)
+    album = _album("alb")
+    album_tracks = [_track(f"a{i}", artist=f"AlbArtist{i}") for i in range(30)]
+    ctrl.get_tracks_for_playback = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item: album_tracks if item is album else []
+    )
+
+    await ctrl._handle_play_media("q1", album, QueueOption.NEXT)
+
+    ids = [
+        item.media_item.item_id
+        for item in ctrl._queue_data["q1"].items
+        if item.media_item is not None
+    ]
+    # the album's tracks are mixed into the rebuilt tail and the album stays a pool source
+    assert any(item_id.startswith("a") for item_id in ids), f"album did not feed the pool: {ids}"
+    source_ids = {item.item_id for item in ctrl._queue_data["q1"].source_items}
+    assert "alb" in source_ids, f"album missing from the pool sources: {source_ids}"
+    assert ctrl._queue_data["q1"].queue.is_dynamic
+
+
+async def test_play_next_mixed_batch_transition_plays_track_once() -> None:
+    """NEXT of [track, dynamic radio] on a linear queue feeds both to the new pool, track once."""
+    random.seed(4)
+    snapshot = RecencySnapshot(now=NOW)
+    ctrl = _controller(snapshot)
+    current = _track("current", artist="Cur")
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        index_in_buffer=0,
+        shuffle_enabled=False,
+        is_dynamic=False,
+    )
+    ctrl._queue_data = {
+        "q1": PlayerQueueData(queue=queue, items=[_queue_item("q1", current)], source_items=[])
+    }
+    ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
+    dynamic_candidates = [_track(f"d{i}", artist=f"Artist{i}") for i in range(10)]
+    ctrl.get_dynamic_source_tracks = AsyncMock(return_value=dynamic_candidates)  # type: ignore[method-assign]
+    ctrl.get_tracks_for_playback = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item: [item] if isinstance(item, Track) else []
+    )
+    wish = _track("wish", artist="Wish")
+
+    await ctrl._handle_play_media("q1", [wish, _radio("dyn")], QueueOption.NEXT)
+
+    ids = [
+        item.media_item.item_id
+        for item in ctrl._queue_data["q1"].items
+        if item.media_item is not None
+    ]
+    # the enqueue that makes the queue dynamic feeds the track to the pool as a source, so it
+    # must appear in the mix exactly once (not also literally inserted)
+    assert ids.count("wish") == 1, f"'wish' must appear exactly once: {ids}"
+    assert ctrl._queue_data["q1"].queue.is_dynamic
