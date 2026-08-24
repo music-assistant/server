@@ -1136,10 +1136,13 @@ class _SoloistSession:
             # a failed feed only costs the crossfade at that boundary: the next
             # item still plays, on a fresh session
             self.logger.debug("Unable to feed %s to the soloist session: %s", next_uri, err)
-            if self._current is not item:
-                del self._items[next_uri]
-                with suppress(ValueError):
-                    self._pending.remove(next_uri)
+            if self._current is item:
+                # the engine acted on the command before the failure got back to
+                # us, so it does play on into this item after all
+                return True
+            del self._items[next_uri]
+            with suppress(ValueError):
+                self._pending.remove(next_uri)
             return False
         self.logger.debug("Fed %s to the soloist session", next_uri)
         return True

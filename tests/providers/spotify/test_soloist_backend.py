@@ -1516,6 +1516,39 @@ async def test_a_jumped_to_item_opens_on_a_hard_cut(tmp_path: Path) -> None:
     assert session.fades_a_boundary_of(_streamdetails_for(uri=TRACK_B)) is False
 
 
+async def test_a_feed_the_engine_acted_on_before_failing_still_fades(tmp_path: Path) -> None:
+    """
+    The engine can reach a fed item and the command still fail on the way back.
+
+    The channel is kept for it in that case, because the reader is already writing
+    there - so the boundary was played across and denying the fade would describe a
+    cut the engine never made.
+    """
+    session = _make_session(tmp_path, queue_id="player1")
+    session.crossfade_ms = 8000
+    streamdetails = _streamdetails_for(uri=TRACK_A)
+    playing = _queue_item(TRACK_A, streamdetails=streamdetails)
+    streamed = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    streamed.started.set()
+    session._current = streamed
+    queues = _queues_of(session)
+    queues.get.return_value = MagicMock(current_index=0)
+    queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
+    queues.get_next_item.return_value = _queue_item(TRACK_B)
+
+    async def _reached_then_failed(_uri: str, **_kwargs: Any) -> None:
+        await session._observe_current(TRACK_B, 200_000)
+        raise TimeoutError
+
+    _client_of(session).add_to_queue.side_effect = _reached_then_failed
+
+    await session.feed_after(streamdetails, TRACK_A)
+
+    # the channel survived because the engine is playing it, so the fade is real
+    assert session._items[TRACK_B].faded_in is True
+    assert streamed.fades_out is True
+
+
 async def test_an_item_only_fed_is_reached_by_a_jump(tmp_path: Path) -> None:
     """
     An item MA opens before the engine gets to it is jumped to, so no fade reaches it.
