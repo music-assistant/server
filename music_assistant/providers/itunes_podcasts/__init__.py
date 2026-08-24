@@ -37,9 +37,9 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
-    feed_has_consistent_numbering,
     find_episode_stream_url,
     get_cached_podcast,
+    get_episode_positions,
     parse_podcast,
     parse_podcast_episode,
     refresh_cached_podcast,
@@ -326,15 +326,12 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
-        use_feed_numbers = feed_has_consistent_numbering(episodes)
-        total = len(episodes)
-        for cnt, episode in enumerate(episodes):
-            # feeds list newest-first; number down so bigger position = newer
-            episode_cnt = episode["number"] if use_feed_numbers else total - cnt
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
             if mass_episode := parse_podcast_episode(
                 episode=episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=episode_cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast.get("title"),
                 domain=self.domain,
@@ -348,14 +345,12 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast = await self._cache_get_podcast(podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
-        use_feed_numbers = feed_has_consistent_numbering(episodes)
-        total = len(episodes)
-        for cnt, episode in enumerate(episodes):
-            episode_cnt = episode["number"] if use_feed_numbers else total - cnt
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
             mass_episode = parse_podcast_episode(
                 episode=episode,
                 prov_podcast_id=podcast_id,
-                episode_cnt=episode_cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast.get("title"),
                 domain=self.domain,

@@ -267,23 +267,36 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
     return None
 
 
-def feed_has_consistent_numbering(episodes: list[dict[str, Any]]) -> bool:
+def get_episode_positions(episodes: list[dict[str, Any]]) -> list[int]:
     """
-    Return True when every episode in the feed carries a valid itunes:episode number.
+    Return the position of every episode, in the order the feed lists them.
 
-    When False, callers should use the enumeration index for all episodes to avoid
-    mixing two incompatible numbering schemes within the same show.
+    Positions run oldest to newest, so the newest episode always has the highest one.
+
+    :param episodes: The episodes of a single feed, as parsed by podcastparser.
     """
-    return bool(episodes) and all(
-        isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes
-    )
+    total = len(episodes)
+    # partial numbering mixes two schemes, so only use the feed's numbers when all episodes have one
+    if all(isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes):
+        return [ep["number"] for ep in episodes]
+    # podcastparser lists serial feeds oldest-first and all others newest-first,
+    # so rank on the publication date instead of the feed order. Episodes without one
+    # sort as the oldest, keeping their feed order among themselves
+    if any(ep.get("published") for ep in episodes):
+        oldest_first = sorted(range(total), key=lambda idx: episodes[idx].get("published") or 0)
+        positions = [0] * total
+        for position, idx in enumerate(oldest_first, 1):
+            positions[idx] = position
+        return positions
+    # nothing to rank on, so assume the usual newest-first listing
+    return [total - idx for idx in range(total)]
 
 
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
     prov_podcast_id: str,
-    episode_cnt: int,
+    position: int,
     podcast_cover: str | None = None,
     podcast_name: str | None = None,
     instance_id: str,
@@ -309,10 +322,6 @@ def parse_podcast_episode(
     if episode_published == 0:
         episode_published = None
 
-    # position is decided by the caller; use the feed's itunes:episode number only when
-    # every episode in the feed carries one, otherwise use the enumeration index for all
-    episode_position = episode_cnt
-
     try:
         stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
     except ValueError:
@@ -328,7 +337,7 @@ def parse_podcast_episode(
         provider=instance_id,
         name=episode_title,
         duration=int(episode_duration),
-        position=episode_position,
+        position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,

@@ -41,9 +41,9 @@ from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
-    feed_has_consistent_numbering,
     find_episode_stream_url,
     get_cached_podcast,
+    get_episode_positions,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -185,14 +185,12 @@ class OvercastProvider(MusicProvider):
         podcast_cover = podcast.get("cover_url")
         podcast_name = podcast.get("title")
         episodes = podcast.get("episodes", [])
-        use_feed_numbers = feed_has_consistent_numbering(episodes)
-        total = len(episodes)
-        for cnt, parsed_episode in enumerate(episodes):
-            episode_cnt = parsed_episode["number"] if use_feed_numbers else total - cnt
+        positions = get_episode_positions(episodes)
+        for position, parsed_episode in zip(positions, episodes, strict=True):
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=episode_cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,
@@ -379,9 +377,8 @@ class OvercastProvider(MusicProvider):
         podcast_cover = parsed_podcast.get("cover_url")
         podcast_name = parsed_podcast.get("title")
         all_episodes = parsed_podcast.get("episodes", [])
-        use_feed_numbers = feed_has_consistent_numbering(all_episodes)
-        total = len(all_episodes)
-        for cnt, parsed_episode in enumerate(all_episodes):
+        positions = get_episode_positions(all_episodes)
+        for position, parsed_episode in zip(positions, all_episodes, strict=True):
             try:
                 stream_url, _ = get_stream_url_and_guid_from_episode(episode=parsed_episode)
             except ValueError:
@@ -397,11 +394,10 @@ class OvercastProvider(MusicProvider):
                 # already applied in a previous sync; skipping it also makes sure
                 # local progress made since then is not overwritten
                 continue
-            episode_cnt = parsed_episode["number"] if use_feed_numbers else total - cnt
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=feed_url,
-                episode_cnt=episode_cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,
