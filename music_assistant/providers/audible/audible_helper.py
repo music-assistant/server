@@ -60,6 +60,8 @@ AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
 # Podcasts are normally reported as "PodcastParent", but (older) Audible Original
 # series are still reported with the legacy "Periodical" delivery type.
 PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
+# legacy series report their episodes as show issues rather than podcast episodes
+SHOW_CONTENT_TYPE = "Show"
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -910,10 +912,15 @@ class AudibleHelper:
             if len(items) < page_size:
                 break
 
-        # the API lists most shows newest-first but serialised ones oldest-first, so rank on
-        # the publication timestamp; release_date is date only and cannot separate episodes
-        # that a serialised show published on the same day
-        positions = rank_episodes_by_date([ep.get("publication_datetime") for ep in all_items])
+        if all(ep.get("content_type") == SHOW_CONTENT_TYPE for ep in all_items):
+            # a legacy series is released in one go, so its publication timestamps record the
+            # ingestion rather than the episode order; the newest-first listing is all we have
+            positions = [len(all_items) - idx for idx in range(len(all_items))]
+        else:
+            # the API lists most shows newest-first but serialised ones oldest-first, so rank on
+            # the publication timestamp; release_date is date only and cannot separate episodes
+            # that a serialised show published on the same day
+            positions = rank_episodes_by_date([ep.get("publication_datetime") for ep in all_items])
         for position, episode_data in zip(positions, all_items, strict=True):
             try:
                 yield self._parse_podcast_episode(episode_data, podcast, position)
