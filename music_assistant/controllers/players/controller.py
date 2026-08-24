@@ -616,7 +616,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -624,12 +624,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        # Redirect to queue controller if it is active (skip if already in queue command context)
-        if active_queue := self.get_active_queue(player):
-            await self.mass.player_queues.stop(active_queue.queue_id)
-            return
-        # Delegate to internal handler for actual implementation
-        await self._handle_cmd_stop(player.player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # Redirect to queue controller if it is active (skip if already in queue command context)
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues.stop(active_queue.queue_id)
+                return
+            # Delegate to internal handler for actual implementation
+            await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -640,20 +641,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
-            self.logger.info(
-                "Ignore PLAY request to player %s: player is already playing", player.state.name
-            )
-            return
-        # player is not paused: check for queue redirect, then delegate to internal handler
-        if player.state.playback_state != PlaybackState.PAUSED:
-            source = player.state.active_source
-            if active_queue := self.mass.player_queues.get(source or player_id):
-                await self.mass.player_queues.resume(active_queue.queue_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            if player.state.playback_state == PlaybackState.PLAYING:
+                self.logger.info(
+                    "Ignore PLAY request to player %s: player is already playing",
+                    player.state.name,
+                )
                 return
-
-        # Delegate to internal handler for actual implementation
-        await self._handle_cmd_play(player.player_id)
+            # player is not paused: check for queue redirect, then delegate to internal handler
+            if player.state.playback_state != PlaybackState.PAUSED:
+                source = player.state.active_source
+                if active_queue := self.mass.player_queues.get(source or player_id):
+                    await self.mass.player_queues.resume(active_queue.queue_id)
+                    return
+            # Delegate to internal handler for actual implementation
+            await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -685,7 +687,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -698,7 +700,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param source: Optional source to resume.
         :param media: Optional media to resume.
         """
-        await self._handle_cmd_resume(player_id, source, media)
+        player = self._get_player_with_redirect(player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_cmd_resume(player.player_id, source, media)
 
     @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -1158,9 +1162,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         elif player.state.synced_to:
             await self.cmd_ungroup(player_id)
         # Delegate to internal handler for actual implementation
-        await self._handle_select_source(player_id, source)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_select_source(player_id, source)
 
-    async def deselect_source(self, player_id: str, stop_playback: bool = True) -> None:
+    async def deselect_source(
+        self,
+        player_id: str,
+        stop_playback: bool = True,
+        provider_instance_id: str | None = None,
+        source_id: str | None = None,
+        playback_session_id: str | None = None,
+    ) -> None:
         """
         Give up the source a player was playing, and stop it.
 
@@ -1172,15 +1184,57 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to give the source up on.
         :param stop_playback: Whether to stop the player as well. Pass False when the
             caller has already stopped it, or is about to.
+        :param provider_instance_id: Optional provider instance that owns the source session.
+        :param source_id: Optional provider-scoped source id that owns the source session.
+        :param playback_session_id: Optional playback session expected to own the player.
         """
-        player = self.get_player(player_id, raise_unavailable=False)
-        if not player:
-            return
-        await self._release_audio_source(player_id)
-        if not stop_playback:
-            return
-        with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
-            await self._handle_cmd_stop(player_id)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            player = self.get_player(player_id, raise_unavailable=False)
+            if not player:
+                return
+            session = self._source_sessions.get(player_id)
+            active_provider_instance_id = session.provider_instance_id if session else None
+            active_source_id = session.source_id if session else None
+            active_playback_session_id = session.playback_session_id if session else None
+            if provider_instance_id is not None and (
+                active_provider_instance_id != provider_instance_id
+                or (source_id is not None and active_source_id != source_id)
+                or playback_session_id is None
+                or active_playback_session_id != playback_session_id
+            ):
+                self.logger.debug(
+                    "Ignoring source release for provider %s source %s session %s on player %s: "
+                    "active source is provider %s source %s session %s",
+                    provider_instance_id,
+                    source_id,
+                    playback_session_id,
+                    player_id,
+                    active_provider_instance_id,
+                    active_source_id,
+                    active_playback_session_id,
+                )
+                return
+            try:
+                if stop_playback:
+                    with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
+                        await self._handle_cmd_stop(player_id)
+            finally:
+                if session is not None:
+                    current_session = self._source_sessions.get(player_id)
+                    if (
+                        current_session is session
+                        and current_session.playback_session_id == active_playback_session_id
+                    ):
+                        await self._release_audio_source(player_id)
+                    else:
+                        self.logger.debug(
+                            "Not releasing provider %s source %s session %s on player %s: "
+                            "the source changed while playback was stopping",
+                            provider_instance_id,
+                            source_id,
+                            playback_session_id,
+                            player_id,
+                        )
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """
@@ -1192,15 +1246,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param provider_instance_id: Instance id of the plugin that is going away.
         """
-        for player_id, session in list(self._source_sessions.items()):
-            if session.provider_instance_id != provider_instance_id:
-                continue
+        sessions = [
+            (player_id, session.source_id, session.playback_session_id)
+            for player_id, session in self._source_sessions.items()
+            if session.provider_instance_id == provider_instance_id
+        ]
+        for player_id, source_id, playback_session_id in sessions:
             self.logger.debug(
                 "Provider %s is unloading, releasing its source on player %s",
                 provider_instance_id,
                 player_id,
             )
-            await self.deselect_source(player_id)
+            await self.deselect_source(
+                player_id,
+                provider_instance_id=provider_instance_id,
+                source_id=source_id,
+                playback_session_id=playback_session_id,
+            )
 
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
