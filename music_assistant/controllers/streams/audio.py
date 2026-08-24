@@ -2449,18 +2449,9 @@ class StreamsAudio:
                         queue.display_name,
                     )
                     continue
-                # a source that crossfades its own playback does that boundary itself,
-                # inside the audio it hands over - only then does MA step aside; a
-                # realtime source without that gets a fade decided from what its
-                # boundary can actually deliver (see _select_buffered_crossfade)
-                item_source_crossfade_mode = self.mass.streams.get_source_crossfade_mode(
-                    queue, queue_track
-                )
-                item_crossfade_mode = (
-                    CrossfadeMode.DISABLED
-                    if item_source_crossfade_mode != CrossfadeMode.DISABLED
-                    else crossfade_mode
-                )
+                # a realtime source gets a fade decided from what its boundary can
+                # actually deliver (see _select_buffered_crossfade)
+                item_crossfade_mode = crossfade_mode
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
                     queue_track.streamdetails.uri,
@@ -2586,13 +2577,12 @@ class StreamsAudio:
                             + (timing_info.fadein_trimmed_duration + timing_info.crossfade_duration)
                             * track_playback_speed
                         )
-                # no fade is credited to this track until one is really rendered below,
-                # unless its own source is the one applying it
+                # no fade is credited to this track until one is really rendered below
                 self._report_crossfade_mode(
                     queue.queue_id,
                     queue_track,
                     pcm_format,
-                    item_source_crossfade_mode,
+                    CrossfadeMode.DISABLED,
                     flow_session_id,
                     overlay_enabled=overlay_active(queue),
                 )

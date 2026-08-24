@@ -1445,13 +1445,6 @@ def test_a_running_session_answers_for_what_the_engine_is_doing(tmp_path: Path) 
     )
 
 
-def test_engine_never_crossfades(tmp_path: Path) -> None:
-    """MA mixes the queue's crossfade itself, so the provider never claims a source fade."""
-    session = _make_session(tmp_path, queue_id="player1")
-    provider = session.backend.provider
-    assert provider.delivers_crossfaded_audio(_streamdetails_for(queue_id="player1")) is False
-
-
 async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
     """PCM that stops well short of the item's duration is rejected."""
     session = _make_session(tmp_path)

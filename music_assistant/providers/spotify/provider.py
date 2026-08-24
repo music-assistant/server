@@ -258,18 +258,6 @@ class SpotifyProvider(MusicProvider):
             return live
         return self.spotify_normalization_configured
 
-    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
-        """
-        Return whether Spotify's own engine crossfades this playback.
-
-        It never does: Music Assistant mixes the queue's crossfade itself, so every
-        track is delivered clean from its first sample and its audio stays aligned
-        with its analysis (waveform, beat grid, light sync).
-
-        :param streamdetails: Stream details of the item being asked about.
-        """
-        return False
-
     @property
     def max_concurrent_streams(self) -> int:
         """

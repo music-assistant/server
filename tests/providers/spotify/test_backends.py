@@ -99,20 +99,6 @@ def test_only_the_soloist_backend_declares_normalized_audio() -> None:
     assert prov.delivers_normalized_audio(_streamdetails()) is False
 
 
-def test_no_backend_declares_crossfaded_audio() -> None:
-    """
-    Music Assistant mixes the queue's crossfade itself on either backend.
-
-    Librespot fetches every track on its own, and the soloist engine is spawned
-    with its own crossfade off, so no delivered audio ever carries an overlap.
-    """
-    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
-    prov.backend = SoloistBackend(prov)
-    assert prov.delivers_crossfaded_audio(_streamdetails()) is False
-    prov.backend = LibrespotBackend(prov)
-    assert prov.delivers_crossfaded_audio(_streamdetails()) is False
-
-
 @pytest.mark.parametrize("normalizes", [True, False])
 def test_another_queues_session_does_not_answer_for_normalization(normalizes: bool) -> None:
     """
