@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
@@ -743,6 +744,35 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.logger.debug("Tracks only available for artists of type ARTIST")
             return []
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
+        query = f"tracks.item_id in ({subquery})"
+        return await self.mass.music.tracks.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+            provider_filter=self._ensure_provider_filter(provider_filter),
+            in_library_only=True,
+        )
+
+    async def get_library_artist_album_tracks(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Track]:
+        """
+        Return the tracks of every in-library album this artist is credited on.
+
+        Unlike :meth:`get_library_artist_tracks`, this covers the artist's album-artist
+        relationship rather than its track-artist one, so it also returns tracks for an artist
+        credited only as an album artist (for example a compilation's "Various Artists").
+        """
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return []
+        subquery = (
+            f"SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE album_id IN "
+            f"(SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id)"
+        )
         query = f"tracks.item_id in ({subquery})"
         return await self.mass.music.tracks.get_library_items_by_query(
             extra_query_parts=[query],

@@ -3496,9 +3496,10 @@ class LocalFileSystemProvider(MusicProvider):
         )
         source = await self._representative_source(tracks, artist_path)
         if source is None:
-            source = await self._representative_source(
-                await self._album_artist_tracks(library_artist_id), artist_path
+            album_tracks = await self.mass.music.artists.get_library_artist_album_tracks(
+                library_artist_id, provider_filter=self.instance_id
             )
+            source = await self._representative_source(album_tracks, artist_path)
         if source is None:
             return None
         kind, payload = source
@@ -3518,19 +3519,6 @@ class LocalFileSystemProvider(MusicProvider):
             if isinstance(candidate, Artist) and candidate.item_id == artist_path:
                 return candidate
         return None
-
-    async def _album_artist_tracks(self, library_artist_id: str) -> list[Track]:
-        """Return the (deduped) tracks of every album this artist is credited on."""
-        albums = await self.mass.music.artists.albums(
-            library_artist_id, "library", provider_filter=self.instance_id
-        )
-        tracks_by_id: dict[str, Track] = {}
-        for album in albums:
-            for track in await self.mass.music.albums.get_library_album_tracks(
-                album.item_id, provider_filter=[self.instance_id]
-            ):
-                tracks_by_id[track.item_id] = track
-        return [tracks_by_id[item_id] for item_id in sorted(tracks_by_id)]
 
     async def _representative_source(
         self, tracks: list[Track], root_dir: str

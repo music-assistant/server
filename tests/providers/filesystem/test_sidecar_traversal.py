@@ -511,8 +511,6 @@ async def test_reparse_artist_falls_back_to_album_tracks_for_album_only_artist()
     """An album-only ALBUMARTIST with no track-artist relationship is rebuilt via its albums."""
     provider = _provider()
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])  # no track-artist rows at all
-    album = Album(item_id="10", provider="library", name="Album", provider_mappings=set())
-    provider.mass.music.artists.albums = AsyncMock(return_value=[album])
     track = Track(
         item_id="1",
         provider="library",
@@ -525,7 +523,7 @@ async def test_reparse_artist_falls_back_to_album_tracks_for_album_only_artist()
             )
         },
     )
-    provider.mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[track])
+    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(return_value=_file("Artist/Album/track.mp3"))
     album_artist = Artist(
         item_id="Artist", provider=INSTANCE_ID, name="Album Artist", provider_mappings=set()
@@ -542,11 +540,8 @@ async def test_reparse_artist_falls_back_to_album_tracks_for_album_only_artist()
         result = await provider._reparse_artist_from_track("9", "Artist")
 
     assert result is album_artist
-    provider.mass.music.artists.albums.assert_awaited_once_with(
-        "9", "library", provider_filter=INSTANCE_ID
-    )
-    provider.mass.music.albums.get_library_album_tracks.assert_awaited_once_with(
-        "10", provider_filter=[INSTANCE_ID]
+    provider.mass.music.artists.get_library_artist_album_tracks.assert_awaited_once_with(
+        "9", provider_filter=INSTANCE_ID
     )
 
 
@@ -554,8 +549,6 @@ async def test_reparse_artist_album_fallback_requires_exact_mapping_path() -> No
     """The album fallback still only matches a track living under the exact artist path."""
     provider = _provider()
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
-    album = Album(item_id="10", provider="library", name="Album", provider_mappings=set())
-    provider.mass.music.artists.albums = AsyncMock(return_value=[album])
     # this album track belongs to a different artist's mapping directory entirely
     track = Track(
         item_id="1",
@@ -569,7 +562,7 @@ async def test_reparse_artist_album_fallback_requires_exact_mapping_path() -> No
             )
         },
     )
-    provider.mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[track])
+    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
 
     result = await provider._reparse_artist_from_track("9", "Artist")
 
@@ -580,8 +573,6 @@ async def test_reparse_artist_album_fallback_propagates_transient_read_failure()
     """A representative found only through the album fallback still surfaces read failures."""
     provider = _provider()
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
-    album = Album(item_id="10", provider="library", name="Album", provider_mappings=set())
-    provider.mass.music.artists.albums = AsyncMock(return_value=[album])
     track = Track(
         item_id="1",
         provider="library",
@@ -594,7 +585,7 @@ async def test_reparse_artist_album_fallback_propagates_transient_read_failure()
             )
         },
     )
-    provider.mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[track])
+    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(side_effect=MediaNotFoundError("gone"))
 
     with pytest.raises(SidecarReadError):

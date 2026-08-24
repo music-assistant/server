@@ -359,8 +359,6 @@ async def test_removed_artist_nfo_reverts_sort_keeps_mbid() -> None:
 def _album_only_artist_track(provider: Any) -> None:
     """Wire up an album-only artist: no track-artist rows, one album track under its path."""
     provider.mass.music.artists.tracks = AsyncMock(return_value=[])
-    album = Album(item_id="10", provider="library", name="Album", provider_mappings=set())
-    provider.mass.music.artists.albums = AsyncMock(return_value=[album])
     track = Track(
         item_id="1",
         provider="library",
@@ -373,7 +371,7 @@ def _album_only_artist_track(provider: Any) -> None:
             )
         },
     )
-    provider.mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[track])
+    provider.mass.music.artists.get_library_artist_album_tracks = AsyncMock(return_value=[track])
     provider.resolve = AsyncMock(return_value=_fs_file("Artist/Album/track.mp3", "1"))
 
 
