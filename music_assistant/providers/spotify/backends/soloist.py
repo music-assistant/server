@@ -177,6 +177,8 @@ _MAX_RETAINED_S: Final[float] = 20.0
 _RESUME_RETAINED_S: Final[float] = 10.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
+# how often an unsettled boundary re-asks the queue for the follower to feed
+_FEED_RETRY_INTERVAL_S: Final[float] = 2.0
 # the engine's "no repeat" value for its playback options
 _REPEAT_OFF: Final[str] = "off"
 # The engine allows one daemon per data directory and refuses to start otherwise,
@@ -418,11 +420,21 @@ class SoloistBackend(SpotifyPlaybackBackend):
         queue_id = streamdetails.queue_id if streamdetails is not None else None
         session, item = await self._acquire(spotify_uri, seek_position, queue_id)
         try:
-            # feed before the first byte is handed over: the item's own stream
-            # must not be able to reach its end before the next one is queued
-            if streamdetails is not None:
-                await session.feed_after(streamdetails, spotify_uri)
+            # Feed before the first byte is handed over: the item's own stream
+            # must not be able to reach its end before the next one is queued.
+            # A follower that is not knowable yet (the queue's index still
+            # settling on a fresh start, or the next item still being resolved)
+            # is asked for again while the item streams.
+            boundary_settled = streamdetails is None or await session.feed_after(
+                streamdetails, spotify_uri
+            )
+            next_feed_attempt = 0.0
             async for chunk in item.read():
+                if not boundary_settled and streamdetails is not None:
+                    now = time.monotonic()
+                    if now >= next_feed_attempt:
+                        next_feed_attempt = now + _FEED_RETRY_INTERVAL_S
+                        boundary_settled = await session.feed_after(streamdetails, spotify_uri)
                 yield chunk
         finally:
             item.release()
@@ -891,7 +903,7 @@ class _SoloistSession:
         await self._apply_sink_state(engine_playing=item.status == "playing")
         return item
 
-    async def feed_after(self, streamdetails: StreamDetails, spotify_uri: str) -> None:
+    async def feed_after(self, streamdetails: StreamDetails, spotify_uri: str) -> bool:
         """
         Hand the engine the item that follows the one being streamed, if any.
 
@@ -902,8 +914,10 @@ class _SoloistSession:
         :param streamdetails: The StreamDetails of the item being streamed, used
             to locate it in the queue.
         :param spotify_uri: The URI being streamed (only tracks are fed ahead).
+        :return: Whether the boundary is settled; False means the follower was
+            not knowable yet and asking again later may still feed it.
         """
-        await self._feed_follower(streamdetails, spotify_uri)
+        return await self._feed_follower(streamdetails, spotify_uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
         """
