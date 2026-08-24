@@ -897,7 +897,7 @@ class SpotifyConnectProvider(PluginProvider):
             # stop and ends the stream (clean EOF), so the player leaves the playing
             # state; the next 'playing' event re-fires play_media to resume.
             self._cancel_pending_play_media()
-            # A pipe-fed backend keeps delivering silence on pause (no EOF), so
+            # A backend without a stream end on pause never signals EOF, so
             # the player must be stopped actively; the claim stays so the next
             # 'playing' event resumes playback like the EOF path does. Only the
             # playing→paused transition fires it: the backend reports a pause
