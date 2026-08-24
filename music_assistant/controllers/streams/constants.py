@@ -5,7 +5,22 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
+from music_assistant_models.enums import VolumeNormalizationMode
+
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
+
+# What the volume normalization preference falls back to.
+DEFAULT_VOLUME_NORMALIZATION_MODE: Final = VolumeNormalizationMode.FALLBACK_DYNAMIC
+
+# Modes that are only ever an outcome, never something to ask for: SOURCE is set by a
+# source that levels its own audio and UNKNOWN is what an unrecognised value
+# deserializes to. Neither is offered as a preference, and one that reaches the config
+# anyway is not honoured as one - it would otherwise be handed straight back as the
+# mode to apply, which for SOURCE also means claiming a source levelled the audio.
+OUTCOME_ONLY_NORMALIZATION_MODES: Final = (
+    VolumeNormalizationMode.SOURCE,
+    VolumeNormalizationMode.UNKNOWN,
+)
 
 
 class BufferMode(StrEnum):

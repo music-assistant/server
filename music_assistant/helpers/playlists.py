@@ -6,7 +6,7 @@ import configparser
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout, client_exceptions
@@ -43,6 +43,11 @@ LOGGER = logging.getLogger(__name__)
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl",)
 PLAYLIST_CONTENT_TYPES = ("audio/x-mpegurl", "audio/x-scpls")
 FIELD_SEPARATOR = "||"
+# every character str.splitlines() treats as a line boundary: one of these inside a
+# title, name or path splits the entry over two lines, and the tail is read back as a
+# separate (bogus) playlist entry that can never be resolved
+_LINE_BREAK_CHARS: Final[str] = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlists are small text files: cap the read so a stream served under a
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
@@ -377,6 +382,15 @@ async def fetch_playlist(
 # --------------------------------------------------------------------------- #
 
 
+def sanitize_m3u_value(value: str) -> str:
+    """
+    Replace line breaks in a value so it stays on a single line in an M3U file.
+
+    :param value: Raw value (name, title, path or URL) about to be written to an M3U line.
+    """
+    return value.translate(_LINE_BREAK_TABLE)
+
+
 def generate_m3u(
     playlist_name: str,
     items: Sequence[PlaylistItem],
@@ -389,56 +403,66 @@ def generate_m3u(
     :param items: Entries to write. Only fields that are set are emitted.
     :param playlist_image_url: Optional playlist cover image URL.
     """
+    # every value goes through sanitize_m3u_value: a line break inside a title or name
+    # (they do occur in provider metadata and file tags) would otherwise split the entry
+    # over two lines, and the tail would be read back as an unresolvable entry
+    clean = sanitize_m3u_value
     # Playlist-level image using #EXTIMG directive (de facto standard for playlist covers)
     lines: list[str] = ["#EXTM3U"]
     if playlist_image_url:
-        lines.append(f"#EXTIMG:{playlist_image_url}")
-    lines.append(f"#PLAYLIST:{playlist_name}")
+        lines.append(f"#EXTIMG:{clean(playlist_image_url)}")
+    lines.append(f"#PLAYLIST:{clean(playlist_name)}")
     sep = FIELD_SEPARATOR
     for item in items:
         if item.metadata:
-            pairs = sep.join(f"{k}={v}" for k, v in item.metadata.items())
+            pairs = sep.join(f"{clean(k)}={clean(v)}" for k, v in item.metadata.items())
             lines.append(f"#EXTMA:{pairs}")
         for prov in item.providers:
             fields = [
-                prov.domain,
-                prov.item_id,
-                prov.instance_id,
-                prov.content_type,
+                clean(prov.domain),
+                clean(prov.item_id),
+                clean(prov.instance_id),
+                clean(prov.content_type),
                 str(prov.sample_rate),
                 str(prov.bit_depth),
                 str(prov.bit_rate),
             ]
             lines.append(f"#EXTPROV:{sep.join(fields)}")
         for artist in item.artists:
-            fields = [artist.name, artist.provider_domain, artist.item_id, artist.provider_instance]
+            fields = [
+                clean(artist.name),
+                clean(artist.provider_domain),
+                clean(artist.item_id),
+                clean(artist.provider_instance),
+            ]
             lines.append(f"#EXTARTIST:{sep.join(fields)}")
         if item.album:
             fields = [
-                item.album.name,
-                item.album.provider_domain,
-                item.album.item_id,
-                item.album.provider_instance,
-                item.album.version,
+                clean(item.album.name),
+                clean(item.album.provider_domain),
+                clean(item.album.item_id),
+                clean(item.album.provider_instance),
+                clean(item.album.version),
             ]
             lines.append(f"#EXTALBUM:{sep.join(fields)}")
         if item.podcast:
             fields = [
-                item.podcast.name,
-                item.podcast.provider_domain,
-                item.podcast.item_id,
-                item.podcast.provider_instance,
+                clean(item.podcast.name),
+                clean(item.podcast.provider_domain),
+                clean(item.podcast.item_id),
+                clean(item.podcast.provider_instance),
             ]
             lines.append(f"#EXTPODCAST:{sep.join(fields)}")
         for img in item.images:
             remotely = "true" if img.remotely_accessible else "false"
-            fields = [img.type, img.path, img.provider, remotely]
+            fields = [clean(img.type), clean(img.path), clean(img.provider), remotely]
             lines.append(f"#EXTIMG:{sep.join(fields)}")
         if item.title is not None:
             # -1 is the M3U convention for unknown length; without it an entry without
             # duration (such as a radio station) loses its title on every rewrite
-            lines.append(f"#EXTINF:{item.length if item.length is not None else -1},{item.title}")
-        lines.append(item.path)
+            length = item.length if item.length is not None else -1
+            lines.append(f"#EXTINF:{length},{clean(item.title)}")
+        lines.append(clean(item.path))
     return "\n".join(lines) + "\n"
 
 

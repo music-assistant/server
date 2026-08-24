@@ -12,6 +12,35 @@ CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 CONF_LIBRESPOT_CREDENTIALS = "librespot_credentials"  # librespot's reusable stored credential
 CONF_ACCOUNT_ID = "account_id"  # Spotify user id this instance serves (one instance per account)
 
+# Playback backend selection; configs predating the choice default to librespot
+CONF_PLAYBACK_BACKEND = "playback_backend"
+BACKEND_LIBRESPOT = "librespot"
+BACKEND_SOLOIST = "soloist"
+
+# Soloist-specific values collected by the setup flow (see CONF_PLAYBACK_BACKEND)
+CONF_SOLOIST_API_KEY = "soloist_api_key"
+CONF_SOLOIST_CONSENT = "soloist_download_consent"
+# a session paired by the setup flow, as a directory relative to the storage
+# path; adopted into the per-instance data dir on the next provider (re)load
+CONF_SOLOIST_SESSION_DIR = "soloist_session_dir"
+SOLOIST_DATA_DIR_NAME = "soloist-data"
+SOLOIST_PAIRING_DIR = "spotify/pairing"
+# the engine names its per-account state dir "<username>-user", which is where a
+# paired session records which Spotify account it belongs to
+SOLOIST_USER_DIR_SUFFIX = "-user"
+# Streaming quality, only meaningful on the soloist backend: librespot hands over
+# Spotify's own ~320 kbps Ogg stream untouched and has nothing to choose.
+CONF_AUDIO_QUALITY = "audio_quality"
+# Whether Spotify's own loudness normalization is used instead of MA's. Only
+# meaningful on the soloist backend: librespot hands over the untouched file.
+CONF_SPOTIFY_NORMALIZATION = "spotify_normalization"
+# The playback session registers under this name, so it shows up as a device in
+# the user's Spotify apps for as long as Music Assistant is playing. Deliberately
+# not plain "Music Assistant": that is what the Spotify Connect provider calls
+# its own (permanently advertised) device by default, and picking the wrong one
+# of two identically named entries is exactly what ends this session badly.
+SOLOIST_DEVICE_NAME = "Music Assistant Playback"
+
 # Librespot playback authorization
 #
 # Spotify's login5 endpoint only accepts a stored credential that was minted with the same

@@ -75,7 +75,6 @@ async def test_login_reads_token_from_persisted_store(monkeypatch: pytest.Monkey
         }
     )
     monkeypatch.setattr(prov, "_update_setup_data", MagicMock())
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
     await prov.login()
     # the token sent to Spotify must come from the persisted store
@@ -140,7 +139,6 @@ async def test_login_refreshes_when_cached_token_expired(monkeypatch: pytest.Mon
         }
     )
     monkeypatch.setattr(prov, "_update_setup_data", MagicMock())
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
     await prov.login()
     token_call.assert_awaited_once()
@@ -169,7 +167,6 @@ async def test_login_persists_rotated_token_immediately(monkeypatch: pytest.Monk
     prov._sp_user = {"display_name": "tester"}  # already populated -> skip the user-info fetch
     update_setup_data = MagicMock()
     monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr(
         "music_assistant.providers.spotify.provider.get_spotify_token",
         AsyncMock(
@@ -192,7 +189,6 @@ async def test_login_debounces_save_when_token_unchanged(monkeypatch: pytest.Mon
     prov._sp_user = {"display_name": "tester"}
     update_setup_data = MagicMock()
     monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr(
         "music_assistant.providers.spotify.provider.get_spotify_token",
         AsyncMock(

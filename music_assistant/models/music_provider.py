@@ -182,6 +182,31 @@ class MusicProvider(Provider):
         )
 
     @property
+    def delivers_normalized_audio(self) -> bool:
+        """
+        Return whether this provider hands over audio it has already normalized.
+
+        True means the source applies a loudness target of its own, so Music
+        Assistant leaves the level alone instead of measuring and correcting it
+        a second time. Only say so when the audio really is normalized on the
+        way out: nothing downstream double-checks it.
+        """
+        return False
+
+    @property
+    def delivers_crossfaded_audio(self) -> bool | None:
+        """
+        Return whether this provider crossfades the playback it is serving.
+
+        True means the source applies the overlap between consecutive items itself,
+        so Music Assistant hands its crossfade setting over instead of mixing one.
+        None means the provider is not serving anything yet and the queue's own
+        setting answers instead. Only say True when the source really does fade:
+        nothing downstream verifies it.
+        """
+        return False
+
+    @property
     def max_concurrent_streams(self) -> int | None:
         """
         Return the number of source streams Music Assistant may run against this provider.

@@ -125,50 +125,6 @@ def test_ending_a_session_drops_and_returns_it() -> None:
     assert ctrl._end_audio_source_session(PLAYER_ID) is None
 
 
-def test_ending_a_session_by_stream_token_requires_a_match() -> None:
-    """A teardown scoped to a stream only ends the session holding that stream."""
-    ctrl = _Controller(_plugin_provider())
-    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    session.stream_session_id = "stream-a"
-
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-b") is None
-    assert ctrl.get_audio_source_session(PLAYER_ID) is session
-
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-a") is session
-    assert ctrl.get_audio_source_session(PLAYER_ID) is None
-
-
-def test_a_superseded_teardown_does_not_end_its_replacement() -> None:
-    """
-    A reconnect's late teardown must not drop the session that replaced it.
-
-    Replays the ordering the plugin contract calls out: the player drops and
-    reopens the stream, so the first request's teardown runs after the second
-    request has already claimed the player.
-    """
-    ctrl = _Controller(_plugin_provider())
-    first = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    first.stream_session_id = "stream-a"
-
-    # the player reconnects: a new stream claims the player before the old one tears down
-    second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    second.stream_session_id = "stream-b"
-
-    # ...and only now does the first request's finally block run
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-a") is None
-    assert ctrl.get_audio_source_session(PLAYER_ID) is second
-
-
-def test_ending_a_session_without_a_token_is_unconditional() -> None:
-    """A deselect that is not scoped to a stream ends whatever is playing."""
-    ctrl = _Controller(_plugin_provider())
-    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    session.stream_session_id = "stream-a"
-
-    assert ctrl._end_audio_source_session(PLAYER_ID) is session
-    assert ctrl.get_audio_source_session(PLAYER_ID) is None
-
-
 def test_sessions_are_isolated_per_player() -> None:
     """A session on one player is invisible to another."""
     ctrl = _Controller(_plugin_provider())
@@ -275,15 +231,14 @@ def test_reconnecting_the_same_source_keeps_its_metadata() -> None:
     """
     ctrl = _Controller(_plugin_provider())
     source = _audio_source()
-    first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-a")
+    first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
     ctrl.update_source_metadata(
         PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
     )
 
-    again = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-b")
+    again = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
 
     assert again is first
-    assert again.stream_session_id == "stream-b"
     assert again.stream_metadata is not None
     assert again.stream_metadata.title == "Take Five"
     assert again.started_at == first.started_at
