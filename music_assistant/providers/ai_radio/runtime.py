@@ -66,6 +66,7 @@ from .helpers import (
     build_slots,
     coerce_float,
     coerce_int,
+    format_ai_radio_timestamp,
     is_empty_section,
     pick_weighted_choice,
     slugify,
@@ -1223,7 +1224,7 @@ class AIRadioRuntimeMixin:
             "<very_next_songinfo>": track_songinfo(very_next_track),
         }
         deferred = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
-        deferred["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
+        deferred["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         for key, value in runtime_tokens.items():
             if str(key) in DEFERRED_PLACEHOLDERS:
                 deferred[str(key)] = str(value)
