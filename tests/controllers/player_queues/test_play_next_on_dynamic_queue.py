@@ -357,4 +357,5 @@ async def test_play_next_mixed_container_transition_no_duplicates() -> None:
         if item.media_item is not None
     ]
     # the album feeds the new pool as a source; its expansion must not also be inserted
+    assert any(item_id.startswith("a") for item_id in ids), f"album did not feed the pool: {ids}"
     assert len(ids) == len(set(ids)), f"duplicate items in queue: {ids}"
