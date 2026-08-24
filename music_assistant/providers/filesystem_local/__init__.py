@@ -1262,8 +1262,14 @@ class LocalFileSystemProvider(MusicProvider):
         )
         for track in tracks:
             for prov_mapping in track.provider_mappings:
-                if prov_mapping.provider_instance == self.instance_id:
-                    return prov_mapping.item_id
+                if prov_mapping.provider_instance != self.instance_id:
+                    continue
+                # a CUE-derived track's mapping is a synthetic "<cue path>::<track>" id, not
+                # itself a resolvable path; its CUE sheet is, and reprocessing that sheet
+                # already refreshes every track (and this artist) it describes
+                if parsed := parse_cue_track_id(prov_mapping.item_id):
+                    return parsed[0]
+                return prov_mapping.item_id
         return None
 
     async def _drop_stale_album_artist_caches(self) -> None:

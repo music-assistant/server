@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
@@ -15,6 +15,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_METADATA_FILE,
 )
+from music_assistant.providers.filesystem_local.cue import make_cue_track_id
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 INSTANCE_ID = "filesystem_local--test"
@@ -177,6 +178,79 @@ async def test_changed_metadata_file_for_cue_album_uses_cue_checksum_for_overwri
     )
 
     assert items_to_process == [(cue_item, "cksum-a")]  # min() of the tracked set
+
+
+async def test_changed_metadata_file_for_cue_artist_queues_one_cue_item() -> None:
+    """
+    An artist.nfo/image registered against a CUE representative queues the CUE item itself.
+
+    Reprocessing the CUE sheet re-runs CUE track parsing, which rebuilds every track (and
+    thus every artist/album) it describes - so a single queued CUE item is enough, and no
+    synthetic per-track id is ever resolved directly.
+    """
+    provider = _provider()
+    nfo = _item("Artist/artist.nfo", checksum="2")
+    img = _item("Artist/artist.jpg", checksum="9")
+    provider.cache.get_all = AsyncMock(
+        return_value={
+            "Artist/artist.nfo": {"token": "1", "track": "Artist/Album/album.cue"},
+            "Artist/artist.jpg": {"token": "8", "track": "Artist/Album/album.cue"},
+        }
+    )
+    cue_item = _item("Artist/Album/album.cue")
+    provider.resolve = AsyncMock(return_value=cue_item)
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
+
+    await provider._queue_changed_metadata_files(
+        [nfo, img],
+        {},
+        {"Artist/Album/album.cue": {"cksum-a"}},
+        items_to_process,
+        force_refresh_tracks,
+    )
+
+    assert items_to_process == [(cue_item, "cksum-a")]  # queued once, deduped across both files
+    assert force_refresh_tracks == {"Artist/Album/album.cue"}
+
+
+async def test_register_metadata_file_stores_cue_path_as_representative() -> None:
+    """Registering against a CUE-derived representative stores the CUE path, not a synthetic id."""
+    provider = _provider()
+    provider.cache.set = AsyncMock()
+    meta = _item("Artist/artist.nfo", checksum="7")
+
+    await provider._register_metadata_file(meta, "Artist/Album/album.cue")
+
+    provider.cache.set.assert_awaited_once_with(
+        key="Artist/artist.nfo",
+        data={"token": "7", "track": "Artist/Album/album.cue"},
+        provider=INSTANCE_ID,
+        category=CACHE_CATEGORY_METADATA_FILE,
+        expiration=ANY,
+        persistent=True,
+    )
+
+
+async def test_missing_cue_representative_track_defers() -> None:
+    """A CUE representative that no longer resolves is skipped, retried on a later sync."""
+    provider = _provider()
+    meta = _item("Artist/artist.nfo", checksum="2")
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/artist.nfo": {"token": "1", "track": "Artist/Album/gone.cue"}}
+    )
+    provider.resolve = AsyncMock(side_effect=FileNotFoundError())
+    provider.cache.set = AsyncMock()
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
+
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
+
+    assert items_to_process == []
+    assert provider.cache.set.await_args_list == []  # old token kept, so a later sync retries
 
 
 async def test_two_changed_metadata_files_dedupe_to_one_track() -> None:
@@ -568,6 +642,35 @@ async def test_resolve_artist_representative_track_returns_none_without_tracks()
     provider.mass.music.artists.get_library_artist_tracks = AsyncMock(return_value=[])
 
     assert await provider._resolve_artist_representative_track(artist) is None
+
+
+async def test_resolve_artist_representative_track_converts_cue_track_id_to_cue_path() -> None:
+    """
+    A CUE-derived track's synthetic id must resolve to its (real, resolvable) CUE path.
+
+    A CUE track's own provider mapping id is a synthetic "<cue path>::<track>" marker, not a
+    path on disk; returning it verbatim would make `_queue_changed_metadata_files` try to
+    resolve a nonexistent file and defer this artist's NFO/image changes forever.
+    """
+    provider = _provider()
+    artist = Artist(item_id="42", provider="library", name="Test Artist", provider_mappings=set())
+    cue_track = Track(
+        item_id="cue-track",
+        provider="library",
+        name="CUE Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id=make_cue_track_id("Artist/Album/album.cue", 3),
+                provider_domain="filesystem_local",
+                provider_instance=INSTANCE_ID,
+            )
+        },
+    )
+    provider.mass.music.artists.get_library_artist_tracks = AsyncMock(return_value=[cue_track])
+
+    result = await provider._resolve_artist_representative_track(artist)
+
+    assert result == "Artist/Album/album.cue"
 
 
 async def test_get_artist_passes_representative_track_to_parse_artist() -> None:
