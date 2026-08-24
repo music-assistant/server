@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 
 # --- Initialization and properties ---
@@ -356,6 +357,9 @@ async def test_play_media_propagates_to_group_members(provider: Any, mass_mock: 
 
     # We call member.play_media directly (not mass.players.play_media) to avoid redirect
     member.play_media.assert_called_once_with(media)
+    mass_mock.players.get_player_lock.assert_called_once_with(
+        "msx_member", PlayerLockPurpose.PLAYBACK
+    )
 
 
 async def test_play_media_no_propagation_when_empty_group(provider: Any, mass_mock: Mock) -> None:

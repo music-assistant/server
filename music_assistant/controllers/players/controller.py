@@ -653,7 +653,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 return
 
         # Delegate to internal handler for actual implementation
-        await self._handle_cmd_play(player.player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -685,7 +686,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -698,7 +699,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param source: Optional source to resume.
         :param media: Optional media to resume.
         """
-        await self._handle_cmd_resume(player_id, source, media)
+        player = self._get_player_with_redirect(player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_cmd_resume(player.player_id, source, media)
 
     @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command

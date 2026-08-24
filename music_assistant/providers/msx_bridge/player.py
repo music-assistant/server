@@ -11,6 +11,7 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -401,18 +402,21 @@ class MSXPlayer(Player):
     async def _propagate_single(self, member: MSXPlayer, command: str, **kwargs: Any) -> None:
         """Propagate a single command to one group member."""
         try:
-            if command == "play_media":
-                media = kwargs.get("media")
-                if media:
-                    # Call member.play_media directly — mass.players.play_media
-                    # would redirect synced/grouped players back to the leader
-                    await member.play_media(media)
-            elif command == "stop":
-                await member.stop()
-            elif command == "pause":
-                await member.pause()
-            elif command == "play":
-                await member.play()
+            async with self.mass.players.get_player_lock(
+                member.player_id, PlayerLockPurpose.PLAYBACK
+            ):
+                if command == "play_media":
+                    media = kwargs.get("media")
+                    if media:
+                        # Call member.play_media directly — mass.players.play_media
+                        # would redirect synced/grouped players back to the leader
+                        await member.play_media(media)
+                elif command == "stop":
+                    await member.stop()
+                elif command == "pause":
+                    await member.pause()
+                elif command == "play":
+                    await member.play()
         except Exception:
             self.logger.warning(
                 "Failed to propagate %s to member %s",

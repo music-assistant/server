@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -84,6 +85,12 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.cmd_previous_track = AsyncMock()
     mass.players.get = Mock(return_value=None)
     mass.players.get_player = Mock(return_value=None)
+
+    @asynccontextmanager
+    async def _player_lock(*_args: Any, **_kwargs: Any) -> AsyncGenerator[None]:
+        yield
+
+    mass.players.get_player_lock = Mock(side_effect=_player_lock)
     mass.players.register = AsyncMock()
     mass.players.unregister = AsyncMock()
     mass.players.all = Mock(return_value=[])

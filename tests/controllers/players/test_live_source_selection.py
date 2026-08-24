@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
@@ -246,8 +246,8 @@ async def test_deselecting_another_source_from_the_same_provider_is_rejected() -
 
 
 async def test_deselecting_finishes_before_new_playback_starts() -> None:
-    """Release and stop complete before queued playback or source selection starts."""
-    controller, provider, _player = _controller(_source())
+    """Release and stop complete before any player playback entry point starts."""
+    controller, provider, player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     session = controller.get_audio_source_session(PLAYER_ID)
     assert session is not None
@@ -268,10 +268,24 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
     async def select_source(_player_id: str, _source_id: str | None) -> None:
         events.append("select")
 
+    async def play(_player_id: str) -> None:
+        events.append("play_command")
+
+    async def resume(
+        _player_id: str,
+        _source_id: str | None,
+        _media: PlayerMedia | None,
+    ) -> None:
+        events.append("resume")
+
     provider.on_source_released.side_effect = release_source
     controller._handle_cmd_stop.side_effect = stop_player
     controller._handle_play_media = AsyncMock(side_effect=play_media)
     controller._handle_select_source = AsyncMock(side_effect=select_source)
+    controller._handle_cmd_play = AsyncMock(side_effect=play)
+    controller._handle_cmd_resume = AsyncMock(side_effect=resume)
+    player.state.playback_state = PlaybackState.IDLE
+    controller.mass.player_queues.get.return_value = None
 
     release_task = asyncio.create_task(
         controller.deselect_source(
@@ -289,15 +303,23 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
         )
     )
     select_task = asyncio.create_task(controller.select_source(PLAYER_ID, PLAYER_ID))
+    play_command_task = asyncio.create_task(controller.cmd_play(PLAYER_ID))
+    resume_task = asyncio.create_task(controller.cmd_resume(PLAYER_ID))
     await asyncio.sleep(0)
     playback_waited = not events
 
     finish_release.set()
-    await asyncio.gather(release_task, play_task, select_task)
+    await asyncio.gather(
+        release_task,
+        play_task,
+        select_task,
+        play_command_task,
+        resume_task,
+    )
 
     assert playback_waited
     assert events[0] == "stop"
-    assert set(events[1:]) == {"play", "select"}
+    assert set(events[1:]) == {"play", "play_command", "resume", "select"}
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
