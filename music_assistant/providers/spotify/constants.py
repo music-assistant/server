@@ -35,8 +35,11 @@ CONF_AUDIO_QUALITY = "audio_quality"
 # meaningful on the soloist backend: librespot hands over the untouched file.
 CONF_SPOTIFY_NORMALIZATION = "spotify_normalization"
 # The playback session registers under this name, so it shows up as a device in
-# the user's Spotify apps for as long as Music Assistant is playing.
-SOLOIST_DEVICE_NAME = "Music Assistant"
+# the user's Spotify apps for as long as Music Assistant is playing. Deliberately
+# not plain "Music Assistant": that is what the Spotify Connect provider calls
+# its own (permanently advertised) device by default, and picking the wrong one
+# of two identically named entries is exactly what ends this session badly.
+SOLOIST_DEVICE_NAME = "Music Assistant Playback"
 
 # Librespot playback authorization
 #

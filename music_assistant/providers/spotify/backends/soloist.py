@@ -29,6 +29,7 @@ import termios
 import time
 from collections import deque
 from contextlib import suppress
+from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn
@@ -79,6 +80,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
     SoloistAuthState,
+    SoloistDeviceChanged,
     SoloistOptionsChanged,
     SoloistPlaybackOptions,
     SoloistPlaybackState,
@@ -196,6 +198,14 @@ _REPEAT_OFF: Final[str] = "off"
 _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
+# How many pauses from the Spotify app are put back before the session gives up.
+# Small on purpose: one is an accidental tap, more than that is someone who means
+# it and is not going to be argued out of it.
+_MAX_APP_PAUSE_RESUMES: Final[int] = 2
+# How long the Spotify app keeps Music Assistant from starting another session
+# after taking one over. Without it the next queue item spawns a fresh daemon
+# that claims the Connect device straight back off whatever the user moved to.
+_APP_CONTROL_COOLDOWN_S: Final[float] = 30.0
 
 
 class SoloistSessionBusyError(ProviderStreamLimitError):
@@ -227,6 +237,52 @@ class SoloistSessionBusyError(ProviderStreamLimitError):
         self.limit = 1
 
 
+class SoloistAppControl(StrEnum):
+    """What the Spotify app did to the session Music Assistant was playing."""
+
+    TOOK_OVER = "soloist_app_took_over"
+    PAUSED = "soloist_app_paused"
+
+
+# plain-English form of each, for the log and the error message; the values of
+# SoloistAppControl are the translation keys carrying the localized wording
+_APP_CONTROL_MESSAGES: Final[dict[SoloistAppControl, str]] = {
+    SoloistAppControl.TOOK_OVER: "{0} playback was taken over from the Spotify app",
+    SoloistAppControl.PAUSED: "{0} playback was paused from the Spotify app",
+}
+
+
+class SoloistAppControlError(ProviderStreamLimitError):
+    """
+    Raised while the Spotify app is holding the session it took from Music Assistant.
+
+    A ProviderStreamLimitError because that is exactly how the queue should treat
+    it: the item is not marked unplayable, other providers get a chance at it,
+    and an explicit play stops the queue with the message below rather than
+    failing one item after another. Above all it keeps the next item from
+    spawning a daemon that would claim the Connect device straight back.
+    """
+
+    def __init__(self, provider: MusicProvider, reason: SoloistAppControl) -> None:
+        """
+        Initialize the error.
+
+        :param provider: The provider whose session the app took.
+        :param reason: What the Spotify app did.
+        """
+        # deliberately skips ProviderStreamLimitError.__init__, whose whole job is
+        # to phrase the message in terms of the provider's source-stream budget
+        MusicAssistantError.__init__(
+            self,
+            _APP_CONTROL_MESSAGES[reason].format(provider.name),
+            translation_key=reason.value,
+            translation_owner="provider.spotify",
+            translation_args=[provider.name],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = 1
+
+
 class SoloistBackend(SpotifyPlaybackBackend):
     """
     Fetches Spotify audio from one continuous ``soloist`` session, fed one track ahead.
@@ -251,6 +307,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # only be spawned once the previous one is gone — holding this across
         # the teardown is what sequences that.
         self._session_lock = asyncio.Lock()
+        # what the Spotify app last did to a session, and until when that holds
+        # off a replacement (see note_app_control)
+        self._app_control: SoloistAppControl | None = None
+        self._app_control_until = 0.0
 
     def source_audio_format(self, media_type: MediaType) -> AudioFormat:
         """
@@ -425,6 +485,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
             "soloist": SoloistBinaryManager(self.mass).diagnostics(),
             "paired": await asyncio.to_thread(self._has_stored_session),
             "session_active": session is not None and session.usable,
+            "app_control": reason.value if (reason := self._held_by_app()) else None,
         }
 
     @property
@@ -481,6 +542,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         skipped-to item, a session that is gone — starts a fresh session.
         """
         async with self._session_lock:
+            self._raise_if_app_controlled()
             session = self._session
             if session is not None and session.usable and session.queue_id == queue_id:
                 if not seek_position and (item := session.item_for(spotify_uri)) is not None:
@@ -527,6 +589,30 @@ class SoloistBackend(SpotifyPlaybackBackend):
             self._session = session
             item.claim()
             return session, item
+
+    def _note_app_control(self, reason: SoloistAppControl) -> None:
+        """
+        Record that the Spotify app took control, holding off a replacement session.
+
+        Starting one right away would claim the Connect device back off whatever
+        the user just moved playback to, so the items that follow are refused for
+        a while instead.
+
+        :param reason: What the Spotify app did.
+        """
+        self._app_control = reason
+        self._app_control_until = time.monotonic() + _APP_CONTROL_COOLDOWN_S
+
+    def _held_by_app(self) -> SoloistAppControl | None:
+        """Return what the Spotify app did, for as long as that holds off a new session."""
+        if self._app_control is None or time.monotonic() >= self._app_control_until:
+            return None
+        return self._app_control
+
+    def _raise_if_app_controlled(self) -> None:
+        """Refuse a new session while the Spotify app is still holding the one it took."""
+        if (reason := self._held_by_app()) is not None:
+            raise SoloistAppControlError(self.provider, reason)
 
     async def _adopt_paired_session(self) -> None:
         """Adopt a session paired by the setup flow into the per-instance data dir."""
@@ -665,6 +751,13 @@ class _SoloistSession:
         self._teardown_done = False
         # None until the engine reports its login state for the first time
         self._logged_in: bool | None = None
+        # set once this daemon is the active Connect device; losing that again is
+        # the user moving playback elsewhere from their Spotify app
+        self._was_active = False
+        # what the Spotify app did to end this session, when it did
+        self._app_control: SoloistAppControl | None = None
+        # pauses from the Spotify app put back for the item being played
+        self._app_pauses = 0
         self._data_dir_busy = False
         self._pin_in_flight = False
         self._options_pin_in_flight = False
@@ -877,7 +970,7 @@ class _SoloistSession:
         :raises AudioError: When the item was cut short.
         """
         if self._error:
-            raise AudioError(f"Spotify Soloist: {self._error}")
+            raise self._session_error()
         if not item.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
         if item.duration_ms is None:
@@ -1076,12 +1169,20 @@ class _SoloistSession:
             # a fresh daemon is not the active Connect device yet, and play() on
             # an inactive device would start playback on whatever else is active
             await client.activate(await_result=True)
+            # Latched here rather than waiting for the engine to volunteer it:
+            # events and command acks share one connection, so everything the
+            # daemon reported while it was still inactive arrived before this.
+            self._was_active = True
             # Music Assistant owns the queue: order and repeats are decided here.
             # A session that inherited repeat from the account would replay this
             # item instead of moving on to the one fed behind it.
             await client.set_shuffle(False)
             await client.set_repeat_context(False)
             await client.set_repeat_track(False)
+            if self._error:
+                # the device was taken while those went out; play() would claim
+                # it straight back off wherever the user moved to
+                raise self._session_error()
             await client.play(spotify_uri)
         except (TimeoutError, OSError, ClientError, SoloistError) as err:
             # a bare TimeoutError stringifies to nothing, so name the type too
@@ -1164,7 +1265,7 @@ class _SoloistSession:
                 "and has to be stopped first (restarting Music Assistant clears it)"
             )
         if self._error:
-            raise AudioError(f"Spotify Soloist: {self._error}")
+            raise self._session_error()
         raise AudioError(f"Spotify Soloist {detail} for {spotify_uri}")
 
     async def _cold_seek(self, client: SoloistClient, item: _ItemAudio, target_ms: int) -> None:
@@ -1329,6 +1430,10 @@ class _SoloistSession:
         data = event.data
         if isinstance(data, SoloistAuthState):
             self._observe_auth_state(logged_in=data.logged_in)
+            self._observe_active_device(is_active=data.is_active)
+            return
+        if isinstance(data, SoloistDeviceChanged):
+            self._observe_active_device(is_active=data.is_active)
             return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
@@ -1349,8 +1454,15 @@ class _SoloistSession:
 
     async def _handle_playback_state(self, data: SoloistPlaybackState) -> None:
         """Apply a playback_state snapshot: current item, position, volume and sink gating."""
+        # data.is_active is deliberately left alone: it is optional and rides on
+        # deltas too, so the dedicated device_changed/auth_state reports are the
+        # only ones worth following.
         if data.item is not None and data.item.uri:
             await self._observe_current(data.item.uri, _decorated_duration_ms(data.item))
+            if not self.usable:
+                # the snapshot ended the session; nothing below it should still
+                # be pinning volume or options on what the app is now driving
+                return
         item = self._current
         if item is not None:
             item.status = data.status
@@ -1367,6 +1479,9 @@ class _SoloistSession:
         playing = data.status == "playing"
         # recorded before the branches below: a drain returns early, and the sink
         # still has to learn that the engine is no longer producing
+        was_playing = self._engine_playing
+        # both read before _apply_sink_state below rewrites them
+        was_backpressured = self._backpressured
         self._engine_playing = playing
         if playing:
             # the engine picked the item back up: it was only rebuffering after all
@@ -1378,14 +1493,34 @@ class _SoloistSession:
             self._drain_last_item(item)
             return
         await self._apply_sink_state(engine_playing=playing)
-        if data.status == "paused" and not item.draining and not self._backpressured:
-            # this session has no user-facing pause: someone paused it from the
-            # Spotify app — resume playback (a persistently re-paused session
-            # ends through the stall timeout)
-            client = self._client
-            if client is not None:
-                with suppress(Exception):
-                    await client.resume()
+        if data.status == "paused" and not item.draining and not was_backpressured:
+            await self._undo_app_pause(was_playing=was_playing)
+
+    async def _undo_app_pause(self, *, was_playing: bool) -> None:
+        """
+        Put back a pause that came from the Spotify app, up to a point.
+
+        This session has no user-facing pause, so an accidental tap is undone.
+        Someone who keeps pausing means it, and fighting on until the item
+        starves serves nobody: the session ends instead.
+
+        :param was_playing: Whether the engine was playing before this snapshot,
+            so a repeated report of the same pause is not counted as a new one.
+        """
+        if not self.usable or not self._was_active:
+            # A session on its way out pauses the daemon itself, and a bare
+            # resume no longer reaches the Spotify apps once this one has lost
+            # the Connect device: it would start local playback beside whatever
+            # took the session over, on an account allowing one stream.
+            return
+        if was_playing:
+            self._app_pauses += 1
+        if self._app_pauses > _MAX_APP_PAUSE_RESUMES:
+            self._end_on_app_control(SoloistAppControl.PAUSED)
+            return
+        if (client := self._client) is not None:
+            with suppress(Exception):
+                await client.resume()
 
     async def _apply_sink_state(self, *, engine_playing: bool | None = None) -> None:
         """
@@ -1509,11 +1644,19 @@ class _SoloistSession:
             current.started.set()
             return
         item = self._items.get(uri)
+        if (item is None or item.spent) and current is not None and current.mid_play:
+            # The engine left an item Music Assistant is part-way through for
+            # somewhere it was never sent: the user is driving from the Spotify
+            # app. Every channel this session opened deliberately — the item
+            # asked for and the one fed behind it — is unspent until its stream
+            # takes it, so the session's own moves never land here.
+            self._end_on_app_control(SoloistAppControl.TOOK_OVER)
+            return
         if item is None:
             # Something nobody asked for: the state the engine restores when it
-            # starts, its own autoplay, or a track started from the Spotify app.
-            # It gets a channel so the reader has somewhere to put the audio,
-            # but it is never offered as an item's audio.
+            # starts, or its own autoplay. It gets a channel so the reader has
+            # somewhere to put the audio, but it is never offered as an item's
+            # audio.
             item = self._items[uri] = _ItemAudio(uri, self)
             item.spent = True
         if duration_ms:
@@ -1521,6 +1664,7 @@ class _SoloistSession:
         with suppress(ValueError):
             self._pending.remove(uri)
         self._current = item
+        self._app_pauses = 0
         if self._discard_until == uri:
             self._discard_until = None
             # The engine confirms a jump over the WebSocket within a few
@@ -1577,6 +1721,47 @@ class _SoloistSession:
         self._logged_in = False
         if was_logged_in:
             self._fail("the session was logged out")
+
+    def _observe_active_device(self, *, is_active: bool) -> None:
+        """
+        Follow whether this session is still the active Spotify Connect device.
+
+        The engine advertises itself as a Connect device and cannot be told not
+        to, so the user can move playback to another one from their Spotify app.
+        Only losing the active status :meth:`_play` claimed counts — a respawned
+        daemon can report itself active from the session Spotify still has on
+        the account, and arming the detector on that would fail the very first
+        item of a fresh session.
+
+        :param is_active: Whether the engine reports being the active device.
+        """
+        if is_active or not self._was_active:
+            return
+        self._was_active = False
+        self._end_on_app_control(SoloistAppControl.TOOK_OVER)
+
+    def _end_on_app_control(self, reason: SoloistAppControl) -> None:
+        """
+        End the session because the Spotify app took control of it.
+
+        :param reason: What the Spotify app did.
+        """
+        if not self.usable:
+            # a session already on its way out has nothing left to give up, and
+            # its teardown pauses the daemon - which must not read as the user
+            # pausing and hold off the next session
+            return
+        self._app_control = reason
+        message = _APP_CONTROL_MESSAGES[reason].format(self.backend.provider.name)
+        self.logger.info("%s; ending the playback session", message)
+        self.backend._note_app_control(reason)
+        self._fail(message)
+
+    def _session_error(self) -> AudioError:
+        """Return the error an item's stream fails with once the session is gone."""
+        if (reason := self._app_control) is not None:
+            return SoloistAppControlError(self.backend.provider, reason)
+        return AudioError(f"Spotify Soloist: {self._error}")
 
     async def _repin_options(self, options: SoloistPlaybackOptions) -> None:
         """
@@ -1677,12 +1862,36 @@ class _ItemAudio:
         Return whether the engine reported this item played (nearly) to its end.
 
         Tells a run that genuinely finished apart from someone pausing in the
-        Spotify app part-way through the last track.
+        Spotify app part-way through the last track. No crossfade allowance:
+        this judges the run's *last* item, which crossfades into nothing (see
+        ``mid_play``, which judges a boundary and therefore needs one).
         """
         if self.duration_ms is None or self.last_position_ms is None:
             # nothing to judge by: treat a stop as the end rather than hanging
             return True
         return self.last_position_ms + _INCOMPLETE_TOLERANCE_MS >= self.duration_ms
+
+    @property
+    def mid_play(self) -> bool:
+        """
+        Return whether the engine is part-way through this item.
+
+        Distinguishes the engine being pulled off an item from it moving on at
+        the item's own end, which is an ordinary boundary — and with crossfade
+        that boundary falls a crossfade short of the duration. Answers False
+        whenever there is nothing to judge by, so an unknown position is never
+        read as an interruption.
+        """
+        if not self.started.is_set() or self._closed or self.draining:
+            return False
+        if self.duration_ms is None or self.last_position_ms is None:
+            return False
+        # Uncapped on purpose, unlike validate_item's half-duration clamp: on an
+        # item shorter than the allowance this answers False throughout, so a
+        # takeover there is missed rather than every crossfade boundary on it
+        # being called one.
+        end_of_item_ms = self.session.crossfade_ms + _INCOMPLETE_TOLERANCE_MS
+        return self.last_position_ms + end_of_item_ms < self.duration_ms
 
     @property
     def tail_complete(self) -> bool:
@@ -1792,7 +2001,7 @@ class _ItemAudio:
             if self._closed:
                 return
             if session._error:
-                raise AudioError(f"Spotify Soloist: {session._error}")
+                raise session._session_error()
             self._available.clear()
             deadline = loop.time() + _READ_SLICE_S
             with suppress(TimeoutError):
