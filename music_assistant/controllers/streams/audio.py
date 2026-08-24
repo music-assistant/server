@@ -242,16 +242,17 @@ def overlay_active(queue: PlayerQueue) -> bool:
     return queue.overlay_enabled and queue.overlay_source is not None
 
 
-class _RealtimeTailHold:
+class _TailHold:
     """
-    Grow a fade-out holdback for a realtime source without starving the player.
+    Grow a fade-out holdback out of what a source delivered ahead of playback.
 
-    A realtime source delivers barely above playback pace, so a fixed holdback
-    would starve the player. The only audio that may be withheld is what the
-    stream has received beyond the wall clock plus a safety reserve - that is
-    audio the player provably does not need to keep rendering in time - and
-    only half of that, so the player's own lead keeps growing too. Once the
-    source is done, the rest is resident and the full window is available.
+    Withholding a fixed window starves a source that delivers near playback pace
+    (a realtime session, a slow provider, a seek close to the end of a track). The
+    only audio that may be withheld is what the stream received beyond the wall
+    clock plus a safety reserve - audio the player provably does not need to keep
+    rendering in time - and only half of that, so the player's own lead keeps
+    growing too. Once the source is done, the rest is resident and the full window
+    is available.
     """
 
     # the player's supply must stay at least this far ahead of the wall clock
@@ -299,9 +300,14 @@ class _RealtimeTailHold:
         if self._started is None:
             return 0
         audio_buffer = self._audio_buffer
-        if audio_buffer is not None and audio_buffer.eof:
-            # the source is done: everything left is resident, hold the full window
-            return max_bytes
+        if audio_buffer is not None:
+            if audio_buffer.has_error:
+                # a failed source is skipped without a fade, so its remaining audio
+                # is better off played out than held back for one
+                return 0
+            if audio_buffer.eof:
+                # the source is done: everything left is resident, hold the full window
+                return max_bytes
         elapsed = asyncio.get_event_loop().time() - self._started
         received_seconds = self._received_bytes / self._pcm_format.pcm_sample_size
         spare_seconds = received_seconds - elapsed - self._LEAD_RESERVE_S
@@ -2003,13 +2009,13 @@ class StreamsAudio:
         warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
         warmup_bytes = 0
         total_chunks_received = 0
-        holdback_armed = False
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
-        # a realtime source's holdback is grown out of its banked surplus
-        # instead of armed as one fixed window
+        # the holdback is grown out of the audio banked ahead of playback instead of
+        # armed as one fixed window, so a source delivering near playback pace keeps
+        # feeding the player
         tail_hold = (
-            _RealtimeTailHold(pcm_format, cast("AudioBuffer | None", streamdetails.buffer))
-            if streamdetails.is_realtime and crossfade_buffer_size > 0
+            _TailHold(pcm_format, cast("AudioBuffer | None", streamdetails.buffer))
+            if crossfade_buffer_size > 0
             else None
         )
         async for chunk in self.get_queue_item_stream(
@@ -2033,25 +2039,12 @@ class StreamsAudio:
                 del chunk
                 continue
 
-            if tail_hold is None and not holdback_armed:
-                holdback_armed = self._crossfade_holdback_allowed(
-                    queue_item.streamdetails or streamdetails,
-                    crossfade_buffer_duration,
-                    playback_speed,
-                )
-                if not holdback_armed:
-                    # holding audio back now would only shrink the player's lead
-                    yield chunk
-                    bytes_written += len(chunk)
-                    del chunk
-                    continue
-
             buffer.extend(chunk)
             del chunk
             hold_target = (
                 tail_hold.hold_target(crossfade_buffer_size, frame_size)
                 if tail_hold is not None
-                else crossfade_buffer_size
+                else 0
             )
             if len(buffer) <= hold_target:
                 await asyncio.sleep(0)
@@ -2579,15 +2572,14 @@ class StreamsAudio:
                 crossfade_buffer = bytearray()
                 warmup_bytes = 0
                 first_chunk_received = False
-                holdback_armed = False
-                # a realtime source's holdback is grown out of its banked surplus
-                # instead of armed as one fixed window
+                # the holdback is grown out of the audio banked ahead of playback instead
+                # of armed as one fixed window, so a source delivering near playback pace
+                # keeps feeding the player
                 tail_hold = (
-                    _RealtimeTailHold(
+                    _TailHold(
                         pcm_format, cast("AudioBuffer | None", queue_track.streamdetails.buffer)
                     )
-                    if queue_track.streamdetails.is_realtime
-                    and item_crossfade_mode != CrossfadeMode.DISABLED
+                    if item_crossfade_mode != CrossfadeMode.DISABLED
                     else None
                 )
 
@@ -2648,19 +2640,6 @@ class StreamsAudio:
                             del chunk
                             continue
 
-                        if tail_hold is None and not last_fadeout_part and not holdback_armed:
-                            holdback_armed = self._crossfade_holdback_allowed(
-                                queue_track.streamdetails,
-                                crossfade_buffer_duration,
-                                track_playback_speed,
-                            )
-                            if not holdback_armed:
-                                # holding audio back now would only shrink the player's lead
-                                yield chunk
-                                bytes_written += len(chunk)
-                                del chunk
-                                continue
-
                         if not last_fadeout_part:
                             # the tail is being held back, so the audio the next transition
                             # blends in can be gathered alongside it instead of after it
@@ -2673,14 +2652,14 @@ class StreamsAudio:
 
                         # accumulate chunks in the crossfade buffer: the outgoing tail
                         # window, or (at a boundary) whatever of the incoming overlap
-                        # arrived before the mix starts. A realtime source's window is
-                        # whatever its banked surplus covers right now.
+                        # arrived before the mix starts. The window is whatever the
+                        # source has banked ahead of playback right now.
                         crossfade_buffer.extend(chunk)
                         del chunk
                         hold_target = (
                             tail_hold.hold_target(crossfade_buffer_size, frame_size)
                             if tail_hold is not None
-                            else crossfade_buffer_size
+                            else 0
                         )
                         if not last_fadeout_part and len(crossfade_buffer) <= hold_target:
                             await asyncio.sleep(0)
@@ -3859,34 +3838,6 @@ class StreamsAudio:
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
             )
-
-    def _crossfade_holdback_allowed(
-        self, streamdetails: StreamDetails, tail_seconds: float, playback_speed: float = 1.0
-    ) -> bool:
-        """
-        Return whether the outgoing tail may be held back for a crossfade.
-
-        :param streamdetails: Stream details of the track being streamed.
-        :param tail_seconds: Length of the tail to hold back, in seconds of playback.
-        :param playback_speed: Playback-speed multiplier of the track.
-        """
-        if tail_seconds <= 0 or playback_speed <= 0:
-            return False
-        audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
-        if audio_buffer is None or audio_buffer.has_error:
-            # a failed source is skipped without a fade, so its remaining audio is
-            # better off played out than held back for one
-            return False
-        if streamdetails.is_realtime:
-            # a realtime source never arms a fixed window: its holdback is grown
-            # out of its banked surplus by the caller (see _RealtimeTailHold)
-            return False
-        # While the source is still delivering, it is what limits playback: withholding
-        # a tail on top of that eats into the lead the player needs. Once the source is
-        # done the remaining audio is resident, so the tail comes for free. A buffer that
-        # is too small to ever hold the tail is the exception - waiting for the source
-        # there would only lose the fade.
-        return audio_buffer.eof or audio_buffer.max_size_seconds / playback_speed < tail_seconds
 
     def _report_crossfade_mode(
         self,
