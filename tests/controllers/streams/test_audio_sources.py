@@ -727,6 +727,69 @@ class TestAudioSourceSilenceKeepalive:
         ]
         assert chunks == [b"one"]
 
+    @pytest.mark.asyncio
+    async def test_propagates_inner_error(self) -> None:
+        """An error from the source generator reaches the stream consumer."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise RuntimeError("source failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format())
+        assert await anext(stream) == b"one"
+        with pytest.raises(RuntimeError, match="source failed"):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_custom_audio_source_path_applies_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CUSTOM AudioSources are wrapped using the format their bytes arrive in."""
+        decoded_format = _audio_format()
+        wrapped_formats: list[AudioFormat] = []
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"audio"
+
+        async def _keepalive(
+            inner: AsyncGenerator[bytes], pcm_format: AudioFormat
+        ) -> AsyncGenerator[bytes]:
+            wrapped_formats.append(pcm_format)
+            async for chunk in inner:
+                yield chunk
+
+        monkeypatch.setattr(
+            "music_assistant.controllers.streams.audio.audio_source_silence_keepalive",
+            _keepalive,
+        )
+        provider = MagicMock()
+        provider.available = True
+        provider.get_audio_stream.return_value = _inner()
+        mass = MagicMock()
+        mass.get_provider.return_value = provider
+        controller = StreamsAudio(mass)
+        streamdetails = StreamDetails(
+            provider="fake_plugin",
+            item_id="main",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+            decoded_audio_format=decoded_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+        )
+
+        source, seek_position, extra_input_args = await controller._resolve_media_stream_source(
+            streamdetails, seek_position=0, extra_input_args=[]
+        )
+
+        assert not isinstance(source, str)
+        assert [chunk async for chunk in source] == [b"audio"]
+        assert wrapped_formats == [decoded_format]
+        assert seek_position == 0
+        assert extra_input_args == []
+
 
 class TestAudioSourceLibraryRejection:
     """AudioSources are dynamic plugin surfaces — favorites/library must reject them."""

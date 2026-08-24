@@ -8,7 +8,7 @@ import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Iterator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from io import BytesIO
 from math import isfinite
 from typing import TYPE_CHECKING, Final
@@ -478,14 +478,8 @@ async def audio_source_silence_keepalive(
             yield chunk
     finally:
         producer_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await producer_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            # log but don't re-raise: we're already in a finally and the
-            # downstream consumer has its own error handling for the outer stream.
-            LOGGER.exception("AudioSource producer task raised")
 
 
 async def get_silence(
