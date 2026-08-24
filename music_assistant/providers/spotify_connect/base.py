@@ -108,8 +108,8 @@ class SpotifyConnectBackend(ABC):
         """
         Whether the audio stream reaches a clean end when playback pauses.
 
-        Pipe-fed backends deliver silence on pause instead; the provider then
-        stops the player actively on the paused state event.
+        Pipe-fed backends never reach one; the provider then stops the player
+        actively on the paused state event.
         """
         return True
 
