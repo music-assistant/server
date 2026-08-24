@@ -154,10 +154,11 @@ class PodcastMusicprovider(MusicProvider):
         """List all episodes for the podcast."""
         if prov_podcast_id != self.podcast_id:
             raise MediaNotFoundError(f"Podcast id not in provider: {prov_podcast_id}")
-        # sort episodes by published date
+        # yield newest-first like the other providers, so callers after the latest episode
+        # only have to take the first one
         episodes: list[dict[str, Any]] = self.parsed_podcast["episodes"]
         if episodes and episodes[0].get("published", 0) != 0:
-            episodes.sort(key=lambda x: x.get("published", 0))
+            episodes.sort(key=lambda x: x.get("published", 0), reverse=True)
         positions = get_episode_positions(episodes)
         for position, episode in zip(positions, episodes, strict=True):
             if mass_episode := self._parse_episode(episode, position):
