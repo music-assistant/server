@@ -318,7 +318,9 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     assert incoming_seconds_read > resident_media_duration
     crossfade_data = audio._crossfade_data["queue-1"]
     assert crossfade_data.queue_item_id == "next"
+    # the window is stream time, so fast playback reaches the incoming track's
+    # half-duration cap sooner: at 2x an 8s overlap would eat this whole track
+    expected_window = min(crossfade_duration, next_details.duration / playback_speed / 2)
     # the next track resumes at the media time the blend already played
-    assert crossfade_data.fade_in_media_duration == pytest.approx(
-        crossfade_duration * playback_speed
-    )
+    assert crossfade_data.fade_in_media_duration == pytest.approx(expected_window * playback_speed)
+    assert crossfade_data.fade_in_media_duration <= next_details.duration / 2

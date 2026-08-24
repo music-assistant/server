@@ -2114,6 +2114,7 @@ class StreamsAudio:
                     crossfade_mode,
                     standard_crossfade_duration,
                     fade_out_seconds=len(buffer) / pcm_format.pcm_sample_size,
+                    playback_speed=fade_in_playback_speed,
                 )
                 crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
         if not crossfade_allowed:
@@ -2493,6 +2494,7 @@ class StreamsAudio:
                             item_crossfade_mode,
                             standard_crossfade_duration,
                             fade_out_seconds=len(last_fadeout_part) / pcm_sample_size,
+                            playback_speed=track_playback_speed,
                         )
                     if transition_mode == CrossfadeMode.DISABLED:
                         # nothing to fade into: flush the held-back tail of the previous track
@@ -3899,6 +3901,7 @@ class StreamsAudio:
         crossfade_mode: CrossfadeMode,
         standard_crossfade_duration: int,
         fade_out_seconds: float,
+        playback_speed: float = 1.0,
     ) -> tuple[CrossfadeMode, float]:
         """
         Select the crossfade this boundary can carry.
@@ -3911,11 +3914,13 @@ class StreamsAudio:
         :param crossfade_mode: Requested crossfade mode.
         :param standard_crossfade_duration: Configured standard overlap in seconds.
         :param fade_out_seconds: Held-back outgoing tail in seconds.
+        :param playback_speed: Incoming track playback-speed multiplier.
         :return: Effective mode and fade-in duration in seconds.
         """
         audio_buffer = streamdetails.buffer
         if (
             crossfade_mode == CrossfadeMode.DISABLED
+            or playback_speed <= 0
             or audio_buffer is None
             or audio_buffer.has_error
             or not audio_buffer.is_valid()
@@ -3933,8 +3938,10 @@ class StreamsAudio:
         )
         if streamdetails.duration:
             # a short incoming track cannot supply a long overlap, and blending into
-            # more than half of it would leave the listener no clean part of it
-            window = min(window, streamdetails.duration / 2)
+            # more than half of it would leave the listener no clean part of it. The
+            # window is stream time, the track's remaining audio is media time.
+            remaining_media = max(0.0, streamdetails.duration - streamdetails.seek_position)
+            window = min(window, remaining_media / playback_speed / 2)
         if window < MIN_CROSSFADE_DURATION:
             return CrossfadeMode.DISABLED, 0
         self.logger.debug(

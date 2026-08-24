@@ -64,10 +64,32 @@ def _feed_pipe_blocking(write_fd: int, payload: bytes) -> None:
         while view:
             written = os.write(write_fd, view[: 1024 * 1024])
             view = view[written:]
-    except OSError:
+    except BrokenPipeError:
+        # ffmpeg stopped reading (its filter took all it needed, or it exited)
         pass
     finally:
         os.close(write_fd)
+
+
+async def _feed_ffmpeg_stdin(
+    proc: AsyncProcess, fade_in_part: bytes | AsyncGenerator[bytes]
+) -> None:
+    """
+    Write the incoming track's head to the mixer, always ending with an EOF.
+
+    :param proc: The mixer process to feed.
+    :param fade_in_part: Raw PCM bytes, or a stream delivering them.
+    """
+    try:
+        if isinstance(fade_in_part, bytes):
+            await proc.write(fade_in_part)
+        else:
+            async for fade_chunk in fade_in_part:
+                await proc.write(fade_chunk)
+    finally:
+        # a feed that stops without an EOF leaves ffmpeg waiting for input
+        # while its consumer waits for output
+        await proc.write_eof()
 
 
 class SmartFade(ABC):
@@ -140,14 +162,6 @@ class SmartFade(ABC):
                 os.close(fadeout_read_fd)
                 fadeout_read_fd = -1
 
-                async def _feed_stdin() -> None:
-                    if isinstance(fade_in_part, bytes):
-                        await proc.write(fade_in_part)
-                    else:
-                        async for fade_chunk in fade_in_part:
-                            await proc.write(fade_chunk)
-                    await proc.write_eof()
-
                 async def _drain_stderr() -> None:
                     """Read stderr to prevent pipe deadlock."""
                     async for line in proc.iter_stderr():
@@ -157,7 +171,7 @@ class SmartFade(ABC):
                     asyncio.to_thread(_feed_pipe_blocking, fadeout_write_fd, fade_out_part)
                 )
                 fadeout_write_fd = -1  # the feeder owns and closes it now
-                feed_task = asyncio.create_task(_feed_stdin())
+                feed_task = asyncio.create_task(_feed_ffmpeg_stdin(proc, fade_in_part))
                 stderr_task = asyncio.create_task(_drain_stderr())
                 try:
                     async for chunk in proc.iter_any():
