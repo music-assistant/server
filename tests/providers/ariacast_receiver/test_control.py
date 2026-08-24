@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant.providers.ariacast_receiver import AriaCastReceiver
+from music_assistant.providers.ariacast_receiver import AUDIO_SOURCE_ID, AriaCastReceiver
 
 
 def _receiver(in_use_by_queue: str | None = "queue_1") -> SimpleNamespace:
@@ -104,14 +104,19 @@ async def test_forward_action_without_exclusion_reaches_all_senders() -> None:
 
 def _playback_receiver(*, active_player_id: str | None, owner: str | None) -> SimpleNamespace:
     """Build a bare receiver namespace for driving _handle_playback_state."""
+    mass = MagicMock()
+    mass.players.get_audio_source_session.return_value = SimpleNamespace(
+        playback_session_id="playback-session"
+    )
     return SimpleNamespace(
+        instance_id="ariacast_receiver--test",
         _is_playing=True,
         _in_use_by_player=owner,
         _active_player_id=active_player_id,
         _get_target_player_id=MagicMock(return_value=None),
         _safe_play_media=AsyncMock(),
         _broadcast_meta=AsyncMock(),
-        mass=MagicMock(),
+        mass=mass,
         logger=MagicMock(),
     )
 
@@ -133,7 +138,12 @@ async def test_the_sender_stopping_gives_the_source_back_to_its_owner() -> None:
 
     await _playback(receiver, False)
 
-    receiver.mass.players.deselect_source.assert_called_once_with("owner-player")
+    receiver.mass.players.deselect_source.assert_called_once_with(
+        "owner-player",
+        provider_instance_id=receiver.instance_id,
+        source_id=AUDIO_SOURCE_ID,
+        playback_session_id="playback-session",
+    )
     assert receiver._in_use_by_player is None
 
 
