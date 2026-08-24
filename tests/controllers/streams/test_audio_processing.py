@@ -401,6 +401,36 @@ def test_clearing_live_source_processing_removes_the_snapshot() -> None:
     mass.players.trigger_player_update.assert_called_once_with("source-player")
 
 
+def test_live_source_outputs_follow_current_group_members() -> None:
+    """A departed group member is removed from the live source output snapshot."""
+    manager, mass, source_session, lossless_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        shared_player_ids={"player-2"},
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+    mass.players.trigger_player_update.reset_mock()
+
+    manager.retain_outputs("source-player", {"player-1"})
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert len(details.outputs) == 1
+    assert details.outputs[0].player_ids == ["player-1"]
+    mass.players.trigger_player_update.assert_called_once_with("source-player")
+
+
 def test_shared_output_adds_member_without_stream_restart() -> None:
     """A late native-sync member inherits the active shared output path."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()

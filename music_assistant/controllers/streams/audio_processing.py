@@ -318,42 +318,33 @@ class AudioProcessingManager:
 
     def retain_outputs(self, queue_id: str, player_ids: set[str]) -> bool:
         """
-        Reconcile outputs with players attached to a queue.
+        Reconcile processing outputs with the current playback destinations.
 
         :param queue_id: Queue identifier.
         :param player_ids: Player identifiers that belong to the output.
         :return: Whether reconciliation published an updated current chain.
         """
-        session = self._sessions.get(queue_id)
-        if session is None:
-            return False
-        changed = False
-        for queue_item_id, outputs in list(session.outputs.items()):
-            retained = {
-                player_id: output
-                for player_id, output in outputs.items()
-                if player_id in player_ids
-            }
-            if template := session.shared_output_templates.get(queue_item_id):
-                added_player_ids = player_ids - retained.keys()
-                if queue_id not in outputs:
-                    added_player_ids.discard(queue_id)
-                for player_id in sorted(added_player_ids):
-                    retained[player_id] = deepcopy(template)
-                    retained[player_id].details.player_ids = [player_id]
-            if retained == outputs:
-                continue
-            changed = True
-            if retained:
-                session.outputs[queue_item_id] = retained
-            else:
-                del session.outputs[queue_item_id]
-                session.shared_output_templates.pop(queue_item_id, None)
-        if not changed:
-            return False
-        current_changed = self._publish_all(queue_id, session)
-        if current_changed:
-            self.mass.player_queues.signal_update(queue_id)
+        queue_session = self._sessions.get(queue_id)
+        queue_changed = queue_session is not None and self._retain_session_outputs(
+            queue_session,
+            queue_id,
+            player_ids,
+        )
+        source_session = self._source_sessions.get(queue_id)
+        source_changed = source_session is not None and self._retain_session_outputs(
+            source_session,
+            queue_id,
+            player_ids,
+        )
+        current_changed = False
+        if queue_changed:
+            assert queue_session is not None
+            current_changed = self._publish_all(queue_id, queue_session)
+            if current_changed:
+                self.mass.player_queues.signal_update(queue_id)
+        if source_changed:
+            assert source_session is not None
+            self._publish_source(queue_id, source_session)
         return current_changed
 
     def clear_source(
@@ -454,6 +445,37 @@ class AudioProcessingManager:
         processing = _AudioSourceProcessingSession(session_id=session_id)
         self._source_sessions[player_id] = processing
         return processing
+
+    @staticmethod
+    def _retain_session_outputs(
+        session: _AudioProcessingSession | _AudioSourceProcessingSession,
+        owner_id: str,
+        player_ids: set[str],
+    ) -> bool:
+        """Reconcile one processing session with its current destinations."""
+        changed = False
+        for queue_item_id, outputs in list(session.outputs.items()):
+            retained = {
+                player_id: output
+                for player_id, output in outputs.items()
+                if player_id in player_ids
+            }
+            if template := session.shared_output_templates.get(queue_item_id):
+                added_player_ids = player_ids - retained.keys()
+                if owner_id not in outputs:
+                    added_player_ids.discard(owner_id)
+                for player_id in sorted(added_player_ids):
+                    retained[player_id] = deepcopy(template)
+                    retained[player_id].details.player_ids = [player_id]
+            if retained == outputs:
+                continue
+            changed = True
+            if retained:
+                session.outputs[queue_item_id] = retained
+            else:
+                del session.outputs[queue_item_id]
+                session.shared_output_templates.pop(queue_item_id, None)
+        return changed
 
     @staticmethod
     def _update_session_dsp_preset(
