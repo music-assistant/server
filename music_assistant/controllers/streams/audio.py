@@ -3911,8 +3911,8 @@ class StreamsAudio:
         Select the crossfade this boundary can carry.
 
         The configured mode picks the fade; the held-back outgoing tail sizes its
-        window, up to that mode's ceiling. Too short a tail to blend at all means no
-        fade rather than a different one.
+        window, up to that mode's ceiling and to what the incoming track can supply.
+        Too short a tail to blend at all means no fade rather than a different one.
 
         :param streamdetails: Incoming track stream details.
         :param crossfade_mode: Requested crossfade mode.
@@ -3938,6 +3938,10 @@ class StreamsAudio:
             else standard_crossfade_duration,
             fade_out_seconds,
         )
+        if streamdetails.duration:
+            # a short incoming track cannot supply a long overlap, and blending into
+            # more than half of it would leave the listener no clean part of it
+            window = min(window, streamdetails.duration / 2)
         if window < MIN_CROSSFADE_DURATION:
             return CrossfadeMode.DISABLED, 0
         self.logger.debug(

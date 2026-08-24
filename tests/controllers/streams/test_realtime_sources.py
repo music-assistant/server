@@ -188,9 +188,9 @@ def _queue_item_with_mapping(media_item_cls: type) -> QueueItem:
     [
         pytest.param(True, False, None, MediaType.RADIO, 1, id="realtime_base"),
         pytest.param(True, False, None, MediaType.AUDIO_SOURCE, 1, id="realtime_audio_source"),
-        # the queue's crossfade setting buys nothing for a realtime source: MA's own
-        # crossfade is force-disabled for one, so a second of audio here would only
-        # be a second of extra startup delay
+        # the queue's crossfade setting buys nothing for a realtime source: its fade
+        # streams in as it arrives, so a second of audio here would only be a second
+        # of extra startup delay
         pytest.param(True, True, None, MediaType.TRACK, 1, id="realtime_crossfade"),
         pytest.param(
             True,
@@ -398,6 +398,22 @@ def test_the_held_tail_sizes_the_fade_the_configured_mode_picks() -> None:
         fade_out_seconds=20,
     )
     assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
+
+
+def test_a_short_incoming_track_caps_the_window() -> None:
+    """A long tail cannot claim more overlap than the next track can supply."""
+    audio = StreamsAudio(MagicMock())
+    streamdetails = _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True)
+    streamdetails.duration = 20
+
+    mode, duration = audio._select_buffered_crossfade(
+        streamdetails,
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=45,
+    )
+
+    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 10)
 
 
 def test_a_tail_too_short_to_blend_skips_the_fade() -> None:
