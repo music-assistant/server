@@ -272,6 +272,7 @@ class _RealtimeTailHold:
         self._audio_buffer = audio_buffer
         self._started: float | None = None
         self._content_bytes = 0
+        self._resident_at_anchor = 0.0
 
     def note_bytes(self, count: int) -> None:
         """
@@ -281,6 +282,11 @@ class _RealtimeTailHold:
         """
         if self._started is None:
             self._started = asyncio.get_event_loop().time()
+            # what the buffer already held is not new surplus: counting it would
+            # snap the hold to a lump the player pays for as an immediate stall
+            self._resident_at_anchor = (
+                self._audio_buffer.duration_available if self._audio_buffer is not None else 0.0
+            )
         self._content_bytes += count
 
     def hold_target(self, max_bytes: int, frame_size: int) -> int:
@@ -296,10 +302,17 @@ class _RealtimeTailHold:
         if audio_buffer is not None and audio_buffer.eof:
             # the source is done: everything left is resident, hold the full window
             return max_bytes
-        resident_seconds = audio_buffer.duration_available if audio_buffer is not None else 0.0
+        # net buffer change since the anchor: together with the bytes read, this
+        # is exactly what the source delivered since then, and delivery beyond
+        # the wall clock is the only audio that may be withheld
+        resident_delta = (
+            audio_buffer.duration_available - self._resident_at_anchor
+            if audio_buffer is not None
+            else 0.0
+        )
         elapsed = asyncio.get_event_loop().time() - self._started
         surplus_seconds = (
-            self._content_bytes / self._pcm_format.pcm_sample_size + resident_seconds - elapsed
+            self._content_bytes / self._pcm_format.pcm_sample_size + resident_delta - elapsed
         )
         # half the surplus: the other half keeps growing the player's lead, which
         # is what absorbs the source's own delivery wobble mid-track
