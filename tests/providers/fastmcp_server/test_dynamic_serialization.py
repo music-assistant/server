@@ -164,10 +164,11 @@ def test_bounded_json_value_matches_seeded_reference_policy() -> None:
                 len(value) > 3 or any(changed for _child, changed in list_children),
             )
         if isinstance(value, dict):
-            dict_children = {key: reference(child, depth - 1) for key, child in value.items()}
+            items = list(value.items())[:3]
+            dict_children = {key: reference(child, depth - 1) for key, child in items}
             return (
                 {key: child for key, (child, _changed) in dict_children.items()},
-                any(changed for _child, changed in dict_children.values()),
+                len(value) > 3 or any(changed for _child, changed in dict_children.values()),
             )
         return value, False
 
@@ -177,6 +178,17 @@ def test_bounded_json_value_matches_seeded_reference_policy() -> None:
         normalized = bounded_json_value(value, item_cap=3, string_cap=8, max_depth=4)
         assert normalized.value == expected_value
         assert normalized.truncated is expected_truncated
+
+
+def test_bounded_json_value_stops_mapping_traversal_at_the_item_cap() -> None:
+    """Wide mappings are not fully allocated before the byte-budget fallback."""
+    payload = {f"key-{index:03}": "x" * 20 for index in range(50)}
+
+    normalized = bounded_json_value(payload, item_cap=3, string_cap=8, max_depth=2)
+
+    assert isinstance(normalized.value, dict)
+    assert list(normalized.value) == ["key-000", "key-001", "key-002"]
+    assert normalized.truncated is True
 
 
 def test_bounded_json_value_truncates_long_strings_at_the_prefix() -> None:

@@ -107,6 +107,14 @@ def test_current_ma_read_commands_have_explicit_capabilities(
     }
 
 
+def test_track_preview_is_hard_denied() -> None:
+    """Provider preview URLs must not leave Music Assistant through MCP."""
+    decision = resolve_command_policy("music/tracks/preview", "library.read", None)
+
+    assert decision.hard_denied is True
+    assert decision.required_capabilities == frozenset()
+
+
 @pytest.mark.parametrize("scope", [None, "library.read", "system.read"])
 def test_unknown_command_fails_closed_instead_of_inheriting_scope(scope: str | None) -> None:
     """Upstream scope metadata alone cannot classify an unknown command family."""
@@ -157,11 +165,12 @@ def test_safe_queue_extension_keeps_destructive_annotation_and_capability() -> N
     assert decision.annotations["destructiveHint"] is True
 
 
-def test_player_queue_write_operations_require_edit_queue_permission() -> None:
-    """Saving a queue is an edit, not an untagged write-scope escape hatch."""
+def test_save_as_playlist_requires_the_playlist_edit_capability() -> None:
+    """Saving a queue as a playlist creates library playlists, not queue edits."""
     decision = resolve_command_policy("player_queues/save_as_playlist", "library.write", None)
 
-    assert decision.required_capabilities == frozenset({str(Capability.EDIT_QUEUE)})
+    assert decision.required_capabilities == frozenset({str(Capability.EDIT_PLAYLISTS)})
+    assert decision.hard_denied is False
 
 
 def test_required_and_alternative_capabilities_have_distinct_mode_semantics() -> None:

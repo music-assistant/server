@@ -583,9 +583,7 @@
     'music/tracks/library_items': list([
       'query:library',
     ]),
-    'music/tracks/preview': list([
-      'query:library',
-    ]),
+    'music/tracks/preview': 'hard-denied',
     'music/tracks/remove': list([
       'delete:library',
     ]),
@@ -668,7 +666,7 @@
       'control:playback',
     ]),
     'player_queues/save_as_playlist': list([
-      'edit:queue',
+      'edit:playlists',
     ]),
     'player_queues/seek': list([
       'control:playback',

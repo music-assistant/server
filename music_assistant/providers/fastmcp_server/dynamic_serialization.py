@@ -205,7 +205,10 @@ def _bounded_mapping(
     """Normalize mapping-like items while retaining their insertion order."""
     result: dict[str, JSONValue] = {}
     truncated = False
-    for key, child in items:
+    for index, (key, child) in enumerate(items):
+        if index >= item_cap:
+            truncated = True
+            break
         normalized_key, key_changed = _bounded_string(str(key), None)
         normalized, changed, _count = _bounded_json_value(
             child,

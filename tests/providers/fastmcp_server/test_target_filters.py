@@ -36,6 +36,12 @@ def _user(
         ("players/cmd/group_many", "child_player_ids", TargetKind.PLAYERS),
         ("players/cmd/set_members", "player_ids_to_add", TargetKind.PLAYERS),
         ("players/cmd/set_members", "player_ids_to_remove", TargetKind.PLAYERS),
+        ("players/create_group_player", "members", TargetKind.PLAYERS),
+        (
+            "audio_analysis/wave_form",
+            "provider_instance_id_or_domain",
+            TargetKind.MUSIC_PROVIDER,
+        ),
         (
             "music/albums/get",
             "provider_instance_id_or_domain",
@@ -53,6 +59,17 @@ def test_live_target_argument_variants_have_declarative_rules(
 
     assert rule is not None
     assert rule.kind is kind
+
+
+def test_create_group_player_members_are_checked() -> None:
+    """Group creation cannot pull in players outside the current user's filter."""
+    with pytest.raises(ToolError, match="not permitted"):
+        enforce_target_filters(
+            MagicMock(),
+            _user(),
+            "players/create_group_player",
+            {"provider": "playerprov", "name": "Kitchen", "members": ["kitchen", "bedroom"]},
+        )
 
 
 def test_player_sequences_are_checked_for_the_exact_command() -> None:

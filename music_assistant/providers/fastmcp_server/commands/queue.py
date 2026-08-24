@@ -16,7 +16,7 @@ async def remove_items_safe(mass: Any, queue_id: str, item_ids: list[str]) -> Re
         raise InvalidDataError("Provide at least one queue item id")
     queue = mass.player_queues.get(queue_id)
     if queue is None:
-        raise KeyError(f"Queue {queue_id!r} not found")
+        raise InvalidDataError(f"Queue {queue_id!r} not found")
 
     result = RemoveFromQueueResult()
     for item_id in item_ids:

@@ -107,7 +107,8 @@ async def test_current_ma_registry_is_capability_classified_or_explicitly_denied
         ):
             unclassified.append(command)
         if decision.hard_denied and not (
-            command.startswith("auth/") or command in {"dashboard/register", "dashboard/unregister"}
+            command.startswith("auth/")
+            or command in {"dashboard/register", "dashboard/unregister", "music/tracks/preview"}
         ):
             unexpectedly_denied.append(command)
         classifications[command] = (

@@ -76,5 +76,5 @@ async def test_remove_items_safe_requires_ids(mock_mass: MagicMock) -> None:
 async def test_remove_items_safe_rejects_unknown_queue(mock_mass: MagicMock) -> None:
     """Unknown queue ids fail before any deletion attempt."""
     mock_mass.player_queues.get.return_value = None
-    with pytest.raises(KeyError, match="q-missing"):
+    with pytest.raises(InvalidDataError, match="q-missing"):
         await remove_items_safe(mock_mass, "q-missing", ["a"])

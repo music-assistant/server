@@ -61,5 +61,5 @@ async def test_safe_remove_rejects_unknown_queue() -> None:
     mass = MagicMock()
     mass.player_queues.get.return_value = None
 
-    with pytest.raises(KeyError, match="'q1'"):
+    with pytest.raises(InvalidDataError, match="'q1'"):
         await remove_items_safe(mass, "q1", ["item"])

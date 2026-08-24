@@ -96,7 +96,9 @@ _SYSTEM_ANNOTATIONS = {
 }
 _DESTRUCTIVE_VERBS = frozenset({"clear", "delete", "remove", "reset", "revoke"})
 _SYSTEM_COMMAND_PREFIXES = ("audio_analysis/", "dashboard/", "logging/", "tasks/")
-_HARD_DENIED_COMMANDS = frozenset({"dashboard/register", "dashboard/unregister"})
+_HARD_DENIED_COMMANDS = frozenset(
+    {"dashboard/register", "dashboard/unregister", "music/tracks/preview"}
+)
 _HARD_DENIED_PREFIXES = ("auth/",)
 
 _PLAYBACK_COMMANDS = frozenset(
@@ -272,6 +274,10 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
     "players/tts_engines": CommandDecision(
         _READ_ANNOTATIONS,
         frozenset({str(Capability.QUERY_PLAYERS)}),
+    ),
+    "player_queues/save_as_playlist": CommandDecision(
+        _CONTROL_ANNOTATIONS,
+        frozenset({str(Capability.EDIT_PLAYLISTS)}),
     ),
     "player_queues/delete_item": _destructive_write(Capability.DELETE_QUEUE),
     "player_queues/clear": _destructive_write(Capability.DELETE_QUEUE),

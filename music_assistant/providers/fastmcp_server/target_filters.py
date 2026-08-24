@@ -38,6 +38,7 @@ TARGET_RULES: tuple[TargetRule, ...] = (
     TargetRule("players/*", "player_ids", TargetKind.PLAYERS),
     TargetRule("players/*", "player_ids_to_add", TargetKind.PLAYERS),
     TargetRule("players/*", "player_ids_to_remove", TargetKind.PLAYERS),
+    TargetRule("players/*", "members", TargetKind.PLAYERS),
     # Queue ids are player ids in Music Assistant's authorization model.
     TargetRule("player_queues/*", "player_id", TargetKind.PLAYER),
     TargetRule("player_queues/*", "queue_id", TargetKind.PLAYER),
@@ -60,6 +61,7 @@ TARGET_RULES: tuple[TargetRule, ...] = (
     TargetRule("music/*", "provider_instance_id_or_domain", TargetKind.MUSIC_PROVIDER),
     TargetRule("music/*", "providers", TargetKind.MUSIC_PROVIDERS),
     TargetRule("music/*", "provider_instance_ids", TargetKind.MUSIC_PROVIDERS),
+    TargetRule("audio_analysis/*", "provider_instance_id_or_domain", TargetKind.MUSIC_PROVIDER),
 )
 
 
