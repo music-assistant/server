@@ -288,8 +288,8 @@ class YotoProvider(MusicProvider):
         if len(self.client.library) == 0:
             await self._handle_yoto_api_call(self.client.update_library())
 
-        if card_id in self.client.library:
-            return self.client.library[card_id]
+        # if card_id in self.client.library:
+        #    return self.client.library[card_id]
         await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
         card = self.client.library.get(card_id)
         if not card:
