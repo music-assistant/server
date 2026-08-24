@@ -64,7 +64,7 @@ def _feed_pipe_blocking(write_fd: int, payload: bytes) -> None:
         while view:
             written = os.write(write_fd, view[: 1024 * 1024])
             view = view[written:]
-    except BrokenPipeError, OSError:
+    except OSError:
         pass
     finally:
         os.close(write_fd)

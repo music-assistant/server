@@ -258,16 +258,16 @@ class _TailHold:
     # the player's supply must stay at least this far ahead of the wall clock
     _LEAD_RESERVE_S = 3.0
 
-    def __init__(self, pcm_format: AudioFormat, audio_buffer: AudioBuffer | None) -> None:
+    def __init__(self, pcm_format: AudioFormat, streamdetails: StreamDetails) -> None:
         """
         Initialize the tracker for one track's stream.
 
         :param pcm_format: PCM format of the stream's chunks.
-        :param audio_buffer: The track's source buffer, if any; its EOF releases
-            the full window.
+        :param streamdetails: Details of the track being streamed; its source buffer
+            is read at hold time, because opening the stream is what creates it.
         """
         self._pcm_format = pcm_format
-        self._audio_buffer = audio_buffer
+        self._streamdetails = streamdetails
         self._started: float | None = None
         self._last_noted = 0.0
         self._received_bytes = 0
@@ -299,7 +299,7 @@ class _TailHold:
         """
         if self._started is None:
             return 0
-        audio_buffer = self._audio_buffer
+        audio_buffer = cast("AudioBuffer | None", self._streamdetails.buffer)
         if audio_buffer is not None:
             if audio_buffer.has_error:
                 # a failed source is skipped without a fade, so its remaining audio
@@ -330,7 +330,7 @@ async def _incoming_overlap_stream(
         beyond the overlap are not lost (see ``overshoot``) and the stream itself
         stays open for the track's body.
     :param target_size: Exact number of overlap bytes to yield.
-    :param fed: Receives every yielded part, for the mixer-failure fallback.
+    :param fed: Receives every yielded part, so the caller can account for them.
     :param overshoot: Receives bytes read beyond the overlap (they open the body).
     """
     taken = 0
@@ -2013,11 +2013,7 @@ class StreamsAudio:
         # the holdback is grown out of the audio banked ahead of playback instead of
         # armed as one fixed window, so a source delivering near playback pace keeps
         # feeding the player
-        tail_hold = (
-            _TailHold(pcm_format, cast("AudioBuffer | None", streamdetails.buffer))
-            if crossfade_buffer_size > 0
-            else None
-        )
+        tail_hold = _TailHold(pcm_format, streamdetails) if crossfade_buffer_size > 0 else None
         async for chunk in self.get_queue_item_stream(
             queue_item,
             pcm_format,
@@ -2197,8 +2193,7 @@ class StreamsAudio:
                 )
                 # aclosing so an aborted stream tears the mix (and its feeder,
                 # which holds a read on the fade-in stream) down first
-                stack = aclosing(mix_stream)
-                async with stack:
+                async with aclosing(mix_stream):
                     async for mix_chunk in mix_stream:
                         if first_part_written < fadeout_share_bytes:
                             # split this chunk so A gets exactly fadeout_share_bytes
@@ -2576,9 +2571,7 @@ class StreamsAudio:
                 # of armed as one fixed window, so a source delivering near playback pace
                 # keeps feeding the player
                 tail_hold = (
-                    _TailHold(
-                        pcm_format, cast("AudioBuffer | None", queue_track.streamdetails.buffer)
-                    )
+                    _TailHold(pcm_format, queue_track.streamdetails)
                     if item_crossfade_mode != CrossfadeMode.DISABLED
                     else None
                 )

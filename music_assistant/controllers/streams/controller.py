@@ -840,8 +840,6 @@ class StreamsController(CoreController):
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
                 session_id=session_id,
-                # a crossfade the source performs itself is never mixed here, so it
-                # is reported apart from the mode that drives our own mixer
             )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
