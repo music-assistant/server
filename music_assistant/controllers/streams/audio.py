@@ -2052,11 +2052,15 @@ class StreamsAudio:
             if len(buffer) <= hold_target:
                 await asyncio.sleep(0)
                 continue
-            # yield everything above the current holdback window
+            # yield everything above the current holdback window; the slice can
+            # run short of a whole second when the window is small, so credit
+            # what is actually yielded - a nominal full-second credit inflates
+            # the play log and the reported duration
             while len(buffer) > hold_target:
-                yield bytes(buffer[: pcm_format.pcm_sample_size])
-                bytes_written += pcm_format.pcm_sample_size
-                del buffer[: pcm_format.pcm_sample_size]
+                pcm_slice = bytes(buffer[: pcm_format.pcm_sample_size])
+                yield pcm_slice
+                bytes_written += len(pcm_slice)
+                del buffer[: len(pcm_slice)]
                 await asyncio.sleep(0)
 
         #### HANDLE END OF TRACK
@@ -2804,11 +2808,16 @@ class StreamsAudio:
                             crossfade_buffer = bytearray()
                             warmup_bytes = 0
 
-                        # yield everything above the current holdback window
+                        # yield everything above the current holdback window; the
+                        # slice can run short of a whole second when the window is
+                        # small, so credit what is actually yielded - a nominal
+                        # full-second credit inflates the play log and pins the
+                        # queue's position mapping to the wrong track
                         while len(crossfade_buffer) > hold_target:
-                            yield bytes(crossfade_buffer[:pcm_sample_size])
-                            bytes_written += pcm_sample_size
-                            del crossfade_buffer[:pcm_sample_size]
+                            pcm_slice = bytes(crossfade_buffer[:pcm_sample_size])
+                            yield pcm_slice
+                            bytes_written += len(pcm_slice)
+                            del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
 
                 # A source error after partial audio must not look like a completed item.
