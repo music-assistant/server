@@ -541,8 +541,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     return session, item
                 if not seek_position and (pending := session.pending_item(spotify_uri)) is not None:
                     # skipped to the item that was fed next: the engine can jump
-                    # there itself, which keeps the session and its crossfade
-                    # instead of paying a whole respawn
+                    # there itself, which keeps the session instead of paying a
+                    # whole respawn
                     # claimed only once the engine is there: a refused skip
                     # would otherwise leave the channel claimed for good, and
                     # the session busy and unable to expire
@@ -773,8 +773,8 @@ class _SoloistSession:
         """
         Return the channel of an item that was fed but has not started yet.
 
-        The engine can be told to jump to it, which keeps the session (and its
-        crossfade) instead of paying a fresh spawn.
+        The engine can be told to jump to it, which keeps the session instead of
+        paying a fresh spawn.
 
         :param spotify_uri: The canonical Spotify URI to check.
         """
@@ -1669,9 +1669,9 @@ class _SoloistSession:
         Follow the engine to the item it reports as current, cutting the previous one.
 
         The cut lands wherever the engine says it moved on: an item's stream
-        carries whatever was read up to that point (including the head of a
-        crossfade) and the next item's stream continues from there, so the two
-        together still reproduce the session's audio exactly.
+        carries whatever was read up to that point and the next item's stream
+        continues from there, so the two together still reproduce the session's
+        audio exactly.
         """
         current = self._current
         if current is not None and current.uri == uri:
@@ -1898,9 +1898,9 @@ class _ItemAudio:
         Return whether the engine reported this item played (nearly) to its end.
 
         Tells a run that genuinely finished apart from someone pausing in the
-        Spotify app part-way through the last track. No crossfade allowance:
-        this judges the run's *last* item, which crossfades into nothing (see
-        ``mid_play``, which judges a boundary and therefore needs one).
+        Spotify app part-way through the last track. Where ``mid_play`` judges a
+        boundary the engine drove, this judges the run's *last* item, which no
+        boundary follows.
         """
         if self.duration_ms is None or self.last_position_ms is None:
             # nothing to judge by: treat a stop as the end rather than hanging
@@ -1913,10 +1913,10 @@ class _ItemAudio:
         Return whether the engine is part-way through this item.
 
         Distinguishes the engine being pulled off an item from it moving on at
-        the item's own end, which is an ordinary boundary — and with crossfade
-        that boundary falls a crossfade short of the duration. Answers False
-        whenever there is nothing to judge by, so an unknown position is never
-        read as an interruption.
+        the item's own end, which is an ordinary boundary — one the engine reaches
+        within the usual tolerance of the item's duration. Answers False whenever
+        there is nothing to judge by, so an unknown position is never read as an
+        interruption.
         """
         if not self.started.is_set() or self._closed or self.draining:
             return False
