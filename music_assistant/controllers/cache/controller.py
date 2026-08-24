@@ -207,6 +207,54 @@ class CacheController(CoreController):
                 return data, is_fresh, True
         return None, False, False
 
+    async def get_all(
+        self,
+        provider: str = "default",
+        category: int = 0,
+        base_class: Any = None,
+    ) -> dict[str, Any]:
+        """
+        Return every non-expired cache entry for a provider/category as a key -> data mapping.
+
+        Use this instead of many individual :meth:`get` calls when a caller needs to check a
+        large number of keys against the cache at once (e.g. while scanning a whole library),
+        since it issues a single query rather than one per key.
+
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param base_class: If provided, reconstruct each entry using base_class.from_dict().
+        """
+        assert self.database is not None
+        cur_time = int(time.time())
+        rows = await self.database.get_rows_from_query(
+            f"SELECT key, data FROM {DB_TABLE_CACHE} "
+            "WHERE category = :category AND provider = :provider AND expires >= :cur_time",
+            {"category": category, "provider": provider, "cur_time": cur_time},
+            limit=0,
+        )
+        result: dict[str, Any] = {}
+        for row in rows:
+            try:
+                data = await async_json_loads(row["data"])
+            except Exception as exc:
+                LOGGER.error(
+                    "Error parsing cache data for %s/%s/%s: %s",
+                    provider,
+                    category,
+                    row["key"],
+                    str(exc),
+                    exc_info=exc if self.logger.isEnabledFor(10) else None,
+                )
+                continue
+            if base_class is not None and data is not None:
+                data = (
+                    [base_class.from_dict(item) for item in data]
+                    if isinstance(data, list)
+                    else base_class.from_dict(data)
+                )
+            result[row["key"]] = data
+        return result
+
     async def get_expiration(
         self,
         key: str,

@@ -46,42 +46,114 @@ async def test_unchanged_metadata_file_is_ignored() -> None:
     """A metadata file whose token still matches its cache entry queues nothing."""
     provider = _provider()
     meta = _item("Artist/Album/album.nfo", checksum="1")
-    provider.cache.get = AsyncMock(return_value={"token": "1", "track": "Artist/Album/t1.mp3"})
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
-    await provider._queue_changed_metadata_files([meta], {}, items_to_process)
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
 
     assert items_to_process == []
+
+
+async def test_registrations_are_bulk_loaded_once() -> None:
+    """Many metadata files trigger a single bulk cache load, not one lookup per file."""
+    provider = _provider()
+    provider.cache.get_all = AsyncMock(return_value={})
+    provider.cache.get = AsyncMock(side_effect=AssertionError("should not be called per-file"))
+    metadata_files = [_item(f"Artist/Album{i}/album.nfo") for i in range(25)]
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+
+    await provider._queue_changed_metadata_files(metadata_files, {}, {}, items_to_process)
+
+    provider.cache.get_all.assert_awaited_once_with(
+        provider=INSTANCE_ID, category=CACHE_CATEGORY_METADATA_FILE
+    )
+    provider.cache.get.assert_not_called()
 
 
 async def test_changed_nfo_queues_representative_track() -> None:
     """A changed NFO's registered representative track is queued for reparsing."""
     provider = _provider()
     meta = _item("Artist/Album/album.nfo", checksum="2")
-    provider.cache.get = AsyncMock(return_value={"token": "1", "track": "Artist/Album/t1.mp3"})
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
     track_item = _item("Artist/Album/t1.mp3")
     provider.resolve = AsyncMock(return_value=track_item)
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
     await provider._queue_changed_metadata_files(
-        [meta], {"Artist/Album/t1.mp3": "abc"}, items_to_process
+        [meta], {"Artist/Album/t1.mp3": "abc"}, {}, items_to_process
     )
 
     assert items_to_process == [(track_item, "abc")]
 
 
-async def test_changed_image_queues_representative_track() -> None:
-    """A changed recognized folder image queues its representative track too."""
+async def test_changed_image_queues_representative_track_and_invalidates_it() -> None:
+    """A changed recognized folder image queues its representative and its own image cache."""
     provider = _provider()
     meta = _item("Artist/Album/folder.jpg", checksum="2")
-    provider.cache.get = AsyncMock(return_value={"token": "1", "track": "Artist/Album/t1.mp3"})
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/folder.jpg": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
     track_item = _item("Artist/Album/t1.mp3")
     provider.resolve = AsyncMock(return_value=track_item)
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
-    await provider._queue_changed_metadata_files([meta], {}, items_to_process)
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
 
     assert items_to_process == [(track_item, None)]
+    # the image itself keeps its (provider, path) identity, so its own cached thumbnail/source
+    # bytes must be invalidated directly: invalidating only the representative track is not
+    # enough since the track's path is never the image's path
+    provider.mass.metadata.invalidate_image_cache.assert_awaited_once_with(
+        INSTANCE_ID, "Artist/Album/folder.jpg"
+    )
+
+
+async def test_changed_nfo_does_not_invalidate_image_cache() -> None:
+    """A changed NFO (not an image) never triggers an image cache invalidation."""
+    provider = _provider()
+    meta = _item("Artist/Album/album.nfo", checksum="2")
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
+    provider.resolve = AsyncMock(return_value=_item("Artist/Album/t1.mp3"))
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+
+    provider.mass.metadata.invalidate_image_cache.assert_not_awaited()
+
+
+async def test_changed_metadata_file_for_cue_album_uses_cue_checksum_for_overwrite() -> None:
+    """
+    A CUE sheet queued as a representative gets its previous checksum from CUE tracking.
+
+    A CUE sheet's own path is never a key in `file_checksums` (only its synthetic per-track
+    ids are), so the CUE-specific checksum map must be consulted instead; otherwise the
+    reparse would look like a brand new import and skip overwriting the existing album.
+    """
+    provider = _provider()
+    meta = _item("Artist/Album/album.nfo", checksum="2")
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/album.cue"}}
+    )
+    cue_item = _item("Artist/Album/album.cue")
+    provider.resolve = AsyncMock(return_value=cue_item)
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+
+    await provider._queue_changed_metadata_files(
+        [meta],
+        {},  # file_checksums: no direct entry for a CUE sheet's own path
+        {"Artist/Album/album.cue": {"cksum-a", "cksum-b"}},
+        items_to_process,
+    )
+
+    assert items_to_process == [(cue_item, "cksum-a")]  # min() of the tracked set
 
 
 async def test_two_changed_metadata_files_dedupe_to_one_track() -> None:
@@ -89,16 +161,18 @@ async def test_two_changed_metadata_files_dedupe_to_one_track() -> None:
     provider = _provider()
     nfo = _item("Artist/Album/album.nfo", checksum="2")
     img = _item("Artist/Album/folder.jpg", checksum="9")
-    cached = {
-        "Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"},
-        "Artist/Album/folder.jpg": {"token": "8", "track": "Artist/Album/t1.mp3"},
-    }
-    provider.cache.get = AsyncMock(side_effect=lambda key, **_kwargs: cached[key])
+    provider.cache.get_all = AsyncMock(
+        return_value={
+            "Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"},
+            "Artist/Album/folder.jpg": {"token": "8", "track": "Artist/Album/t1.mp3"},
+        }
+    )
     track_item = _item("Artist/Album/t1.mp3")
     provider.resolve = AsyncMock(return_value=track_item)
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
-    await provider._queue_changed_metadata_files([nfo, img], {}, items_to_process)
+    await provider._queue_changed_metadata_files([nfo, img], {}, {}, items_to_process)
 
     assert len(items_to_process) == 1
     assert items_to_process[0][0] is track_item
@@ -108,12 +182,14 @@ async def test_track_already_changed_is_not_duplicated() -> None:
     """A representative already queued (its own content changed) is not queued twice."""
     provider = _provider()
     meta = _item("Artist/Album/album.nfo", checksum="2")
-    provider.cache.get = AsyncMock(return_value={"token": "1", "track": "Artist/Album/t1.mp3"})
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
     provider.resolve = AsyncMock()
     existing = (_item("Artist/Album/t1.mp3"), "old")
     items_to_process: list[tuple[FileSystemItem, str | None]] = [existing]
 
-    await provider._queue_changed_metadata_files([meta], {}, items_to_process)
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
 
     assert items_to_process == [existing]
     provider.resolve.assert_not_awaited()
@@ -123,10 +199,10 @@ async def test_cache_miss_is_ignored() -> None:
     """A metadata file with no cache entry (new/untracked) queues nothing."""
     provider = _provider()
     meta = _item("Artist/Album/album.nfo")
-    provider.cache.get = AsyncMock(return_value=None)
+    provider.cache.get_all = AsyncMock(return_value={})
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
-    await provider._queue_changed_metadata_files([meta], {}, items_to_process)
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
 
     assert items_to_process == []
 
@@ -135,12 +211,14 @@ async def test_missing_representative_track_defers() -> None:
     """A representative track that no longer resolves is skipped, not raised or written."""
     provider = _provider()
     meta = _item("Artist/Album/album.nfo", checksum="2")
-    provider.cache.get = AsyncMock(return_value={"token": "1", "track": "Artist/Album/gone.mp3"})
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/gone.mp3"}}
+    )
     provider.resolve = AsyncMock(side_effect=FileNotFoundError())
     provider.cache.set = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
 
-    await provider._queue_changed_metadata_files([meta], {}, items_to_process)
+    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
 
     assert items_to_process == []
     provider.cache.set.assert_not_awaited()  # old token kept, so a later sync retries
@@ -257,3 +335,65 @@ async def test_parse_artist_does_not_register_when_nfo_read_fails() -> None:
         )
 
     provider.cache.set.assert_not_awaited()
+
+
+async def test_parse_artist_does_not_register_on_malformed_nfo() -> None:
+    """
+    Malformed (but readable) artist.nfo XML is warned about, not registered as handled.
+
+    Registering here would advance the token and make the malformed edit look already
+    processed, so the same broken file would never be retried once it is eventually fixed.
+    """
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider.exists = AsyncMock(return_value=True)
+    provider._read_file = AsyncMock(return_value=b"not xml at all <<<")
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.cache.set = AsyncMock()
+
+    artist = await provider._parse_artist(
+        "Name", artist_path="Artist", representative_track="Artist/Album/t1.mp3"
+    )
+
+    assert artist is not None  # the malformed NFO is only warned about, not fatal
+    meta_calls = [
+        call
+        for call in provider.cache.set.await_args_list
+        if call.kwargs.get("category") == CACHE_CATEGORY_METADATA_FILE
+    ]
+    assert meta_calls == []
+
+
+async def test_parse_album_does_not_register_on_malformed_nfo() -> None:
+    """Malformed (but readable) album.nfo XML is warned about, not registered as handled."""
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    provider.exists = AsyncMock(return_value=True)
+    provider._read_file = AsyncMock(return_value=b"not xml at all <<<")
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    provider.cache.get = AsyncMock(return_value=None)
+    provider.cache.set = AsyncMock()
+    provider._resolve_artists_with_mbids = AsyncMock(return_value=[])
+    provider.config.get_value = MagicMock(return_value="various_artists")
+
+    tags = MagicMock(
+        album="My Album",
+        album_artists=[],
+        album_sort=None,
+        barcode=None,
+        musicbrainz_albumid=None,
+        musicbrainz_releasegroupid=None,
+        year=None,
+        album_type=None,
+        filename="track.mp3",
+    )
+    album = await provider._parse_album(track_path="Artist/Album/t1.mp3", track_tags=tags)
+
+    assert album is not None
+    meta_calls = [
+        call
+        for call in provider.cache.set.await_args_list
+        if call.kwargs.get("category") == CACHE_CATEGORY_METADATA_FILE
+    ]
+    assert meta_calls == []

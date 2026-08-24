@@ -189,9 +189,10 @@ CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
 # folder image); derivative and non-authoritative, so a cache miss is simply ignored
 CACHE_CATEGORY_METADATA_FILE: Final[int] = 9
 
-# how long a local metadata file's registered token is remembered for; long-lived since it is
-# only ever refreshed by actually reading the file again, not on a timer
-METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 30  # 30 days
+# a registration is only ever refreshed by actually reading the file again, never on a timer,
+# so it must not expire under normal operation: an infrequently-touched item (an unchanged NFO
+# for months) would otherwise silently fall back to "untracked" once the entry expired
+METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for the provider's life
 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this

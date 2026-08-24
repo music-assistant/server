@@ -136,6 +136,7 @@ from .helpers import (
     get_artist_dir,
     get_folder_signature,
     get_relative_path,
+    is_image_file,
     is_metadata_file,
     recursive_iter,
     sorted_scandir,
@@ -519,7 +520,7 @@ class LocalFileSystemProvider(MusicProvider):
                 return
             if metadata_files:
                 await self._queue_changed_metadata_files(
-                    metadata_files, file_checksums, items_to_process
+                    metadata_files, file_checksums, cue_file_checksums, items_to_process
                 )
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
@@ -1232,6 +1233,7 @@ class LocalFileSystemProvider(MusicProvider):
         self,
         metadata_files: list[FileSystemItem],
         file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         items_to_process: list[tuple[FileSystemItem, str | None]],
     ) -> None:
         """
@@ -1250,15 +1252,17 @@ class LocalFileSystemProvider(MusicProvider):
 
         :param metadata_files: Local metadata files collected by this sync's walk.
         :param file_checksums: Previously stored checksum per provider item id.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param items_to_process: The sync's changed/new items; receives queued representatives.
         """
+        # one bulk load instead of one query per metadata file, which otherwise would mean
+        # thousands of sequential cache reads on a large library every single sync
+        registrations = await self.cache.get_all(
+            provider=self.instance_id, category=CACHE_CATEGORY_METADATA_FILE
+        )
         queued_tracks = {item.relative_path for item, _ in items_to_process}
         for meta_item in metadata_files:
-            cached = await self.cache.get(
-                key=meta_item.relative_path,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_METADATA_FILE,
-            )
+            cached = registrations.get(meta_item.relative_path)
             if not cached:
                 continue
             if cached.get("token") == meta_item.metadata_change_token:
@@ -1276,7 +1280,20 @@ class LocalFileSystemProvider(MusicProvider):
             if track_item.is_dir:
                 continue
             queued_tracks.add(track_path)
-            items_to_process.append((track_item, file_checksums.get(track_path)))
+            if track_item.ext in CUE_EXTENSIONS:
+                # a CUE sheet's own checksum is not tracked under its path in file_checksums,
+                # only the synthetic per-track ids it expands into are
+                prev_checksum = min(cue_file_checksums.get(track_path, set()), default=None)
+            else:
+                prev_checksum = file_checksums.get(track_path)
+            items_to_process.append((track_item, prev_checksum))
+            if is_image_file(meta_item):
+                # a changed folder image keeps the same (provider, path) identity, so only
+                # invalidating the representative track's own image cache would leave any
+                # already-served thumbnail/source/palette cache entries for this image stale
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, meta_item.relative_path
+                )
 
     async def _register_metadata_file(
         self, item: FileSystemItem, representative_track: str | None
@@ -1301,6 +1318,9 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             category=CACHE_CATEGORY_METADATA_FILE,
             expiration=METADATA_FILE_CACHE_EXPIRATION,
+            # this is functional registration data the feature depends on, not a disposable
+            # cache: keep it out of a generic "clear cache" action
+            persistent=True,
         )
 
     def _set_available(self, available: bool) -> None:
@@ -2005,13 +2025,18 @@ class LocalFileSystemProvider(MusicProvider):
                     artist.metadata.description = description
                 if genre := info.get("genre"):
                     artist.metadata.genres = set(split_items(genre))
+                # only a successful parse counts as having read this NFO: registering on a
+                # malformed file would advance its token and treat the bad edit as handled,
+                # permanently masking it (until unrelated changes trigger a full reparse)
+                await self._register_metadata_file(
+                    await self.resolve(nfo_file), representative_track
+                )
             except (ExpatError, KeyError) as err:
                 self.logger.warning(
                     "Failed to parse artist NFO file %s: %s",
                     nfo_file,
                     str(err),
                 )
-            await self._register_metadata_file(await self.resolve(nfo_file), representative_track)
         # find local images
         if images := await self._get_local_images(
             artist_path, extra_thumb_names=("artist",), representative_track=representative_track
@@ -2362,7 +2387,11 @@ class LocalFileSystemProvider(MusicProvider):
         return sound_effect
 
     async def _parse_album(
-        self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
+        self,
+        track_path: str,
+        track_tags: AudioTags,
+        track_created_at: int | None = None,
+        representative_track: str | None = None,
     ) -> Album:
         """
         Parse Album metadata from Track tags.
@@ -2370,8 +2399,14 @@ class LocalFileSystemProvider(MusicProvider):
         :param track_path: Path to the track file.
         :param track_tags: Audio tags from the track.
         :param track_created_at: Creation timestamp of the track file (Unix epoch).
+        :param representative_track: The path to register for metadata-file change detection,
+            when it differs from `track_path` itself (a CUE sheet's tracks are parsed from their
+            companion audio file, but that companion is not a synced item on its own, so the CUE
+            sheet's own path is the one that must be re-queued when the album/artist folder's
+            NFO or images change). Defaults to `track_path`.
         """
         assert track_tags.album
+        representative_track = representative_track or track_path
         # work out if we have an album and/or disc folder
         # track_dir is the folder level where the tracks are located
         # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
@@ -2404,7 +2439,7 @@ class LocalFileSystemProvider(MusicProvider):
                     album_dir=album_dir,
                     sort_name=sort_name,
                     mbid=mbid,
-                    representative_track=track_path,
+                    representative_track=representative_track,
                 )
                 album_artists.append(artist)
         else:
@@ -2423,7 +2458,7 @@ class LocalFileSystemProvider(MusicProvider):
                         await self._parse_artist(
                             name=album_artist_str,
                             album_dir=album_dir,
-                            representative_track=track_path,
+                            representative_track=representative_track,
                         )
                     ]
                 )
@@ -2438,7 +2473,7 @@ class LocalFileSystemProvider(MusicProvider):
                         await self._parse_artist(
                             name=track_artist_str,
                             album_dir=album_dir,
-                            representative_track=track_path,
+                            representative_track=representative_track,
                         )
                         for track_artist_str in track_tags.artists
                     ]
@@ -2455,7 +2490,7 @@ class LocalFileSystemProvider(MusicProvider):
                         await self._parse_artist(
                             name=VARIOUS_ARTISTS_NAME,
                             mbid=VARIOUS_ARTISTS_MBID,
-                            representative_track=track_path,
+                            representative_track=representative_track,
                         )
                     ]
                 )
@@ -2516,17 +2551,22 @@ class LocalFileSystemProvider(MusicProvider):
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
                     parse_album_nfo(album, info["album"], nfo_file)
+                    # only a successful parse counts as having read this NFO: registering on a
+                    # malformed file would advance its token and treat the bad edit as handled,
+                    # permanently masking it (until unrelated changes trigger a full reparse)
+                    await self._register_metadata_file(
+                        await self.resolve(nfo_file), representative_track
+                    )
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",
                         nfo_file,
                         str(err),
                     )
-                await self._register_metadata_file(await self.resolve(nfo_file), track_path)
 
             # find local images
             if images := await self._get_local_images(
-                folder_path, extra_thumb_names=("album",), representative_track=track_path
+                folder_path, extra_thumb_names=("album",), representative_track=representative_track
             ):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)

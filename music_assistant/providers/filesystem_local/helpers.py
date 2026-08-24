@@ -251,6 +251,16 @@ def is_metadata_file(item: FileSystemItem) -> bool:
     return False
 
 
+def is_image_file(item: FileSystemItem) -> bool:
+    """
+    Return True when a recognized metadata file is a folder image rather than an NFO file.
+
+    :param item: The file to check; only meaningful for a file that :func:`is_metadata_file`
+        already accepted.
+    """
+    return item.ext is not None and item.ext.lower() in IMAGE_EXTENSIONS
+
+
 def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
     Return an order-independent digest of the given files' paths, mtimes and sizes.

@@ -149,9 +149,15 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
             if isinstance(item, Folder):
                 out.append((item.id, item.name, True, "folder", item.size))
                 continue
-            # quickXorHash is a stable content hash; not every file has one,
-            # so fall back to the size
-            checksum = item.hashes.quick_xor_hash or str(item.size)
+            # prefer a real content hash; quickXorHash is not always present (e.g. some
+            # business accounts only compute SHA1/SHA256), and no hash at all is possible for
+            # very large or still-processing files, in which case the size is the last resort
+            checksum = (
+                item.hashes.quick_xor_hash
+                or item.hashes.sha256_hash
+                or item.hashes.sha1_hash
+                or str(item.size)
+            )
             out.append((item.id, item.name, False, checksum, item.size))
         return out
 

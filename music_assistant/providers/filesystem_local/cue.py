@@ -238,6 +238,11 @@ class CueSheetHandler:
                 track_path=audio_relative_path,
                 track_tags=tags,
                 track_created_at=cue_item.created_at,
+                # the companion audio file is absorbed into CUE tracks and is never itself a
+                # synced item (its own sync entry is dropped, see sync_library's CUE-companion
+                # filter), so it cannot be re-queued for reparsing; register the CUE sheet's own
+                # path instead, since re-processing that path re-runs this same parse
+                representative_track=cue_item.relative_path,
             )
         else:
             logger.warning(
