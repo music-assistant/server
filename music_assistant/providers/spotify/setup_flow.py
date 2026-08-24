@@ -345,6 +345,7 @@ async def _choose_playback_backend(
                         ConfigValueOption(BACKEND_SOLOIST),
                         ConfigValueOption(BACKEND_LIBRESPOT),
                     ],
+                    expanded_options=True,
                 ),
             ],
             step_id="playback_backend",

@@ -47,6 +47,10 @@
       "options": {
         "soloist": "Spotify Soloist (official)",
         "librespot": "librespot (community)"
+      },
+      "option_descriptions": {
+        "soloist": "Spotify's official playback engine. It works with all Spotify accounts but requires a personal API key and a few extra setup steps.",
+        "librespot": "Simpler to set up and quicker to start, but relies on reverse-engineered Spotify internals and primarily works for accounts created before December 2024."
       }
     },
     "soloist_download_consent": {
@@ -115,7 +119,7 @@
     },
     "playback_backend": {
       "title": "Choose how Spotify audio is played",
-      "description": "Music Assistant can fetch Spotify audio in two ways:\n\n**Spotify Soloist (official)** — Spotify's official playback engine. Works with every account, including accounts created since December 2024, and supports Spotify's own crossfade between songs. It needs a personal API key and a few extra setup steps, and starting a queue or seeking takes a few seconds longer.\n\n**librespot (community)** — simpler to set up and quicker to start, but it relies on reverse-engineered Spotify internals and primarily works for accounts created before December 2024."
+      "description": "Music Assistant can use two different Spotify playback engines:"
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
