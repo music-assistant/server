@@ -1208,6 +1208,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     mass.player_queues.get.return_value = queue
     mass.player_queues.get_next_item.return_value = skipped_item
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.streams.get_source_crossfade_mode.return_value = CrossfadeMode.DISABLED
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()

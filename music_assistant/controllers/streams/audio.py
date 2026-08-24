@@ -15,7 +15,7 @@ import re
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterable
-from contextlib import aclosing, asynccontextmanager, nullcontext
+from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -182,6 +182,12 @@ WARMUP_DURATION = 8
 # Minimum overlap used when the full incoming crossfade buffer was not prepared.
 MIN_CROSSFADE_FALLBACK_DURATION = 5
 
+# Bounded wait at a boundary for a realtime incoming track to start delivering.
+# Its buffer only exists once its session produces audio, which happens around the
+# moment the outgoing track's audio ends; the wait trades a little of the player's
+# lead for the fade, and a source that never shows up loses only the fade.
+REALTIME_FADE_SOURCE_WAIT = 5.0
+
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
@@ -235,6 +241,44 @@ def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) ->
 def overlay_active(queue: PlayerQueue) -> bool:
     """Return True if the given queue has an audio overlay enabled and a source selected."""
     return queue.overlay_enabled and queue.overlay_source is not None
+
+
+async def _incoming_overlap_stream(
+    collected: bytes,
+    stream: AsyncGenerator[bytes],
+    target_size: int,
+    fed: list[bytes],
+    overshoot: bytearray,
+) -> AsyncGenerator[bytes]:
+    """
+    Yield exactly the incoming track's overlap: what is in hand, then the live stream.
+
+    :param collected: Overlap bytes already collected when the mix starts.
+    :param stream: The incoming track's stream, read further as needed; bytes read
+        beyond the overlap are not lost (see ``overshoot``) and the stream itself
+        stays open for the track's body.
+    :param target_size: Exact number of overlap bytes to yield.
+    :param fed: Receives every yielded part, for the mixer-failure fallback.
+    :param overshoot: Receives bytes read beyond the overlap (they open the body).
+    """
+    taken = 0
+    if collected:
+        part = collected[:target_size]
+        overshoot.extend(collected[target_size:])
+        fed.append(part)
+        taken = len(part)
+        yield part
+    while taken < target_size:
+        try:
+            next_chunk = await anext(stream)
+        except StopAsyncIteration:
+            return
+        remaining = target_size - taken
+        part = next_chunk[:remaining]
+        overshoot.extend(next_chunk[remaining:])
+        fed.append(part)
+        taken += len(part)
+        yield part
 
 
 class _IncomingFadePrefetcher:
@@ -299,7 +343,6 @@ class _IncomingFadePrefetcher:
             or next_item.queue_item_id == queue_item.queue_item_id
             or next_item.media_type != MediaType.TRACK
             or (streamdetails := next_item.streamdetails) is None
-            or streamdetails.is_realtime
             # without a duration the read below cannot be kept clear of the track's end
             or not streamdetails.duration
             or (audio_buffer := cast("AudioBuffer | None", streamdetails.buffer)) is None
@@ -1834,10 +1877,11 @@ class StreamsAudio:
 
         buffer = bytearray()
         bytes_written = 0
-        # calculate crossfade buffer size
+        # calculate crossfade buffer size; a realtime source never holds the smart
+        # window (45s of resident audio it cannot have), only the standard overlap
         crossfade_buffer_duration = (
             SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE and not streamdetails.is_realtime
             else standard_crossfade_duration
         )
         crossfade_buffer_duration = min(
@@ -1989,6 +2033,9 @@ class StreamsAudio:
                 next_sample_rate=next_pcm.sample_rate,
             )
             if crossfade_allowed:
+                # a realtime incoming track has audio to read only once its session
+                # produces; give it a bounded chance to show up
+                await self._await_realtime_fade_source(next_queue_item.streamdetails)
                 transition_mode, fade_in_buffer_duration = self._select_buffered_crossfade(
                     next_queue_item.streamdetails,
                     crossfade_mode,
@@ -2299,16 +2346,17 @@ class StreamsAudio:
                         queue.display_name,
                     )
                     continue
-                # a realtime source delivers at playback pace, so it has no audio to spare
-                # for an overlap in either direction - but one that crossfades its own
-                # playback still does that boundary itself, inside the audio it hands over
-                item_crossfade_mode = (
-                    CrossfadeMode.DISABLED
-                    if queue_track.streamdetails.is_realtime
-                    else crossfade_mode
-                )
+                # a source that crossfades its own playback does that boundary itself,
+                # inside the audio it hands over - only then does MA step aside; a
+                # realtime source without that gets a fade decided from what its
+                # boundary can actually deliver (see _select_buffered_crossfade)
                 item_source_crossfade_mode = self.mass.streams.get_source_crossfade_mode(
                     queue, queue_track
+                )
+                item_crossfade_mode = (
+                    CrossfadeMode.DISABLED
+                    if item_source_crossfade_mode != CrossfadeMode.DISABLED
+                    else crossfade_mode
                 )
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
@@ -2327,10 +2375,13 @@ class StreamsAudio:
                 track_playback_speed = cast(
                     "float", queue_track.extra_attributes.get("playback_speed", 1.0)
                 )
-                # calculate crossfade buffer size
+                # calculate crossfade buffer size; a realtime source never holds the
+                # smart window (45s of resident audio it cannot have), only the
+                # standard overlap
                 crossfade_buffer_duration = (
                     SMART_CROSSFADE_DURATION
                     if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                    and not queue_track.streamdetails.is_realtime
                     else standard_crossfade_duration
                 )
                 crossfade_buffer_duration = min(
@@ -2357,7 +2408,6 @@ class StreamsAudio:
                 # Build eagerly so seek_position is set before PlayLogEntry is appended —
                 # consumer-paced mix() would otherwise let the queue briefly report 0.
                 crossfade_smart_fade: SmartFade | None = None
-                collect_started = 0.0
                 collect_resident = 0.0
                 incoming_crossfade_size = crossfade_buffer_size
                 incoming_audio_buffer: AudioBuffer | None = None
@@ -2368,6 +2418,9 @@ class StreamsAudio:
                 if last_fadeout_part and last_streamdetails:
                     incoming_duration = 0.0
                     if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
+                        # a realtime incoming track has audio to read only once its
+                        # session produces; give it a bounded chance to show up
+                        await self._await_realtime_fade_source(queue_track.streamdetails)
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
                             item_crossfade_mode,
@@ -2394,9 +2447,6 @@ class StreamsAudio:
                         incoming_crossfade_size = (
                             incoming_crossfade_size // frame_size
                         ) * frame_size
-                        # no audio is emitted while the incoming overlap is collected, so a
-                        # slow collection here is heard as a gap at the transition
-                        collect_started = asyncio.get_event_loop().time()
                         collect_resident = incoming_audio_buffer.duration_available
                         applied_mode = transition_mode
                         build_started = asyncio.get_event_loop().time()
@@ -2531,13 +2581,12 @@ class StreamsAudio:
                                 standard_crossfade_duration,
                             )
 
-                        # smart fades enabled: accumulate chunks in crossfade buffer
+                        # accumulate chunks in the crossfade buffer: the outgoing tail
+                        # window, or (at a boundary) whatever of the incoming overlap
+                        # arrived before the mix starts
                         crossfade_buffer.extend(chunk)
                         del chunk
-                        required_buffer_size = (
-                            incoming_crossfade_size if last_fadeout_part else crossfade_buffer_size
-                        )
-                        if len(crossfade_buffer) < required_buffer_size:
+                        if not last_fadeout_part and len(crossfade_buffer) < crossfade_buffer_size:
                             await asyncio.sleep(0)
                             continue
                         # handle crossfade of previous track and new track
@@ -2548,28 +2597,41 @@ class StreamsAudio:
                             and last_play_log_entry is not None
                         ):
                             self.logger.debug(
-                                "Collected %.1fs of incoming audio for the transition into %s"
-                                " in %.1fs (%.1fs prefetched, %.1fs build,"
-                                " %.1fs was resident when it started)",
-                                len(crossfade_buffer) / pcm_sample_size,
+                                "Starting the transition into %s with %.1fs of its overlap"
+                                " in hand (%.1fs prefetched, %.1fs build,"
+                                " %.1fs was resident at the boundary)",
                                 queue_track.name,
-                                asyncio.get_event_loop().time() - collect_started,
+                                len(crossfade_buffer) / pcm_sample_size,
                                 prefetched_size / pcm_sample_size,
                                 build_seconds,
                                 collect_resident,
                             )
-                            fadein_part = bytes(crossfade_buffer[:incoming_crossfade_size])
-                            remaining_bytes = bytes(crossfade_buffer[incoming_crossfade_size:])
+                            # The mixer consumes the incoming overlap as it arrives and
+                            # emits the blend at that same pace, so the transition
+                            # streams instead of first collecting the whole overlap.
+                            # Everything handed to the mixer is kept for the
+                            # no-output fallback below.
+                            fed_to_mixer: list[bytes] = []
+                            overlap_overshoot = bytearray()
+                            overlap_stream = _incoming_overlap_stream(
+                                bytes(crossfade_buffer),
+                                item_stream,
+                                incoming_crossfade_size,
+                                fed_to_mixer,
+                                overlap_overshoot,
+                            )
+                            crossfade_buffer = bytearray()
                             try:
                                 crossfade_bytes_written = 0
                                 async for mix_chunk in self.smart_fades_mixer.mix(
                                     crossfade_smart_fade,
-                                    fade_in_part=fadein_part,
+                                    fade_in_part=overlap_stream,
                                     fade_out_part=last_fadeout_part,
                                     pcm_format=pcm_format,
                                 ):
                                     yield mix_chunk
                                     crossfade_bytes_written += len(mix_chunk)
+                                remaining_bytes = bytes(overlap_overshoot)
                             except Exception as mix_err:
                                 if crossfade_bytes_written:
                                     # partial mix already played — concat'd tail would duplicate audio
@@ -2586,7 +2648,7 @@ class StreamsAudio:
                                     await asyncio.sleep(0)
                                 # full tail was pre-counted and is now yielded as-is
                                 crossfade_bytes_written = 0
-                                remaining_bytes = bytes(crossfade_buffer)
+                                remaining_bytes = b"".join(fed_to_mixer) + bytes(overlap_overshoot)
                                 # mix failed — undo the eager seek_position
                                 queue_track.streamdetails.seek_position = raw_seek_position
                             if crossfade_bytes_written:
@@ -3661,13 +3723,19 @@ class StreamsAudio:
         :param tail_seconds: Length of the tail to hold back, in seconds of playback.
         :param playback_speed: Playback-speed multiplier of the track.
         """
-        if tail_seconds <= 0 or playback_speed <= 0 or streamdetails.is_realtime:
+        if tail_seconds <= 0 or playback_speed <= 0:
             return False
         audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
         if audio_buffer is None or audio_buffer.has_error:
             # a failed source is skipped without a fade, so its remaining audio is
             # better off played out than held back for one
             return False
+        if streamdetails.is_realtime:
+            # a realtime source delivers at playback pace, so holding a tail back
+            # while it is still producing would starve the player; once it is done
+            # (which its overpaced read reaches ahead of the player) the remaining
+            # audio is resident and the tail comes for free
+            return audio_buffer.eof
         # While the source is still delivering, it is what limits playback: withholding
         # a tail on top of that eats into the lead the player needs. Once the source is
         # done the remaining audio is resident, so the tail comes for free. A buffer that
@@ -3713,6 +3781,29 @@ class StreamsAudio:
             alters_audio=queue_item.streamdetails.fade_in,
         )
 
+    async def _await_realtime_fade_source(self, streamdetails: StreamDetails) -> None:
+        """
+        Give a realtime incoming track a bounded chance to start delivering.
+
+        :param streamdetails: Stream details of the incoming (fade-in) track.
+        """
+        if not streamdetails.is_realtime:
+            return
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + REALTIME_FADE_SOURCE_WAIT
+        while True:
+            audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
+            if audio_buffer is not None:
+                if audio_buffer.has_error:
+                    return
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(audio_buffer.ready.wait(), deadline - loop.time())
+                return
+            if loop.time() >= deadline:
+                return
+            # the buffer appears when the source's session starts producing
+            await asyncio.sleep(0.1)
+
     def _select_buffered_crossfade(
         self,
         streamdetails: StreamDetails,
@@ -3733,14 +3824,26 @@ class StreamsAudio:
         if (
             crossfade_mode == CrossfadeMode.DISABLED
             or playback_speed <= 0
-            # a realtime source has no more than its banked lead: fading in would spend
-            # that at the start of the track and leave nothing for the rest of it
-            or streamdetails.is_realtime
             or audio_buffer is None
             or audio_buffer.has_error
             or not audio_buffer.is_valid()
         ):
             return CrossfadeMode.DISABLED, 0
+
+        if streamdetails.is_realtime:
+            # A realtime source cannot bank the whole overlap up front, but it does
+            # not have to: the mix streams, so the blend flows at the source's own
+            # (overpaced) delivery rate. The resident audio only has to prove the
+            # source is actually delivering; a source that is not there yet means
+            # this boundary simply plays without a fade. Smart fades need their
+            # full analysis window resident, so a realtime source always gets the
+            # standard overlap.
+            if (
+                not audio_buffer.ready.is_set()
+                or standard_crossfade_duration < MIN_CROSSFADE_FALLBACK_DURATION
+            ):
+                return CrossfadeMode.DISABLED, 0
+            return CrossfadeMode.STANDARD_CROSSFADE, standard_crossfade_duration
 
         available_seconds = audio_buffer.duration_available / playback_speed
         if (

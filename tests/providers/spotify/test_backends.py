@@ -99,61 +99,38 @@ def test_only_the_soloist_backend_declares_normalized_audio() -> None:
     assert prov.delivers_normalized_audio(_streamdetails()) is False
 
 
-def test_only_the_soloist_backend_can_declare_crossfaded_audio() -> None:
+def test_no_backend_declares_crossfaded_audio() -> None:
     """
-    Librespot fetches every track on its own, so it has nothing to fade into.
+    Music Assistant mixes the queue's crossfade itself on either backend.
 
-    With no soloist session running yet there is nothing to report either, and the
-    queue's own setting answers instead.
+    Librespot fetches every track on its own, and the soloist engine is spawned
+    with its own crossfade off, so no delivered audio ever carries an overlap.
     """
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     prov.backend = SoloistBackend(prov)
-    assert prov.delivers_crossfaded_audio(_streamdetails()) is None
+    assert prov.delivers_crossfaded_audio(_streamdetails()) is False
     prov.backend = LibrespotBackend(prov)
     assert prov.delivers_crossfaded_audio(_streamdetails()) is False
 
 
-@pytest.mark.parametrize("expected", [True, False])
-def test_a_running_session_answers_for_the_boundary_it_is_asked_about(
-    expected: bool,
-) -> None:
-    """
-    The engine reads the crossfade once, at spawn, so the session answers for itself.
-
-    Following the current setting instead would claim a fade the running engine is
-    not applying, or deny the one it still is.
-    """
-    prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
-    backend = SoloistBackend(prov)
-    prov.backend = backend
-    streamdetails = _streamdetails(queue_id="queue-1")
-    backend._session = _session(queue_id="queue-1", fades=expected)
-
-    assert backend.session_crossfades(streamdetails) is expected
-    assert prov.delivers_crossfaded_audio(streamdetails) is expected
-
-
 @pytest.mark.parametrize("normalizes", [True, False])
-def test_another_queues_session_answers_for_neither_hook(normalizes: bool) -> None:
+def test_another_queues_session_does_not_answer_for_normalization(normalizes: bool) -> None:
     """
     A session serves one queue, so it says nothing about an item played on another.
 
-    Reading it anyway would hand the asking queue the other one's answers: MA
+    Reading it anyway would hand the asking queue the other one's answer: MA
     normalization applied on top of the engine's, or skipped when nobody applies it.
     """
     prov = _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
     cast("MagicMock", prov.config).get_value = MagicMock(return_value=normalizes)
     backend = SoloistBackend(prov)
     prov.backend = backend
-    backend._session = _session(queue_id="queue-1", fades=True, normalizes=not normalizes)
+    backend._session = _session(queue_id="queue-1", normalizes=not normalizes)
     other_queue = _streamdetails(queue_id="queue-2")
 
     assert backend.session_normalizes(other_queue) is None
-    assert backend.session_crossfades(other_queue) is None
-    # so the configuration answers for normalization, and the queue's own setting
-    # (resolved by the streams core) for the crossfade
+    # so the configuration answers for normalization
     assert prov.delivers_normalized_audio(other_queue) is normalizes
-    assert prov.delivers_crossfaded_audio(other_queue) is None
 
 
 def test_turning_spotify_normalization_off_hands_it_back_to_ma() -> None:
@@ -172,7 +149,7 @@ def test_the_engine_is_told_who_normalizes(tmp_path: Path, normalize: bool) -> N
     cast("MagicMock", prov.mass).cache_path = str(tmp_path / "cache")
     backend = SoloistBackend(prov)
     prov.backend = backend
-    backend._prepare_data_dir(0, normalize=normalize)
+    backend._prepare_data_dir(normalize=normalize)
     prefs = (backend._data_dir / "settings" / "prefs").read_text(encoding="utf-8")
     assert f"audio.normalize_v2={'true' if normalize else 'false'}" in prefs
 
@@ -271,13 +248,12 @@ def _streamdetails(*, queue_id: str | None = None, item_id: str = "track-1") -> 
     )
 
 
-def _session(*, queue_id: str, fades: bool, normalizes: bool = True) -> MagicMock:
+def _session(*, queue_id: str, normalizes: bool = True) -> MagicMock:
     """Return a stand-in for a running soloist session serving one queue."""
     session = MagicMock()
     session.usable = True
     session.queue_id = queue_id
     session.engine_normalizes = normalizes
-    session.fades_a_boundary_of = MagicMock(return_value=fades)
     return session
 
 

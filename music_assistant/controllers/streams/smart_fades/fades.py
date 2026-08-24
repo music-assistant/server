@@ -13,7 +13,10 @@ import aiofiles
 import shortuuid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter, Filter
+from music_assistant.controllers.streams.smart_fades.filters import (
+    Filter,
+    StreamingCrossfadeFilter,
+)
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
@@ -103,7 +106,13 @@ class SmartFade(ABC):
             pcm_format.content_type.value,
             "-i",
             fadeout_filename,
-            # Input 2: fade_in part (stdin)
+            # Input 2: fade_in part (stdin). The format is fully specified, so kill
+            # the raw demuxer's probe buffer: it would swallow seconds of a
+            # streamed fade-in before the filter graph produces its first frame.
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
             "-acodec",
             pcm_format.content_type.name.lower(),
             *get_ffmpeg_channel_args(pcm_format),
@@ -318,8 +327,10 @@ class StandardCrossFade(SmartFade):
             fadein_trimmed_duration=0.0,
             post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
         )
+        # the streaming variant, so a fade-in that is still arriving (realtime
+        # source) is blended and delivered as it comes in
         self.filters = [
-            CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
+            StreamingCrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
         ]
 
     async def apply(
@@ -355,44 +366,45 @@ class StandardCrossFade(SmartFade):
                     for pcm_slice in iter_pcm_slices(chunk, pcm_format, 1000):
                         yield pcm_slice
             return
-        # Pre-crossfade: outgoing track minus the crossfaded portion
+        # Pre-crossfade: outgoing track minus the crossfaded portion. Emitted
+        # before the incoming side is touched at all: with a streamed fade-in the
+        # overlap is still arriving, and the player keeps playing this meanwhile.
         split = len(fade_out_part) - crossfade_size
         pre_crossfade = fade_out_part[:split]
         adjusted_fade_out_part = fade_out_part[split:]
-
-        # Collect only the crossfade portion from fade_in, keep the rest as a generator
-        if isinstance(fade_in_part, bytes):
-            adjusted_fade_in_part = fade_in_part[:crossfade_size]
-            post_crossfade: bytes | AsyncGenerator[bytes] = fade_in_part[crossfade_size:]
-        else:
-            # read exactly crossfade_size bytes from the generator
-            buf = bytearray()
-            async for chunk in fade_in_part:
-                buf.extend(chunk)
-                if len(buf) >= crossfade_size:
-                    break
-            adjusted_fade_in_part = bytes(buf[:crossfade_size])
-            # anything beyond crossfade_size plus the remaining generator is post_crossfade
-            leftover = bytes(buf[crossfade_size:])
-
-            async def _post_crossfade() -> AsyncGenerator[bytes]:
-                if leftover:
-                    for pcm_slice in iter_pcm_slices(leftover, pcm_format, 1000):
-                        yield pcm_slice
-                async for remaining_chunk in fade_in_part:
-                    for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
-                        yield pcm_slice
-
-            post_crossfade = _post_crossfade()
-
-        # Yield pre-crossfade, crossfaded section, and post-crossfade
         for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
             yield pcm_slice
-        async for chunk in super().apply(adjusted_fade_out_part, adjusted_fade_in_part, pcm_format):
-            yield chunk
-        if isinstance(post_crossfade, bytes):
-            for pcm_slice in iter_pcm_slices(post_crossfade, pcm_format, 1000):
-                yield pcm_slice
-        else:
-            async for chunk in post_crossfade:
+
+        if isinstance(fade_in_part, bytes):
+            async for chunk in super().apply(
+                adjusted_fade_out_part, fade_in_part[:crossfade_size], pcm_format
+            ):
                 yield chunk
+            for pcm_slice in iter_pcm_slices(fade_in_part[crossfade_size:], pcm_format, 1000):
+                yield pcm_slice
+            return
+
+        # Generator fade-in: hand exactly the overlap to the (streaming) blend as
+        # it arrives; whatever the last chunk carried beyond it opens the post part
+        overshoot = bytearray()
+
+        async def _overlap_stream() -> AsyncGenerator[bytes]:
+            taken = 0
+            async for chunk in fade_in_part:
+                remaining = crossfade_size - taken
+                if len(chunk) >= remaining:
+                    taken += remaining
+                    overshoot.extend(chunk[remaining:])
+                    yield chunk[:remaining]
+                    return
+                taken += len(chunk)
+                yield chunk
+
+        async for chunk in super().apply(adjusted_fade_out_part, _overlap_stream(), pcm_format):
+            yield chunk
+        if overshoot:
+            for pcm_slice in iter_pcm_slices(bytes(overshoot), pcm_format, 1000):
+                yield pcm_slice
+        async for remaining_chunk in fade_in_part:
+            for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
+                yield pcm_slice

@@ -127,13 +127,17 @@ def _flow_audio(
     async def _concat_mix(
         _smart_fade: object,
         *,
-        fade_in_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes],
         fade_out_part: bytes,
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         # a lossless stand-in for the mixer, so the emitted total stays checkable
         yield fade_out_part
-        yield fade_in_part
+        if isinstance(fade_in_part, bytes):
+            yield fade_in_part
+        else:
+            async for fade_in_chunk in fade_in_part:
+                yield fade_in_chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
     return audio, queue, mass

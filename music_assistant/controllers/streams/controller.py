@@ -792,9 +792,10 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
-            elif queue_item.streamdetails.is_realtime:
-                # a realtime source delivers at playback pace, so it has no audio to
-                # spare for an overlap in either direction
+            elif self.get_source_crossfade_mode(queue, queue_item) != CrossfadeMode.DISABLED:
+                # the item's own source fades its boundaries, inside the audio it
+                # hands over; a realtime source without that gets a fade decided
+                # from what its boundary can actually deliver
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)

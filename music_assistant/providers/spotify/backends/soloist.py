@@ -3,13 +3,14 @@ Spotify Soloist playback backend for the Spotify music provider.
 
 Runs one continuous session of ``soloist``, Spotify's official headless client,
 and feeds it one track ahead so the engine plays consecutive tracks without a
-break — with Spotify's own crossfade at the boundaries. The session renders into
-a private PulseAudio capture sink whose FIFO is read back slightly above
-realtime pace, and that one continuous audio stream is handed to Music Assistant
-as ordinary per-item streams: an item's stream ends where the session moves on to
-the next track, and the next item's stream begins there. Played back to back the
-items reproduce the session's audio sample for sample, so the cut position does
-not matter and a crossfade simply lives inside the bytes.
+break. The session renders into a private PulseAudio capture sink whose FIFO is
+read back slightly above realtime pace, and that one continuous audio stream is
+handed to Music Assistant as ordinary per-item streams: an item's stream ends
+where the session moves on to the next track, and the next item's stream begins
+there. Played back to back the items reproduce the session's audio sample for
+sample. The engine itself never crossfades — Music Assistant mixes the queue's
+crossfade, so every item's audio starts at its first sample and stays aligned
+with its analysis.
 
 SECURITY NOTE: the daemon takes the user's personal API key on its command
 line; nothing in this module may ever log the process argv.
@@ -40,8 +41,6 @@ from music_assistant_models.errors import AudioError, LoginFailed, MusicAssistan
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
-    CONF_CROSSFADE_DURATION,
-    CONF_PLAYER_QUEUES,
     CONF_VALUE_DISABLED,
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
@@ -155,9 +154,9 @@ _DRAIN_TIMEOUT_S: Final[float] = 2.0
 # and showing as a playing device in the Spotify app - while the gap it exists to
 # cover is the handover between two items, which is milliseconds.
 _IDLE_TIMEOUT_S: Final[float] = 5.0
-# an item's stream may run past its nominal duration (it carries the head of the
-# crossfade into the next track), but never unboundedly: without the session
-# reporting a track change by then, something is wrong and the item fails
+# an item's stream may run past its nominal duration (reported durations are
+# approximate), but never unboundedly: without the session reporting a track
+# change by then, something is wrong and the item fails
 _ITEM_OVERRUN_S: Final[float] = 30.0
 # how far ahead of the playing item to look for the one being streamed: a flow
 # stream runs ahead of the player, a per-item stream is the playing item or its
@@ -355,18 +354,6 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         session = self._session_for(streamdetails)
         return session.engine_normalizes if session is not None else None
-
-    def session_crossfades(self, streamdetails: StreamDetails) -> bool | None:
-        """
-        Return whether the session serving this item's queue fades one of its boundaries.
-
-        None when no session serves that queue, in which case the queue's own setting
-        is the only thing to go on.
-
-        :param streamdetails: Stream details of the item being asked about.
-        """
-        session = self._session_for(streamdetails)
-        return session.fades_a_boundary_of(streamdetails) if session is not None else None
 
     async def setup(self) -> None:
         """
@@ -641,11 +628,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Return whether the data dir holds a stored (paired) session (blocking)."""
         return soloist_session_present(self._data_dir)
 
-    def _prepare_data_dir(self, crossfade_ms: int, *, normalize: bool) -> None:
+    def _prepare_data_dir(self, *, normalize: bool) -> None:
         """
         Prepare the data dir for a fresh session spawn (blocking).
 
-        :param crossfade_ms: Crossfade duration to configure the engine with.
         :param normalize: Whether the engine should normalize loudness itself.
         """
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -658,10 +644,13 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # doing it the provider declares the audio pre-normalized, which takes
         # MA's own normalization out of the path (see
         # SpotifyProvider.delivers_normalized_audio).
+        # crossfade 0: Music Assistant mixes the queue's crossfade itself, so the
+        # engine plays every track clean from its first sample and an item's
+        # delivered audio lines up with its analysis (waveform, beat grid, light sync)
         if not write_audio_prefs(
             self._data_dir,
             self.logger,
-            crossfade_ms=crossfade_ms,
+            crossfade_ms=0,
             loudness_normalization=normalize,
             audio_quality=self._audio_quality,
         ):
@@ -723,7 +712,6 @@ class _SoloistSession:
         self.queue_id = queue_id
         self.mass = backend.mass
         self.logger: logging.Logger = backend.logger
-        self.crossfade_ms = 0
         # what the engine was actually told at spawn, which is what the streams
         # core has to agree with - the setting may be toggled while this plays
         self.engine_normalizes = False
@@ -861,10 +849,9 @@ class _SoloistSession:
         server = backend._server
         assert server is not None
         assert backend._binary is not None
-        self.crossfade_ms = self._queue_crossfade_ms()
         self.engine_normalizes = self._engine_normalization_enabled()
         await asyncio.to_thread(
-            partial(backend._prepare_data_dir, self.crossfade_ms, normalize=self.engine_normalizes)
+            partial(backend._prepare_data_dir, normalize=self.engine_normalizes)
         )
         self._sink = sink = await PipeSink.create(server, backend._sink_prefix)
         # unity gain so the FIFO carries the engine's PCM unaltered; the sink
@@ -909,50 +896,14 @@ class _SoloistSession:
         Hand the engine the item that follows the one being streamed, if any.
 
         Only consecutive tracks are stitched: the engine's queue command takes
-        track URIs, and a podcast episode or audiobook chapter gains nothing
-        from a crossfade anyway. Whether the feed landed also settles what
-        happens at the streamed item's end, which ``fades_a_boundary_of`` reports.
+        track URIs, and a podcast episode or audiobook chapter would not gain
+        anything from being fed ahead.
 
         :param streamdetails: The StreamDetails of the item being streamed, used
             to locate it in the queue.
         :param spotify_uri: The URI being streamed (only tracks are fed ahead).
         """
-        plays_on = await self._feed_follower(streamdetails, spotify_uri)
-        if (item := self._items.get(spotify_uri)) is not None:
-            item.fades_out = plays_on and self.crossfade_ms > 0
-
-    def fades_a_boundary_of(self, streamdetails: StreamDetails) -> bool:
-        """
-        Return whether this session fades one of an item's two boundaries.
-
-        Either side counts: an item's audio carries the overlap whether it was faded
-        into or out of. The engine has to play across the cut for that overlap to
-        exist, so nothing is faded into the item a session starts on, nor into one
-        the engine is jumped to.
-
-        :param streamdetails: Stream details of the item whose boundaries to report.
-        """
-        if self.crossfade_ms == 0 or streamdetails.media_type != MediaType.TRACK:
-            return False
-        uri = f"spotify:track:{streamdetails.item_id}"
-        if uri in self._pending:
-            # the engine has not played on to this item, so it is reached by a jump -
-            # which drops the overlap already rendered for it
-            return False
-        # Channels are keyed by track, so an entry left from an earlier play of the
-        # same one says nothing about this play: only the channel the engine is on
-        # can answer for its own boundaries.
-        if (item := self._items.get(uri)) is not None and item is self._current:
-            if item.faded_in:
-                return True
-            if item.fades_out is not None:
-                return item.fades_out
-        # what happens at this item's end is not settled yet, so the follower the
-        # engine would be fed is what the boundary rests on
-        next_uri = self._feedable_follower_uri(streamdetails)
-        if next_uri is None:
-            return False
-        return next_uri not in self._items or self._engine_plays_on_into(next_uri, uri)
+        await self._feed_follower(streamdetails, spotify_uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
         """
@@ -971,12 +922,7 @@ class _SoloistSession:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
         if item.duration_ms is None:
             return
-        # with crossfade the engine starts the next track before this one ends,
-        # so the last position reported for it falls a crossfade short by design
-        tolerance_ms = min(
-            max(_INCOMPLETE_TOLERANCE_MS, self.crossfade_ms + _INCOMPLETE_TOLERANCE_MS),
-            item.duration_ms // 2,
-        )
+        tolerance_ms = min(_INCOMPLETE_TOLERANCE_MS, item.duration_ms // 2)
         if item.last_position_ms is None or item.last_position_ms + tolerance_ms < item.duration_ms:
             raise AudioError(
                 f"Spotify Soloist delivered incomplete audio for {item.uri} "
@@ -1071,23 +1017,6 @@ class _SoloistSession:
             item.started.set()
             item.close()
         self.mass.create_task(self.backend.discard_session, self)
-
-    def _queue_crossfade_ms(self) -> int:
-        """
-        Return the crossfade the engine should apply, from the queue's own preference.
-
-        Music Assistant cannot crossfade audio it is not mixing, so its queue
-        setting is handed to the engine instead. The pref is in milliseconds and
-        sub-second values silently disable crossfade, which the seconds-based
-        queue setting can never produce.
-        """
-        queue = self.mass.player_queues.get(self.queue_id) if self.queue_id else None
-        if queue is None or not queue.crossfade_enabled:
-            return 0
-        seconds = self.mass.config.get_raw_core_config_value(
-            CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
-        )
-        return int(seconds) * 1000
 
     def _engine_normalization_enabled(self) -> bool:
         """
@@ -1732,7 +1661,6 @@ class _SoloistSession:
             item.spent = True
         if duration_ms:
             item.duration_ms = duration_ms
-        was_fed = uri in self._pending
         with suppress(ValueError):
             self._pending.remove(uri)
         self._current = item
@@ -1746,10 +1674,6 @@ class _SoloistSession:
             # is still on its way here and belongs to the item being left
             # behind - drop that, so it cannot open this one.
             self._stale_budget = self._stale_bytes()
-        elif was_fed and self.crossfade_ms > 0:
-            # reached by the engine playing on rather than by a jump, so this
-            # channel opens inside the overlap with the item before it
-            item.faded_in = True
         item.started.set()
         if current is not None and current.started.is_set():
             # Only an item that was actually playing has a boundary to cut at.
@@ -1911,12 +1835,6 @@ class _ItemAudio:
         self.claimed = False
         # served once already: its audio was handed over and cannot be replayed
         self.spent = False
-        # the engine played on into this channel, so its audio opens inside the
-        # overlap with the item before it
-        self.faded_in = False
-        # whether the engine plays on into another item at this one's end; None
-        # until the feed that decides it has been attempted
-        self.fades_out: bool | None = None
         self.drain_task: asyncio.Task[None] | None = None
         self._last_write = 0.0
         self._chunks: deque[bytes] = deque()
@@ -1970,10 +1888,9 @@ class _ItemAudio:
             return False
         # Uncapped on purpose, unlike validate_item's half-duration clamp: on an
         # item shorter than the allowance this answers False throughout, so a
-        # takeover there is missed rather than every crossfade boundary on it
+        # takeover there is missed rather than every ordinary boundary on it
         # being called one.
-        end_of_item_ms = self.session.crossfade_ms + _INCOMPLETE_TOLERANCE_MS
-        return self.last_position_ms + end_of_item_ms < self.duration_ms
+        return self.last_position_ms + _INCOMPLETE_TOLERANCE_MS < self.duration_ms
 
     @property
     def tail_complete(self) -> bool:
@@ -2126,9 +2043,7 @@ class _ItemAudio:
         """Return the byte count past which this item is considered stuck."""
         if (own_audio := self._duration_bytes()) is None:
             return None
-        return own_audio + int(
-            (self.session.crossfade_ms / 1000 + _ITEM_OVERRUN_S) * _BYTES_PER_SECOND
-        )
+        return own_audio + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
 
 
 def _decorated_duration_ms(item: object) -> int | None:
