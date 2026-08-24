@@ -158,10 +158,9 @@ class SpotifyConnectProvider(PluginProvider):
         # True while MA is the active Spotify Connect device (set on 'active',
         # cleared on 'inactive'); gates get_stream_details and transport commands.
         self._spotify_session_active: bool = False
-        # holds the single in-flight deferred play_media task scheduled from a
-        # 'playing' event; cancelled when a 'paused' / 'stopped' / 'active' event
-        # arrives during the debounce so we don't act on stale state from a dying
-        # session.
+        # holds the single in-flight deferred play_media task scheduled once the
+        # session is both active and playing; cancelled when a later event makes
+        # that state stale.
         self._pending_play_media_task: asyncio.Task[None] | None = None
         # holds the in-flight stop of a paused player (pipe-fed backends
         # only); the stop dispatches right away, but a 'playing' event cancels
@@ -706,6 +705,20 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
 
+    def _schedule_play_media(self) -> None:
+        """Schedule playback when Spotify is active and no player owns the source."""
+        if (
+            not self._playing
+            or not self._spotify_session_active
+            or self._in_use_by_player
+            or (
+                self._pending_play_media_task is not None
+                and not self._pending_play_media_task.done()
+            )
+        ):
+            return
+        self._pending_play_media_task = self.mass.create_task(self._deferred_play_media_fire())
+
     def _cancel_pending_play_media(self) -> None:
         """Cancel any pending deferred play_media trigger."""
         task = self._pending_play_media_task
@@ -771,6 +784,9 @@ class SpotifyConnectProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset playback state when a session ends."""
         prev_player_id = self._active_player_id
+        source_session = (
+            self.mass.players.get_audio_source_session(prev_player_id) if prev_player_id else None
+        )
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -780,7 +796,15 @@ class SpotifyConnectProvider(PluginProvider):
             # the player is not playing us any more, so it should stop saying it is;
             # the stop itself is scheduled separately by the caller
             self.mass.create_task(
-                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+                self.mass.players.deselect_source(
+                    prev_player_id,
+                    stop_playback=False,
+                    provider_instance_id=self.instance_id,
+                    source_id=AUDIO_SOURCE_ID,
+                    playback_session_id=(
+                        source_session.playback_session_id if source_session else None
+                    ),
+                )
             )
 
     def _save_last_player_id(self, player_id: str) -> None:
@@ -828,9 +852,8 @@ class SpotifyConnectProvider(PluginProvider):
         if event.type is BackendEventType.SESSION_ACTIVE:
             self._spotify_session_active = True
             self._last_session_active_time = time.time()
-            # A (re)activation supersedes any deferred play_media scheduled from a
-            # previous session's stale 'playing'; the fresh 'playing' that follows
-            # schedules a new one.
+            # A (re)activation supersedes any deferred play_media from a previous
+            # session. Reconcile afterwards because 'playing' may arrive first.
             self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
             # A new session starts at the backend's 100% volume default; push the
@@ -840,6 +863,7 @@ class SpotifyConnectProvider(PluginProvider):
             # value — the app slider staying at 100 there is by design.)
             if player_id := self._get_target_player_id():
                 await self._sync_player_volume_to_spotify(player_id)
+            self._schedule_play_media()
         elif event.type is BackendEventType.SESSION_INACTIVE:
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
@@ -864,14 +888,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Only while the session is active: a daemon playing without being
             # the active Connect device (e.g. right after a deactivate) must
             # not grab MA players in a loop.
-            if (
-                not self._in_use_by_player
-                and self._spotify_session_active
-                and (self._pending_play_media_task is None or self._pending_play_media_task.done())
-            ):
-                self._pending_play_media_task = self.mass.create_task(
-                    self._deferred_play_media_fire()
-                )
+            self._schedule_play_media()
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = self._playing
             self._playing = False

@@ -118,6 +118,9 @@ def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvi
     """Build a minimal provider whose linked player reports the given volume."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
+    provider.mass.players.get_audio_source_session.return_value = MagicMock(
+        playback_session_id="playback-session"
+    )
     provider.logger = MagicMock()
     provider._last_volume_sent = None
     backend = MagicMock()
@@ -175,6 +178,13 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
+    provider.config = ProviderConfig(
+        values={},
+        type=ProviderType.PLUGIN,
+        domain="spotify_connect",
+        instance_id="spotify_connect--test",
+        name="Spotify Connect",
+    )
     backend = MagicMock()
     deactivate = AsyncMock()
     backend.deactivate = deactivate

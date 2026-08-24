@@ -40,14 +40,14 @@ class AudioSourceSession:
     ``streamdetails`` and ``stream_session_id`` are independent of the session's
     own existence: a paused external source keeps the player while its stream is
     torn down, so both fall back to None without the session ending. The
-    ``playback_session_id`` is the one identifier that lasts as long as the
-    session does, which is why the stream URLs are built from it.
+    ``playback_session_id`` identifies the current selection through pauses and
+    stream reconnects, and is refreshed when the source is explicitly reselected.
     """
 
     player_id: str
     source: AudioSource
     provider_instance_id: str
-    # identifies this session in its stream URLs, for the whole time it plays
+    # identifies the current selection in its stream URLs
     playback_session_id: str = field(default_factory=lambda: uuid4().hex)
     started_at: float = field(default_factory=time.time)
     streamdetails: StreamDetails | None = None
@@ -292,6 +292,8 @@ class AudioSourceMixin:
             and session.provider_instance_id == provider_instance_id
         ):
             session.source = source
+            session.playback_session_id = uuid4().hex
+            session.stream_session_id = None
             return session
         # a source plays on one player at a time, so it leaves whichever other player
         # was holding it: two players both reporting it would let a command on the one

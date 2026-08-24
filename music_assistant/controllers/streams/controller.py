@@ -370,7 +370,9 @@ class StreamsController(CoreController):
         # plugin providers serve playable items too, and only a music provider
         # declares this (a plugin's live audio is handled by the media type)
         provider = self.mass.get_provider(streamdetails.provider)
-        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
+        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio(
+            streamdetails
+        )
 
     def get_source_crossfade_mode(self, queue: PlayerQueue, queue_item: QueueItem) -> CrossfadeMode:
         """
@@ -378,9 +380,12 @@ class StreamsController(CoreController):
 
         A source that crossfades its own playback is handed the queue's crossfade
         setting instead of Music Assistant mixing the overlap. This only answers for
-        audio we do not mix ourselves, and the same two limits apply as to a fade of
-        our own: only tracks are faded, and an item needs a boundary the same source
-        owns both sides of.
+        audio we do not mix ourselves, and only for tracks - the same limit as applies
+        to a fade of our own.
+
+        A source already serving this item's queue answers for the item's own
+        boundaries. Before it does, the answer can only be the setting it will be
+        handed together with a boundary it would own both sides of.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item to report the fade for.
@@ -393,16 +398,13 @@ class StreamsController(CoreController):
         provider = self.mass.get_provider(queue_item.streamdetails.provider)
         if not isinstance(provider, MusicProvider):
             return CrossfadeMode.DISABLED
-        source_fades = provider.delivers_crossfaded_audio
+        source_fades = provider.delivers_crossfaded_audio(queue_item.streamdetails)
         if source_fades is None:
-            # nothing is playing from this source yet, so the setting it would be
-            # handed when it starts is the only thing to go on
-            source_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
-        if not source_fades:
-            return CrossfadeMode.DISABLED
-        if not self._source_fades_an_adjacent_item(queue, queue_item):
-            return CrossfadeMode.DISABLED
-        return CrossfadeMode.SOURCE
+            # the source is not serving this queue yet, so the setting it will be
+            # handed and a boundary it would own are all there is to go on
+            queue_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+            source_fades = queue_fades and self._source_fades_an_adjacent_item(queue, queue_item)
+        return CrossfadeMode.SOURCE if source_fades else CrossfadeMode.DISABLED
 
     def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
         """Return whether the queue's effective crossfade mode is smart crossfade."""
@@ -1056,6 +1058,7 @@ class StreamsController(CoreController):
         """Stream a live AudioSource playing on a player."""
         self._log_request(request)
         session, player, prov = self._resolve_audio_source_request(request)
+        playback_session_id = session.playback_session_id
         # the session's own player, never the url's: the consuming player differs for
         # protocol and group members, and the claim belongs to the owner
         source_player_id = session.player_id
@@ -1083,6 +1086,11 @@ class StreamsController(CoreController):
                     source_player_id,
                     stream_session_id,
                 )
+                if (
+                    self.mass.players.get_audio_source_session(source_player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                ):
+                    raise web.HTTPNotFound(reason="AudioSource session was superseded")
                 session.stream_session_id = stream_session_id
             except RuntimeError as err:
                 # the plugin refuses this player (e.g. it just redirected playback
@@ -1121,7 +1129,12 @@ class StreamsController(CoreController):
             try:
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
-                        if session.stream_session_id != stream_session_id:
+                        if (
+                            self.mass.players.get_audio_source_session(source_player_id)
+                            is not session
+                            or session.playback_session_id != playback_session_id
+                            or session.stream_session_id != stream_session_id
+                        ):
                             self.logger.debug(
                                 "Ending stream for %s: a newer request took the source over",
                                 session.source.name,
@@ -1149,7 +1162,7 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -1726,7 +1739,9 @@ class StreamsController(CoreController):
             )
         return session, player, prov
 
-    async def _release_unstarted_audio_source(self, session: AudioSourceSession) -> None:
+    async def _release_unstarted_audio_source(
+        self, session: AudioSourceSession, playback_session_id: str
+    ) -> None:
         """
         Take a source that never started off the player holding it.
 
@@ -1735,8 +1750,13 @@ class StreamsController(CoreController):
         source that never played, with its own queue held inactive behind it.
 
         :param session: The session whose stream failed before any audio flowed.
+        :param playback_session_id: Playback session active when stream setup started.
         """
-        if self.mass.players.get_audio_source_session(session.player_id) is not session:
+        current_session = self.mass.players.get_audio_source_session(session.player_id)
+        if (
+            current_session is not session
+            or current_session.playback_session_id != playback_session_id
+        ):
             # already superseded, so it is not ours to release
             return
         self.logger.debug(
@@ -1745,7 +1765,12 @@ class StreamsController(CoreController):
             session.player_id,
         )
         try:
-            await self.mass.players.deselect_source(session.player_id)
+            await self.mass.players.deselect_source(
+                session.player_id,
+                provider_instance_id=session.provider_instance_id,
+                source_id=session.source_id,
+                playback_session_id=playback_session_id,
+            )
         except Exception:
             # deselect_source already absorbs the expected stop failures, so anything
             # arriving here is a defect worth a trail rather than a silent half-cleanup
@@ -1880,6 +1905,7 @@ class StreamsController(CoreController):
             raise AudioError(
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
+        playback_session_id = session.playback_session_id
         stream_session_id = uuid4().hex
         serving = False
         try:
@@ -1893,6 +1919,11 @@ class StreamsController(CoreController):
             except RuntimeError as err:
                 # the plugin refuses this consumer, e.g. it just redirected playback
                 raise AudioError(str(err)) from err
+            if (
+                self.mass.players.get_audio_source_session(session.player_id) is not session
+                or session.playback_session_id != playback_session_id
+            ):
+                raise AudioError("AudioSource session was superseded")
             session.stream_session_id = stream_session_id
             if (streamdetails := session.streamdetails) is None:
                 streamdetails = await prov.get_stream_details(
@@ -1906,6 +1937,12 @@ class StreamsController(CoreController):
                 raise_on_error=False,
                 display_name=session.source.name,
             ):
+                if (
+                    self.mass.players.get_audio_source_session(session.player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                    or session.stream_session_id != stream_session_id
+                ):
+                    break
                 yield chunk
         finally:
             try:
@@ -1921,7 +1958,7 @@ class StreamsController(CoreController):
                     exc_info=True,
                 )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def _wrap_with_audio_source_lifecycle(
         self,
@@ -1979,10 +2016,11 @@ class StreamsController(CoreController):
         """
         Return whether the same source serves an item next to this one.
 
-        A source can only fade across a boundary it owns both sides of: with anything
-        else next to this item it plays the item out and the cut is a hard one. Both
-        neighbours count, the same way one of our own fades credits both of its sides -
-        the last track of a queue is still the side that was faded into.
+        Stands in for a source that is not serving this queue yet and so cannot answer
+        for the item itself: a source can only fade across a boundary it owns both
+        sides of, which makes this a necessary condition rather than proof of a fade.
+        Both neighbours count, the same way one of our own fades credits both of its
+        sides - the last track of a queue is still the side that was faded into.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item whose neighbours to check.

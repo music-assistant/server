@@ -1207,19 +1207,25 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
 
 class _CrossfadingProvider(MusicProvider):
-    """A music provider whose running source crossfades its own playback."""
+    """A music provider whose running source crossfades this item's boundary."""
 
-    @property
-    def delivers_crossfaded_audio(self) -> bool | None:
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
         """Declare the source fade."""
         return True
+
+
+class _NonCrossfadingServingProvider(MusicProvider):
+    """A music provider serving this item, whose session fades neither of its boundaries."""
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """Deny the source fade for this item."""
+        return False
 
 
 class _UndecidedCrossfadingProvider(MusicProvider):
     """A music provider that can crossfade its own playback but serves nothing yet."""
 
-    @property
-    def delivers_crossfaded_audio(self) -> bool | None:
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
         """Leave the answer to the queue's own setting."""
         return None
 
@@ -1301,18 +1307,19 @@ def test_no_source_fade_for_audio_we_mix_ourselves(
     ],
 )
 @pytest.mark.parametrize("side", ["follower", "predecessor"])
-def test_a_source_fade_needs_a_boundary_the_source_owns(
+def test_an_undecided_source_needs_a_boundary_it_would_own(
     neighbour_kind: str, side: str, expected: CrossfadeMode
 ) -> None:
     """
-    Only a boundary between two items of the same source is credited with its fade.
+    A source that is not serving this queue yet is credited only where it could fade.
 
-    Either side counts: the last track of a queue has no follower but was still the
-    side faded into. Reporting one anywhere else would describe an overlap nobody
-    rendered - we do not mix a realtime item's boundaries either, so it is a hard cut.
+    It cannot answer for the item, so the boundary stands in: either side counts,
+    the same way one of our own fades credits both of its sides. Reporting a fade
+    anywhere else would describe an overlap nobody rendered - we do not mix a
+    realtime item's boundaries either, so it is a hard cut.
     """
     controller = _source_crossfade_controller(
-        object.__new__(_CrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
+        object.__new__(_UndecidedCrossfadingProvider), CrossfadeMode.SMART_CROSSFADE
     )
     queues = controller.mass.player_queues
     neighbour = _follower(neighbour_kind)
@@ -1329,6 +1336,35 @@ def test_a_source_fade_needs_a_boundary_the_source_owns(
     )
 
     assert controller.get_source_crossfade_mode(MagicMock(), queue_item) == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "neighbour_kind", "expected"),
+    [
+        # the source says it fades this item, so its own boundary answer stands even
+        # where the queue offers nothing to fade against
+        (_CrossfadingProvider, "none", CrossfadeMode.SOURCE),
+        # and it says it does not, so the neighbour it happens to own is not credited:
+        # a list predecessor that never played is exactly this case
+        (_NonCrossfadingServingProvider, "same-provider", CrossfadeMode.DISABLED),
+    ],
+)
+def test_a_serving_source_is_not_second_guessed_by_the_queue(
+    provider: type[MusicProvider], neighbour_kind: str, expected: CrossfadeMode
+) -> None:
+    """
+    A source already serving the item answers for its boundaries, and that answer stands.
+
+    It knows what it fed and what it played across; the neighbour check is only a
+    necessary condition, so applying it on top would both deny fades that happened
+    and credit ones that did not.
+    """
+    controller = _source_crossfade_controller(
+        object.__new__(provider), CrossfadeMode.SMART_CROSSFADE
+    )
+    controller.mass.player_queues.get_next_item.return_value = _follower(neighbour_kind)
+
+    assert controller.get_source_crossfade_mode(MagicMock(), _realtime_track()) == expected
 
 
 def test_the_raw_pcm_path_reports_a_source_fade_too() -> None:
@@ -1382,7 +1418,12 @@ def test_the_raw_pcm_path_reports_a_source_fade_too() -> None:
 
 def test_a_music_provider_declares_no_source_fade_by_default() -> None:
     """The declaration is opt-in: nothing downstream verifies it."""
-    assert object.__new__(MusicProvider).delivers_crossfaded_audio is False
+    assert (
+        object.__new__(MusicProvider).delivers_crossfaded_audio(
+            _make_stream_details(MediaType.TRACK, is_realtime=True)
+        )
+        is False
+    )
 
 
 def _source_crossfade_controller(provider: Any, queue_crossfade_mode: CrossfadeMode) -> Any:

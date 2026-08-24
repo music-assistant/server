@@ -242,35 +242,37 @@ class SpotifyProvider(MusicProvider):
             self.config.get_value(CONF_SPOTIFY_NORMALIZATION, True)
         )
 
-    @property
-    def delivers_normalized_audio(self) -> bool:
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """
         Return whether Spotify's own loudness normalization handles this audio.
 
-        A running session answers for itself. The engine reads its settings only
-        at startup, so a setting changed mid-playback must not make the streams
-        core normalize on top of what the engine is still doing - it takes effect
-        on the next playback instead.
+        The session serving this item's queue answers for itself. The engine reads
+        its settings only at startup, so a setting changed mid-playback must not make
+        the streams core normalize on top of what the engine is still doing - it
+        takes effect on the next playback instead.
+
+        :param streamdetails: Stream details of the item being asked about.
         """
         backend = self._soloist_backend
-        if backend is not None and (live := backend.session_normalizes) is not None:
+        if backend is not None and (live := backend.session_normalizes(streamdetails)) is not None:
             return live
         return self.spotify_normalization_configured
 
-    @property
-    def delivers_crossfaded_audio(self) -> bool | None:
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
         """
         Return whether Spotify's own engine crossfades this playback.
 
         Only the soloist backend can: it keeps one session across items and is handed
         the queue's crossfade duration when that session starts, so the overlap lives
-        in the audio it delivers. librespot fetches every track on its own. A running
-        session answers for itself, because it read that duration once - a setting
-        changed mid-playback applies to the next session, not to the audio this one
-        is still serving.
+        in the audio it delivers. librespot fetches every track on its own. The session
+        serving this item's queue answers for the item's own boundaries, because it read
+        that duration once - a setting changed mid-playback applies to the next session,
+        not to the audio this one is still serving.
+
+        :param streamdetails: Stream details of the item being asked about.
         """
         backend = self._soloist_backend
-        return backend.session_crossfades if backend is not None else False
+        return backend.session_crossfades(streamdetails) if backend is not None else False
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -567,10 +569,11 @@ class SpotifyProvider(MusicProvider):
         # Get (cached) episode data
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
-        # Parse and yield episodes with position
+        # API lists newest-first; number down so bigger position = newer
+        total = len(episodes_data)
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
-            episode.position = idx + 1
+            episode.position = total - idx
 
             # Set played status if sync is enabled and resume data exists
             if self.podcast_progress_sync_enabled and "resume_point" in episode_data:
