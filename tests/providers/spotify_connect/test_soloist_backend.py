@@ -1366,6 +1366,24 @@ def test_decoded_format_reports_the_capture_pcm() -> None:
     assert backend.get_audio_reader() is None
 
 
+def test_each_stream_gets_its_own_copy_of_the_capture_format() -> None:
+    """
+    Every stream is handed its own decoded format, not one shared object.
+
+    ffmpeg writes what it probes onto the format it is given, so a shared instance
+    would carry one stream's probe over into the next.
+    """
+    backend, _events = _make_backend()
+
+    first = backend.decoded_audio_format
+    second = backend.decoded_audio_format
+
+    assert first is not second
+    first.bit_rate = 12345
+    assert second.bit_rate != 12345
+    assert backend.decoded_audio_format.bit_rate != 12345
+
+
 @pytest.mark.parametrize(
     ("audio_quality", "content_type", "bit_depth"),
     [
