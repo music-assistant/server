@@ -3210,10 +3210,14 @@ class LocalFileSystemProvider(MusicProvider):
         Refresh known albums/artists whose sidecars changed since before this sync.
 
         Existing mappings are classified against the details captured before the scan, so a
-        same-sync audio change that overwrote an item's details cannot hide a sidecar removed in the
-        same sync. Newly discovered mappings use their freshly written details (already current), so
-        they are detected as unchanged and skipped. A transient read failure leaves the stored
-        details untouched, so the item is retried on the next sync.
+        same-sync audio change that overwrote an item's details cannot hide a sidecar removed in
+        the same sync. When that classification finds no change, the just-queried current details
+        are also checked against the final signature: a same-sync write (e.g. a changed track
+        reparsed before a newly discovered nested album was excluded from its artwork) can leave
+        stale data persisted even though the pre-scan baseline itself never changed, and that is
+        corrected here using the pre-scan snapshot for provenance. Newly discovered mappings use
+        their freshly written details (already current) throughout. A transient read failure
+        leaves the stored details untouched, so the item is retried on the next sync.
 
         :param sidecar_index: The sidecars collected during this scan.
         """
@@ -3224,14 +3228,24 @@ class LocalFileSystemProvider(MusicProvider):
         refreshed = 0
         deferred = 0
         for album_dir, current in album_details.items():
-            # existing mappings use their pre-scan details; new mappings (absent pre-scan) use the
-            # freshly written current details
+            # existing mappings use their pre-scan details as the reconciliation baseline/
+            # provenance; new mappings (absent pre-scan) use the freshly written current details
             baseline = self._pre_scan_album_details.get(album_dir, current)
             prev = self._parse_sidecar_details(baseline)
             nfo_sig, img_sig = sidecar_index.album_signatures(
                 album_dir, self._sync_mapped_album_dirs
             )
             decision = self._classify_sidecar_change(prev, nfo_sig, img_sig)
+            if decision is None and album_dir in self._pre_scan_album_details:
+                # the pre-scan baseline already matches the final signature, but this existing
+                # mapping's persisted details may have been overwritten mid-sync (e.g. a changed
+                # parent track reparsed before a newly discovered nested album was excluded from
+                # its artwork): if the row's just-queried current details still disagree with the
+                # final signature, that stale write is corrected now, using the pre-scan snapshot
+                # for provenance so removal history is not lost
+                decision = self._classify_sidecar_change(
+                    self._parse_sidecar_details(current), nfo_sig, img_sig
+                )
             if decision is None:
                 continue
             if await self._refresh_album_sidecars(album_dir, decision, nfo_sig, img_sig, prev):
@@ -3243,6 +3257,12 @@ class LocalFileSystemProvider(MusicProvider):
             prev = self._parse_sidecar_details(baseline)
             nfo_sig, img_sig = sidecar_index.artist_signatures(artist_path)
             decision = self._classify_sidecar_change(prev, nfo_sig, img_sig)
+            if decision is None and artist_path in self._pre_scan_artist_details:
+                # see the album loop above: correct a same-sync stale write against the final
+                # signature while still reconciling from the pre-scan provenance snapshot
+                decision = self._classify_sidecar_change(
+                    self._parse_sidecar_details(current), nfo_sig, img_sig
+                )
             if decision is None:
                 continue
             if await self._refresh_artist_sidecars(artist_path, decision, nfo_sig, img_sig, prev):

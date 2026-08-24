@@ -924,6 +924,79 @@ async def test_refresh_classifies_existing_mapping_against_pre_scan_baseline() -
     assert captured["prev"] == ("nfo-old", img_sig, baseline_snap)
 
 
+async def test_refresh_corrects_stale_current_when_baseline_matches_final() -> None:
+    """
+    A same-sync stale write is corrected even when the pre-scan baseline already matches final.
+
+    A changed parent track can be reparsed (and its details persisted) before a newly discovered
+    nested album is excluded from its disc artwork, leaving the row's *current* details stale even
+    though the pre-scan baseline itself never disagreed with the final (post-exclusion) signature.
+    """
+    provider = _provider()
+    index = provider._active_sidecar_index
+    index.record(_fs_file("Artist/Album/folder.jpg", "1"))
+    index.record_track_dir("Artist/Album")
+    index.record(_fs_file("Artist/Album/Nested/folder.jpg", "2"))
+    index.record_track_dir("Artist/Album/Nested")
+    # "Artist/Album/Nested" is discovered as its own album mapping only during this sync
+    provider._sync_mapped_album_dirs = {"Artist/Album"}
+    final_nfo, final_img = index.album_signatures(
+        "Artist/Album", {"Artist/Album", "Artist/Album/Nested"}
+    )
+    # the pre-scan baseline already matches the final (Nested-excluded) signature
+    provider._pre_scan_album_details = {
+        "Artist/Album": provider._build_sidecar_details(final_nfo, final_img, {})
+    }
+    # mid-sync, a changed track under "Artist/Album" was reparsed before Nested was excluded,
+    # so the row's persisted (current) details wrongly include Nested's image
+    stale_img = index.album_signatures("Artist/Album", {"Artist/Album"})[1]
+    assert stale_img != final_img
+    provider._query_mapping_details = AsyncMock(
+        return_value=(
+            {
+                "Artist/Album": provider._build_sidecar_details(final_nfo, stale_img, {}),
+                "Artist/Album/Nested": None,
+            },
+            {},
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    async def _capture(album_dir: str, changed: bool, _nfo: str, img_sig: str, prev: Any) -> bool:
+        if album_dir == "Artist/Album":
+            captured["changed"] = changed
+            captured["img_sig"] = img_sig
+            captured["prev"] = prev
+        return True
+
+    provider._refresh_album_sidecars = _capture
+    await provider._refresh_changed_sidecars(index)
+
+    # the parent is still refreshed (image-only) to remove the stale Nested artwork in this same
+    # sync, using the pre-scan snapshot for provenance rather than the stale current details
+    assert captured["changed"] is False
+    assert captured["img_sig"] == final_img
+    assert captured["prev"] == (final_nfo, final_img, {})
+
+
+async def test_refresh_skips_when_baseline_and_current_both_match_final() -> None:
+    """No refresh happens when both the pre-scan baseline and the current details match final."""
+    provider = _provider()
+    index = provider._active_sidecar_index
+    index.record(_fs_file("Artist/Album/folder.jpg", "1"))
+    index.record_track_dir("Artist/Album")
+    provider._sync_mapped_album_dirs = {"Artist/Album"}
+    nfo_sig, img_sig = index.album_signatures("Artist/Album", {"Artist/Album"})
+    details = provider._build_sidecar_details(nfo_sig, img_sig, {})
+    provider._pre_scan_album_details = {"Artist/Album": details}
+    provider._query_mapping_details = AsyncMock(return_value=({"Artist/Album": details}, {}))
+    provider._refresh_album_sidecars = AsyncMock()
+
+    await provider._refresh_changed_sidecars(index)
+
+    provider._refresh_album_sidecars.assert_not_awaited()
+
+
 def _fs_file(relative_path: str, checksum: str) -> Any:
     """Build a FileSystemItem for the index."""
     return FileSystemItem(
