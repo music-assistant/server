@@ -147,18 +147,18 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         out: list[RawItem] = []
         for item in items:
             if isinstance(item, Folder):
-                out.append((item.id, item.name, True, "folder", item.size))
+                out.append((item.id, item.name, True, "folder", item.size, None))
                 continue
-            # prefer a real content hash; quickXorHash is not always present (e.g. some
-            # business accounts only compute SHA1/SHA256), and no hash at all is possible for
-            # very large or still-processing files, in which case the size is the last resort
-            checksum = (
-                item.hashes.quick_xor_hash
-                or item.hashes.sha256_hash
-                or item.hashes.sha1_hash
-                or str(item.size)
+            # quickXorHash is a stable content hash; not every file has one, so fall back to
+            # the size - this is also the imported-media checksum, so it must stay exactly as
+            # it always has been, or every existing mapping would look changed on next sync
+            checksum = item.hashes.quick_xor_hash or str(item.size)
+            # a stronger hash (when the account computes one) is only used to detect a
+            # metadata file (NFO/image) changing; it never touches the checksum above
+            metadata_token = (
+                item.hashes.quick_xor_hash or item.hashes.sha256_hash or item.hashes.sha1_hash
             )
-            out.append((item.id, item.name, False, checksum, item.size))
+            out.append((item.id, item.name, False, checksum, item.size, metadata_token))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

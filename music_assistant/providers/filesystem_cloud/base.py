@@ -50,8 +50,11 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
 
-# (id, name, is_dir, checksum, size) as returned by _api_list_children
-RawItem = tuple[str, str, bool, str, int | None]
+# (id, name, is_dir, checksum, size, metadata_token) as returned by _api_list_children.
+# metadata_token is an optional higher-precision token (e.g. a stronger hash a provider
+# also computes) used only to detect a metadata file (NFO/image) changing; it never
+# substitutes for checksum, which stays whatever it always was for imported media.
+RawItem = tuple[str, str, bool, str, int | None, str | None]
 
 # extensions the stream route will serve; playlists/cue/images are read
 # server-side and never fetched over HTTP, so audio is all it needs to proxy
@@ -485,7 +488,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     def _to_item(self, raw: RawItem, parent_path: str, name: str) -> FileSystemItem:
         """Convert a raw API listing entry to a FileSystemItem."""
-        _, _, is_dir, checksum, size = raw
+        _, _, is_dir, checksum, size, metadata_token = raw
         relative_path = f"{parent_path}/{name}" if parent_path else name
         return FileSystemItem(
             filename=name,
@@ -497,4 +500,5 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             is_dir=is_dir,
             checksum=checksum,
             file_size=size,
+            metadata_token=metadata_token,
         )

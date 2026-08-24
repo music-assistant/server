@@ -1319,10 +1319,12 @@ class LocalFileSystemProvider(MusicProvider):
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param items_to_process: The sync's changed/new items; receives queued representatives.
-        :param force_refresh_tracks: Receives the relative_path of every changed representative;
-            a non-empty result tells the caller to drop this provider's own short-lived album/
-            artist/folder-image caches before processing, so a concurrent parse of the same
-            folder (forced or not) cannot hand back or write back the pre-change data.
+        :param force_refresh_tracks: Receives the relative_path of every representative that
+            was actually queued (new or deduplicated against one already queued); a non-empty
+            result tells the caller to drop this provider's own short-lived album/artist/
+            folder-image caches before processing, so a concurrent parse of the same folder
+            cannot hand back or write back the pre-change data. Left empty when nothing was
+            actually queued (e.g. every representative failed to resolve).
         """
         # one bulk load instead of one query per metadata file, which otherwise would mean
         # thousands of sequential cache reads on a large library every single sync
@@ -1347,23 +1349,24 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.metadata.invalidate_image_cache(
                     self.instance_id, meta_item.relative_path
                 )
-            # mark unconditionally, even when this representative is already queued for
-            # another reason (its own content changed, or another metadata file got here
-            # first): any queued change here still needs this provider's own album/artist/
-            # folder-image caches dropped before processing (see sync_library)
-            force_refresh_tracks.add(track_path)
             if track_path in queued_tracks:
+                # already queued for another reason (its own content changed, or another
+                # metadata file got here first): still needs the stale-cache drop below, since
+                # that reparse must see this change too
+                force_refresh_tracks.add(track_path)
                 continue
             try:
                 track_item = await self.resolve(track_path)
             except MediaNotFoundError, OSError:
                 # the representative no longer resolves: leave the old token in place so a
                 # future sync (once a fresh representative registers) or a manual refresh
-                # can recover; this change is deferred, not lost
+                # can recover; this change is deferred, not lost - and since nothing is
+                # actually queued, the stale-cache drop below is not needed either
                 continue
             if track_item.is_dir:
                 continue
             queued_tracks.add(track_path)
+            force_refresh_tracks.add(track_path)
             if track_item.ext in CUE_EXTENSIONS:
                 # a CUE sheet's own checksum is not tracked under its path in file_checksums,
                 # only the synthetic per-track ids it expands into are

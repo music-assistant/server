@@ -335,6 +335,8 @@ async def test_missing_representative_track_defers() -> None:
 
     assert items_to_process == []
     provider.cache.set.assert_not_awaited()  # old token kept, so a later sync retries
+    # nothing was actually queued, so the batch has no reason to drop its short-lived caches
+    assert force_refresh_tracks == set()
 
 
 # --- _classify_scan_item (walk routing, shared by local/WebDAV/cloud) ------
