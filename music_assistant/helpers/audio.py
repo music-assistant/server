@@ -451,42 +451,32 @@ async def audio_source_silence_keepalive(
     raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
     silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
     silence_chunk = b"\x00" * silence_bytes
-    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
-        async with aclosing(inner) as managed_inner:
-            async for chunk in managed_inner:
-                await queue.put(chunk)
+        try:
+            async with aclosing(inner) as managed_inner:
+                async for chunk in managed_inner:
+                    await queue.put(chunk)
+        except Exception as err:
+            await queue.put(err)
+        else:
+            await queue.put(None)
 
     producer_task = asyncio.create_task(_producer())
-    queue_task: asyncio.Task[bytes] | None = None
     try:
         while True:
-            if queue_task is None:
-                queue_task = asyncio.create_task(queue.get())
-            done, _ = await asyncio.wait(
-                (queue_task, producer_task),
-                timeout=idle_threshold_s,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if queue_task in done:
-                chunk = queue_task.result()
-                queue_task = None
-                yield chunk
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
+            except TimeoutError:
+                yield silence_chunk
                 continue
-            if producer_task in done:
-                queue_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await queue_task
-                queue_task = None
-                await producer_task
+            if item is None:
                 break
-            yield silence_chunk
+            if isinstance(item, Exception):
+                raise item
+            yield item
     finally:
-        if queue_task is not None:
-            queue_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await queue_task
         producer_task.cancel()
         with suppress(asyncio.CancelledError):
             await producer_task
