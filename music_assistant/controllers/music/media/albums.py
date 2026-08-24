@@ -678,7 +678,14 @@ class AlbumsController(MediaControllerBase[Album]):
         await self.set_provider_mappings(db_id, provider_mappings, authoritative)
         # set album artist(s)
         artists = update.artists if authoritative else cur_item.artists + update.artists
-        await self._set_album_artists(db_id, artists, overwrite=authoritative)
+        # clear the authoritative context for this nested write: an album-level full replace
+        # must not cascade into replacing the artist records it references, which may carry
+        # only a bare identity stub here and would otherwise wipe their stored metadata
+        token = FULL_REPLACE_UPDATE.set(False)
+        try:
+            await self._set_album_artists(db_id, artists, overwrite=authoritative)
+        finally:
+            FULL_REPLACE_UPDATE.reset(token)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_album_tracks(

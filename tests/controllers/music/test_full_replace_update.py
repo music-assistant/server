@@ -48,6 +48,15 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
 
 def _test_album() -> Album:
     """Build an album carrying identity, external ids, and metadata for update tests."""
+    artist = Artist(
+        item_id="Artist",
+        provider=INSTANCE,
+        name="Artist",
+        provider_mappings={
+            ProviderMapping(item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE)
+        },
+    )
+    artist.metadata.genres = {"Metal"}
     album = Album(
         item_id="Artist/Album",
         provider=INSTANCE,
@@ -61,20 +70,7 @@ def _test_album() -> Album:
                 item_id="Artist/Album", provider_domain=DOMAIN, provider_instance=INSTANCE
             )
         },
-        artists=UniqueList(
-            [
-                Artist(
-                    item_id="Artist",
-                    provider=INSTANCE,
-                    name="Artist",
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id="Artist", provider_domain=DOMAIN, provider_instance=INSTANCE
-                        )
-                    },
-                )
-            ]
-        ),
+        artists=UniqueList([artist]),
     )
     album.metadata.genres = {"Rock", "Pop"}
     album.metadata.description = "a description"
@@ -133,6 +129,10 @@ async def test_full_replace_clears_values_the_update_omits(music: MusicControlle
     assert refreshed.external_ids == set()
     assert not refreshed.metadata.genres
     assert not refreshed.metadata.description
+    # the album's authoritative context must not cascade into the (unchanged) album artist it
+    # references: re-writing that relationship should never wipe the artist's own metadata
+    artist_id = refreshed.artists[0].item_id
+    assert (await music.artists.get_library_item(artist_id)).metadata.genres == {"Metal"}
 
 
 async def test_overwrite_without_full_replace_keeps_existing_values(
