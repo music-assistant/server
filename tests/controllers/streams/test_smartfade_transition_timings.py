@@ -36,9 +36,9 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     StandardCrossFade,
 )
 from music_assistant.controllers.streams.smart_fades.filters import (
-    CrossfadeFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
+    StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
@@ -233,18 +233,18 @@ class TestStandardCrossFadeBuild:
         assert timing.post_crossfade_duration == pytest.approx(17.0)
 
     def test_filter_duration_matches_clamped_timing(self) -> None:
-        """The acrossfade filter must use the clamped duration, not the configured one."""
+        """The crossfade filter must use the clamped duration, not the configured one."""
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
         # only 6s of (stripped) fade-out audio available
         fade.build(_seconds(6), _seconds(45), PCM)
         assert fade.timing_info.crossfade_duration == pytest.approx(6.0)
         crossfade_filter = fade.filters[0]
-        assert isinstance(crossfade_filter, CrossfadeFilter)
+        assert isinstance(crossfade_filter, StreamingCrossfadeFilter)
         assert crossfade_filter.crossfade_samples == int(6.0 * PCM.sample_rate)
 
     def test_fractional_overlap_keeps_filter_aligned_to_buffer(self) -> None:
         """
-        A non-integer clamped overlap keeps acrossfade ``ns=`` aligned to the buffer.
+        A non-integer clamped overlap keeps the filter's sample count aligned to the buffer.
 
         Regression for the silent "FFmpeg produced no output" fallback: a fractional
         effective crossfade made the byte slice a fraction of a sample shorter than the
@@ -257,10 +257,10 @@ class TestStandardCrossFadeBuild:
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
         fade.build(fade_out_len, _seconds(45), PCM)
         crossfade_filter = fade.filters[0]
-        assert isinstance(crossfade_filter, CrossfadeFilter)
+        assert isinstance(crossfade_filter, StreamingCrossfadeFilter)
         # the source-of-truth byte size is frame-aligned ...
         assert fade.crossfade_size % frame_size == 0
-        # ... and the acrossfade sample count is exactly that buffer, in samples
+        # ... and the filter's sample count is exactly that buffer, in samples
         assert crossfade_filter.crossfade_samples == fade.crossfade_size // frame_size
         # the timing duration round-trips from the same integer, never the other way
         assert fade.timing_info.crossfade_duration == pytest.approx(
@@ -308,10 +308,11 @@ class TestStandardCrossFadeApplySlicing:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """
-        apply() must feed the base mixer exactly the acrossfade ``ns=`` sample count.
+        apply() must feed the base mixer exactly the filter's sample count.
 
-        Otherwise ffmpeg's acrossfade receives fewer samples than requested and emits
-        nothing — the silent crossfade failure this regression guards against.
+        Otherwise ffmpeg receives fewer samples than the filter was built for and the
+        overlap comes out short — the silent crossfade failure this regression guards
+        against.
         """
         captured: dict[str, bytes] = {}
 
@@ -333,7 +334,7 @@ class TestStandardCrossFadeApplySlicing:
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
         fade.build(fade_out_len, _seconds(45), PCM)
         crossfade_filter = fade.filters[0]
-        assert isinstance(crossfade_filter, CrossfadeFilter)
+        assert isinstance(crossfade_filter, StreamingCrossfadeFilter)
         assert crossfade_filter.crossfade_samples is not None
         async for _ in fade.apply(b"\x00" * fade_out_len, b"\x11" * _seconds(45), PCM):
             pass

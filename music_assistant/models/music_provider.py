@@ -197,21 +197,6 @@ class MusicProvider(Provider):
         """
         return False
 
-    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
-        """
-        Return whether this provider crossfades the playback it is serving.
-
-        True means the source applies the overlap at a boundary of this item itself,
-        so Music Assistant hands its crossfade setting over instead of mixing one.
-        None means the provider is not serving this item's queue yet, in which case
-        the queue's own setting answers instead. Only say True when the source really
-        does fade this item: nothing downstream verifies it.
-
-        :param streamdetails: Stream details of the item being asked about, whose
-            boundaries the answer is about.
-        """
-        return False
-
     @property
     def max_concurrent_streams(self) -> int | None:
         """

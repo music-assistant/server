@@ -258,22 +258,6 @@ class SpotifyProvider(MusicProvider):
             return live
         return self.spotify_normalization_configured
 
-    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
-        """
-        Return whether Spotify's own engine crossfades this playback.
-
-        Only the soloist backend can: it keeps one session across items and is handed
-        the queue's crossfade duration when that session starts, so the overlap lives
-        in the audio it delivers. librespot fetches every track on its own. The session
-        serving this item's queue answers for the item's own boundaries, because it read
-        that duration once - a setting changed mid-playback applies to the next session,
-        not to the audio this one is still serving.
-
-        :param streamdetails: Stream details of the item being asked about.
-        """
-        backend = self._soloist_backend
-        return backend.session_crossfades(streamdetails) if backend is not None else False
-
     @property
     def max_concurrent_streams(self) -> int:
         """

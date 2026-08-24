@@ -491,9 +491,10 @@ class AudioBuffer:
             # A realtime source fills the buffer at playback pace, so every second of
             # audio asked for here is a second of extra startup delay - on a seek or a
             # track change as much as on a start. The queue's crossfade setting buys
-            # nothing for such a source, because MA's own crossfade is force-disabled
-            # for it (it has no audio to spare for an overlap), so only dynamic
-            # normalization, which genuinely needs lookahead, raises this.
+            # nothing for such a source, because its fade streams in as it arrives and
+            # is sized by the tail the outgoing track banked, not by what is resident
+            # here. Only dynamic normalization, which genuinely needs lookahead, raises
+            # this.
             ready_threshold = 2 if dynamic_normalization else 1
         elif crossfade_enabled:
             ready_threshold = 8

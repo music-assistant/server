@@ -1176,6 +1176,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
             has_error=False,
             is_valid=lambda *_args: True,
             duration_available=16,
+            eof=False,
             ready=SimpleNamespace(is_set=lambda: True),
         ),
         fade_in=False,
@@ -1208,6 +1209,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     mass.player_queues.get.return_value = queue
     mass.player_queues.get_next_item.return_value = skipped_item
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.streams.get_source_crossfade_mode.return_value = CrossfadeMode.DISABLED
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()
@@ -1252,8 +1254,11 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
-    # a source that hands over nothing is reopened, and both opens see the eager position
-    assert eager_seek_positions == [32, 32]
+    # the prefetcher's early open sees the raw position; the reopen after the failed
+    # handover sees the eager (crossfade-adjusted) one
+    assert len(eager_seek_positions) == 2
+    assert eager_seek_positions[-1] == 32
+    # ... and the zero-audio skip restores the raw position afterwards
     assert skipped_streamdetails.seek_position == raw_seek_position
 
 
