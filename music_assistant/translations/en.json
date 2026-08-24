@@ -2292,7 +2292,7 @@
   "provider.spotify.config_entries.playback_auth_method.options.spotify_app": "Use the Spotify app (recommended)",
   "provider.spotify.config_entries.playback_backend.label": "How should Music Assistant play Spotify audio?",
   "provider.spotify.config_entries.playback_backend.option_descriptions.librespot": "Simpler to set up and quicker to start, but relies on reverse-engineered Spotify internals and primarily works for accounts created before December 2024.",
-  "provider.spotify.config_entries.playback_backend.option_descriptions.soloist": "Spotify's official playback engine. It works with all Spotify accounts but requires a personal API key and a few extra setup steps.",
+  "provider.spotify.config_entries.playback_backend.option_descriptions.soloist": "Spotify's official playback engine. It works with all Premium Spotify accounts but requires a personal API key and a few extra setup steps.",
   "provider.spotify.config_entries.playback_backend.options.librespot": "librespot (community)",
   "provider.spotify.config_entries.playback_backend.options.soloist": "Spotify Soloist (official)",
   "provider.spotify.config_entries.playback_callback_url.label": "Address of the error page",

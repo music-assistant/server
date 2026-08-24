@@ -49,7 +49,7 @@
         "librespot": "librespot (community)"
       },
       "option_descriptions": {
-        "soloist": "Spotify's official playback engine. It works with all Spotify accounts but requires a personal API key and a few extra setup steps.",
+        "soloist": "Spotify's official playback engine. It works with all Premium Spotify accounts but requires a personal API key and a few extra setup steps.",
         "librespot": "Simpler to set up and quicker to start, but relies on reverse-engineered Spotify internals and primarily works for accounts created before December 2024."
       }
     },
