@@ -425,7 +425,12 @@ class SyncGroupPlayer(Player):
             # bypassing group/sync redirect that would loop back to this player.
             # Hold the group's playback lock until the leader confirms playback
             # (see play()) so a concurrent (un)group command can't race the start.
-            async with self._await_leader_playback():
+            async with (
+                self.mass.players.get_player_lock(
+                    sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                ),
+                self._await_leader_playback(),
+            ):
                 await self.mass.players._handle_play_media(sync_leader.player_id, media)
         else:
             raise RuntimeError("An empty group cannot play media, consider adding members first")

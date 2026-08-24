@@ -771,6 +771,9 @@ class SpotifyConnectProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset playback state when a session ends."""
         prev_player_id = self._active_player_id
+        source_session = (
+            self.mass.players.get_audio_source_session(prev_player_id) if prev_player_id else None
+        )
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -780,7 +783,15 @@ class SpotifyConnectProvider(PluginProvider):
             # the player is not playing us any more, so it should stop saying it is;
             # the stop itself is scheduled separately by the caller
             self.mass.create_task(
-                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+                self.mass.players.deselect_source(
+                    prev_player_id,
+                    stop_playback=False,
+                    provider_instance_id=self.instance_id,
+                    source_id=AUDIO_SOURCE_ID,
+                    playback_session_id=(
+                        source_session.playback_session_id if source_session else None
+                    ),
+                )
             )
 
     def _save_last_player_id(self, player_id: str) -> None:
