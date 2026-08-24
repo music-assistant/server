@@ -318,16 +318,17 @@ async def test_realtime_tail_hold_grows_with_the_banked_surplus() -> None:
     # nothing arrived yet: nothing may be held
     assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
 
-    # 11s of content arrived; pretend ~4s of wall time passed since the first byte
-    hold.note_bytes(11 * pcm_format.pcm_sample_size)
+    # 22s of content arrived; pretend ~4s of wall time passed since the first byte
+    hold.note_bytes(22 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
     target = hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size)
-    # surplus = 11 (content) + 2 (resident) - 4 (elapsed) = 9s => capped at the window
+    # surplus = 22 (content) + 2 (resident) - 4 (elapsed) = 20s; half of it may be
+    # held (the rest keeps growing the player's lead) => capped at the window
     assert target == 8 * pcm_format.pcm_sample_size
-    # a larger window is bounded by the surplus itself, frame-aligned
+    # a larger window is bounded by half the surplus, frame-aligned
     larger = hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
     assert larger % frame_size == 0
-    assert int(8.5 * pcm_format.pcm_sample_size) < larger <= 9 * pcm_format.pcm_sample_size
+    assert int(9.5 * pcm_format.pcm_sample_size) < larger <= 10 * pcm_format.pcm_sample_size
 
     # once the source is done, the rest is resident: full window regardless
     audio_buffer.eof = True
@@ -401,20 +402,36 @@ def test_holdback_capacity_accounts_for_playback_speed() -> None:
 # -- StreamsAudio._select_buffered_crossfade --
 
 
-def test_realtime_incoming_source_gets_a_standard_fade_once_delivering() -> None:
-    """A delivering realtime source gets the standard overlap; smart needs its full window."""
+def test_realtime_incoming_source_climbs_the_fade_ladder_by_residency() -> None:
+    """What is resident picks the rung: smart with the window in hand, standard without."""
     audio = StreamsAudio(MagicMock())
 
+    # barely delivering: the streaming standard mix covers the overlap as it arrives
     mode, duration = audio._select_buffered_crossfade(
-        _streamdetails_for_crossfade(
-            _buffer(SMART_CROSSFADE_DURATION, ready=True), is_realtime=True
-        ),
+        _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
     )
+    assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
 
-    assert mode == CrossfadeMode.STANDARD_CROSSFADE
-    assert duration == 8
+    # a resident smart window (however it got there) earns the smart fade,
+    # sized by what is actually in hand rather than the full ceiling
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(_buffer(15, ready=True), is_realtime=True),
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=20,
+    )
+    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 15)
+
+    # ... but not when the outgoing tail cannot carry its half of the window
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(_buffer(15, ready=True), is_realtime=True),
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=6,
+    )
+    assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
 
 
 def test_realtime_incoming_source_not_yet_delivering_skips_the_fade() -> None:
