@@ -80,4 +80,5 @@ NON_HIRES_MODELS = (
     "Play:3",
     "Connect",
     "Connect:Amp",
+    "Table lamp",
 )

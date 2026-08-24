@@ -245,10 +245,9 @@ class AirPlayStreamSession:
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
-        if (
-            pcm_format.sample_rate != self.pcm_format.sample_rate
-            or pcm_format.bit_depth != self.pcm_format.bit_depth
-        ):
+        # the encoding matters as much as the depth here (a 24-bit session carries
+        # PCM_S32LE): replace() wires the new source into the session's declared format
+        if pcm_format != self.pcm_format:
             return False
         return all(
             p.stream is not None and p.stream.running and p.stream.connected

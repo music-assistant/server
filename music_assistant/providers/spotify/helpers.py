@@ -9,6 +9,7 @@ import platform
 import re
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,8 +18,21 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.providers.spotify_connect.soloist import SoloistBinaryManager
+from music_assistant.providers.spotify_connect.soloist.runtime import (
+    WS_ADDR_FILE,
+    WS_PORT_FILE,
+)
 
-from .constants import CHECK_AUTH_TIMEOUT, CREDENTIALS_FILE
+from .constants import (
+    CHECK_AUTH_TIMEOUT,
+    CREDENTIALS_FILE,
+    PAIRING_DEVICE_NAME,
+    SOLOIST_USER_DIR_SUFFIX,
+)
+
+# how long the pairing daemon's log reader is given to drain after it exits
+PAIR_LOG_DRAIN_TIMEOUT = 2.0
 
 LOGGER = logging.getLogger(__name__)
 PAIRING_LOG_TIMESTAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^ ]+ ")
@@ -33,6 +47,8 @@ LOOPBACK_RESPONSE_HTML = """
 
 if TYPE_CHECKING:
     import aiohttp
+
+    from music_assistant.mass import MusicAssistant
 
 
 async def get_librespot_binary() -> str:
@@ -122,6 +138,117 @@ async def librespot_credentials_via_token(librespot_bin: str, access_token: str)
         return await asyncio.to_thread(_read_credentials_file, credentials_file)
 
 
+async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Path) -> None:
+    """
+    Pair a Spotify account with soloist and store the session in the given data dir.
+
+    Advertises a Spotify Connect device and blocks until the user selects it in the
+    official Spotify app; the caller is expected to bound the wait (the setup flow's
+    step deadline cancels it).
+
+    :param mass: The MusicAssistant instance.
+    :param api_key: The user's personal Soloist API key (secret, kept out of all logs).
+    :param data_dir: Directory the paired session is stored in.
+    :raises LoginFailed: When pairing did not complete with a stored session.
+    """
+    binary = await SoloistBinaryManager(mass).ensure_fresh(consent=True)
+
+    def _prepare() -> None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # the paired session holds the Spotify device identity and login session
+        data_dir.chmod(0o700)
+
+    await asyncio.to_thread(_prepare)
+    with tempfile.TemporaryDirectory() as cache_dir:
+        args = [
+            str(binary),
+            "--pair",
+            "--device-name",
+            PAIRING_DEVICE_NAME,
+            "--api-key",
+            api_key,
+            "--data-dir",
+            str(data_dir),
+            "--cache-dir",
+            cache_dir,
+        ]
+        # the explicit process name keeps AsyncProcess logging free of the argv
+        # (which carries the API key)
+        # the daemon writes all of its logging to stdout and only ever puts
+        # argument-parsing complaints on stderr, so the two are merged into one
+        # captured stream. Capturing is also what makes the redaction below
+        # reachable: an unset stdout is inherited, which would leak the daemon's
+        # output - argv included - straight to the server console.
+        async with AsyncProcess(
+            args,
+            stdout=True,
+            stderr=asyncio.subprocess.STDOUT,
+            name="soloist-pair",
+        ) as pair_proc:
+            log_task = asyncio.create_task(_log_soloist_pairing_output(pair_proc, api_key))
+            try:
+                # watched together: nothing else drains the daemon's stdout, so a
+                # reader that died would leave it blocked on a full pipe until the
+                # setup step expires
+                wait_task = asyncio.ensure_future(pair_proc.wait())
+                await asyncio.wait({wait_task, log_task}, return_when=asyncio.FIRST_COMPLETED)
+                if log_task.done() and not log_task.cancelled() and log_task.exception():
+                    wait_task.cancel()
+                    raise LoginFailed(
+                        "Soloist pairing could not be monitored"
+                    ) from log_task.exception()
+                returncode = await wait_task
+                # an exited daemon still has its last (and most telling) lines in
+                # the stream buffer; the shield keeps the reader alive across the
+                # timeout so a pairing failure stays diagnosable
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(log_task), PAIR_LOG_DRAIN_TIMEOUT)
+            finally:
+                log_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await log_task
+    if returncode != 0:
+        raise LoginFailed(f"Soloist pairing failed (exit code {returncode})")
+    if not await asyncio.to_thread(soloist_session_present, data_dir):
+        raise LoginFailed("Soloist did not store a paired session")
+
+
+def soloist_session_account(data_dir: Path) -> str | None:
+    """
+    Return the Spotify username a stored soloist session belongs to (blocking).
+
+    The engine keeps its per-account state under ``settings/Users/<username>-user``,
+    which is where the paired identity is written down. Answers None when it
+    cannot be told apart: no session yet, or state for more than one account.
+
+    :param data_dir: The soloist data directory to inspect.
+    """
+    users_dir = data_dir / "settings" / "Users"
+    try:
+        accounts = [
+            entry.name.removesuffix(SOLOIST_USER_DIR_SUFFIX)
+            for entry in users_dir.iterdir()
+            if entry.is_dir() and entry.name.endswith(SOLOIST_USER_DIR_SUFFIX)
+        ]
+    except OSError:
+        return None
+    return accounts[0] if len(accounts) == 1 else None
+
+
+def soloist_session_present(data_dir: Path) -> bool:
+    """
+    Return whether a soloist data dir holds a stored (paired) session (blocking).
+
+    The session storage format is opaque; any persisted file besides the WebSocket
+    endpoint files counts as a stored session.
+
+    :param data_dir: The soloist data directory to inspect.
+    """
+    if not data_dir.is_dir():
+        return False
+    return any(entry.name not in (WS_ADDR_FILE, WS_PORT_FILE) for entry in data_dir.iterdir())
+
+
 async def await_loopback_authorization(port: int, path: str) -> dict[str, str]:
     """
     Serve the loopback redirect target and return the OAuth params the browser arrives with.
@@ -200,6 +327,15 @@ async def get_spotify_token(
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
+
+
+async def _log_soloist_pairing_output(pair_proc: AsyncProcess, api_key: str) -> None:
+    """Log the pairing daemon's output (API key redacted) so failures are diagnosable."""
+    async for line in pair_proc.iter_stdout():
+        # the third-party binary's own output may echo argv (which carries the
+        # api key), so redact it before logging
+        text = line.replace(api_key, "<redacted>") if api_key else line
+        LOGGER.debug("[soloist-pair] %s", text)
 
 
 async def _log_pairing_output(librespot_proc: AsyncProcess) -> None:

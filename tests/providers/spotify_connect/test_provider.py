@@ -118,6 +118,9 @@ def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvi
     """Build a minimal provider whose linked player reports the given volume."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
+    provider.mass.players.get_audio_source_session.return_value = MagicMock(
+        playback_session_id="playback-session"
+    )
     provider.logger = MagicMock()
     provider._last_volume_sent = None
     backend = MagicMock()
@@ -175,12 +178,19 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
+    provider.config = ProviderConfig(
+        values={},
+        type=ProviderType.PLUGIN,
+        domain="spotify_connect",
+        instance_id="spotify_connect--test",
+        name="Spotify Connect",
+    )
     backend = MagicMock()
     deactivate = AsyncMock()
     backend.deactivate = deactivate
     provider._backend = backend
     provider._active_player_id = "player1"
-    provider._in_use_by_queue = None
+    provider._in_use_by_player = None
     provider._active_session_id = None
     provider._spotify_session_active = True
     provider._playing = False
@@ -189,26 +199,26 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, AsyncMock]:
     return provider, deactivate
 
 
-async def test_queue_clear_releases_a_paused_spotify_session() -> None:
-    """Clearing the queue releases the session the paused stream's teardown left behind."""
+async def test_releasing_a_player_releases_a_paused_spotify_session() -> None:
+    """Letting the player go releases the session the paused stream's teardown left behind."""
     provider, deactivate = _tethered_provider()
 
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
 
     deactivate.assert_awaited_once()
 
 
-async def test_queue_clear_releases_while_the_stream_is_winding_down() -> None:
+async def test_release_while_the_stream_is_winding_down_still_releases() -> None:
     """
-    A clear landing before the paused stream finished tearing down still releases.
+    A release landing before the paused stream finished tearing down still releases.
 
     The teardown itself releases nothing for a paused source, so waiting for it to hand the
     claim back would leave the Spotify app tethered for good.
     """
     provider, deactivate = _tethered_provider()
-    provider._in_use_by_queue = "player1"
+    provider._in_use_by_player = "player1"
 
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
 
     deactivate.assert_awaited_once()
 
@@ -217,7 +227,7 @@ async def test_clearing_another_queue_leaves_the_session_alone() -> None:
     """Only the queue the source is tethered to may release it."""
     provider, deactivate = _tethered_provider()
 
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player2")
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player2")
 
     deactivate.assert_not_awaited()
 
@@ -227,7 +237,7 @@ async def test_queue_clear_without_an_active_session_does_nothing() -> None:
     provider, deactivate = _tethered_provider()
     provider._spotify_session_active = False
 
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
 
     deactivate.assert_not_awaited()
 
@@ -252,7 +262,7 @@ async def test_releasing_the_session_leaves_the_new_playback_alone() -> None:
     provider, _ = _tethered_provider()
 
     with patch.object(SpotifyConnectProvider, "name", "Spotify Test"):
-        await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
+        await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
 
     assert await _session_inactive(provider) == []
 
@@ -269,40 +279,7 @@ async def test_queue_clear_survives_a_failing_release() -> None:
     provider, deactivate = _tethered_provider()
     deactivate.side_effect = OSError("daemon gone")
 
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player1")
-
-    deactivate.assert_awaited_once()
-
-
-async def test_a_transferred_source_follows_its_new_queue() -> None:
-    """A paused source moved to another player is tracked on the queue that took it over."""
-    provider, _ = _tethered_provider()
-
-    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player1", "player2")
-
-    assert provider._active_player_id == "player2"
-
-
-async def test_a_transfer_of_another_queue_is_ignored() -> None:
-    """A transfer that does not involve the tethered queue leaves the tracking alone."""
-    provider, _ = _tethered_provider()
-
-    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player3", "player2")
-
-    assert provider._active_player_id == "player1"
-
-
-async def test_clearing_a_transferred_queue_releases_the_session() -> None:
-    """
-    The queue a paused source was transferred to can release it.
-
-    Transferring a paused source never re-selects it on the target, so without the handover
-    the plugin would still be pointed at the queue it left and the release would not fire.
-    """
-    provider, deactivate = _tethered_provider()
-
-    await provider.on_source_transferred(AUDIO_SOURCE_ID, "player1", "player2")
-    await provider.on_source_removed(AUDIO_SOURCE_ID, "player2")
+    await provider.on_source_released(AUDIO_SOURCE_ID, "player1")
 
     deactivate.assert_awaited_once()
 

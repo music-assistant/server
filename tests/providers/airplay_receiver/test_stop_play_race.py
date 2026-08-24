@@ -20,7 +20,7 @@ def provider() -> MagicMock:
     mock._first_volume_event_received = False
     # queue_id == player_id in MA: the stop and the follow-up play target the same
     # player, which is the same-player reconnect scenario the race can actually break.
-    mock._in_use_by_queue = "player1"
+    mock._in_use_by_player = "player1"
     mock._active_player_id = "player1"
     mock._active_session_id = "session1"
     mock._pending_stop_task = None
@@ -30,7 +30,7 @@ def provider() -> MagicMock:
 
     def _clear_active_player() -> None:
         mock._active_player_id = None
-        mock._in_use_by_queue = None
+        mock._in_use_by_player = None
         mock._active_session_id = None
 
     mock._clear_active_player.side_effect = _clear_active_player
@@ -81,7 +81,7 @@ async def test_play_waits_for_inflight_stop(provider: MagicMock) -> None:
 
 async def test_play_without_pending_stop_starts_immediately(provider: MagicMock) -> None:
     """A plain session start plays right away."""
-    provider._in_use_by_queue = None
+    provider._in_use_by_player = None
     provider.mass.player_queues.play_media = AsyncMock()
 
     _handle(provider, "playing")
@@ -130,7 +130,7 @@ async def test_concurrent_starts_all_wait_for_pending_stop(provider: MagicMock) 
     provider._pending_stop_task = asyncio.get_event_loop().create_task(slow_stop())
     provider.mass.player_queues.play_media = play_media
 
-    # two starts before on_source_selected claims _in_use_by_queue
+    # two starts before on_source_selected claims _in_use_by_player
     starts = [
         asyncio.ensure_future(AirPlayReceiverProvider._start_playback(provider, "player1"))
         for _ in range(2)

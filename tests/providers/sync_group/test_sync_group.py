@@ -13,6 +13,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
@@ -2167,6 +2168,7 @@ class TestLeaderPlaybackAwaited:
             "play_media",
             "await",
         ]
+        mass.players.get_player_lock.assert_any_call("leader", PlayerLockPurpose.PLAYBACK)
 
     @pytest.mark.asyncio
     async def test_no_wait_when_group_has_no_leader(self) -> None:

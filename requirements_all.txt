@@ -35,7 +35,7 @@ deezer-python-gql==0.17.1
 defusedxml==0.7.1
 deno==2.9.5
 duration-parser==1.0.1
-fastmcp==3.4.4
+fastmcp==3.4.7
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.3.0
@@ -50,10 +50,10 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.284
-music-assistant-models==1.1.194
+music-assistant-frontend==2.17.286
+music-assistant-models==1.1.198
 mutagen==1.48.1
-niconico.py-ma==2.1.0.post2
+niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
 numkong==7.8.0
 numpy==2.3.5
@@ -104,7 +104,7 @@ transformers==5.14.1
 usearch==2.26.0
 uv>=0.8.0
 websocket-client==1.9.0
-wiim==0.1.5
+wiim==0.1.7
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==1.8.0

@@ -51,12 +51,13 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     channels=2,
     sample_type="float",
 )
-# Media types whose upstream feeds at realtime rate, so the Sendspin queue cannot
-# grow after playback begins, so their send-ahead stays at the min_buffer_ms floor.
-# Buffered types (tracks, podcasts, etc.) race ahead and fill the queue naturally, so
-# their send-ahead may extend to a larger required_lead_time_ms without lasting cost.
-# A queue flow carries those same buffered items - radio and live sources always play
-# as a single item, never in flow mode - so it belongs with the buffered types.
+# Media types whose upstream always feeds at realtime rate, so the Sendspin queue
+# cannot grow after playback begins and their send-ahead stays at the min_buffer_ms
+# floor. Buffered types (tracks, podcasts, etc.) race ahead and fill the queue
+# naturally, so their send-ahead may extend to a larger required_lead_time_ms without
+# lasting cost. Media type alone does not settle it: a track can come from a source
+# that also feeds just-in-time, which is what StreamDetails.is_realtime marks - see
+# _is_live_source().
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
@@ -762,8 +763,7 @@ class SendspinPlaybackSession:
                 self._pcm_format.sample_rate,
             )
             push_stream = self._create_push_stream()
-            is_live = media.media_type in _LIVE_MEDIA_TYPES
-            push_stream.set_live_source(is_live)
+            push_stream.set_live_source(self._is_live_source(media))
             async with self._state_lock:
                 self._push_stream = push_stream
                 self._playback_running = True
@@ -1534,3 +1534,22 @@ class SendspinPlaybackSession:
         frame_size = bytes_per_sample * int(self._pcm_format.channels)
         samples = max(0, round((duration_us / 1_000_000) * int(self._pcm_format.sample_rate)))
         return b"\x00" * (samples * frame_size)
+
+    def _is_live_source(self, media: PlayerMedia) -> bool:
+        """
+        Return whether this media is fed to the server at playback pace.
+
+        Radio and live sources always are; a track is when its provider hands
+        over the audio just-in-time (a queue flow of such items included, which
+        the media type cannot express because it names the first item).
+
+        :param media: The media about to be played.
+        """
+        if media.media_type in _LIVE_MEDIA_TYPES:
+            return True
+        if not media.source_id or not media.queue_item_id:
+            return False
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return bool(
+            queue_item and queue_item.streamdetails and queue_item.streamdetails.is_realtime
+        )

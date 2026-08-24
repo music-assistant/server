@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 import random
@@ -884,6 +885,34 @@ def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
     assert "<weather_hourly>" not in static
     assert deferred["<weather_hourly>"] == "12 degrees"
     assert "<timestamp>" in deferred
+
+
+def test_resolve_placeholders_timestamp_spells_out_weekday() -> None:
+    """The deferred <timestamp> value names the weekday so the LLM never has to derive it."""
+    runtime = DummyRuntime()
+    moment = datetime.datetime(2026, 8, 22, 16, 20, tzinfo=datetime.UTC)
+    runtime._configured_now = lambda: moment  # type: ignore[method-assign]
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+    slot = Slot(
+        when="between_songs",
+        at_index=1,
+        prev_index=0,
+        next_index=1,
+        very_next_index=None,
+        minute_mark=3.3,
+    )
+
+    _static, deferred = runtime._resolve_placeholders(
+        program={},
+        tracks=tracks,
+        slot=slot,
+        runtime_tokens={},
+    )
+
+    assert deferred["<timestamp>"] == "Saturday 22 August 2026, 16:20 UTC"
 
 
 def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:

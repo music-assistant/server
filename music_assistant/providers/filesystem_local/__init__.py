@@ -79,6 +79,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
+from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -1524,12 +1525,10 @@ class LocalFileSystemProvider(MusicProvider):
                     normalized = posixpath.normpath(f"{playlist_path}/{_line}")
                     with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                         file_item = await self.resolve(normalized)
-                        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                        return await self._parse_track(file_item, tags)
+                        return await self._get_playlist_line_track(file_item)
                 with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                     file_item = await self.resolve(_line)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    return await self._parse_track(file_item, tags)
+                    return await self._get_playlist_line_track(file_item)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1538,12 +1537,52 @@ class LocalFileSystemProvider(MusicProvider):
 
         return None
 
+    async def _get_playlist_line_track(self, file_item: FileSystemItem) -> Track:
+        """
+        Return the track for a resolved playlist entry.
+
+        :param file_item: The resolved file the playlist entry points at.
+        """
+        # filesystem tracks are synced into the library, so prefer the database over
+        # (expensive) tag parsing - this keeps loading large playlists fast
+        library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            file_item.relative_path, self.instance_id
+        )
+        # only trust the library item if its mapping for this file is available: the file
+        # just resolved, so an unavailable mapping is stale (e.g. the file was missing
+        # during the last scan) and would wrongly exclude the track from playback
+        if library_track is not None and any(
+            mapping.provider_instance == self.instance_id
+            and mapping.item_id == file_item.relative_path
+            and mapping.available
+            for mapping in library_track.provider_mappings
+        ):
+            # callers expect the provider item identity here (not the library one),
+            # e.g. for duplicate detection when editing the playlist
+            library_track.item_id = file_item.relative_path
+            library_track.provider = self.instance_id
+            library_track.uri = create_uri(
+                MediaType.TRACK, self.instance_id, file_item.relative_path
+            )
+            return library_track
+        # not (yet) in the library: parse the file tags
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_track(file_item, tags)
+
     @staticmethod
     def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
         """Append the file checksum so the image cache busts when the file is replaced."""
         if checksum:
             return f"{relative_path}?cs={checksum}"
         return relative_path
+
+    @staticmethod
+    def _codec_type_from_tags(tags: AudioTags) -> ContentType:
+        """Return the audio codec detected by ffprobe, if any."""
+        if tags.raw and (streams := tags.raw.get("streams")):
+            if codec_name := streams[0].get("codec_name"):
+                return ContentType.try_parse(codec_name)
+        return ContentType.UNKNOWN
 
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
@@ -1564,6 +1603,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1940,6 +1980,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2039,6 +2080,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2163,6 +2205,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2474,6 +2517,7 @@ class LocalFileSystemProvider(MusicProvider):
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(file_item.ext or tags.format),
+                codec_type=self._codec_type_from_tags(tags),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,
