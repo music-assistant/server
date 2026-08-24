@@ -134,6 +134,7 @@ class DashboardController(CoreController):
 
         del self._dashboards[dashboard_id]
         self._signal_dashboards_updated()
+        self._session_owners.pop(dashboard_id, None)
         if self._sessions.pop(dashboard_id, None) is not None:
             self._signal_sessions_updated()
 
@@ -195,8 +196,6 @@ class DashboardController(CoreController):
             # API registration: url-based clients resolve their own url via `dashboard/get_url`
             self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
 
-        # pop first so dict order stays show order: viewer_preferences takes the last match
-        self._sessions.pop(dashboard_id, None)
         self._sessions[dashboard_id] = session
         if (user := get_current_user()) is not None:
             self._session_owners[dashboard_id] = user.user_id
@@ -231,7 +230,10 @@ class DashboardController(CoreController):
 
     @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
     async def get_viewer_preferences(
-        self, dashboard: DashboardType, player_id: str | None = None
+        self,
+        dashboard: DashboardType,
+        player_id: str | None = None,
+        dashboard_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Return the visualizer preferences a dashboard viewer should render with.
@@ -243,15 +245,18 @@ class DashboardController(CoreController):
 
         :param dashboard: Dashboard the viewer is showing.
         :param player_id: Player the viewer is showing, when dashboard is NOW_PLAYING.
+        :param dashboard_id: The viewer's own dashboard id, carried in the launched
+            url; identifies its session when several displays show the same dashboard.
         """
-        owner_id: str | None = None
-        for session_dashboard_id, session in self._sessions.items():
-            if session.dashboard != dashboard:
-                continue
-            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
-                continue
-            # multiple matches: the most recently shown session wins
-            owner_id = self._session_owners.get(session_dashboard_id, owner_id)
+        if dashboard_id is None:
+            return {}
+        session = self._sessions.get(dashboard_id)
+        # the session must show what the viewer claims to be showing
+        if session is None or session.dashboard != dashboard:
+            return {}
+        if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+            return {}
+        owner_id = self._session_owners.get(dashboard_id)
         if owner_id is None:
             return {}
         owner = await self.mass.webserver.auth.get_user(owner_id)
@@ -277,10 +282,13 @@ class DashboardController(CoreController):
         :raises InsufficientPermissions: If the caller has neither the required scope
             nor a matching active session of its own.
         """
-        if not self._can_resolve_url_for_caller(dashboard, player_id):
+        allowed, own_dashboard_id = self._can_resolve_url_for_caller(dashboard, player_id)
+        if not allowed:
             msg = "Insufficient permissions to resolve a dashboard url"
             raise InsufficientPermissions(msg)
-        return await self.resolve_dashboard_url(dashboard, player_id, prefer_local=prefer_local)
+        return await self.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id=own_dashboard_id, prefer_local=prefer_local
+        )
 
     def register_dashboard_handler(
         self,
@@ -362,7 +370,12 @@ class DashboardController(CoreController):
         self._signal_sessions_updated()
 
     async def resolve_dashboard_url(
-        self, dashboard: DashboardType, player_id: str | None, *, prefer_local: bool = False
+        self,
+        dashboard: DashboardType,
+        player_id: str | None,
+        *,
+        dashboard_id: str | None = None,
+        prefer_local: bool = False,
     ) -> str:
         """
         Build the fully-qualified URL a dashboard endpoint should load to show a dashboard.
@@ -376,11 +389,13 @@ class DashboardController(CoreController):
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :param dashboard_id: The endpoint's registered dashboard id, carried in the url
+            so the viewer can identify its own session (e.g. for viewer_preferences).
         :param prefer_local: Return the plain local base url instead of the https/remote form.
         :raises ActionUnavailable: If neither an https base url nor remote access is configured
             (never raised when ``prefer_local`` is set).
         """
-        route = self._dashboard_route(dashboard, player_id)
+        route = self._dashboard_route(dashboard, player_id, dashboard_id)
         base_url = self.mass.webserver.base_url
         if prefer_local:
             # native LAN apps talk straight to this server, no https/remote gate needed
@@ -406,30 +421,33 @@ class DashboardController(CoreController):
         channel = self._frontend_channel()
         return f"{APP_MA_HOST}/{channel}/?{urlencode(query)}"
 
-    def _can_resolve_url_for_caller(self, dashboard: DashboardType, player_id: str | None) -> bool:
+    def _can_resolve_url_for_caller(
+        self, dashboard: DashboardType, player_id: str | None
+    ) -> tuple[bool, str | None]:
         """
         Return whether the current caller may resolve a dashboard url for itself.
 
         :param dashboard: Dashboard the caller wants a url for.
         :param player_id: Player the caller wants a url for, when dashboard is NOW_PLAYING.
+        :return: (allowed, the caller's own dashboard id when it resolves the url for
+            its own active session, else None).
         """
+        client_id = get_current_client_id()
+        if client_id is not None:
+            for dashboard_id, registration in self._dashboards.items():
+                if registration.client_id != client_id:
+                    continue
+                session = self._sessions.get(dashboard_id)
+                if session is None or session.dashboard != dashboard:
+                    continue
+                if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+                    continue
+                return True, dashboard_id
+
         user = get_current_user()
         if user is not None and has_scope(user, Scope.USERS_INVITE):
-            return True
-
-        client_id = get_current_client_id()
-        if client_id is None:
-            return False
-        for dashboard_id, registration in self._dashboards.items():
-            if registration.client_id != client_id:
-                continue
-            session = self._sessions.get(dashboard_id)
-            if session is None or session.dashboard != dashboard:
-                continue
-            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
-                continue
-            return True
-        return False
+            return True, None
+        return False, None
 
     async def _get_dashboard_code(self) -> str:
         """Mint a fresh one-time code a cast receiver can exchange for a viewer token."""
@@ -445,27 +463,39 @@ class DashboardController(CoreController):
         )
         return code
 
-    def _dashboard_route(self, dashboard: DashboardType, player_id: str | None) -> str:
+    def _dashboard_route(
+        self, dashboard: DashboardType, player_id: str | None, dashboard_id: str | None = None
+    ) -> str:
         """
         Map a dashboard type to its frontend route.
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :param dashboard_id: When given, carried as a route query param so the viewer
+            can identify its own session.
         :raises InvalidCommand: If dashboard is NOW_PLAYING without a player_id, or unsupported.
         """
+        query: dict[str, str] = {}
         if dashboard == DashboardType.PARTY:
-            return "/party"
-        if dashboard == DashboardType.NOW_PLAYING:
+            route = "/party"
+        elif dashboard == DashboardType.NOW_PLAYING:
             if not player_id:
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
-            return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
-        if dashboard == DashboardType.MUSIC_QUIZ:
+            route = "/now-playing"
+            query["player"] = player_id
+        elif dashboard == DashboardType.MUSIC_QUIZ:
             # the viewer-only kiosk view: the host page needs USERS_INVITE, which a
             # dashboard viewer never has
-            return "/music-quiz/dashboard"
-        msg = f"Unsupported dashboard type: {dashboard}"
-        raise InvalidCommand(msg)
+            route = "/music-quiz/dashboard"
+        else:
+            msg = f"Unsupported dashboard type: {dashboard}"
+            raise InvalidCommand(msg)
+        if dashboard_id is not None:
+            query["dashboard_id"] = dashboard_id
+        if not query:
+            return route
+        return f"{route}?{urlencode(query, safe=ROUTE_SAFE_CHARS)}"
 
     def _frontend_channel(self) -> str:
         """Derive the app.music-assistant.io frontend channel from the server version."""

@@ -156,7 +156,9 @@ class ChromecastDashboards:
         # running" receiver may be backgrounded (Android TV's launcher hides it) and
         # only a real launch brings it back to the foreground
         force_launch = release_on_the_wire or device_id not in self._active_casts
-        url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
+        url = await self.mass.dashboard.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id=f"chromecast_{device_id}"
+        )
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
             await self.mass.loop.run_in_executor(

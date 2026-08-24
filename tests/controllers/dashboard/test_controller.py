@@ -154,6 +154,35 @@ async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
     assert _query(url)["path"] == f"/now-playing?player={expected}"
 
 
+@pytest.mark.parametrize(
+    ("dashboard", "player_id", "expected_path"),
+    [
+        (DashboardType.PARTY, None, "/party?dashboard_id=chromecast_abc"),
+        (
+            DashboardType.NOW_PLAYING,
+            "player1",
+            "/now-playing?player=player1&dashboard_id=chromecast_abc",
+        ),
+        (DashboardType.MUSIC_QUIZ, None, "/music-quiz/dashboard?dashboard_id=chromecast_abc"),
+    ],
+)
+async def test_resolve_dashboard_url_embeds_dashboard_id(
+    dashboard: DashboardType, player_id: str | None, expected_path: str
+) -> None:
+    """The endpoint's dashboard id rides along in the route so the viewer knows its session."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id="chromecast_abc"
+        )
+
+    assert _query(url)["path"] == expected_path
+
+
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
     """An UNKNOWN dashboard type is never a valid target to cast."""
     controller = _make_controller()
@@ -380,6 +409,7 @@ async def test_unregister_dashboard_removes_registration_and_session() -> None:
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
     )
+    controller._session_owners["dash1"] = "user-1"
 
     with patch(
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
@@ -389,6 +419,7 @@ async def test_unregister_dashboard_removes_registration_and_session() -> None:
 
     assert "dash1" not in controller._dashboards
     assert "dash1" not in controller._sessions
+    assert "dash1" not in controller._session_owners
     controller.mass.signal_event.assert_any_call(  # type: ignore[attr-defined]
         EventType.DASHBOARDS_UPDATED, data=[]
     )
@@ -747,7 +778,7 @@ async def test_get_url_for_dashboard_returns_resolved_url() -> None:
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
     with (
-        patch.object(DashboardController, "_can_resolve_url_for_caller", return_value=True),
+        patch.object(DashboardController, "_can_resolve_url_for_caller", return_value=(True, None)),
         patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
     ):
         url = await controller.get_url_for_dashboard(DashboardType.PARTY)
@@ -800,7 +831,8 @@ async def test_get_url_for_dashboard_allows_owner_with_matching_session() -> Non
     ):
         url = await controller.get_url_for_dashboard(DashboardType.PARTY)
 
-    assert _query(url) == {"dashboard": "code456", "path": "/party"}
+    # the caller's own dashboard id is embedded so its viewer can identify its session
+    assert _query(url) == {"dashboard": "code456", "path": "/party?dashboard_id=dash1"}
 
 
 async def test_get_url_for_dashboard_rejects_owner_without_session() -> None:
@@ -953,7 +985,7 @@ async def test_viewer_preferences_follow_the_casting_user() -> None:
     )
     controller.mass.webserver.auth.get_user = AsyncMock(return_value=owner)  # type: ignore[method-assign]
 
-    prefs = await controller.get_viewer_preferences(DashboardType.PARTY)
+    prefs = await controller.get_viewer_preferences(DashboardType.PARTY, dashboard_id="dash1")
 
     assert prefs == {
         "visualizer_enabled": True,
@@ -962,40 +994,9 @@ async def test_viewer_preferences_follow_the_casting_user() -> None:
     }
 
 
-async def test_viewer_preferences_match_now_playing_session_by_player() -> None:
-    """With several now-playing sessions, the one showing the viewer's player wins."""
+async def test_viewer_preferences_resolve_each_display_by_dashboard_id() -> None:
+    """Two displays showing the same dashboard each follow their own caster's preferences."""
     controller = _make_controller()
-    for dashboard_id, player_id, owner_id in (
-        ("dash1", "player1", "user-1"),
-        ("dash2", "player2", "user-2"),
-    ):
-        controller._sessions[dashboard_id] = DashboardSession(
-            dashboard_id=dashboard_id,
-            name=dashboard_id,
-            dashboard=DashboardType.NOW_PLAYING,
-            player_id=player_id,
-        )
-        controller._session_owners[dashboard_id] = owner_id
-    users = {
-        "user-1": _owner_user("user-1", {"visualizer_preset": "one"}),
-        "user-2": _owner_user("user-2", {"visualizer_preset": "two"}),
-    }
-    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda uid: users.get(uid)
-    )
-
-    prefs = await controller.get_viewer_preferences(DashboardType.NOW_PLAYING, "player2")
-
-    assert prefs == {"visualizer_preset": "two"}
-
-
-async def test_viewer_preferences_reshown_session_wins() -> None:
-    """Re-showing an earlier session makes its owner the most recently shown again."""
-    controller = _make_controller()
-    device = DashboardDevice(
-        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
-    )
-    controller._dashboards["dash1"] = _RegisteredDashboard(device=device)
     for dashboard_id, owner_id in (("dash1", "user-1"), ("dash2", "user-2")):
         controller._sessions[dashboard_id] = DashboardSession(
             dashboard_id=dashboard_id, name=dashboard_id, dashboard=DashboardType.PARTY
@@ -1009,28 +1010,48 @@ async def test_viewer_preferences_reshown_session_wins() -> None:
         side_effect=lambda uid: users.get(uid)
     )
 
-    with patch(
-        "music_assistant.controllers.dashboard.controller.get_current_user",
-        return_value=users["user-1"],
-    ):
-        await controller.show_dashboard("dash1", DashboardType.PARTY)
+    prefs1 = await controller.get_viewer_preferences(DashboardType.PARTY, dashboard_id="dash1")
+    prefs2 = await controller.get_viewer_preferences(DashboardType.PARTY, dashboard_id="dash2")
 
-    prefs = await controller.get_viewer_preferences(DashboardType.PARTY)
+    assert prefs1 == {"visualizer_preset": "one"}
+    assert prefs2 == {"visualizer_preset": "two"}
 
+
+async def test_viewer_preferences_session_must_match_what_the_viewer_shows() -> None:
+    """A session that shows a different dashboard (or player) than claimed yields nothing."""
+    controller = _make_controller()
+    controller._sessions["dash1"] = DashboardSession(
+        dashboard_id="dash1",
+        name="Living Room",
+        dashboard=DashboardType.NOW_PLAYING,
+        player_id="player1",
+    )
+    controller._session_owners["dash1"] = "user-1"
+    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
+        return_value=_owner_user("user-1", {"visualizer_preset": "one"})
+    )
+
+    prefs = await controller.get_viewer_preferences(DashboardType.NOW_PLAYING, "player1", "dash1")
     assert prefs == {"visualizer_preset": "one"}
+
+    assert (
+        await controller.get_viewer_preferences(DashboardType.NOW_PLAYING, "player2", "dash1") == {}
+    )
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
 
 
 async def test_viewer_preferences_without_matching_session_are_empty() -> None:
-    """No matching active session (or unknown owner) yields empty preferences."""
+    """A missing dashboard_id, unknown session, or unknown owner yields empty preferences."""
     controller = _make_controller()
     assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
 
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
     )
     controller._session_owners["dash1"] = "user-gone"
     controller.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
+    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
 
 
 async def test_preferences_change_signals_only_for_session_owners() -> None:
