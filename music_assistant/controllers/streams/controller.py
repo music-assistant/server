@@ -370,7 +370,9 @@ class StreamsController(CoreController):
         # plugin providers serve playable items too, and only a music provider
         # declares this (a plugin's live audio is handled by the media type)
         provider = self.mass.get_provider(streamdetails.provider)
-        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
+        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio(
+            streamdetails
+        )
 
     def get_source_crossfade_mode(self, queue: PlayerQueue, queue_item: QueueItem) -> CrossfadeMode:
         """
@@ -378,9 +380,12 @@ class StreamsController(CoreController):
 
         A source that crossfades its own playback is handed the queue's crossfade
         setting instead of Music Assistant mixing the overlap. This only answers for
-        audio we do not mix ourselves, and the same two limits apply as to a fade of
-        our own: only tracks are faded, and an item needs a boundary the same source
-        owns both sides of.
+        audio we do not mix ourselves, and only for tracks - the same limit as applies
+        to a fade of our own.
+
+        A source already serving this item's queue answers for the item's own
+        boundaries. Before it does, the answer can only be the setting it will be
+        handed together with a boundary it would own both sides of.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item to report the fade for.
@@ -393,16 +398,13 @@ class StreamsController(CoreController):
         provider = self.mass.get_provider(queue_item.streamdetails.provider)
         if not isinstance(provider, MusicProvider):
             return CrossfadeMode.DISABLED
-        source_fades = provider.delivers_crossfaded_audio
+        source_fades = provider.delivers_crossfaded_audio(queue_item.streamdetails)
         if source_fades is None:
-            # nothing is playing from this source yet, so the setting it would be
-            # handed when it starts is the only thing to go on
-            source_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
-        if not source_fades:
-            return CrossfadeMode.DISABLED
-        if not self._source_fades_an_adjacent_item(queue, queue_item):
-            return CrossfadeMode.DISABLED
-        return CrossfadeMode.SOURCE
+            # the source is not serving this queue yet, so the setting it will be
+            # handed and a boundary it would own are all there is to go on
+            queue_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+            source_fades = queue_fades and self._source_fades_an_adjacent_item(queue, queue_item)
+        return CrossfadeMode.SOURCE if source_fades else CrossfadeMode.DISABLED
 
     def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
         """Return whether the queue's effective crossfade mode is smart crossfade."""
@@ -1979,10 +1981,11 @@ class StreamsController(CoreController):
         """
         Return whether the same source serves an item next to this one.
 
-        A source can only fade across a boundary it owns both sides of: with anything
-        else next to this item it plays the item out and the cut is a hard one. Both
-        neighbours count, the same way one of our own fades credits both of its sides -
-        the last track of a queue is still the side that was faded into.
+        Stands in for a source that is not serving this queue yet and so cannot answer
+        for the item itself: a source can only fade across a boundary it owns both
+        sides of, which makes this a necessary condition rather than proof of a fade.
+        Both neighbours count, the same way one of our own fades credits both of its
+        sides - the last track of a queue is still the side that was faded into.
 
         :param queue: Queue the item is played from.
         :param queue_item: Queue item whose neighbours to check.
