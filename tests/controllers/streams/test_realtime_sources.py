@@ -345,6 +345,26 @@ async def test_tail_hold_sees_a_buffer_attached_after_it_was_created() -> None:
     )
 
 
+async def test_tail_hold_counts_a_long_mix_as_listening_time() -> None:
+    """Bytes noted across a long overlap must not read as a suspension and bank a surplus."""
+    pcm_format = TEST_PCM_FORMAT
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=SimpleNamespace(eof=False, has_error=False))
+    )
+    hold = _TailHold(pcm_format, cast("Any", queue_item))
+
+    # 20s of audio arrives over 20s of wall clock: the source is keeping pace, so
+    # there is no surplus to hold back
+    hold.note_bytes(pcm_format.pcm_sample_size)
+    now = asyncio.get_event_loop().time()
+    hold._started = now - 20.0
+    hold._last_noted = now
+    hold._received_bytes = 20 * pcm_format.pcm_sample_size
+
+    assert hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size) == 0
+
+
 async def test_tail_hold_follows_a_capacity_reselection() -> None:
     """A reselection hands the item different details; the tracker must follow them."""
     pcm_format = TEST_PCM_FORMAT

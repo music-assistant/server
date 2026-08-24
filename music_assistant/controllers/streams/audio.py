@@ -326,8 +326,8 @@ async def _incoming_overlap_stream(
     collected: bytes,
     stream: AsyncGenerator[bytes],
     target_size: int,
-    fed: list[bytes],
     overshoot: bytearray,
+    on_pulled: Callable[[int], None],
 ) -> AsyncGenerator[bytes]:
     """
     Yield exactly the incoming track's overlap: what is in hand, then the live stream.
@@ -337,14 +337,14 @@ async def _incoming_overlap_stream(
         beyond the overlap are not lost (see ``overshoot``) and the stream itself
         stays open for the track's body.
     :param target_size: Exact number of overlap bytes to yield.
-    :param fed: Receives every yielded part, so the caller can account for them.
     :param overshoot: Receives bytes read beyond the overlap (they open the body).
+    :param on_pulled: Called with the size of every chunk taken off the stream here,
+        as it is taken - these bypass the caller's own read loop.
     """
     taken = 0
     if collected:
         part = collected[:target_size]
         overshoot.extend(collected[target_size:])
-        fed.append(part)
         taken = len(part)
         yield part
     while taken < target_size:
@@ -352,10 +352,10 @@ async def _incoming_overlap_stream(
             next_chunk = await anext(stream)
         except StopAsyncIteration:
             return
+        on_pulled(len(next_chunk))
         remaining = target_size - taken
         part = next_chunk[:remaining]
         overshoot.extend(next_chunk[remaining:])
-        fed.append(part)
         taken += len(part)
         yield part
 
@@ -2692,17 +2692,28 @@ class StreamsAudio:
                             # The mixer consumes the incoming overlap as it arrives and
                             # emits the blend at that same pace, so the transition
                             # streams instead of first collecting the whole overlap.
-                            # Everything handed to the mixer is kept for the
-                            # no-output fallback below.
-                            fed_to_mixer: list[bytes] = []
                             overlap_overshoot = bytearray()
                             mix_start_collected = len(crossfade_buffer)
+                            overlap_pulled = 0
+
+                            def _note_overlap_bytes(
+                                count: int, hold: _TailHold | None = tail_hold
+                            ) -> None:
+                                # the mixer reads the stream itself for the length of the
+                                # overlap; noting those bytes as they arrive keeps the
+                                # holdback's clock running, where one update afterwards
+                                # would read as a suspension and bank a false surplus
+                                nonlocal overlap_pulled
+                                overlap_pulled += count
+                                if hold is not None:
+                                    hold.note_bytes(count)
+
                             overlap_stream = _incoming_overlap_stream(
                                 bytes(crossfade_buffer),
                                 item_stream,
                                 incoming_crossfade_size,
-                                fed_to_mixer,
                                 overlap_overshoot,
+                                _note_overlap_bytes,
                             )
                             crossfade_buffer = bytearray()
                             # The mix output is split live as it flows: the first
@@ -2807,14 +2818,17 @@ class StreamsAudio:
                                     await asyncio.sleep(0)
                                 bytes_written += len(remaining_bytes)
                                 del remaining_bytes
-                            if tail_hold is not None:
-                                # bytes the mixer pulled from the stream bypassed the
-                                # loop's own counting; without them the surplus (and
-                                # so the next fade) would be under-measured
-                                pulled = sum(len(part) for part in fed_to_mixer) + len(
-                                    overlap_overshoot
-                                )
-                                tail_hold.note_bytes(max(0, pulled - mix_start_collected))
+                            # the position was reported for the planned overlap; an
+                            # incoming stream that ended short blended less than that,
+                            # and the track must not be reported past its own audio
+                            blended = max(
+                                0, mix_start_collected + overlap_pulled - len(overlap_overshoot)
+                            )
+                            queue_track.streamdetails.seek_position = min(
+                                queue_track.streamdetails.seek_position,
+                                raw_seek_position
+                                + blended / pcm_sample_size * track_playback_speed,
+                            )
                             last_fadeout_part = b""
                             last_streamdetails = None
                             last_queue_track = None
