@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,7 +27,24 @@ def _provider() -> Any:
     provider.media_content_type = "music"
     provider._sync_tracks = True
     provider.cache = MagicMock()
+    provider.mass.cache.handle_refresh = _recording_handle_refresh([])
     return provider
+
+
+def _recording_handle_refresh(calls: list[bool]) -> Any:
+    """
+    Build a fake `CacheController.handle_refresh` that records the bypass flag it's given.
+
+    The recorded flags are readable back via the returned callable's `.calls` attribute.
+    """
+
+    @asynccontextmanager
+    async def _handle_refresh(bypass: bool) -> AsyncGenerator[None]:
+        calls.append(bypass)
+        yield None
+
+    _handle_refresh.calls = calls  # type: ignore[attr-defined]
+    return _handle_refresh
 
 
 def _item(relative_path: str, checksum: str = "1") -> FileSystemItem:
@@ -50,8 +69,11 @@ async def test_unchanged_metadata_file_is_ignored() -> None:
         return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
     )
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert items_to_process == []
 
@@ -63,8 +85,11 @@ async def test_registrations_are_bulk_loaded_once() -> None:
     provider.cache.get = AsyncMock(side_effect=AssertionError("should not be called per-file"))
     metadata_files = [_item(f"Artist/Album{i}/album.nfo") for i in range(25)]
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files(metadata_files, {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        metadata_files, {}, {}, items_to_process, force_refresh_tracks
+    )
 
     provider.cache.get_all.assert_awaited_once_with(
         provider=INSTANCE_ID, category=CACHE_CATEGORY_METADATA_FILE
@@ -82,12 +107,16 @@ async def test_changed_nfo_queues_representative_track() -> None:
     track_item = _item("Artist/Album/t1.mp3")
     provider.resolve = AsyncMock(return_value=track_item)
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
     await provider._queue_changed_metadata_files(
-        [meta], {"Artist/Album/t1.mp3": "abc"}, {}, items_to_process
+        [meta], {"Artist/Album/t1.mp3": "abc"}, {}, items_to_process, force_refresh_tracks
     )
 
     assert items_to_process == [(track_item, "abc")]
+    # its reparse must bypass this provider's short-lived album/artist caches, or an
+    # unrelated concurrent parse of the same folder could hand back the pre-change data
+    assert force_refresh_tracks == {"Artist/Album/t1.mp3"}
 
 
 async def test_changed_image_queues_representative_track_and_invalidates_it() -> None:
@@ -101,8 +130,11 @@ async def test_changed_image_queues_representative_track_and_invalidates_it() ->
     provider.resolve = AsyncMock(return_value=track_item)
     provider.mass.metadata.invalidate_image_cache = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert items_to_process == [(track_item, None)]
     # the image itself keeps its (provider, path) identity, so its own cached thumbnail/source
@@ -123,8 +155,11 @@ async def test_changed_nfo_does_not_invalidate_image_cache() -> None:
     provider.resolve = AsyncMock(return_value=_item("Artist/Album/t1.mp3"))
     provider.mass.metadata.invalidate_image_cache = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     provider.mass.metadata.invalidate_image_cache.assert_not_awaited()
 
@@ -145,12 +180,14 @@ async def test_changed_metadata_file_for_cue_album_uses_cue_checksum_for_overwri
     cue_item = _item("Artist/Album/album.cue")
     provider.resolve = AsyncMock(return_value=cue_item)
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
     await provider._queue_changed_metadata_files(
         [meta],
         {},  # file_checksums: no direct entry for a CUE sheet's own path
         {"Artist/Album/album.cue": {"cksum-a", "cksum-b"}},
         items_to_process,
+        force_refresh_tracks,
     )
 
     assert items_to_process == [(cue_item, "cksum-a")]  # min() of the tracked set
@@ -171,8 +208,11 @@ async def test_two_changed_metadata_files_dedupe_to_one_track() -> None:
     provider.resolve = AsyncMock(return_value=track_item)
     provider.mass.metadata.invalidate_image_cache = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([nfo, img], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [nfo, img], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert len(items_to_process) == 1
     assert items_to_process[0][0] is track_item
@@ -188,8 +228,11 @@ async def test_track_already_changed_is_not_duplicated() -> None:
     provider.resolve = AsyncMock()
     existing = (_item("Artist/Album/t1.mp3"), "old")
     items_to_process: list[tuple[FileSystemItem, str | None]] = [existing]
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert items_to_process == [existing]
     provider.resolve.assert_not_awaited()
@@ -201,8 +244,11 @@ async def test_cache_miss_is_ignored() -> None:
     meta = _item("Artist/Album/album.nfo")
     provider.cache.get_all = AsyncMock(return_value={})
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert items_to_process == []
 
@@ -217,8 +263,11 @@ async def test_missing_representative_track_defers() -> None:
     provider.resolve = AsyncMock(side_effect=FileNotFoundError())
     provider.cache.set = AsyncMock()
     items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
 
-    await provider._queue_changed_metadata_files([meta], {}, {}, items_to_process)
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
 
     assert items_to_process == []
     provider.cache.set.assert_not_awaited()  # old token kept, so a later sync retries
@@ -397,3 +446,65 @@ async def test_parse_album_does_not_register_on_malformed_nfo() -> None:
         if call.kwargs.get("category") == CACHE_CATEGORY_METADATA_FILE
     ]
     assert meta_calls == []
+
+
+# --- force_refresh bypassing the provider's own short-lived caches ---------
+
+
+async def test_process_item_async_bypasses_cache_when_force_refresh() -> None:
+    """
+    A metadata-triggered reparse must bypass the provider's own album/artist caches.
+
+    Otherwise an unrelated concurrent parse of the same folder within the last 120 seconds
+    could hand back its pre-change cached Album/Artist, silently defeating the whole point
+    of queuing this representative for reparsing.
+    """
+    provider = _provider()
+    track_item = _item("Artist/Album/t1.mp3")
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    provider._parse_track = AsyncMock(return_value=MagicMock())
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        await provider._process_item_async(track_item, "old", force_refresh=True)
+
+    assert provider.mass.cache.handle_refresh.calls == [True]
+
+
+async def test_process_item_async_does_not_bypass_cache_by_default() -> None:
+    """A normally-changed track (not metadata-triggered) keeps the provider's own caching."""
+    provider = _provider()
+    track_item = _item("Artist/Album/t1.mp3")
+    provider.mass.metadata.invalidate_image_cache = AsyncMock()
+    provider._parse_track = AsyncMock(return_value=MagicMock())
+    provider.mass.music.tracks.add_item_to_library = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        await provider._process_item_async(track_item, "old")
+
+    assert provider.mass.cache.handle_refresh.calls == [False]
+
+
+async def test_queue_changed_metadata_files_marks_representative_for_force_refresh() -> None:
+    """A representative queued from a metadata-file change is marked for cache-bypassing."""
+    provider = _provider()
+    meta = _item("Artist/Album/album.nfo", checksum="2")
+    provider.cache.get_all = AsyncMock(
+        return_value={"Artist/Album/album.nfo": {"token": "1", "track": "Artist/Album/t1.mp3"}}
+    )
+    track_item = _item("Artist/Album/t1.mp3")
+    provider.resolve = AsyncMock(return_value=track_item)
+    items_to_process: list[tuple[FileSystemItem, str | None]] = []
+    force_refresh_tracks: set[str] = set()
+
+    await provider._queue_changed_metadata_files(
+        [meta], {}, {}, items_to_process, force_refresh_tracks
+    )
+
+    assert force_refresh_tracks == {"Artist/Album/t1.mp3"}

@@ -236,7 +236,7 @@ class CacheController(CoreController):
         for row in rows:
             try:
                 data = await async_json_loads(row["data"])
-            except Exception as exc:
+            except ValueError as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s/%s/%s: %s",
                     provider,

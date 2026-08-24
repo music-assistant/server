@@ -495,6 +495,9 @@ class LocalFileSystemProvider(MusicProvider):
         # never imported themselves, only used to detect a change worth reparsing their
         # registered representative track
         metadata_files: list[FileSystemItem] = []
+        # representatives queued because of a metadata-file change, so their reparse can
+        # bypass this provider's own short-lived album/artist/folder-image caches
+        force_refresh_tracks: set[str] = set()
         # collects the errors raised while walking the tree; any error means the
         # scan is incomplete, a fatal one means the provider is unreachable
         scan_errors = ScanErrors()
@@ -520,7 +523,11 @@ class LocalFileSystemProvider(MusicProvider):
                 return
             if metadata_files:
                 await self._queue_changed_metadata_files(
-                    metadata_files, file_checksums, cue_file_checksums, items_to_process
+                    metadata_files,
+                    file_checksums,
+                    cue_file_checksums,
+                    items_to_process,
+                    force_refresh_tracks,
                 )
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
@@ -569,7 +576,12 @@ class LocalFileSystemProvider(MusicProvider):
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
                 if await self._process_item_async(
-                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames
+                    item,
+                    prev_checksum,
+                    cur_filenames,
+                    cue_stems,
+                    prev_filenames,
+                    force_refresh=item.relative_path in force_refresh_tracks,
                 ):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
@@ -1235,6 +1247,7 @@ class LocalFileSystemProvider(MusicProvider):
         file_checksums: dict[str, str],
         cue_file_checksums: dict[str, set[str]],
         items_to_process: list[tuple[FileSystemItem, str | None]],
+        force_refresh_tracks: set[str],
     ) -> None:
         """
         Queue the representative track of each changed local metadata file for reparsing.
@@ -1248,12 +1261,18 @@ class LocalFileSystemProvider(MusicProvider):
 
         This never writes the metadata-file cache itself: only actually reparsing the
         representative track (which re-reads the file) advances its registered token, so a
-        failed parse is retried next sync instead of being silently marked as handled.
+        failed parse is retried next sync instead of being silently marked as handled. A
+        changed recognized image also has its own image cache invalidated unconditionally,
+        even when its representative reparse itself is deduplicated away.
 
         :param metadata_files: Local metadata files collected by this sync's walk.
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param items_to_process: The sync's changed/new items; receives queued representatives.
+        :param force_refresh_tracks: Receives the relative_path of every newly queued
+            representative, so its reparse can bypass this provider's own short-lived
+            album/artist/folder-image caches instead of an unrelated concurrent parse of the
+            same folder immediately handing back the pre-change data.
         """
         # one bulk load instead of one query per metadata file, which otherwise would mean
         # thousands of sequential cache reads on a large library every single sync
@@ -1268,7 +1287,17 @@ class LocalFileSystemProvider(MusicProvider):
             if cached.get("token") == meta_item.metadata_change_token:
                 continue
             track_path = cached.get("track")
-            if not track_path or track_path in queued_tracks:
+            if not track_path:
+                continue
+            if is_image_file(meta_item):
+                # invalidate unconditionally, even when the representative reparse below is
+                # deduplicated away (e.g. the track itself also changed, or another metadata
+                # file already queued it this sync): the image keeps the same (provider, path)
+                # identity, so skipping this here would leave its old bytes cached regardless
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, meta_item.relative_path
+                )
+            if track_path in queued_tracks:
                 continue
             try:
                 track_item = await self.resolve(track_path)
@@ -1280,6 +1309,7 @@ class LocalFileSystemProvider(MusicProvider):
             if track_item.is_dir:
                 continue
             queued_tracks.add(track_path)
+            force_refresh_tracks.add(track_path)
             if track_item.ext in CUE_EXTENSIONS:
                 # a CUE sheet's own checksum is not tracked under its path in file_checksums,
                 # only the synthetic per-track ids it expands into are
@@ -1287,13 +1317,6 @@ class LocalFileSystemProvider(MusicProvider):
             else:
                 prev_checksum = file_checksums.get(track_path)
             items_to_process.append((track_item, prev_checksum))
-            if is_image_file(meta_item):
-                # a changed folder image keeps the same (provider, path) identity, so only
-                # invalidating the representative track's own image cache would leave any
-                # already-served thumbnail/source/palette cache entries for this image stale
-                await self.mass.metadata.invalidate_image_cache(
-                    self.instance_id, meta_item.relative_path
-                )
 
     async def _register_metadata_file(
         self, item: FileSystemItem, representative_track: str | None
@@ -1385,6 +1408,7 @@ class LocalFileSystemProvider(MusicProvider):
         cur_filenames: set[str] | None = None,
         cue_stems: set[str] | None = None,
         prev_filenames: set[str] | None = None,
+        force_refresh: bool = False,
     ) -> bool:
         """
         Process a single item asynchronously.
@@ -1396,6 +1420,9 @@ class LocalFileSystemProvider(MusicProvider):
             used to detect companion-CUE audio files without a filesystem stat.
         :param prev_filenames: The ids/paths the previous scan found, used to keep the
             ids of a CUE sheet that fails to parse.
+        :param force_refresh: When True, bypass this provider's own short-lived album/artist/
+            folder-image caches while parsing, so a metadata-file-triggered reparse cannot be
+            handed back stale data by an unrelated concurrent parse of the same folder.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -1412,7 +1439,8 @@ class LocalFileSystemProvider(MusicProvider):
                 )
 
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
-                tracks = await self._cue.parse_tracks(item)
+                async with self.mass.cache.handle_refresh(force_refresh):
+                    tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
                     track.favorite = False
                     await self.mass.music.tracks.add_item_to_library(
@@ -1429,7 +1457,8 @@ class LocalFileSystemProvider(MusicProvider):
                 if cue_stems is not None and item.absolute_path.rsplit(".", 1)[0] in cue_stems:
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
-                track = await self._parse_track(item, tags)
+                async with self.mass.cache.handle_refresh(force_refresh):
+                    track = await self._parse_track(item, tags)
                 track.favorite = False  # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
