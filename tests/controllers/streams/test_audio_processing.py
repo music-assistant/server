@@ -1253,8 +1253,11 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
-    # a source that hands over nothing is reopened, and both opens see the eager position
-    assert eager_seek_positions == [32, 32]
+    # the prefetcher's early open sees the raw position; the reopen after the failed
+    # handover sees the eager (crossfade-adjusted) one
+    assert len(eager_seek_positions) == 2
+    assert eager_seek_positions[-1] == 32
+    # ... and the zero-audio skip restores the raw position afterwards
     assert skipped_streamdetails.seek_position == raw_seek_position
 
 

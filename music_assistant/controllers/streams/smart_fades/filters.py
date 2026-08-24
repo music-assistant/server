@@ -340,13 +340,15 @@ class StreamingCrossfadeFilter(Filter):
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the afade+amix filter chain."""
         ns = self.crossfade_samples
-        # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
+        # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated
+        # material. The final output stays unlabeled: this filter ends the chain and an
+        # unconnected named output fails the whole graph.
         return [
             f"{input_fadeout_label}afade=t=out:start_sample=0:nb_samples={ns}:"
             f"curve={self.fadeout_curve}[xfade_out]",
             f"{input_fadein_label}afade=t=in:start_sample=0:nb_samples={ns}:"
             f"curve={self.fadein_curve}[xfade_in]",
-            f"[xfade_out][xfade_in]amix=inputs=2:normalize=0[{self.output_fadeout_label}]",
+            "[xfade_out][xfade_in]amix=inputs=2:normalize=0",
         ]
 
     def __repr__(self) -> str:

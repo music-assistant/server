@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio import StreamsAudio, _RealtimeTailHold
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
@@ -297,24 +297,44 @@ def test_holdback_rejected_when_crossfade_buffer_size_is_zero() -> None:
     assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 0) is False
 
 
-def test_holdback_for_realtime_source_arms_only_at_eof() -> None:
-    """A realtime source's tail is held back only once the source is done delivering."""
+def test_holdback_never_arms_a_fixed_window_for_a_realtime_source() -> None:
+    """A realtime source's holdback is surplus-grown (_RealtimeTailHold), never fixed."""
     audio = StreamsAudio(MagicMock())
-    delivering = SimpleNamespace(
-        is_realtime=True, buffer=SimpleNamespace(eof=False, has_error=False, max_size_seconds=300)
-    )
-    done = SimpleNamespace(
-        is_realtime=True, buffer=SimpleNamespace(eof=True, has_error=False, max_size_seconds=300)
-    )
-    # the small-buffer exception must not apply: holding back against a
-    # still-delivering realtime source would starve the player
-    small = SimpleNamespace(
-        is_realtime=True, buffer=SimpleNamespace(eof=False, has_error=False, max_size_seconds=15)
-    )
+    for eof in (False, True):
+        streamdetails = SimpleNamespace(
+            is_realtime=True,
+            buffer=SimpleNamespace(eof=eof, has_error=False, max_size_seconds=300),
+        )
+        assert audio._crossfade_holdback_allowed(cast("Any", streamdetails), 10) is False
 
-    assert audio._crossfade_holdback_allowed(cast("Any", delivering), 10) is False
-    assert audio._crossfade_holdback_allowed(cast("Any", done), 10) is True
-    assert audio._crossfade_holdback_allowed(cast("Any", small), 45) is False
+
+async def test_realtime_tail_hold_grows_with_the_banked_surplus() -> None:
+    """The holdback window covers exactly what the source delivered beyond the clock."""
+    pcm_format = TEST_PCM_FORMAT
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+    audio_buffer = SimpleNamespace(eof=False, duration_available=2.0)
+    hold = _RealtimeTailHold(pcm_format, cast("Any", audio_buffer))
+
+    # nothing arrived yet: nothing may be held
+    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
+
+    # 11s of content arrived; pretend ~4s of wall time passed since the first byte
+    hold.note_bytes(11 * pcm_format.pcm_sample_size)
+    hold._started = asyncio.get_event_loop().time() - 4.0
+    target = hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size)
+    # surplus = 11 (content) + 2 (resident) - 4 (elapsed) = 9s => capped at the window
+    assert target == 8 * pcm_format.pcm_sample_size
+    # a larger window is bounded by the surplus itself, frame-aligned
+    larger = hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
+    assert larger % frame_size == 0
+    assert int(8.5 * pcm_format.pcm_sample_size) < larger <= 9 * pcm_format.pcm_sample_size
+
+    # once the source is done, the rest is resident: full window regardless
+    audio_buffer.eof = True
+    assert (
+        hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
+        == 45 * pcm_format.pcm_sample_size
+    )
 
 
 def test_holdback_rejected_without_a_buffer() -> None:
