@@ -386,6 +386,44 @@ async def test_playback_starting_during_release_callback_is_not_stopped() -> Non
     assert events == ["stop", "play"]
 
 
+async def test_cmd_play_checks_playing_state_after_cleanup_finishes() -> None:
+    """A play command waiting on cleanup rechecks state after the old stop."""
+    controller, _provider, player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    player.state.playback_state = PlaybackState.PLAYING
+    stop_started = asyncio.Event()
+    finish_stop = asyncio.Event()
+
+    async def stop_player(_player_id: str) -> None:
+        stop_started.set()
+        await finish_stop.wait()
+        player.state.playback_state = PlaybackState.IDLE
+
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_cmd_play = AsyncMock()
+    controller.mass.player_queues.get.return_value = None
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+    )
+    await stop_started.wait()
+    play_task = asyncio.create_task(controller.cmd_play(PLAYER_ID))
+    await asyncio.sleep(0)
+    controller._handle_cmd_play.assert_not_awaited()
+
+    finish_stop.set()
+    await asyncio.gather(release_task, play_task)
+
+    controller._handle_cmd_play.assert_awaited_once_with(PLAYER_ID)
+
+
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
     """A release for a player holding no source tells no plugin anything."""
     controller, provider, _player = _controller(None)

@@ -408,15 +408,15 @@ class MSXPlayer(Player):
                 if command == "play_media":
                     media = kwargs.get("media")
                     if media:
-                        # Call member.play_media directly — mass.players.play_media
-                        # would redirect synced/grouped players back to the leader
-                        await member.play_media(media)
+                        # Use the internal handler so active source sessions are released,
+                        # while avoiding the public redirect back to the leader.
+                        await self.mass.players._handle_play_media(member.player_id, media)
                 elif command == "stop":
-                    await member.stop()
+                    await self.mass.players._handle_cmd_stop(member.player_id)
                 elif command == "pause":
-                    await member.pause()
+                    await self.mass.players._handle_cmd_pause(member.player_id)
                 elif command == "play":
-                    await member.play()
+                    await self.mass.players._handle_cmd_play(member.player_id)
         except Exception:
             self.logger.warning(
                 "Failed to propagate %s to member %s",

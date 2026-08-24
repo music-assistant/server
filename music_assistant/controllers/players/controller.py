@@ -640,20 +640,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
-            self.logger.info(
-                "Ignore PLAY request to player %s: player is already playing", player.state.name
-            )
-            return
-        # player is not paused: check for queue redirect, then delegate to internal handler
-        if player.state.playback_state != PlaybackState.PAUSED:
-            source = player.state.active_source
-            if active_queue := self.mass.player_queues.get(source or player_id):
-                await self.mass.player_queues.resume(active_queue.queue_id)
-                return
-
-        # Delegate to internal handler for actual implementation
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            if player.state.playback_state == PlaybackState.PLAYING:
+                self.logger.info(
+                    "Ignore PLAY request to player %s: player is already playing",
+                    player.state.name,
+                )
+                return
+            # player is not paused: check for queue redirect, then delegate to internal handler
+            if player.state.playback_state != PlaybackState.PAUSED:
+                source = player.state.active_source
+                if active_queue := self.mass.player_queues.get(source or player_id):
+                    await self.mass.player_queues.resume(active_queue.queue_id)
+                    return
+            # Delegate to internal handler for actual implementation
             await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
