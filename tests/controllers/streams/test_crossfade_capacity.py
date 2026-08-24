@@ -13,7 +13,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import (
-    MIN_CROSSFADE_FALLBACK_DURATION,
+    MIN_CROSSFADE_DURATION,
     StreamsAudio,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -52,66 +52,68 @@ def _delivered_buffer() -> SimpleNamespace:
 
 
 def test_ready_incoming_buffer_keeps_smart_crossfade() -> None:
-    """A fully resident incoming buffer keeps the requested Smart Fade."""
+    """A tail that carries the full smart window keeps the requested Smart Fade."""
     audio = StreamsAudio(MagicMock())
 
     mode, duration = audio._select_buffered_crossfade(
         _streamdetails(_buffer(SMART_CROSSFADE_DURATION, ready=True)),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
+        fade_out_seconds=SMART_CROSSFADE_DURATION,
     )
 
     assert mode == CrossfadeMode.SMART_CROSSFADE
     assert duration == SMART_CROSSFADE_DURATION
 
 
-def test_partial_incoming_buffer_degrades_to_short_standard_crossfade() -> None:
-    """Five resident seconds are crossfaded without waiting for more source PCM."""
-    audio = StreamsAudio(MagicMock())
-    available_seconds = MIN_CROSSFADE_FALLBACK_DURATION + 2
-
-    mode, duration = audio._select_buffered_crossfade(
-        _streamdetails(_buffer(available_seconds, ready=False)),
-        CrossfadeMode.SMART_CROSSFADE,
-        standard_crossfade_duration=8,
-    )
-
-    assert mode == CrossfadeMode.STANDARD_CROSSFADE
-    assert duration == available_seconds
-
-
-def test_crossfade_resident_duration_accounts_for_playback_speed() -> None:
-    """Fast playback cannot claim more post-filter overlap than resident PCM can produce."""
+def test_a_partly_resident_incoming_buffer_keeps_the_full_window() -> None:
+    """The incoming side streams in while the blend plays, so residency does not cap it."""
     audio = StreamsAudio(MagicMock())
 
     mode, duration = audio._select_buffered_crossfade(
-        _streamdetails(_buffer(8, ready=False)),
+        _streamdetails(_buffer(2, ready=True)),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
-        playback_speed=2.0,
+        fade_out_seconds=SMART_CROSSFADE_DURATION,
     )
 
-    assert mode == CrossfadeMode.DISABLED
-    assert duration == 0
+    assert mode == CrossfadeMode.SMART_CROSSFADE
+    assert duration == SMART_CROSSFADE_DURATION
 
 
 @pytest.mark.parametrize(
     "audio_buffer",
     [
         None,
-        _buffer(MIN_CROSSFADE_FALLBACK_DURATION - 0.5, ready=False),
+        _buffer(30, ready=False),
     ],
 )
 def test_unprepared_incoming_buffer_disables_crossfade(
     audio_buffer: AudioBuffer | None,
 ) -> None:
-    """An unusable incoming buffer falls back to gapless/no-crossfade playback."""
+    """An incoming source that is not delivering yet falls back to playback without a fade."""
     audio = StreamsAudio(MagicMock())
 
     mode, duration = audio._select_buffered_crossfade(
         _streamdetails(audio_buffer),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
+        fade_out_seconds=SMART_CROSSFADE_DURATION,
+    )
+
+    assert mode == CrossfadeMode.DISABLED
+    assert duration == 0
+
+
+def test_a_tail_below_the_minimum_disables_the_crossfade() -> None:
+    """Too short a held tail is played out instead of blended."""
+    audio = StreamsAudio(MagicMock())
+
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails(_buffer(30, ready=True)),
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=MIN_CROSSFADE_DURATION - 0.5,
     )
 
     assert mode == CrossfadeMode.DISABLED
@@ -202,22 +204,19 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
     build.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("playback_speed", "resident_media_duration"),
-    [(0.5, 2.5), (2.0, 10.0)],
-)
-async def test_partial_crossfade_resumes_at_consumed_media_time(
+@pytest.mark.parametrize("playback_speed", [0.5, 2.0])
+async def test_crossfade_reads_its_window_past_the_resident_buffer(
     monkeypatch: pytest.MonkeyPatch,
     playback_speed: float,
-    resident_media_duration: float,
 ) -> None:
-    """Crossfade output bytes resume the raw source at the matching media-time position."""
+    """The blend consumes its whole window as it arrives, and hands on the media time used."""
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE,
         sample_rate=8000,
         bit_depth=16,
         channels=2,
     )
+    resident_media_duration = 2.0
     current_details = SimpleNamespace(
         duration=16,
         seek_position=0,
@@ -228,7 +227,7 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
     )
     next_details = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=_buffer(resident_media_duration, ready=False),
+        buffer=_buffer(resident_media_duration, ready=True),
         duration=16,
         seek_position=0,
         uri="test://next",
@@ -264,10 +263,11 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
     audio.setup()
     audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
     audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    crossfade_duration = 8
     smart_fade = SimpleNamespace(
         timing_info=SimpleNamespace(
-            pre_crossfade_duration=3,
-            crossfade_duration=5,
+            pre_crossfade_duration=0,
+            crossfade_duration=crossfade_duration,
             fadein_trimmed_duration=0,
         )
     )
@@ -287,23 +287,22 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
             yield chunk
 
     monkeypatch.setattr(audio.smart_fades_mixer, "mix", _mix)
-    requested_beyond_resident = False
-    seek_positions: list[float | None] = []
+    incoming_seconds_read = 0
 
     async def _item_stream(
         queue_item: object,
         *_args: object,
-        **kwargs: object,
+        **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
-        nonlocal requested_beyond_resident
+        nonlocal incoming_seconds_read
         if queue_item is current_item:
             yield bytes(pcm_format.pcm_sample_size * 8)
             yield bytes(pcm_format.pcm_sample_size * 8)
             return
-        seek_positions.append(cast("float | None", kwargs.get("seek_position")))
-        yield bytes(pcm_format.pcm_sample_size * MIN_CROSSFADE_FALLBACK_DURATION)
-        requested_beyond_resident = True
-        pytest.fail("Crossfade requested audio beyond the resident buffer")
+        # the incoming source keeps delivering beyond what was resident at the boundary
+        for _ in range(20):
+            incoming_seconds_read += 1
+            yield bytes(pcm_format.pcm_sample_size)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -311,25 +310,15 @@ async def test_partial_crossfade_resumes_at_consumed_media_time(
         cast("Any", current_item),
         pcm_format,
         crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
-        standard_crossfade_duration=8,
+        standard_crossfade_duration=crossfade_duration,
     )
 
     _ = [chunk async for chunk in stream]
 
-    assert not requested_beyond_resident
+    assert incoming_seconds_read > resident_media_duration
     crossfade_data = audio._crossfade_data["queue-1"]
-    assert crossfade_data.fade_in_media_duration == resident_media_duration
-    assert crossfade_data.elapsed_time_offset == 5 * playback_speed
-
-    next_stream = audio.get_queue_item_stream_with_smartfade(
-        cast("Any", player),
-        cast("Any", next_item),
-        pcm_format,
-        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
-        standard_crossfade_duration=8,
+    assert crossfade_data.queue_item_id == "next"
+    # the next track resumes at the media time the blend already played
+    assert crossfade_data.fade_in_media_duration == pytest.approx(
+        crossfade_duration * playback_speed
     )
-    await anext(next_stream)
-    await next_stream.aclose()
-
-    assert seek_positions == [None, resident_media_duration]
-    assert next_details.seek_position == 5 * playback_speed

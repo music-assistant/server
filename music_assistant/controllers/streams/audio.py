@@ -113,10 +113,7 @@ from music_assistant.controllers.streams.constants import (
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
-from music_assistant.controllers.streams.smart_fades.helpers import (
-    MIN_EFFECTIVE_FADE_BUFFER,
-    SMART_CROSSFADE_DURATION,
-)
+from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -179,12 +176,10 @@ if TYPE_CHECKING:
 # Seconds of PCM at the start of a track that are yielded straight to the player,
 # never held back for a crossfade.
 WARMUP_DURATION = 8
-# Minimum overlap used when the full incoming crossfade buffer was not prepared.
-MIN_CROSSFADE_FALLBACK_DURATION = 5
-
-# Minimum fade a realtime source's banked surplus must cover for the boundary to
-# be blended at all; below this the tail plays out and the boundary is a hard cut.
-MIN_REALTIME_CROSSFADE_DURATION = 3
+# Minimum overlap worth blending; below this the tail plays out and the boundary
+# is a hard cut. The configured mode picks the fade, this only decides whether a
+# boundary can carry one at all.
+MIN_CROSSFADE_DURATION = 3
 
 # Bounded wait at a boundary for a realtime incoming track to start delivering.
 # Its buffer only exists once its session produces audio, which happens around the
@@ -1962,7 +1957,7 @@ class StreamsAudio:
             else crossfade_buffer_duration,
         )
         # skip crossfade if buffer would be too small to be meaningful
-        if crossfade_buffer_duration < MIN_CROSSFADE_FALLBACK_DURATION:
+        if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
             crossfade_buffer_duration = 0
         # Ensure crossfade buffer size is aligned to frame boundaries
         # Frame size = bytes_per_sample * channels
@@ -2101,16 +2096,8 @@ class StreamsAudio:
         fade_in_buffer_duration = 0.0
         fade_in_playback_speed = 1.0
         # a fade needs enough of the outgoing track to overlap with; a holdback that
-        # armed late (or not at all) leaves less than that. A realtime tail is
-        # surplus-grown, so a smaller one is still worth blending.
-        min_fade_out_size = int(
-            pcm_format.pcm_sample_size
-            * (
-                MIN_REALTIME_CROSSFADE_DURATION
-                if streamdetails.is_realtime
-                else MIN_CROSSFADE_FALLBACK_DURATION
-            )
-        )
+        # armed late (or not at all) leaves less than that
+        min_fade_out_size = int(pcm_format.pcm_sample_size * MIN_CROSSFADE_DURATION)
         if len(buffer) >= min_fade_out_size and next_queue_item and next_queue_item.streamdetails:
             fade_in_playback_speed = cast(
                 "float", next_queue_item.extra_attributes.get("playback_speed", 1.0)
@@ -2137,7 +2124,6 @@ class StreamsAudio:
                     next_queue_item.streamdetails,
                     crossfade_mode,
                     standard_crossfade_duration,
-                    fade_in_playback_speed,
                     fade_out_seconds=len(buffer) / pcm_format.pcm_sample_size,
                 )
                 crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
@@ -2484,7 +2470,7 @@ class StreamsAudio:
                     else crossfade_buffer_duration,
                 )
                 # skip crossfade if buffer would be too small to be meaningful
-                if crossfade_buffer_duration < MIN_CROSSFADE_FALLBACK_DURATION:
+                if crossfade_buffer_duration < MIN_CROSSFADE_DURATION:
                     crossfade_buffer_duration = 0
                 # Ensure crossfade buffer size is aligned to frame boundaries
                 # Frame size = bytes_per_sample * channels
@@ -2518,7 +2504,6 @@ class StreamsAudio:
                             queue_track.streamdetails,
                             item_crossfade_mode,
                             standard_crossfade_duration,
-                            track_playback_speed,
                             fade_out_seconds=len(last_fadeout_part) / pcm_sample_size,
                         )
                     if transition_mode == CrossfadeMode.DISABLED:
@@ -2905,16 +2890,8 @@ class StreamsAudio:
                     # full tail was pre-counted and is now yielded as-is
                     last_fadeout_part = b""
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
-                # armed late (or not at all) leaves less than that. A realtime tail is
-                # surplus-grown, so a smaller one is still worth blending.
-                min_fade_out_size = int(
-                    pcm_sample_size
-                    * (
-                        MIN_REALTIME_CROSSFADE_DURATION
-                        if queue_track.streamdetails.is_realtime
-                        else MIN_CROSSFADE_FALLBACK_DURATION
-                    )
-                )
+                # armed late (or not at all) leaves less than that
+                min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_DURATION)
                 if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
@@ -3977,79 +3954,48 @@ class StreamsAudio:
         streamdetails: StreamDetails,
         crossfade_mode: CrossfadeMode,
         standard_crossfade_duration: int,
-        playback_speed: float = 1.0,
-        fade_out_seconds: float | None = None,
+        fade_out_seconds: float,
     ) -> tuple[CrossfadeMode, float]:
         """
-        Select a crossfade that can be completed from resident incoming PCM.
+        Select the crossfade this boundary can carry.
 
-        What the boundary has in hand picks the rung: a smart fade on whatever
-        window both sides can carry (the full smart window is a ceiling, its
-        effective minimum the floor), a standard fade otherwise, none when there
-        is not enough to blend at all.
+        The configured mode picks the fade; the held-back outgoing tail sizes its
+        window, up to that mode's ceiling. Too short a tail to blend at all means no
+        fade rather than a different one.
 
         :param streamdetails: Incoming track stream details.
         :param crossfade_mode: Requested crossfade mode.
         :param standard_crossfade_duration: Configured standard overlap in seconds.
-        :param playback_speed: Incoming track playback-speed multiplier.
-        :param fade_out_seconds: Held-back outgoing tail in seconds, when known;
-            a smart fade needs its effective minimum on that side too.
-        :return: Effective mode and resident fade-in duration in seconds.
+        :param fade_out_seconds: Held-back outgoing tail in seconds.
+        :return: Effective mode and fade-in duration in seconds.
         """
         audio_buffer = streamdetails.buffer
         if (
             crossfade_mode == CrossfadeMode.DISABLED
-            or playback_speed <= 0
             or audio_buffer is None
             or audio_buffer.has_error
             or not audio_buffer.is_valid()
+            or not audio_buffer.ready.is_set()
         ):
             return CrossfadeMode.DISABLED, 0
 
-        available_seconds = audio_buffer.duration_available / playback_speed
-        if (
-            crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            and audio_buffer.ready.is_set()
-            and (fade_out_seconds is None or fade_out_seconds >= MIN_EFFECTIVE_FADE_BUFFER)
-        ):
-            if streamdetails.is_realtime and fade_out_seconds is not None:
-                # The blend streams, so the incoming window does not have to be
-                # resident - it arrives at the source's own (overpaced) delivery
-                # rate while the blend plays. The held-back outgoing tail is what
-                # bounds the window a boundary can carry.
-                return crossfade_mode, min(SMART_CROSSFADE_DURATION, fade_out_seconds)
-            if available_seconds >= MIN_EFFECTIVE_FADE_BUFFER:
-                return crossfade_mode, min(SMART_CROSSFADE_DURATION, available_seconds)
-
-        if streamdetails.is_realtime:
-            # A realtime source cannot bank the whole standard overlap up front,
-            # but it does not have to: the standard mix streams too. The resident
-            # audio only has to prove the source is actually delivering; a source
-            # that is not there yet means this boundary simply plays without a fade.
-            if (
-                not audio_buffer.ready.is_set()
-                or standard_crossfade_duration < MIN_CROSSFADE_FALLBACK_DURATION
-            ):
-                return CrossfadeMode.DISABLED, 0
-            return CrossfadeMode.STANDARD_CROSSFADE, standard_crossfade_duration
-
-        if (
-            crossfade_mode == CrossfadeMode.STANDARD_CROSSFADE
-            and standard_crossfade_duration >= MIN_CROSSFADE_FALLBACK_DURATION
-            and audio_buffer.ready.is_set()
-            and available_seconds >= standard_crossfade_duration
-        ):
-            return crossfade_mode, standard_crossfade_duration
-
-        fallback_duration = min(standard_crossfade_duration, available_seconds)
-        if fallback_duration < MIN_CROSSFADE_FALLBACK_DURATION:
+        # The blend streams, so the incoming window does not have to be resident:
+        # it arrives while the blend plays. The tail we held back is what bounds it.
+        window = min(
+            SMART_CROSSFADE_DURATION
+            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+            else standard_crossfade_duration,
+            fade_out_seconds,
+        )
+        if window < MIN_CROSSFADE_DURATION:
             return CrossfadeMode.DISABLED, 0
         self.logger.debug(
-            "Using %s second standard crossfade for %s from resident audio",
-            fallback_duration,
+            "Using a %.1f second %s for %s",
+            window,
+            crossfade_mode.value,
             streamdetails.uri,
         )
-        return CrossfadeMode.STANDARD_CROSSFADE, fallback_duration
+        return crossfade_mode, window
 
     async def _resolve_media_stream_source(
         self,

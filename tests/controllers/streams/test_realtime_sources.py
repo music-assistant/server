@@ -28,7 +28,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.controllers.streams.audio import StreamsAudio, _RealtimeTailHold
+from music_assistant.controllers.streams.audio import (
+    MIN_CROSSFADE_DURATION,
+    StreamsAudio,
+    _RealtimeTailHold,
+)
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
@@ -405,20 +409,12 @@ def test_holdback_capacity_accounts_for_playback_speed() -> None:
 # -- StreamsAudio._select_buffered_crossfade --
 
 
-def test_realtime_incoming_source_climbs_the_fade_ladder_by_residency() -> None:
-    """What is resident picks the rung: smart with the window in hand, standard without."""
+def test_the_held_tail_sizes_the_fade_the_configured_mode_picks() -> None:
+    """The mode decides which fade is applied; the held tail only sizes its window."""
     audio = StreamsAudio(MagicMock())
 
-    # barely delivering: the streaming standard mix covers the overlap as it arrives
-    mode, duration = audio._select_buffered_crossfade(
-        _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
-        CrossfadeMode.SMART_CROSSFADE,
-        standard_crossfade_duration=8,
-    )
-    assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
-
-    # with a held tail that can carry the window, the smart fade applies and is
-    # sized by that tail: the incoming side streams in while the blend plays
+    # a realtime source barely delivers, yet the tail it banked carries the window:
+    # the incoming side streams in while the blend plays
     mode, duration = audio._select_buffered_crossfade(
         _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
         CrossfadeMode.SMART_CROSSFADE,
@@ -427,14 +423,38 @@ def test_realtime_incoming_source_climbs_the_fade_ladder_by_residency() -> None:
     )
     assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 20)
 
-    # ... but not when the outgoing tail cannot carry its half of the window
+    # a shorter tail keeps the smart fade, on a shorter window
     mode, duration = audio._select_buffered_crossfade(
-        _streamdetails_for_crossfade(_buffer(15, ready=True), is_realtime=True),
+        _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
         fade_out_seconds=6,
     )
+    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 6)
+
+    # a standard fade never exceeds the configured overlap
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
+        CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=20,
+    )
     assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
+
+
+def test_a_tail_too_short_to_blend_skips_the_fade() -> None:
+    """Below the minimum overlap the tail plays out and the boundary is a hard cut."""
+    audio = StreamsAudio(MagicMock())
+
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(_buffer(20, ready=True), is_realtime=True),
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=MIN_CROSSFADE_DURATION - 0.5,
+    )
+
+    assert mode == CrossfadeMode.DISABLED
+    assert duration == 0
 
 
 def test_realtime_incoming_source_not_yet_delivering_skips_the_fade() -> None:
@@ -445,6 +465,7 @@ def test_realtime_incoming_source_not_yet_delivering_skips_the_fade() -> None:
         _streamdetails_for_crossfade(_buffer(0, ready=False), is_realtime=True),
         CrossfadeMode.STANDARD_CROSSFADE,
         standard_crossfade_duration=8,
+        fade_out_seconds=8,
     )
 
     assert mode == CrossfadeMode.DISABLED

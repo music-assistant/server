@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 # Buffer size in seconds for crossfade analysis
 SMART_CROSSFADE_DURATION = 45
 
-# Below this many seconds of audible tail, a smart crossfade is pointless;
-# the caller should fall back to a standard fade (which strips silence).
+# Below this many seconds of audible tail there is no room to place a musical
+# blend; the planner degrades such a boundary to a standard fade.
 MIN_EFFECTIVE_FADE_BUFFER = 8.0
 
 # Fraction of sustained (median-active) energy below which the outro no longer
