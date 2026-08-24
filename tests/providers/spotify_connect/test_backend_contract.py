@@ -27,7 +27,14 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.spotify_connect import provider as provider_mod
-from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_NORMAL,
+    AUDIO_QUALITY_VERY_HIGH,
+    SpotifyConnectBackend,
+    spotify_source_audio_format,
+)
 from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
@@ -801,6 +808,35 @@ async def test_go_librespot_stream_source_is_custom_with_nobuffer() -> None:
     assert source.stream_type is StreamType.CUSTOM
     assert source.path is None
     assert source.extra_input_args == ["-fflags", "nobuffer"]
+
+
+@pytest.mark.parametrize(
+    ("quality", "lossless", "codec", "bit_depth", "bit_rate"),
+    [
+        (AUDIO_QUALITY_LOSSLESS, True, ContentType.FLAC, 24, None),
+        # an engine or item that cannot be served losslessly keeps the tier's ceiling
+        (AUDIO_QUALITY_LOSSLESS, False, ContentType.VORBIS, 16, 320),
+        (AUDIO_QUALITY_VERY_HIGH, False, ContentType.VORBIS, 16, 320),
+        (AUDIO_QUALITY_HIGH, False, ContentType.VORBIS, 16, 160),
+        (AUDIO_QUALITY_NORMAL, False, ContentType.VORBIS, 16, 96),
+        ("future_tier", False, ContentType.VORBIS, 16, 320),
+    ],
+)
+def test_the_advertised_source_format_follows_the_tier(
+    quality: str,
+    lossless: bool,
+    codec: ContentType,
+    bit_depth: int,
+    bit_rate: int | None,
+) -> None:
+    """Every soloist/librespot engine advertises the tier it was configured with."""
+    fmt = spotify_source_audio_format(quality, lossless=lossless)
+
+    assert fmt.codec_type is codec
+    assert fmt.sample_rate == 44100
+    assert fmt.bit_depth == bit_depth
+    assert fmt.channels == 2
+    assert fmt.bit_rate == bit_rate
 
 
 def _make_backend() -> GoLibrespotBackend:

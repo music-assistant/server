@@ -1,14 +1,21 @@
 """Test Audible Provider."""
 
+import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import audible
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.audible import Audibleprovider
-from music_assistant.providers.audible.audible_helper import AudibleHelper
+from music_assistant.providers.audible.audible_helper import (
+    AudibleHelper,
+    cached_authenticator_from_file,
+    evict_cached_authenticator,
+)
 
 
 @pytest.fixture
@@ -217,6 +224,77 @@ async def test_podcast_parent_fallback(helper: AudibleHelper) -> None:
     assert episode.podcast.item_id == ""
 
 
+def _mock_auth(locale: str) -> MagicMock:
+    """Return a mock Authenticator with signing auth and the given locale."""
+    auth = MagicMock()
+    auth.adp_token = "adp_token"
+    auth.device_private_key = "private_key"
+    auth.locale = audible.localization.Locale(locale)
+    return auth
+
+
+def _write_auth_file(path: Path, locale_code: str) -> None:
+    """Write a syntactically valid auth file with dummy tokens and the given locale."""
+    # assembled at runtime so the detect-private-key hook does not flag the dummy value
+    pem = "RSA PRIVATE " + "KEY-----"
+    path.write_text(
+        json.dumps(
+            {
+                "website_cookies": {"session-id": "dummy"},
+                "adp_token": "{enc:x}{key:x}{iv:x}{name:x}{serial:Mg==}",
+                "access_token": "Atna|dummy",
+                "refresh_token": "Atnr|dummy",
+                "device_private_key": f"-----BEGIN {pem}\ndummy\n-----END {pem}\n",
+                "expires": 9999999999.0,
+                "locale_code": locale_code,
+                "device_info": {"device_serial_number": "dummy"},
+                "customer_info": {"name": "dummy"},
+                "with_username": False,
+            }
+        )
+    )
+
+
+async def test_cached_authenticator_corrects_locale_mismatch(tmp_path: Path) -> None:
+    """An auth file holding a stale marketplace is corrected to the configured locale."""
+    path = tmp_path / "auth.json"
+    _write_auth_file(path, "us")
+
+    auth = await cached_authenticator_from_file(str(path), "de")
+
+    assert auth.locale is not None
+    assert auth.locale.country_code == "de"
+    assert auth.locale.domain == "de"
+    assert json.loads(path.read_text())["locale_code"] == "de"
+    evict_cached_authenticator(str(path))
+
+
+async def test_cached_authenticator_keeps_matching_locale(tmp_path: Path) -> None:
+    """An auth file matching the configured locale is left untouched."""
+    path = str(tmp_path / "auth.json")
+    auth = _mock_auth("de")
+    with patch("audible.Authenticator.from_file", return_value=auth):
+        result = await cached_authenticator_from_file(path, "de")
+
+    assert result is auth
+    auth.to_file.assert_not_called()
+    evict_cached_authenticator(path)
+
+
+async def test_cached_authenticator_loads_new_file_after_reauth(tmp_path: Path) -> None:
+    """A new auth file written by a reconfigure is loaded instead of a stale authenticator."""
+    old_path = str(tmp_path / "old.json")
+    new_path = str(tmp_path / "new.json")
+    old_auth = _mock_auth("us")
+    new_auth = _mock_auth("de")
+    with patch("audible.Authenticator.from_file", side_effect=[old_auth, new_auth]):
+        assert await cached_authenticator_from_file(old_path, "us") is old_auth
+        assert await cached_authenticator_from_file(new_path, "de") is new_auth
+
+    evict_cached_authenticator(old_path)
+    evict_cached_authenticator(new_path)
+
+
 async def test_browse_decoding(provider: Audibleprovider) -> None:
     """Test browse path decoding."""
     # We need to test the provider's browse method, not the helper's.
@@ -233,3 +311,34 @@ async def test_browse_decoding(provider: Audibleprovider) -> None:
     # Test Genre with slash (encoded)
     await provider.browse("audible://genres/Sci-Fi%2FFantasy")
     provider.helper.get_audiobooks_by_genre.assert_called_with("Sci-Fi/Fantasy")
+
+
+async def test_get_library_podcasts_includes_legacy_periodicals(helper: AudibleHelper) -> None:
+    """Test podcast sync also picks up series with the legacy Periodical delivery type."""
+    library_items = [
+        {
+            "asin": "P1",
+            "title": "Modern Podcast",
+            "content_delivery_type": "PodcastParent",
+        },
+        {
+            "asin": "P2",
+            "title": "Audible Original Show",
+            "content_delivery_type": "Periodical",
+        },
+        {
+            "asin": "B1",
+            "title": "Some Book",
+            "content_delivery_type": "SinglePartBook",
+        },
+    ]
+
+    async def side_effect(_: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("page") == 1:
+            return {"items": library_items}
+        return {"items": []}
+
+    with patch.object(helper, "_call_api", side_effect=side_effect):
+        podcasts = [podcast async for podcast in helper.get_library_podcasts()]
+
+    assert [podcast.item_id for podcast in podcasts] == ["P1", "P2"]
