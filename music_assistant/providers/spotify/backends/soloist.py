@@ -1140,12 +1140,6 @@ class _SoloistSession:
         queue_id = self.queue_id
         queue = self.mass.player_queues.get(queue_id) if queue_id else None
         if queue is None or queue_id is None or queue.current_index is None:
-            self.logger.debug(
-                "No follower for %s: queue=%s current_index=%s",
-                streamdetails.uri,
-                queue_id,
-                queue.current_index if queue else None,
-            )
             return None
         controller = self.mass.player_queues
         # the item being streamed is the one playing or one of the few ahead of
@@ -1157,15 +1151,13 @@ class _SoloistSession:
                 break
             if item.streamdetails is streamdetails:
                 return controller.get_next_item(queue_id, item.queue_item_id)
+        # commonly a queue index that has not settled yet (fresh play start);
+        # the caller keeps asking while the item streams
         self.logger.debug(
-            "No follower for %s: no identity match from index %s (%s)",
+            "No follower for %s: item not within %s of queue index %s",
             streamdetails.uri,
+            _FOLLOWER_SEARCH_DEPTH,
             queue.current_index,
-            ", ".join(
-                f"{item.name}:{'same' if item.streamdetails is streamdetails else 'other'}"
-                for offset in range(_FOLLOWER_SEARCH_DEPTH)
-                if (item := controller.get_item(queue_id, queue.current_index + offset)) is not None
-            ),
         )
         return None
 
