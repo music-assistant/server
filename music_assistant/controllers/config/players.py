@@ -670,7 +670,7 @@ class PlayerConfigMixin:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
                     default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
                 else:
-                    # Flow mode is enforced for this HA-player. Clear depends_on so the
+                    # Flow mode is enforced for this player. Clear depends_on so the
                     # UI doesn't visually disable sample rate when entry is omitted.
                     forced_sample_rate_entry = deepcopy(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
                     forced_sample_rate_entry.depends_on = None
