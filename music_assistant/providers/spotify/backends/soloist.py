@@ -1459,6 +1459,10 @@ class _SoloistSession:
         # only ones worth following.
         if data.item is not None and data.item.uri:
             await self._observe_current(data.item.uri, _decorated_duration_ms(data.item))
+            if not self.usable:
+                # the snapshot ended the session; nothing below it should still
+                # be pinning volume or options on what the app is now driving
+                return
         item = self._current
         if item is not None:
             item.status = data.status

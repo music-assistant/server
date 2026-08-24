@@ -1000,6 +1000,32 @@ async def test_skipping_from_the_app_to_the_fed_item_is_followed(tmp_path: Path)
     assert session.item_for(TRACK_B) is fed
 
 
+async def test_a_takeover_snapshot_stops_pinning_volume_and_options(tmp_path: Path) -> None:
+    """Once the app has the session, the rest of its snapshot must not reach the daemon."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    await session._observe_current(TRACK_A, 200_000)
+    item.observe_position(20_000)
+
+    await session._handle_event(
+        SoloistEvent(
+            type="playback_changed",
+            data=SoloistPlaybackState(
+                status="playing",
+                item=SoloistEntity(uri="spotify:track:theirs", entity_type="track"),
+                volume=40,
+                options=SoloistPlaybackOptions(shuffle=True, repeat="context"),
+            ),
+            raw={},
+        )
+    )
+    assert session.usable is False
+    _client_of(session).set_volume.assert_not_awaited()
+    _client_of(session).set_shuffle.assert_not_awaited()
+
+
 async def test_the_engine_moving_on_at_a_track_end_is_not_a_takeover(tmp_path: Path) -> None:
     """An unasked-for item the engine reaches at a boundary is its own autoplay."""
     session = _make_session(tmp_path)
