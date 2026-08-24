@@ -48,7 +48,7 @@ from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcod
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import FULL_REPLACE_UPDATE, MediaControllerBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -618,17 +618,16 @@ class AlbumsController(MediaControllerBase[Album]):
         return db_id
 
     async def _update_library_item(
-        self,
-        item_id: str | int,
-        update: Album,
-        overwrite: bool = False,
-        full_replace: bool = False,
+        self, item_id: str | int, update: Album, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = metadata_for_update(
-            cur_item.metadata, update.metadata, overwrite, full_replace=full_replace
+        full_replace = FULL_REPLACE_UPDATE.get()
+        metadata = (
+            update.metadata
+            if full_replace
+            else metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         )
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
@@ -639,8 +638,8 @@ class AlbumsController(MediaControllerBase[Album]):
         name = update.name if authoritative else cur_item.name
         sort_name = update.sort_name if authoritative else cur_item.sort_name or update.sort_name
         if full_replace:
-            # the sidecar refresh delivers the complete filesystem-owned identity, so an NFO-only
-            # value it no longer carries must be cleared rather than kept via a truthiness fallback
+            # an authoritative update delivers the complete state, so a value it no longer
+            # carries must be cleared rather than kept via a truthiness fallback
             version = update.version
             year = update.year
         elif overwrite:

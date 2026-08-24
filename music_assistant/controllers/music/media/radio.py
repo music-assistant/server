@@ -286,7 +286,7 @@ class RadioController(MediaControllerBase[Radio]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Radio, overwrite: bool = False, full_replace: bool = False
+        self, item_id: str | int, update: Radio, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer

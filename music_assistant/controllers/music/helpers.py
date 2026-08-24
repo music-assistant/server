@@ -124,26 +124,18 @@ def filter_search_results(
 
 
 def metadata_for_update(
-    stored: MediaItemMetadata,
-    update: MediaItemMetadata,
-    overwrite: bool,
-    full_replace: bool = False,
+    stored: MediaItemMetadata, update: MediaItemMetadata, overwrite: bool
 ) -> MediaItemMetadata:
     """
     Return the metadata to store for a library item update.
 
     An overwrite replaces the stored metadata, unless the given item carries none at
     all: providers embed a bare stub of an album or artist in their track payloads.
-    A full replace persists the given metadata verbatim, so an authoritative caller can
-    clear fields the source no longer provides.
 
     :param stored: Metadata currently stored for the library item.
     :param update: Metadata of the item as delivered by the provider.
     :param overwrite: Whether the given item replaces the stored one.
-    :param full_replace: Whether the given metadata is authoritative and may clear fields.
     """
-    if full_replace:
-        return update
     if overwrite and any(getattr(update, field.name) for field in fields(update)):
         return update
     return stored.update(update)

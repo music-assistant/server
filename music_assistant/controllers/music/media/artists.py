@@ -56,7 +56,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import FULL_REPLACE_UPDATE, MediaControllerBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1104,15 +1104,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         return db_id
 
     async def _update_library_item(
-        self,
-        item_id: str | int,
-        update: Artist | ItemMapping,
-        overwrite: bool = False,
-        full_replace: bool = False,
+        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
+        full_replace = FULL_REPLACE_UPDATE.get()
         authoritative = overwrite or full_replace
         if isinstance(update, ItemMapping):
             # NOTE that artist is the only mediatype where its accepted we
@@ -1120,8 +1117,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = metadata_for_update(
-                cur_item.metadata, update.metadata, overwrite, full_replace=full_replace
+            metadata = (
+                update.metadata
+                if full_replace
+                else metadata_for_update(cur_item.metadata, update.metadata, overwrite)
             )
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
@@ -1151,9 +1150,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # update/set external id lookup table
-        # artist identity ids are sticky: a non-empty authoritative set replaces them, but an empty
-        # one never clears the final id (a MusicBrainz artist id may also be asserted by another
-        # album.nfo or a streaming provider), so this never passes replace=True
+        # artist identity ids are sticky: a non-empty authoritative set replaces them, but an
+        # empty one never clears the final id, since the same id may also be asserted by
+        # another authoritative source or a streaming provider, so this never passes replace=True
         await self.set_external_ids(
             db_id,
             update.external_ids if authoritative else cur_item.external_ids,

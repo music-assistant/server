@@ -485,7 +485,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         item_id: str | int,
         update: Audiobook,
         overwrite: bool = False,
-        full_replace: bool = False,
         *,
         set_playlog: bool = True,
     ) -> None:

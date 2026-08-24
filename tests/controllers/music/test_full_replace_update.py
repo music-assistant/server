@@ -1,4 +1,4 @@
-"""Tests for the authoritative full_replace update mode used by the filesystem sidecar refresh."""
+"""Tests for the authoritative full_replace update mode on library items."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.base import FULL_REPLACE_UPDATE
 from music_assistant.mass import MusicAssistant
 
-INSTANCE = "filesystem_local_1"
-DOMAIN = "filesystem_local"
+INSTANCE = "test_provider_1"
+DOMAIN = "test_provider"
 ALBUM_MBID = "aa11bb22-cc33-dd44-ee55-ff6677889900"
 ARTIST_MBID = "11223344-5566-7788-99aa-bbccddeeff00"
 
@@ -46,8 +46,8 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
         await controller._database.close()
 
 
-def _fs_album() -> Album:
-    """Build a filesystem album carrying NFO-derived identity, ids, and metadata."""
+def _test_album() -> Album:
+    """Build an album carrying identity, external ids, and metadata for update tests."""
     album = Album(
         item_id="Artist/Album",
         provider=INSTANCE,
@@ -77,7 +77,7 @@ def _fs_album() -> Album:
         ),
     )
     album.metadata.genres = {"Rock", "Pop"}
-    album.metadata.description = "an nfo description"
+    album.metadata.description = "a description"
     return album
 
 
@@ -98,16 +98,16 @@ async def _external_ids(music: MusicController, media_type: str, db_id: int | st
     }
 
 
-async def test_full_replace_clears_album_nfo_owned_values(music: MusicController) -> None:
+async def test_full_replace_clears_values_the_update_omits(music: MusicController) -> None:
     """A full_replace album update clears version, year, external ids and empties metadata."""
-    stored = await music.albums.add_item_to_library(_fs_album(), overwrite_existing=True)
+    stored = await music.albums.add_item_to_library(_test_album(), overwrite_existing=True)
     assert await _external_ids(music, "album", stored.item_id) == {
         str(ExternalID.MB_ALBUM),
         str(ExternalID.BARCODE),
     }
 
-    # the NFO (and its barcode/mbid/version/year/genres) is removed: a full replace persists the
-    # bare tag-only album verbatim, clearing every value the sidecar no longer provides
+    # the update carries only the bare identity: a full replace persists it verbatim, clearing
+    # every value (barcode/mbid/version/year/genres) it no longer provides
     cleared = Album(
         item_id="Artist/Album",
         provider=INSTANCE,
@@ -135,9 +135,11 @@ async def test_full_replace_clears_album_nfo_owned_values(music: MusicController
     assert not refreshed.metadata.description
 
 
-async def test_overwrite_without_full_replace_keeps_nfo_values(music: MusicController) -> None:
+async def test_overwrite_without_full_replace_keeps_existing_values(
+    music: MusicController,
+) -> None:
     """A plain overwrite update must not clear version, year, or external ids (existing behavior)."""
-    stored = await music.albums.add_item_to_library(_fs_album(), overwrite_existing=True)
+    stored = await music.albums.add_item_to_library(_test_album(), overwrite_existing=True)
     cleared = Album(
         item_id="Artist/Album",
         provider=INSTANCE,

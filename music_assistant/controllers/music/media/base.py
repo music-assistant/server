@@ -115,10 +115,9 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
 )
 
 # When set (task-local), the current library update is authoritative and persists the given item
-# as the complete state, allowing fields the source no longer provides to be cleared. It is an
-# internal control for the filesystem sidecar refresh, deliberately kept off the public update
-# command so external clients cannot request a destructive full replace. Only album and artist
-# honor it.
+# as the complete state, allowing fields the source no longer provides to be cleared. It is
+# deliberately kept off the public update command so external clients cannot request a
+# destructive full replace. Only album and artist honor it.
 FULL_REPLACE_UPDATE: ContextVar[bool] = ContextVar("FULL_REPLACE_UPDATE", default=False)
 
 SORT_KEYS = {
@@ -315,24 +314,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @final
     async def update_item_in_library(
-        self,
-        item_id: str | int,
-        update: ItemCls,
-        overwrite: bool = False,
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
-        """
-        Update existing library record in the library database.
-
-        :param item_id: The library item id to update.
-        :param update: The item carrying the new values.
-        :param overwrite: Replace this provider's values, keeping other providers' data.
-        """
+        """Update existing library record in the library database."""
         self.mass.music.match_provider_instances(update)
         # batch the many writes of an item update into a single commit
         async with self.mass.music.database.deferred_commit():
-            await self._update_library_item(
-                item_id, update, overwrite=overwrite, full_replace=FULL_REPLACE_UPDATE.get()
-            )
+            await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
         if SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -1794,11 +1782,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @abstractmethod
     async def _update_library_item(
-        self,
-        item_id: str | int,
-        update: ItemCls,
-        overwrite: bool = False,
-        full_replace: bool = False,
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> None:
         """Update existing library record in the database."""
 

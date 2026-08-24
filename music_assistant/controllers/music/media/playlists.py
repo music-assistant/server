@@ -431,11 +431,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return db_id
 
     async def _update_library_item(
-        self,
-        item_id: str | int,
-        update: Playlist,
-        overwrite: bool = False,
-        full_replace: bool = False,
+        self, item_id: str | int, update: Playlist, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer

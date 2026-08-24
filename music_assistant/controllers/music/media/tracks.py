@@ -751,7 +751,6 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str | int,
         update: Track,
         overwrite: bool = False,
-        full_replace: bool = False,
         *,
         set_album: bool = True,
     ) -> None:
