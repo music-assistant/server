@@ -1213,23 +1213,27 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     active_playback_session_id,
                 )
                 return
-            await self._release_audio_source(player_id)
-            if not stop_playback:
-                return
-            replacement_session = self._source_sessions.get(player_id)
-            if provider_instance_id is not None and replacement_session is not None:
-                self.logger.debug(
-                    "Not stopping player %s after releasing provider %s source %s: "
-                    "provider %s source %s took over",
-                    player_id,
-                    provider_instance_id,
-                    source_id,
-                    replacement_session.provider_instance_id,
-                    replacement_session.source_id,
-                )
-                return
-            with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
-                await self._handle_cmd_stop(player_id)
+            try:
+                if stop_playback:
+                    with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
+                        await self._handle_cmd_stop(player_id)
+            finally:
+                if session is not None:
+                    current_session = self._source_sessions.get(player_id)
+                    if (
+                        current_session is session
+                        and current_session.playback_session_id == active_playback_session_id
+                    ):
+                        await self._release_audio_source(player_id)
+                    else:
+                        self.logger.debug(
+                            "Not releasing provider %s source %s session %s on player %s: "
+                            "the source changed while playback was stopping",
+                            provider_instance_id,
+                            source_id,
+                            playback_session_id,
+                            player_id,
+                        )
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """

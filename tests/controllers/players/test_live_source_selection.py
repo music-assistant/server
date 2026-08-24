@@ -186,6 +186,26 @@ async def test_a_provider_release_without_a_playback_session_is_rejected() -> No
     controller._handle_cmd_stop.assert_not_awaited()
 
 
+async def test_an_unexpected_stop_failure_still_releases_the_source() -> None:
+    """Source cleanup completes before an unexpected stop error propagates."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    controller._handle_cmd_stop.side_effect = OSError("transport failed")
+
+    with pytest.raises(OSError, match="transport failed"):
+        await controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
 async def test_a_replacement_source_during_release_is_not_stopped() -> None:
     """A source taking over during release remains active and playing."""
     controller, provider, _player = _controller(_source())
@@ -221,7 +241,7 @@ async def test_a_replacement_source_during_release_is_not_stopped() -> None:
     session = controller.get_audio_source_session(PLAYER_ID)
     assert session is not None
     assert session.source is replacement
-    controller._handle_cmd_stop.assert_not_awaited()
+    controller._handle_cmd_stop.assert_awaited_once()
 
 
 async def test_deselecting_another_source_from_the_same_provider_is_rejected() -> None:
@@ -296,6 +316,7 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
         )
     )
     await release_started.wait()
+    assert events == ["stop"]
     play_task = asyncio.create_task(
         controller.play_media(
             PLAYER_ID,
@@ -306,7 +327,7 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
     play_command_task = asyncio.create_task(controller.cmd_play(PLAYER_ID))
     resume_task = asyncio.create_task(controller.cmd_resume(PLAYER_ID))
     await asyncio.sleep(0)
-    playback_waited = not events
+    playback_waited = events == ["stop"]
 
     finish_release.set()
     await asyncio.gather(
@@ -320,6 +341,49 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
     assert playback_waited
     assert events[0] == "stop"
     assert set(events[1:]) == {"play", "play_command", "resume", "select"}
+
+
+async def test_playback_starting_during_release_callback_is_not_stopped() -> None:
+    """Playback bypassing the lock during plugin release sees no later stale stop."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    events: list[str] = []
+
+    async def release_source(_source_id: str, _player_id: str) -> None:
+        release_started.set()
+        await finish_release.wait()
+
+    async def stop_player(_player_id: str) -> None:
+        events.append("stop")
+
+    async def play_media(_player_id: str, _media: PlayerMedia) -> None:
+        events.append("play")
+
+    provider.on_source_released.side_effect = release_source
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_play_media = AsyncMock(side_effect=play_media)
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+    )
+    await release_started.wait()
+    await controller._handle_play_media(
+        PLAYER_ID,
+        PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK),
+    )
+    finish_release.set()
+    await release_task
+
+    assert events == ["stop", "play"]
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
