@@ -103,6 +103,7 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
     ctrl._smart_shuffle.windows = Mock(return_value=WINDOWS)
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items: list(items))
     ctrl._managed_pool = ManagedPool(ctrl)
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     # a carved-out NEXT track is expanded through the media resolver like on a linear queue;
@@ -312,3 +313,48 @@ async def test_play_next_mixed_batch_transition_plays_track_once() -> None:
         "play-next track must not be recorded as a pool source"
     )
     assert ctrl._queue_data["q1"].queue.is_dynamic
+
+
+async def test_play_next_mixed_container_transition_no_duplicates() -> None:
+    """NEXT of [album, dynamic radio] on a linear queue pools the album without duplicating it."""
+    random.seed(4)
+    snapshot = RecencySnapshot(now=NOW)
+    ctrl = _controller(snapshot)
+    current = _track("current", artist="Cur")
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=1,
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        index_in_buffer=0,
+        shuffle_enabled=False,
+        is_dynamic=False,
+    )
+    ctrl._queue_data = {
+        "q1": PlayerQueueData(queue=queue, items=[_queue_item("q1", current)], source_items=[])
+    }
+    ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
+    album = _album("alb")
+    album_tracks = [_track(f"a{i}", artist=f"AlbArtist{i}") for i in range(5)]
+    ctrl._media_resolver._resolve_media_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=list(album_tracks)
+    )
+    ctrl.get_dynamic_source_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[_track(f"d{i}", artist=f"Artist{i}") for i in range(10)]
+    )
+    ctrl.get_tracks_for_playback = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item: list(album_tracks) if item is album else []
+    )
+
+    await ctrl._handle_play_media("q1", [album, _radio("dyn")], QueueOption.NEXT)
+
+    ids = [
+        item.media_item.item_id
+        for item in ctrl._queue_data["q1"].items
+        if item.media_item is not None
+    ]
+    # the album feeds the new pool as a source; its expansion must not also be inserted
+    assert len(ids) == len(set(ids)), f"duplicate items in queue: {ids}"

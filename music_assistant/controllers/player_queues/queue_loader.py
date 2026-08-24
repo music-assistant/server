@@ -731,6 +731,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
 
         media_items: list[MediaItemType] = []
+        # the subset of media_items the user explicitly picked to play next
+        play_next_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
         # resolve all media items
@@ -849,7 +851,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         start_item_uri = start_item
                     elif start_item is not None:
                         start_item_uri = start_item.uri
-                    media_items += await self._media_resolver._resolve_media_items(
+                    resolved_items = await self._media_resolver._resolve_media_items(
                         media_item,
                         start_item_uri,
                         userid=queue_data.userid,
@@ -861,6 +863,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         # before it - the chosen track is pinned in front of the shuffled rest
                         keep_preceding_items=queue.shuffle_enabled,
                     )
+                    media_items += resolved_items
+                    if plays_next_track:
+                        play_next_items += resolved_items
 
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
@@ -892,8 +897,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # Only rebuilt when this enqueue changed the sources, so a play-next insert
                 # leaves the tail untouched.
                 await self._enter_dynamic_mode(queue_id, option)
-            if not (option == QueueOption.NEXT and media_items):
-                # everything else is fully handled by the pool (rebuilt above when needed)
+            # only explicit play-next tracks are inserted literally; container expansions are
+            # already in the pool via their source
+            media_items = play_next_items
+            if not media_items:
                 return
             # fall through: play-next track(s) are inserted after the buffered index below
 
