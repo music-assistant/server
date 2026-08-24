@@ -1064,10 +1064,19 @@ class _SoloistSession:
         next_uri = self._feedable_follower_uri(streamdetails)
         if next_uri is None:
             return False
-        if next_uri in self._items:
+        existing = self._items.get(next_uri)
+        if existing is not None and (
+            existing.claimed or existing is self._current or not existing.spent
+        ):
             # nothing left to send, so whether the engine plays on rests entirely on
             # the channel this session already holds for it
             return self._engine_plays_on_into(next_uri, spotify_uri)
+        if existing is not None:
+            # a channel left from an earlier play of the same track: its audio was
+            # handed over already, so this occurrence needs its own feed and channel
+            del self._items[next_uri]
+            with suppress(ValueError):
+                self._pending.remove(next_uri)
         # Registered before the command goes out: the engine can reach the item
         # while it is still in flight, and the events task has to find its
         # channel rather than mistake it for something nobody asked for.
@@ -1131,6 +1140,12 @@ class _SoloistSession:
         queue_id = self.queue_id
         queue = self.mass.player_queues.get(queue_id) if queue_id else None
         if queue is None or queue_id is None or queue.current_index is None:
+            self.logger.debug(
+                "No follower for %s: queue=%s current_index=%s",
+                streamdetails.uri,
+                queue_id,
+                queue.current_index if queue else None,
+            )
             return None
         controller = self.mass.player_queues
         # the item being streamed is the one playing or one of the few ahead of
@@ -1142,6 +1157,16 @@ class _SoloistSession:
                 break
             if item.streamdetails is streamdetails:
                 return controller.get_next_item(queue_id, item.queue_item_id)
+        self.logger.debug(
+            "No follower for %s: no identity match from index %s (%s)",
+            streamdetails.uri,
+            queue.current_index,
+            ", ".join(
+                f"{item.name}:{'same' if item.streamdetails is streamdetails else 'other'}"
+                for offset in range(_FOLLOWER_SEARCH_DEPTH)
+                if (item := controller.get_item(queue_id, queue.current_index + offset)) is not None
+            ),
+        )
         return None
 
     def _track_uri(self, queue_item: QueueItem) -> str | None:
