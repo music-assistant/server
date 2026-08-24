@@ -39,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import PocketCastsClient
@@ -246,15 +247,9 @@ class PocketCastsProvider(MusicProvider):
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
 
-        # only use episode numbers when every episode carries one, otherwise use the
-        # enumeration index to avoid mixing two incompatible numbering schemes
-        all_numbered = all(
-            isinstance(ep.get("episodeNumber"), int) and ep["episodeNumber"] > 0 for ep in episodes
-        )
-        total = len(episodes)
-        for idx, episode_data in enumerate(episodes):
-            # API lists newest-first; number down so bigger position = newer
-            position = episode_data["episodeNumber"] if all_numbered else total - idx
+        # the full-podcast payload carries no episode number, so rank on the publication date
+        positions = rank_episodes_by_date([ep.get("published") or None for ep in episodes])
+        for position, episode_data in zip(positions, episodes, strict=True):
             episode_item = self._convert_episode(
                 episode_data,
                 prov_podcast_id,

@@ -26,7 +26,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.podcast_parsers import enrich_episode_chapters
+from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
+    rank_episodes_by_date,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -283,16 +286,10 @@ class PodcastIndexProvider(MusicProvider):
             )
 
             episodes = response.get("items", [])
-            # only use itunes:episode numbers when every episode in the feed carries one,
-            # otherwise fall back to the listing index for all of them to avoid mixing
-            # two incompatible numbering schemes within the same show
-            all_numbered = all(
-                isinstance(ep.get("episode"), int) and ep["episode"] > 0 for ep in episodes
-            )
-            total = len(episodes)
-            for idx, episode_data in enumerate(episodes):
-                # API lists newest-first; number down so bigger position = newer
-                position = episode_data["episode"] if all_numbered else total - idx
+            # rank on the publication date rather than trusting the listing order, so a feed
+            # that numbers only part of its episodes cannot mix two incompatible scales
+            positions = rank_episodes_by_date([ep.get("datePublished") or None for ep in episodes])
+            for position, episode_data in zip(positions, episodes, strict=True):
                 episode = parse_episode_from_data(
                     episode_data,
                     prov_podcast_id,

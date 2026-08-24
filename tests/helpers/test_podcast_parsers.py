@@ -17,6 +17,7 @@ from music_assistant.helpers.podcast_parsers import (
     parse_chapters_from_json,
     parse_podcast_episode,
     parse_podcast_persons,
+    rank_episodes_by_date,
     refresh_cached_podcast,
 )
 
@@ -252,6 +253,38 @@ def test_positions_rank_serial_feeds_oldest_first() -> None:
     """An oldest-first (itunes:type=serial) feed still gives the newest episode the top spot."""
     episodes = [_episode(published=100), _episode(published=200), _episode(published=300)]
     assert get_episode_positions(episodes) == [1, 2, 3]
+
+
+def test_positions_ignore_numbering_that_restarts_each_season() -> None:
+    """Seasoned feeds restart their numbering, so the dates decide instead."""
+    episodes = [
+        _episode(number=1, season=2, published=300),
+        _episode(number=2, season=1, published=100),
+        _episode(number=1, season=1, published=200),
+    ]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_use_numbers_for_a_single_season() -> None:
+    """A feed that declares one season keeps its own episode numbers."""
+    episodes = [_episode(number=2, season=1), _episode(number=1, season=1)]
+    assert get_episode_positions(episodes) == [2, 1]
+
+
+def test_positions_prefer_numbers_over_dates() -> None:
+    """Episode numbers win over the publication dates when the feed carries both."""
+    episodes = [_episode(number=7, published=100), _episode(number=9, published=200)]
+    assert get_episode_positions(episodes) == [7, 9]
+
+
+def test_rank_by_date_keeps_feed_order_among_undated() -> None:
+    """Undated episodes rank oldest and hold their listing order between themselves."""
+    assert rank_episodes_by_date([None, 300, None, 100]) == [1, 4, 2, 3]
+
+
+def test_rank_by_date_accepts_string_dates() -> None:
+    """Providers reporting dates as sortable strings are ranked the same way."""
+    assert rank_episodes_by_date(["2026-03-01", "2024-01-01", "2025-02-01"]) == [3, 1, 2]
 
 
 def test_positions_rank_undated_episodes_as_oldest() -> None:

@@ -267,29 +267,44 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
     return None
 
 
+def rank_episodes_by_date(dates: list[Any]) -> list[int]:
+    """
+    Return the position of every episode, in the order the provider lists them.
+
+    Positions run oldest to newest, so the newest episode has the highest one. Episodes
+    without a date rank as the oldest, and when none of them has one the provider is
+    assumed to list its episodes newest-first.
+
+    :param dates: The publication dates in listing order, None where an episode has none.
+        Any comparable type will do as long as the provider reports them all the same way.
+    """
+    total = len(dates)
+    dated = [idx for idx, date in enumerate(dates) if date is not None]
+    if not dated:
+        return [total - idx for idx in range(total)]
+    undated = [idx for idx, date in enumerate(dates) if date is None]
+    positions = [0] * total
+    for position, idx in enumerate(undated + sorted(dated, key=lambda idx: dates[idx]), 1):
+        positions[idx] = position
+    return positions
+
+
 def get_episode_positions(episodes: list[dict[str, Any]]) -> list[int]:
     """
     Return the position of every episode, in the order the feed lists them.
 
-    Positions run oldest to newest, so the newest episode always has the highest one.
+    Positions run oldest to newest, so the newest episode has the highest one.
 
     :param episodes: The episodes of a single feed, as parsed by podcastparser.
     """
-    total = len(episodes)
-    # partial numbering mixes two schemes, so only use the feed's numbers when all episodes have one
-    if all(isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes):
+    # a feed that numbers only part of its episodes, or restarts its numbering every
+    # season, mixes incompatible scales, so its numbers are only used when unique
+    numbered = all(isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes)
+    if numbered and len({ep.get("season") or 0 for ep in episodes}) == 1:
         return [ep["number"] for ep in episodes]
     # podcastparser lists serial feeds oldest-first and all others newest-first,
-    # so rank on the publication date instead of the feed order. Episodes without one
-    # sort as the oldest, keeping their feed order among themselves
-    if any(ep.get("published") for ep in episodes):
-        oldest_first = sorted(range(total), key=lambda idx: episodes[idx].get("published") or 0)
-        positions = [0] * total
-        for position, idx in enumerate(oldest_first, 1):
-            positions[idx] = position
-        return positions
-    # nothing to rank on, so assume the usual newest-first listing
-    return [total - idx for idx in range(total)]
+    # so rank on the publication date instead of the feed order
+    return rank_episodes_by_date([ep.get("published") or None for ep in episodes])
 
 
 def parse_podcast_episode(
@@ -312,6 +327,8 @@ def parse_podcast_episode(
 
     The function returns None, if the episode enclosure is missing, i.e. there is no stream
     information present.
+
+    :param position: The episode's listing position, oldest to newest.
     """
     episode_duration = episode.get("total_time", 0.0)
     episode_title = episode.get("title", "NO_EPISODE_TITLE")
