@@ -26,13 +26,6 @@ from music_assistant.providers.ariacast_receiver import (
     CONF_MASS_PLAYER_ID as ARIACAST_PLAYER_ID,
 )
 from music_assistant.providers.ariacast_receiver import setup_flow as ariacast_flow
-from music_assistant.providers.spotify_connect import (
-    CONF_MASS_PLAYER_ID as SPOTIFY_PLAYER_ID,
-)
-from music_assistant.providers.spotify_connect import (
-    CONF_PUBLISH_NAME,
-)
-from music_assistant.providers.spotify_connect import setup_flow as spotify_flow
 from music_assistant.providers.vban_receiver import setup_flow as vban_flow
 from music_assistant.providers.vban_receiver.constants import (
     CONF_AUDIO_CHANNELS,
@@ -112,14 +105,6 @@ async def _wait_finished(session: SetupSession) -> None:
             {
                 AIRPLAY_PLAYER_ID: "kitchen",
                 CONF_AIRPLAY_NAME: "Kitchen AirPlay",
-            },
-        ),
-        (
-            "spotify_connect",
-            spotify_flow,
-            {
-                SPOTIFY_PLAYER_ID: "living-room",
-                CONF_PUBLISH_NAME: "Living Room Spotify",
             },
         ),
         (

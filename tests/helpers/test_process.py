@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 
@@ -148,3 +149,55 @@ async def test_stdin_quiesced_is_a_noop_without_a_process() -> None:
 
     async with proc.stdin_quiesced() as quiesced:
         assert quiesced is True
+
+
+@pytest.mark.asyncio
+async def test_iter_stdout_drains_lines_buffered_after_exit() -> None:
+    """
+    Output written just before the process exits is still delivered.
+
+    A short-lived process can write everything and be reaped before the reader
+    runs, so keying the stdout reader off the returncode would drop exactly the
+    output that explains why it exited.
+    """
+    proc = AsyncProcess(
+        ["sh", "-c", "for i in $(seq 1 50); do echo line$i; done"],
+        stdout=True,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    await proc.start()
+    await proc.wait()
+
+    lines = [line async for line in proc.iter_stdout()]
+
+    assert lines == [f"line{index}" for index in range(1, 51)]
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_read_stdout_stops_once_the_process_is_closed() -> None:
+    """A closed process reports EOF instead of waiting on a stream it no longer owns."""
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    await proc.close()
+
+    assert await proc.read_stdout() == b""
+
+
+@pytest.mark.asyncio
+async def test_second_close_returns_without_waiting_out_the_stream_locks() -> None:
+    """
+    Closing an already-closed process is cheap.
+
+    close() keeps the stdin/stdout locks it takes, so a second call used to sit
+    through both 5s acquire timeouts - a delay paid on every supervised restart
+    that closes the process before its own cleanup runs.
+    """
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    await proc.close()
+
+    started = time.monotonic()
+    await proc.close()
+
+    assert time.monotonic() - started < 1

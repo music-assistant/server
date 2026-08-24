@@ -940,8 +940,12 @@ class PlayerConfigMixin:
         if has_native:
             default_value = "native"
         else:
-            default_value = "auto"
+            # Without a native output the entry default stays "auto": runtime selection
+            # honours the player's default_output_protocol_domain (e.g. DLNA-first for a
+            # LinkPlay shell) with plain priority fallback, so the stored config default
+            # must not depend on which linked protocols happen to be available right now.
             options.append(ConfigValueOption("auto"))
+            default_value = "auto"
 
         all_entries.append(
             ConfigEntry(

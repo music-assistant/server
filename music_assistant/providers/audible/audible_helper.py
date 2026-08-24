@@ -23,6 +23,8 @@ from audible import AsyncClient
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
+
+    from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import (
     LoginFailed,
@@ -54,7 +56,9 @@ CACHE_CATEGORY_PODCAST_EPISODES = 4
 
 # Content delivery types
 AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
-PODCAST_CONTENT_TYPES = ("PodcastParent",)
+# Podcasts are normally reported as "PodcastParent", but (older) Audible Original
+# series are still reported with the legacy "Periodical" delivery type.
+PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -109,31 +113,67 @@ async def refresh_access_token_compat(
     return {"access_token": access_token, "expires": expires}
 
 
-async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
+async def cached_authenticator_from_file(
+    path: str, locale: str | None = None
+) -> audible.Authenticator:
     """
     Get an authenticator from file with caching and signing auth validation.
 
     :param path: Path to the authenticator JSON file.
+    :param locale: The configured marketplace locale; when the stored file disagrees,
+        the configured locale wins and the file is corrected.
     :return: The cached or loaded Authenticator instance.
     """
     logger = logging.getLogger("audible_helper")
-    if path in _AUTH_CACHE:
-        return _AUTH_CACHE[path]
+    auth = _AUTH_CACHE.get(path)
+    if auth is None:
+        logger.debug("Loading authenticator from file %s and caching it", path)
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
 
-    logger.debug("Loading authenticator from file %s and caching it", path)
-    auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+        # Verify signing auth is available (not affected by API changes)
+        if auth.adp_token and auth.device_private_key:
+            logger.debug("Signing auth available - using stable RSA-signed requests")
+        else:
+            logger.warning(
+                "Signing auth not available - only bearer auth will work. "
+                "Consider re-authenticating for more stable auth."
+            )
 
-    # Verify signing auth is available (not affected by API changes)
-    if auth.adp_token and auth.device_private_key:
-        logger.debug("Signing auth available - using stable RSA-signed requests")
-    else:
+        _AUTH_CACHE[path] = auth
+
+    # auth files written by older versions can hold the marketplace from before a
+    # locale change; the configured locale is authoritative, so correct the file
+    if locale and (auth.locale is None or auth.locale.country_code != locale):
         logger.warning(
-            "Signing auth not available - only bearer auth will work. "
-            "Consider re-authenticating for more stable auth."
+            "Marketplace in auth file (%s) does not match the configured locale (%s), correcting",
+            auth.locale.country_code if auth.locale else None,
+            locale,
         )
+        auth.locale = audible.localization.Locale(locale)
+        await asyncio.to_thread(auth.to_file, path)
 
-    _AUTH_CACHE[path] = auth
     return auth
+
+
+def evict_cached_authenticator(path: str) -> None:
+    """
+    Drop the cached authenticator for the given file path, if any.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    _AUTH_CACHE.pop(path, None)
+
+
+async def deregister_auth_file(path: str) -> None:
+    """
+    Deregister the virtual device registration stored in the given auth file.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    auth = _AUTH_CACHE.pop(path, None)
+    if auth is None:
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+    await asyncio.to_thread(auth.deregister_device)
 
 
 class AudibleHelper:
@@ -145,13 +185,24 @@ class AudibleHelper:
         client: AsyncClient,
         provider_domain: str,
         provider_instance: str,
+        provider: MusicProvider,
         logger: logging.Logger | None = None,
     ):
-        """Initialize the Audible Helper."""
+        """
+        Initialize the Audible Helper.
+
+        :param mass: The MusicAssistant instance.
+        :param client: An authenticated Audible API client.
+        :param provider_domain: Domain of the owning provider.
+        :param provider_instance: Instance id of the owning provider.
+        :param provider: The owning provider, used to report library items it had to skip.
+        :param logger: Logger to use, defaults to a module level logger.
+        """
         self.mass = mass
         self.client = client
         self.provider_domain = provider_domain
         self.provider_instance = provider_instance
+        self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
 
@@ -230,13 +281,8 @@ class AudibleHelper:
             if cached_book is not None:
                 return self._parse_audiobook(cached_book)
             return self._parse_audiobook(audiobook_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid audiobook: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing audiobook {audiobook_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.AUDIOBOOK, asin or None, exc)
             return None
 
     async def get_library(self) -> AsyncGenerator[Audiobook]:
@@ -759,13 +805,8 @@ class AudibleHelper:
             if cached_podcast is not None:
                 return self._parse_podcast(cached_podcast)
             return self._parse_podcast(podcast_data)
-        except MediaNotFoundError as exc:
-            self.logger.warning(f"Skipping invalid podcast: {exc}")
-            return None
         except Exception as exc:
-            self.logger.warning(
-                f"Error processing podcast {podcast_data.get('asin', 'unknown')}: {exc}"
-            )
+            self.provider.report_skipped_sync_item(MediaType.PODCAST, asin or None, exc)
             return None
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:

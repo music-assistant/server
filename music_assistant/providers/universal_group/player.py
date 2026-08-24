@@ -207,7 +207,7 @@ class UniversalGroupPlayer(Player):
                 options=[
                     ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
-                    if x.type != PlayerType.GROUP
+                    if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN)
                 ],
             ),
             ConfigEntry(
@@ -340,9 +340,9 @@ class UniversalGroupPlayer(Player):
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
+                            queue_session_id=self.stream.session_id,
                             custom_data={
                                 "ugp_player_id": self.player_id,
-                                "session_id": self.stream.session_id,
                             },
                         ),
                     )
@@ -395,9 +395,9 @@ class UniversalGroupPlayer(Player):
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
                         source_id=self.player_id,
+                        queue_session_id=self.stream.session_id,
                         custom_data={
                             "ugp_player_id": self.player_id,
-                            "session_id": self.stream.session_id,
                         },
                     ),
                 )

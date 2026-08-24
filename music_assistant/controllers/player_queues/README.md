@@ -102,17 +102,29 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
 - **Media-time vs stream-time.** The queue's elapsed time is stored in media-time (usable directly
   as a resume position), whereas the player reports stream-time (post-atempo). The two are bridged
   by scaling with the current item's playback speed.
-- **Shuffle does not outlive the media it was set for.** The options that start playing right away
-  (*play* and *replace*) begin a new listening session and play their media in order, unless the
-  caller asks for shuffle explicitly or the user switched shuffle on moments earlier — tracked by
-  the runtime-only `shuffle_set_at` stamp, which is never restored from cache and is consumed by the
-  play command that reads it. Switching shuffle off goes through `set_shuffle`, so the items that
-  stay in the queue are restored to their original order rather than left shuffled behind a queue
-  that now reads unshuffled. The options that only stage items for later (*add* / *next* /
-  *replace next*) leave the shuffle state alone. A dynamic queue is exempt: it is an always-on
-  smart mix and forces shuffle on. *Replace next* is the only staging option that can take that
-  dynamic source away, so it is the one exception: it switches the imposed shuffle back off, which
-  `_enter_dynamic_mode` restores if the new media leaves the queue dynamic.
+- **A replace swaps the queue's contents; it never empties it first.** The queue keeps playing what
+  it has while the new media is resolved (one or more provider round-trips), and the items are
+  exchanged in a single `update_items`, so clients never observe an empty queue with nothing
+  playing in between. `load(keep_remaining=False, keep_played=False)` is that atomic swap; the
+  dynamic path rebuilds its pool from index 0 for a replace rather than behind the playing track
+  (which is what *play* wants), and holds player reconciliation off while it does, since the pool
+  is fetched with the queue already truncated. The outgoing audio is released by
+  `_cleanup_queue_audio_data` *before* the swap, while those items are still on the queue —
+  afterwards nothing reaches them, and the track being started needs the source slot they hold.
+- **Shuffle is a queue setting; only the media's own order overrides it.** Shuffle stays as the
+  user left it across everything they play, except when the media carries an order of its own:
+  starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
+  with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
+  pool of tracks. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  a batch decides for the whole batch — it is the only media type known before the items are
+  resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
+  are restored to their original order rather than left shuffled behind a queue that now reads
+  unshuffled. The options that only stage items for later (*add* / *next* / *replace next*) leave
+  the shuffle state alone, and clearing the queue switches shuffle off with it. A dynamic queue is
+  exempt: it is an always-on smart mix and forces shuffle on. *Replace next* is the only staging
+  option that can take that dynamic source away, so it is the one exception: it switches the
+  imposed shuffle back off, which `_enter_dynamic_mode` restores if the new media leaves the queue
+  dynamic.
 
 ## State and Persistence
 
@@ -121,7 +133,7 @@ keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and h
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
 previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
-last-counted-play marker, the shuffle-intent stamp, the flow-buffer-completed session, and the
+last-counted-play marker, the flow-buffer-completed session, and the
 current stream session's id, flow play-log and next-enqueued item id.
 
 `PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of
@@ -292,9 +304,9 @@ mechanism) that configure default enqueue behaviour, in three groups:
   to *play* or *replace*.
 - **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
   prefer library, all tracks).
-- **Click actions** — what a client does when a media item is clicked (*browse* or *play*, for
-  artist/album/playlist) and what the play button on a track row inside an album or playlist starts
-  (*play from here* or *play track*).
+- **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
+  clicked (*browse* or *play*), and what the play button on a track row inside an album
+  or playlist starts (*play from here* or *play track*).
 
 The first two groups are read back at enqueue time to decide how a given media item is turned into
 queue items. The click actions are **not read by the server at all**: they live here so every client

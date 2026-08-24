@@ -77,6 +77,10 @@ class GoLibrespotClient:
         """Pause playback on the active session."""
         await self._request("POST", "/player/pause")
 
+    async def stop(self) -> None:
+        """Stop playback and disconnect the session (release active device status)."""
+        await self._request("POST", "/player/stop")
+
     async def next(self) -> None:
         """Skip to the next track."""
         await self._request("POST", "/player/next")

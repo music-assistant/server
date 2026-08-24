@@ -26,6 +26,9 @@ CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
 CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
 CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_RADIO = "default_click_action_radio"
 CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
 
 CLICK_ACTION_BROWSE = "browse"
@@ -80,11 +83,18 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
-# How long a user's shuffle toggle stays "fresh" enough to carry over into the next media the user
-# starts. Turning shuffle on and then pressing play is a deliberate "shuffle this" gesture and must
-# be honoured; a shuffle left on by an earlier listening session must not silently reorder the album
-# the user just picked. Only bridges the gap between the two clicks, so it is deliberately short.
-SHUFFLE_INTENT_WINDOW = 300
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a radio station is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.RADIO,
+)
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

@@ -16,7 +16,3 @@ CONF_DEVICE_INFO: Final[str] = "device_info"
 # timestamp so players created in the same second still order, used to let the
 # older player win when two of them merge.
 CONF_CREATED_AT: Final[str] = "created_at"
-
-# Protocols where external sources (e.g. Spotify Connect) can play
-# independently of Music Assistant.
-EXTERNAL_SOURCE_PROTOCOLS = {"chromecast", "dlna"}

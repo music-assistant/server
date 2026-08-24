@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Coroutine
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -245,10 +245,9 @@ class AirPlayStreamSession:
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
-        if (
-            pcm_format.sample_rate != self.pcm_format.sample_rate
-            or pcm_format.bit_depth != self.pcm_format.bit_depth
-        ):
+        # the encoding matters as much as the depth here (a 24-bit session carries
+        # PCM_S32LE): replace() wires the new source into the session's declared format
+        if pcm_format != self.pcm_format:
             return False
         return all(
             p.stream is not None and p.stream.running and p.stream.connected
@@ -867,14 +866,19 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         stream_error: BaseException | None = None
         try:
-            async for chunk in audio_source:
-                if not self.sync_clients:
-                    break
+            # the loop below leaves early once the clients are gone; closing the source
+            # from here releases its decoders instead of waiting on the garbage collector
+            async with aclosing(audio_source):
+                async for chunk in audio_source:
+                    if not self.sync_clients:
+                        break
 
-                has_running_clients = await self._write_chunk_to_all_players(chunk)
-                if not has_running_clients:
-                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
-                    break
+                    has_running_clients = await self._write_chunk_to_all_players(chunk)
+                    if not has_running_clients:
+                        self.prov.logger.debug(
+                            "No running clients remaining, stopping audio streamer"
+                        )
+                        break
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise

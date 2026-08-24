@@ -16,8 +16,12 @@ from music_assistant_models.media_items import (
     Radio,
     SearchResults,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
@@ -28,7 +32,12 @@ from .constants import (
     RADIO_PARADISE_CHANNELS,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
-from .helpers import find_current_song, get_current_block_position, get_next_song
+from .helpers import (
+    find_current_song,
+    find_song_by_stream_title,
+    get_current_block_position,
+    get_next_song,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -36,6 +45,11 @@ if TYPE_CHECKING:
 
 class RadioParadiseProvider(MusicProvider):
     """Radio Paradise Music Provider for Music Assistant."""
+
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -101,6 +115,7 @@ class RadioParadiseProvider(MusicProvider):
             duration=0,
             stream_metadata_update_callback=self._update_stream_metadata,
             stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
+            data={STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True},
         )
 
         # Set initial metadata if available so the first frame the listener sees
@@ -110,6 +125,12 @@ class RadioParadiseProvider(MusicProvider):
             stream_details.stream_metadata = parsers.build_stream_metadata(
                 metadata["current"], metadata
             )
+            if metadata.get("block_data"):
+                # Seed the block cache consumed by _update_stream_metadata.
+                stream_details.data = {
+                    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True,
+                    "block_data": metadata["block_data"],
+                }
 
         return stream_details
 
@@ -203,15 +224,55 @@ class RadioParadiseProvider(MusicProvider):
         # now_playing returns flat song data; no next song or block data is available.
         return {"current": data, "next": None, "block_data": None}
 
+    async def _match_icy_title(
+        self, channel_id: str, icy_title: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """
+        Resolve an in-band ICY title against (cached) play API block data.
+
+        :param channel_id: Radio Paradise channel ID (0-5).
+        :param icy_title: Cleaned in-band stream title ("Artist - Title" form).
+        :param data: StreamDetails scratch dict holding the cached block.
+        :returns: Metadata dict in the shape of _get_channel_metadata, or None
+            when the title cannot be resolved to a block song.
+        """
+        block = data.get("block_data")
+        if block and (song := find_song_by_stream_title(block.get("song", {}), icy_title)):
+            return {
+                "current": song,
+                "next": get_next_song(block["song"], song),
+                "block_data": block,
+            }
+        fresh = await self._fetch_json(f"{PLAY_API_URL}{channel_id}", channel_id)
+        if not fresh or "song" not in fresh:
+            return None
+        song = find_song_by_stream_title(fresh["song"], icy_title)
+        if song is None:
+            # The API served a stale or future block; keep the cached one.
+            self.logger.debug(
+                "Play API block for channel %s does not contain current title %r; discarding",
+                channel_id,
+                icy_title,
+            )
+            return None
+        data["block_data"] = fresh
+        return {
+            "current": song,
+            "next": get_next_song(fresh["song"], song),
+            "block_data": fresh,
+        }
+
     async def _update_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
         """
         Update stream metadata callback called by player queue controller.
 
-        Fetches current track info from Radio Paradise's API and updates
-        StreamDetails with track metadata. Alternates between showing the artist
-        and upcoming track info every interval.
+        The in-band ICY title identifies what is actually playing; the play API
+        provides enrichment (cover art, album/year, upcoming songs) and is only
+        trusted when its block contains that title. Falls back to the
+        schedule-derived guess until the first in-band title arrives. Alternates
+        between showing the artist and upcoming track info every interval.
 
         :param stream_details: StreamDetails object to update with metadata.
         :param elapsed_time: Elapsed playback time in seconds (unused for Radio Paradise).
@@ -219,8 +280,21 @@ class RadioParadiseProvider(MusicProvider):
         item_id = stream_details.item_id
         if stream_details.data is None:
             stream_details.data = {}
+        data = stream_details.data
 
-        metadata = await self._get_channel_metadata(item_id)
+        icy_title = (data.get(STREAMDETAILS_INBAND_TITLE_KEY) or "").strip()
+        if icy_title:
+            metadata = await self._match_icy_title(item_id, icy_title, data)
+            if metadata is None:
+                # Station break/PSA or block data unavailable: show the title verbatim.
+                if data.get("last_verbatim_title") != icy_title:
+                    data["last_verbatim_title"] = icy_title
+                    data["last_event"] = None
+                    stream_details.stream_metadata = StreamMetadata(title=icy_title)
+                return
+            data.pop("last_verbatim_title", None)
+        else:
+            metadata = await self._get_channel_metadata(item_id)
         if not metadata or not metadata.get("current"):
             return
 

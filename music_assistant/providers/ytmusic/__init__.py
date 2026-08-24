@@ -175,6 +175,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _cookie: str
     _yt_dlp_module = None
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """YouTube Music serves one stream per account session."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
@@ -211,7 +216,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    # the checksum invalidates entries cached before search was authenticated
+    @use_cache(3600 * 24 * 7, cache_checksum="authenticated_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -240,7 +246,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 # bit of an edge case but still good to handle
                 return parsed_results
         results = await search(
-            query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
+            query=search_query,
+            headers=self._headers,
+            ytm_filter=ytm_filter,
+            limit=limit,
+            language=self.language,
+            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -954,7 +965,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:

@@ -371,6 +371,7 @@ def build_concat_filelist(paths: list[str]) -> str:
 async def realtime_pcm_pacer(
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,
+    initial_burst_s: float = 0.5,
 ) -> AsyncGenerator[bytes]:
     """
     Pace a PCM byte stream at the format's native rate.
@@ -381,6 +382,10 @@ async def realtime_pcm_pacer(
 
     :param inner: Source generator yielding raw PCM bytes.
     :param pcm_format: PCM format the inner generator emits.
+    :param initial_burst_s: Bounded head start (in seconds of audio) passed
+        through unpaced, so downstream jitter does not immediately underrun.
+        Mirrors ffmpeg's ``-readrate_initial_burst``; producers that cannot
+        deliver faster than realtime simply never use the allowance.
     """
     bytes_per_second = pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
     if bytes_per_second <= 0 or not pcm_format.content_type.is_pcm():
@@ -394,7 +399,7 @@ async def realtime_pcm_pacer(
     async for chunk in inner:
         yield chunk
         total_bytes += len(chunk)
-        expected_elapsed = total_bytes / bytes_per_second
+        expected_elapsed = total_bytes / bytes_per_second - initial_burst_s
         actual_elapsed = loop.time() - start_time
         if actual_elapsed < expected_elapsed:
             await asyncio.sleep(expected_elapsed - actual_elapsed)
@@ -735,6 +740,21 @@ async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -
     )
 
 
+def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the format the audio actually arrives in.
+
+    ``audio_format`` is what the source claims, which is meant for display and
+    may describe something the provider decoded on our behalf. Every decision
+    about the bytes themselves - what to hand ffmpeg, what a buffer holds, what
+    depth to carry - has to follow this instead, or real audio gets truncated or
+    reinterpreted.
+
+    :param streamdetails: The stream the audio belongs to.
+    """
+    return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -814,6 +834,7 @@ def get_normalization_mode(
     preference: VolumeNormalizationMode,
     volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
+    source_normalized: bool = False,
 ) -> VolumeNormalizationMode:
     """
     Get the volume normalization mode for a given queue and stream.
@@ -823,6 +844,8 @@ def get_normalization_mode(
     :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
         resolved from the per-queue setting and its global (queue controller) fallback.
     :param streamdetails: The stream to evaluate.
+    :param source_normalized: Whether the provider already delivers this audio at a
+        loudness target of its own.
     """
     if not volume_normalization_enabled:
         # disabled for this queue
@@ -830,6 +853,11 @@ def get_normalization_mode(
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on
         return VolumeNormalizationMode.DISABLED
+    if source_normalized:
+        # the source owns loudness here too: correcting a level it already set would
+        # mean normalizing twice, against a measurement of its own output. SOURCE says
+        # that out loud - the audio is levelled, just not by us
+        return VolumeNormalizationMode.SOURCE
     if streamdetails.media_type == MediaType.SOUND_EFFECT:
         # never measured, and the dynamic fallback compresses short clips
         return VolumeNormalizationMode.DISABLED

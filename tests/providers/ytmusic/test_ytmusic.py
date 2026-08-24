@@ -92,3 +92,18 @@ async def test_sync_library_keeps_other_errors_silent(provider: YoutubeMusicProv
     ):
         await provider.sync_library(MediaType.PLAYLIST)
     provider.unload_with_error.assert_not_called()
+
+
+def test_parse_owned_playlist_is_editable_without_privacy(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An owned playlist is editable even when the library response omits privacy."""
+    playlist = provider._parse_playlist(
+        {
+            "id": "PL_owned",
+            "title": "Owned playlist",
+            "owned": True,
+        }
+    )
+
+    assert playlist.is_editable is True

@@ -317,7 +317,6 @@ class SendspinBasePlayer(Player):
         self.unsub_event_cb = None
         self.unsub_group_event_cb = None
         self.logger = self.provider.logger.getChild(player_id)
-        self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
@@ -1119,6 +1118,7 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         hello_payload = initial_hello or self.api.info
         self.playback_session = SendspinPlaybackSession(self)
         self._attr_supported_features = {
@@ -1213,6 +1213,7 @@ class SendspinPlayer(SendspinBasePlayer):
             self._attr_device_info.add_identifier(id_type, id_value)
         self.is_web_player = False
         self._attr_hidden_by_default = False
+        self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_type = PlayerType.PROTOCOL
 
@@ -1659,6 +1660,7 @@ class SendspinPlayer(SendspinBasePlayer):
         ).is_virtual_player(self.player_id)
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
+        self._attr_private = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
@@ -1706,11 +1708,11 @@ class SendspinPlayer(SendspinBasePlayer):
             case ControllerRepeatEvent(mode=mode) if queue:
                 match mode:
                     case SendspinRepeatMode.OFF:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
                     case SendspinRepeatMode.ONE:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
                     case SendspinRepeatMode.ALL:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
             case ControllerSeekEvent(position_ms=position_ms) if (
@@ -2177,6 +2179,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
         :param initial_hello: Optional hello payload from the client.
         """
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
 
     async def set_members(
@@ -2206,4 +2209,5 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     _attr_type = PlayerType.UNKNOWN
     _attr_hidden_by_default = True
+    _attr_private = True
     _attr_expose_to_ha_by_default = False
