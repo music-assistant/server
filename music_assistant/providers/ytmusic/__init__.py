@@ -513,10 +513,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
-        for index, episode_obj in enumerate(podcast_obj.get("episodes", []), start=1):
+        episodes = podcast_obj.get("episodes", [])
+        total = len(episodes)
+        # API lists newest-first; number down so bigger position = newer
+        for idx, episode_obj in enumerate(episodes):
             episode = self._parse_podcast_episode(episode_obj, podcast)
-            ep_index = episode_obj.get("index") or index
-            episode.position = ep_index
+            episode.position = total - idx
             yield episode
 
     @use_cache(3600 * 3)  # Cache for 3 hours
