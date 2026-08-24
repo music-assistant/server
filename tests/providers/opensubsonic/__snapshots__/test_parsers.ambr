@@ -1682,7 +1682,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({
@@ -1836,7 +1836,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({
@@ -1990,7 +1990,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({

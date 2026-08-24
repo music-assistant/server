@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 
 from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
@@ -647,15 +648,12 @@ class DeezerMediaManager:
                         )
                     )
 
-        # Build final list in original order with correct positions
-        episodes: list[PodcastEpisode] = []
-        position = 0
-        for eid in episode_ids:
-            if eid in cached_episodes:
-                position += 1
-                cached_ep = cached_episodes[eid]
-                cached_ep.position = position
-                episodes.append(cached_ep)
+        # rank on the publication date, so the order the API returns the episodes in does
+        # not decide the ordering
+        episodes = [cached_episodes[eid] for eid in episode_ids if eid in cached_episodes]
+        positions = rank_episodes_by_date([ep.metadata.release_date for ep in episodes])
+        for episode, position in zip(episodes, positions, strict=True):
+            episode.position = position
         return episodes
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
