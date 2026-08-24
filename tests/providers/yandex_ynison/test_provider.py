@@ -149,6 +149,9 @@ def _make_mock_mass() -> MagicMock:
     mass.players.cmd_play = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.trigger_player_update = MagicMock()
+    mass.players.get_audio_source_session.return_value = MagicMock(
+        playback_session_id="playback-session"
+    )
 
     # Player queues
     mass.player_queues.play_media = AsyncMock()
@@ -381,6 +384,7 @@ class TestClearActivePlayer:
             "some-player",
             provider_instance_id=provider.instance_id,
             source_id=AUDIO_SOURCE_ID,
+            playback_session_id="playback-session",
         )
 
     def test_the_owner_is_released_not_the_consuming_player(self) -> None:
@@ -396,6 +400,7 @@ class TestClearActivePlayer:
             "owner-player",
             provider_instance_id=provider.instance_id,
             source_id=AUDIO_SOURCE_ID,
+            playback_session_id="playback-session",
         )
 
     def test_nothing_is_released_when_the_source_was_not_in_use(self) -> None:

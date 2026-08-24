@@ -1058,6 +1058,7 @@ class StreamsController(CoreController):
         """Stream a live AudioSource playing on a player."""
         self._log_request(request)
         session, player, prov = self._resolve_audio_source_request(request)
+        playback_session_id = session.playback_session_id
         # the session's own player, never the url's: the consuming player differs for
         # protocol and group members, and the claim belongs to the owner
         source_player_id = session.player_id
@@ -1151,7 +1152,7 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -1728,7 +1729,9 @@ class StreamsController(CoreController):
             )
         return session, player, prov
 
-    async def _release_unstarted_audio_source(self, session: AudioSourceSession) -> None:
+    async def _release_unstarted_audio_source(
+        self, session: AudioSourceSession, playback_session_id: str
+    ) -> None:
         """
         Take a source that never started off the player holding it.
 
@@ -1737,8 +1740,13 @@ class StreamsController(CoreController):
         source that never played, with its own queue held inactive behind it.
 
         :param session: The session whose stream failed before any audio flowed.
+        :param playback_session_id: Playback session active when stream setup started.
         """
-        if self.mass.players.get_audio_source_session(session.player_id) is not session:
+        current_session = self.mass.players.get_audio_source_session(session.player_id)
+        if (
+            current_session is not session
+            or current_session.playback_session_id != playback_session_id
+        ):
             # already superseded, so it is not ours to release
             return
         self.logger.debug(
@@ -1751,6 +1759,7 @@ class StreamsController(CoreController):
                 session.player_id,
                 provider_instance_id=session.provider_instance_id,
                 source_id=session.source_id,
+                playback_session_id=playback_session_id,
             )
         except Exception:
             # deselect_source already absorbs the expected stop failures, so anything
@@ -1886,6 +1895,7 @@ class StreamsController(CoreController):
             raise AudioError(
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
+        playback_session_id = session.playback_session_id
         stream_session_id = uuid4().hex
         serving = False
         try:
@@ -1927,7 +1937,7 @@ class StreamsController(CoreController):
                     exc_info=True,
                 )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def _wrap_with_audio_source_lifecycle(
         self,

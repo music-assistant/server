@@ -1167,6 +1167,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         stop_playback: bool = True,
         provider_instance_id: str | None = None,
         source_id: str | None = None,
+        playback_session_id: str | None = None,
     ) -> None:
         """
         Give up the source a player was playing, and stop it.
@@ -1181,6 +1182,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             caller has already stopped it, or is about to.
         :param provider_instance_id: Optional provider instance that owns the source session.
         :param source_id: Optional provider-scoped source id that owns the source session.
+        :param playback_session_id: Optional playback session expected to own the player.
         """
         async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
             player = self.get_player(player_id, raise_unavailable=False)
@@ -1189,18 +1191,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             session = self._source_sessions.get(player_id)
             active_provider_instance_id = session.provider_instance_id if session else None
             active_source_id = session.source_id if session else None
+            active_playback_session_id = session.playback_session_id if session else None
             if provider_instance_id is not None and (
                 active_provider_instance_id != provider_instance_id
                 or (source_id is not None and active_source_id != source_id)
+                or playback_session_id is None
+                or active_playback_session_id != playback_session_id
             ):
                 self.logger.debug(
-                    "Ignoring source release for provider %s source %s on player %s: "
-                    "active source is provider %s source %s",
+                    "Ignoring source release for provider %s source %s session %s on player %s: "
+                    "active source is provider %s source %s session %s",
                     provider_instance_id,
                     source_id,
+                    playback_session_id,
                     player_id,
                     active_provider_instance_id,
                     active_source_id,
+                    active_playback_session_id,
                 )
                 return
             await self._release_audio_source(player_id)
@@ -1231,9 +1238,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param provider_instance_id: Instance id of the plugin that is going away.
         """
-        for player_id, session in list(self._source_sessions.items()):
-            if session.provider_instance_id != provider_instance_id:
-                continue
+        sessions = [
+            (player_id, session.source_id, session.playback_session_id)
+            for player_id, session in self._source_sessions.items()
+            if session.provider_instance_id == provider_instance_id
+        ]
+        for player_id, source_id, playback_session_id in sessions:
             self.logger.debug(
                 "Provider %s is unloading, releasing its source on player %s",
                 provider_instance_id,
@@ -1242,7 +1252,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.deselect_source(
                 player_id,
                 provider_instance_id=provider_instance_id,
-                source_id=session.source_id,
+                source_id=source_id,
+                playback_session_id=playback_session_id,
             )
 
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)

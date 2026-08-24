@@ -757,6 +757,7 @@ class AriaCastReceiver(PluginProvider):
             # deselect the owner, not _active_player_id: that can be a protocol player
             # whose stream we were consumed over, while the session hangs off the owner
             owner_player_id = self._in_use_by_player
+            source_session = self.mass.players.get_audio_source_session(owner_player_id)
             # Clear the guard before the stop so a fast resume can re-trigger
             self._in_use_by_player = None
             self.mass.create_task(
@@ -764,6 +765,9 @@ class AriaCastReceiver(PluginProvider):
                     owner_player_id,
                     provider_instance_id=self.instance_id,
                     source_id=AUDIO_SOURCE_ID,
+                    playback_session_id=(
+                        source_session.playback_session_id if source_session else None
+                    ),
                 )
             )
 

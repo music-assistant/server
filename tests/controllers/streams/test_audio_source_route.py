@@ -205,6 +205,7 @@ async def test_a_plugin_refusing_the_stream_takes_the_source_off_the_player() ->
         OWNER_ID,
         provider_instance_id=session.provider_instance_id,
         source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
     )
 
 
@@ -221,6 +222,7 @@ async def test_failing_stream_details_also_takes_the_source_off_the_player() -> 
         OWNER_ID,
         provider_instance_id=session.provider_instance_id,
         source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
     )
 
 
@@ -231,6 +233,23 @@ async def test_a_session_already_superseded_is_not_released() -> None:
     provider.on_source_selected = AsyncMock(side_effect=RuntimeError("nope"))
     # the player moved on to a different session while this request was setting up
     ctrl.mass.players.get_audio_source_session = MagicMock(return_value=_session())
+
+    with pytest.raises(web.HTTPNotFound):
+        await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
+
+    ctrl.mass.players.deselect_source.assert_not_awaited()
+
+
+async def test_a_reselected_session_is_not_released_after_setup_failure() -> None:
+    """A failed request cannot release a newer selection using the same session object."""
+    session = _session()
+    ctrl, provider, _player = _controller(session)
+
+    async def supersede_session(*_args: Any) -> None:
+        session.playback_session_id = "replacement-session"
+        raise RuntimeError("nope")
+
+    provider.on_source_selected = AsyncMock(side_effect=supersede_session)
 
     with pytest.raises(web.HTTPNotFound):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))

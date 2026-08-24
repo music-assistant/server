@@ -423,6 +423,9 @@ class AirPlayReceiverProvider(PluginProvider):
         Called when playback ends to reset the plugin state.
         """
         prev_player_id = self._active_player_id
+        source_session = (
+            self.mass.players.get_audio_source_session(prev_player_id) if prev_player_id else None
+        )
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -436,6 +439,9 @@ class AirPlayReceiverProvider(PluginProvider):
                     stop_playback=False,
                     provider_instance_id=self.instance_id,
                     source_id=AUDIO_SOURCE_ID,
+                    playback_session_id=(
+                        source_session.playback_session_id if source_session else None
+                    ),
                 )
             )
 

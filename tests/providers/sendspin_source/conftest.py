@@ -141,6 +141,7 @@ class _FakePlayers:
         stop_playback: bool = True,
         provider_instance_id: str | None = None,
         source_id: str | None = None,
+        playback_session_id: str | None = None,
     ) -> None:
         self.deselected.append(player_id)
         if stop_playback:

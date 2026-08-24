@@ -1569,6 +1569,9 @@ class YandexYnisonProvider(PluginProvider):
         # the owner is the user-facing MA player; _active_player_id can be the protocol
         # player that consumed the stream, which is not what holds the source session
         owner_player_id = self._in_use_by_player
+        source_session = (
+            self.mass.players.get_audio_source_session(owner_player_id) if owner_player_id else None
+        )
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -1593,6 +1596,9 @@ class YandexYnisonProvider(PluginProvider):
                         owner_player_id,
                         provider_instance_id=self.instance_id,
                         source_id=AUDIO_SOURCE_ID,
+                        playback_session_id=(
+                            source_session.playback_session_id if source_session else None
+                        ),
                     )
                 )
             self.mass.players.trigger_player_update(prev_player_id)

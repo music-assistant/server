@@ -120,9 +120,14 @@ async def test_deselecting_releases_the_source_and_stops_the_player() -> None:
     """The source owner can give its source back and stop playback."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
 
     await controller.deselect_source(
-        PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=session.playback_session_id,
     )
 
     assert controller.get_audio_source_session(PLAYER_ID) is None
@@ -135,9 +140,13 @@ async def test_deselecting_from_another_provider_leaves_the_source_playing() -> 
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
 
     await controller.deselect_source(
-        PLAYER_ID, provider_instance_id="airplay_receiver--xyz", source_id="main"
+        PLAYER_ID,
+        provider_instance_id="airplay_receiver--xyz",
+        source_id="main",
+        playback_session_id=session.playback_session_id,
     )
 
     assert controller.get_audio_source_session(PLAYER_ID) is session
@@ -150,9 +159,29 @@ async def test_deselecting_without_an_owned_session_does_not_stop_the_player() -
     controller, provider, _player = _controller(None)
 
     await controller.deselect_source(
-        PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id="stale-session",
     )
 
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_a_provider_release_without_a_playback_session_is_rejected() -> None:
+    """Provider cleanup without a captured playback generation is not authoritative."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
     provider.on_source_released.assert_not_awaited()
     controller._handle_cmd_stop.assert_not_awaited()
 
@@ -161,6 +190,8 @@ async def test_a_replacement_source_during_release_is_not_stopped() -> None:
     """A source taking over during release remains active and playing."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    original_session = controller.get_audio_source_session(PLAYER_ID)
+    assert original_session is not None
     replacement_instance = "airplay_receiver--xyz"
     replacement = AudioSource(
         item_id="receiver",
@@ -181,7 +212,10 @@ async def test_a_replacement_source_during_release_is_not_stopped() -> None:
     provider.on_source_released.side_effect = start_replacement
 
     await controller.deselect_source(
-        PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=original_session.playback_session_id,
     )
 
     session = controller.get_audio_source_session(PLAYER_ID)
@@ -194,11 +228,16 @@ async def test_deselecting_another_source_from_the_same_provider_is_rejected() -
     """A provider cannot release a different source session from the one that ended."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    original_session = controller.get_audio_source_session(PLAYER_ID)
+    assert original_session is not None
     replacement = _source("other")
     session = controller._start_audio_source_session(PLAYER_ID, replacement, PROVIDER_INSTANCE)
 
     await controller.deselect_source(
-        PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=original_session.playback_session_id,
     )
 
     assert controller.get_audio_source_session(PLAYER_ID) is session
@@ -210,6 +249,8 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
     """Release and stop complete before queued playback or source selection starts."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
     release_started = asyncio.Event()
     finish_release = asyncio.Event()
     events: list[str] = []
@@ -234,7 +275,10 @@ async def test_deselecting_finishes_before_new_playback_starts() -> None:
 
     release_task = asyncio.create_task(
         controller.deselect_source(
-            PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
         )
     )
     await release_started.wait()
@@ -426,11 +470,35 @@ async def test_reselecting_the_same_source_does_not_hand_it_back() -> None:
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     first = controller.get_audio_source_session(PLAYER_ID)
+    assert first is not None
+    first_playback_session_id = first.playback_session_id
 
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
 
     provider.on_source_released.assert_not_awaited()
     assert controller.get_audio_source_session(PLAYER_ID) is first
+    assert first.playback_session_id != first_playback_session_id
+
+
+async def test_a_stale_release_cannot_end_a_reselected_source() -> None:
+    """A delayed cleanup cannot release a new selection of the same source."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    stale_playback_session_id = session.playback_session_id
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=stale_playback_session_id,
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
 
 
 async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:

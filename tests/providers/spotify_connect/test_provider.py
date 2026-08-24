@@ -118,6 +118,9 @@ def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvi
     """Build a minimal provider whose linked player reports the given volume."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
+    provider.mass.players.get_audio_source_session.return_value = MagicMock(
+        playback_session_id="playback-session"
+    )
     provider.logger = MagicMock()
     provider._last_volume_sent = None
     backend = MagicMock()
