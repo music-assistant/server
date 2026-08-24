@@ -660,6 +660,7 @@ class LocalFileSystemProvider(MusicProvider):
             sort_name=db_artist.sort_name,
             mbid=db_artist.mbid,
             artist_path=artist_path,
+            representative_track=await self._resolve_artist_representative_track(db_artist),
         )
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -1241,6 +1242,26 @@ class LocalFileSystemProvider(MusicProvider):
             return item.ext in PODCAST_EPISODE_EXTENSIONS
         return False
 
+    async def _resolve_artist_representative_track(self, artist: Artist) -> str | None:
+        """
+        Return one of this artist's own track paths, to register a metadata-file baseline.
+
+        Used when explicitly (re)fetching an artist (e.g. a manual "Refresh item"), which does
+        not otherwise go through `_parse_track`/`_parse_album` and so would leave a freshly
+        read artist.nfo/image unregistered - permanently invisible to the sync's automatic
+        change detection until an unrelated track/album parse happens to register it instead.
+
+        :param artist: The library artist whose own tracks (if any) are searched.
+        """
+        tracks = await self.mass.music.artists.get_library_artist_tracks(
+            artist.item_id, provider_filter=self.instance_id
+        )
+        for track in tracks:
+            for prov_mapping in track.provider_mappings:
+                if prov_mapping.provider_instance == self.instance_id:
+                    return prov_mapping.item_id
+        return None
+
     async def _queue_changed_metadata_files(
         self,
         metadata_files: list[FileSystemItem],
@@ -1269,10 +1290,10 @@ class LocalFileSystemProvider(MusicProvider):
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param items_to_process: The sync's changed/new items; receives queued representatives.
-        :param force_refresh_tracks: Receives the relative_path of every newly queued
-            representative, so its reparse can bypass this provider's own short-lived
-            album/artist/folder-image caches instead of an unrelated concurrent parse of the
-            same folder immediately handing back the pre-change data.
+        :param force_refresh_tracks: Receives the relative_path of every changed representative,
+            including one already queued for another reason, so its reparse can bypass this
+            provider's own short-lived album/artist/folder-image caches instead of an unrelated
+            concurrent parse of the same folder immediately handing back the pre-change data.
         """
         # one bulk load instead of one query per metadata file, which otherwise would mean
         # thousands of sequential cache reads on a large library every single sync
@@ -1297,6 +1318,11 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.metadata.invalidate_image_cache(
                     self.instance_id, meta_item.relative_path
                 )
+            # mark for cache-bypassing unconditionally too: even when this representative is
+            # already queued for another reason (its own content changed, or another metadata
+            # file got here first), that reparse must still see this change, not an unrelated
+            # concurrent parse's stale 120-second cache
+            force_refresh_tracks.add(track_path)
             if track_path in queued_tracks:
                 continue
             try:
@@ -1309,7 +1335,6 @@ class LocalFileSystemProvider(MusicProvider):
             if track_item.is_dir:
                 continue
             queued_tracks.add(track_path)
-            force_refresh_tracks.add(track_path)
             if track_item.ext in CUE_EXTENSIONS:
                 # a CUE sheet's own checksum is not tracked under its path in file_checksums,
                 # only the synthetic per-track ids it expands into are

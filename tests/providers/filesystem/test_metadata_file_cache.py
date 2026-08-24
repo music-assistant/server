@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.media_items import UniqueList
+from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import CACHE_CATEGORY_METADATA_FILE
@@ -236,6 +236,10 @@ async def test_track_already_changed_is_not_duplicated() -> None:
 
     assert items_to_process == [existing]
     provider.resolve.assert_not_awaited()
+    # the track's own change already queued it, but the NFO change happening in the same sync
+    # must still force a fresh reparse - otherwise a concurrent parse of the same folder could
+    # serve stale cached data and silently miss this simultaneous metadata edit
+    assert force_refresh_tracks == {"Artist/Album/t1.mp3"}
 
 
 async def test_cache_miss_is_ignored() -> None:
@@ -508,3 +512,109 @@ async def test_queue_changed_metadata_files_marks_representative_for_force_refre
     )
 
     assert force_refresh_tracks == {"Artist/Album/t1.mp3"}
+
+
+# --- get_artist registers a representative for manual "Refresh item" ------
+
+
+async def test_resolve_artist_representative_track_uses_own_provider_mapping() -> None:
+    """The artist's own instance-local track path is picked as its representative."""
+    provider = _provider()
+    artist = Artist(
+        item_id="42",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+    )
+    other_track = Track(
+        item_id="other",
+        provider="library",
+        name="Other Provider Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id="Other/track.flac", provider_domain="qobuz", provider_instance="qobuz"
+            )
+        },
+    )
+    own_track = Track(
+        item_id="mine",
+        provider="library",
+        name="Local Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id="Artist/Album/t1.mp3",
+                provider_domain="filesystem_local",
+                provider_instance=INSTANCE_ID,
+            )
+        },
+    )
+    provider.mass.music.artists.get_library_artist_tracks = AsyncMock(
+        return_value=[other_track, own_track]
+    )
+
+    result = await provider._resolve_artist_representative_track(artist)
+
+    assert result == "Artist/Album/t1.mp3"
+    provider.mass.music.artists.get_library_artist_tracks.assert_awaited_once_with(
+        "42", provider_filter=INSTANCE_ID
+    )
+
+
+async def test_resolve_artist_representative_track_returns_none_without_tracks() -> None:
+    """An artist with no tracks under this provider (album-only) yields no representative."""
+    provider = _provider()
+    artist = Artist(item_id="42", provider="library", name="Test Artist", provider_mappings=set())
+    provider.mass.music.artists.get_library_artist_tracks = AsyncMock(return_value=[])
+
+    assert await provider._resolve_artist_representative_track(artist) is None
+
+
+async def test_get_artist_passes_representative_track_to_parse_artist() -> None:
+    """
+    Fetching a library artist threads a representative track into `_parse_artist`.
+
+    Without this, a manual "Refresh item" on an artist would read (and re-cache) its NFO/image
+    without ever registering them, leaving the documented manual-refresh fallback a no-op.
+    """
+    provider = _provider()
+    provider.manifest = MagicMock(domain="filesystem_local")
+    db_artist = Artist(
+        item_id="42",
+        provider="library",
+        name="Test Artist",
+        sort_name="Test Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id="Artist",
+                provider_domain="filesystem_local",
+                provider_instance=INSTANCE_ID,
+                url="Artist",
+            )
+        },
+    )
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=db_artist)
+    provider.mass.music.artists.get_library_artist_tracks = AsyncMock(
+        return_value=[
+            Track(
+                item_id="mine",
+                provider="library",
+                name="Local Track",
+                provider_mappings={
+                    ProviderMapping(
+                        item_id="Artist/Album/t1.mp3",
+                        provider_domain="filesystem_local",
+                        provider_instance=INSTANCE_ID,
+                    )
+                },
+            )
+        ]
+    )
+    provider.exists = AsyncMock(return_value=True)
+    provider._parse_artist = AsyncMock(return_value=db_artist)
+
+    await provider.get_artist("Artist")
+
+    provider._parse_artist.assert_awaited_once()
+    assert provider._parse_artist.await_args.kwargs["representative_track"] == (
+        "Artist/Album/t1.mp3"
+    )
