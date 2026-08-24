@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
