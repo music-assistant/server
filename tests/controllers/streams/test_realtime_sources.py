@@ -134,12 +134,13 @@ async def _empty_mix(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]
         yield chunk
 
 
-def _buffer(duration_available: float, ready: bool) -> AudioBuffer:
+def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioBuffer:
     """Build a valid buffer with the requested resident duration."""
     audio_buffer = MagicMock(spec=AudioBuffer)
     audio_buffer.has_error = False
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
+    audio_buffer.eof = eof
     audio_buffer.ready = MagicMock()
     audio_buffer.ready.is_set.return_value = ready
     return audio_buffer
@@ -418,6 +419,20 @@ def test_the_held_tail_sizes_the_fade_the_configured_mode_picks() -> None:
         fade_out_seconds=20,
     )
     assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
+
+
+def test_a_finished_incoming_source_caps_the_window_at_what_it_holds() -> None:
+    """A source that already ended has no more audio than what is resident."""
+    audio = StreamsAudio(MagicMock())
+
+    mode, duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(_buffer(6, ready=True, eof=True), is_realtime=True),
+        CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=45,
+    )
+
+    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 6)
 
 
 def test_a_short_incoming_track_caps_the_window() -> None:

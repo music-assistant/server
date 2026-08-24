@@ -35,12 +35,13 @@ def _streamdetails(audio_buffer: AudioBuffer | None) -> StreamDetails:
     return streamdetails
 
 
-def _buffer(duration_available: float, ready: bool) -> AudioBuffer:
+def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioBuffer:
     """Build a valid buffer with the requested resident duration."""
     audio_buffer = MagicMock(spec=AudioBuffer)
     audio_buffer.has_error = False
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
+    audio_buffer.eof = eof
     audio_buffer.ready = MagicMock()
     audio_buffer.ready.is_set.return_value = ready
     return audio_buffer

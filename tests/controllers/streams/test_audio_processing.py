@@ -1176,6 +1176,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
             has_error=False,
             is_valid=lambda *_args: True,
             duration_available=16,
+            eof=False,
             ready=SimpleNamespace(is_set=lambda: True),
         ),
         fade_in=False,

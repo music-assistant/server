@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -12,6 +13,7 @@ from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.controllers.streams import audio as audio_module
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
@@ -510,3 +512,35 @@ async def test_flow_keeps_the_prefetch_clear_of_the_end_after_a_seek(
     # half of the 10s that remain, so the source is never read to its end in the background
     assert exhausted_at["item-1"]["item-2"] <= TEST_PCM_FORMAT.pcm_sample_size * 5 + CHUNK_SIZE
     assert opened.count("item-2") == 1
+
+
+async def test_prefetch_handover_gives_up_on_a_stalled_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source that stopped delivering must not hold the handover open."""
+    monkeypatch.setattr(audio_module, "PREFETCH_HANDOVER_TIMEOUT", 0.1)
+    prefetcher = audio_module._IncomingFadePrefetcher(
+        cast("Any", MagicMock()), TEST_PCM_FORMAT, "session-1"
+    )
+    stalled = asyncio.Event()
+
+    async def _stalled_stream() -> AsyncGenerator[bytes]:
+        # the source went quiet: the collector blocks here, never seeing a new target
+        await stalled.wait()
+        yield b""
+
+    streamdetails = SimpleNamespace(stream_error=False)
+    queue_item = SimpleNamespace(queue_item_id="item-2", streamdetails=streamdetails)
+    stream = _stalled_stream()
+    prefetcher._queue_item_id = "item-2"
+    prefetcher._streamdetails = cast("Any", streamdetails)
+    prefetcher._seek_position = 0
+    prefetcher._stream = stream
+    prefetcher._chunks = deque()
+    prefetcher._target = TEST_PCM_FORMAT.pcm_sample_size * 45
+    prefetcher._task = asyncio.create_task(prefetcher._collect(stream, prefetcher._chunks))
+
+    # the flow stream opens the track itself rather than waiting on a dead prefetch;
+    # the timeout keeps a regression here a failure instead of a hung test run
+    async with asyncio.timeout(10):
+        assert await prefetcher.take(cast("Any", queue_item), 0) is None

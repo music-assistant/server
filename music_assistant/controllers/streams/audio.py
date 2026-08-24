@@ -181,6 +181,11 @@ WARMUP_DURATION = 8
 # boundary can carry one at all.
 MIN_CROSSFADE_DURATION = 3
 
+# Bounded wait for the fade-in prefetcher to release a stream at the handover. In
+# normal operation it returns on its next chunk; only a stalled source takes longer,
+# and then the flow stream is better off opening the track itself.
+PREFETCH_HANDOVER_TIMEOUT = 5.0
+
 # Bounded wait at a boundary for a realtime incoming track to start delivering.
 # Its buffer only exists once its session produces audio, which happens around the
 # moment the outgoing track's audio ends; the wait trades a little of the player's
@@ -479,7 +484,13 @@ class _IncomingFadePrefetcher:
             return None
         # stop collecting: from here the flow stream reads the same generator itself
         self._target = 0
-        await self._task
+        try:
+            # the collector only sees the new target once its next chunk arrives, so a
+            # source that stalled would hold the handover; give up on it instead
+            await asyncio.wait_for(self._task, timeout=PREFETCH_HANDOVER_TIMEOUT)
+        except TimeoutError:
+            await self.close()
+            return None
         if self._failed or (self._streamdetails is not None and self._streamdetails.stream_error):
             await self.close()
             return None
@@ -3936,6 +3947,9 @@ class StreamsAudio:
             else standard_crossfade_duration,
             fade_out_seconds,
         )
+        if audio_buffer.eof:
+            # the source is done, so what is resident is all there will ever be
+            window = min(window, audio_buffer.duration_available / playback_speed)
         if streamdetails.duration:
             # a short incoming track cannot supply a long overlap, and blending into
             # more than half of it would leave the listener no clean part of it. The
