@@ -616,7 +616,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -624,12 +624,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        # Redirect to queue controller if it is active (skip if already in queue command context)
-        if active_queue := self.get_active_queue(player):
-            await self.mass.player_queues.stop(active_queue.queue_id)
-            return
-        # Delegate to internal handler for actual implementation
-        await self._handle_cmd_stop(player.player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # Redirect to queue controller if it is active (skip if already in queue command context)
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues.stop(active_queue.queue_id)
+                return
+            # Delegate to internal handler for actual implementation
+            await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command

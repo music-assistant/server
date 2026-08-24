@@ -19,6 +19,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
@@ -422,6 +423,29 @@ async def test_cmd_play_checks_playing_state_after_cleanup_finishes() -> None:
     await asyncio.gather(release_task, play_task)
 
     controller._handle_cmd_play.assert_awaited_once_with(PLAYER_ID)
+
+
+async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
+    """A member stop locks its group rather than taking the locks in reverse order."""
+    controller, _provider, player = _controller(None)
+    group_id = "group_1"
+    group = MagicMock()
+    group.player_id = group_id
+    group.available = True
+    group.protocol_parent_id = None
+    group.state.active_group = None
+    group.state.synced_to = None
+    controller._players[group_id] = group
+    players = {PLAYER_ID: player, group_id: group}
+    controller.get_player.side_effect = lambda player_id, *_args, **_kwargs: players.get(player_id)
+    player.state.active_group = group_id
+    controller.mass.player_queues.get.return_value = None
+
+    await controller.cmd_stop(PLAYER_ID)
+
+    controller._handle_cmd_stop.assert_awaited_once_with(group_id)
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{group_id}" in controller._player_command_locks
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{PLAYER_ID}" not in controller._player_command_locks
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
