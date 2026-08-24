@@ -1747,7 +1747,11 @@ class StreamsController(CoreController):
             session.player_id,
         )
         try:
-            await self.mass.players.deselect_source(session.player_id)
+            await self.mass.players.deselect_source(
+                session.player_id,
+                provider_instance_id=session.provider_instance_id,
+                source_id=session.source_id,
+            )
         except Exception:
             # deselect_source already absorbs the expected stop failures, so anything
             # arriving here is a defect worth a trail rather than a silent half-cleanup

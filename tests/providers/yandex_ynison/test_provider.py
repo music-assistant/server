@@ -378,7 +378,9 @@ class TestClearActivePlayer:
         provider._clear_active_player()
 
         provider.mass.players.deselect_source.assert_called_once_with(
-            "some-player", provider_instance_id=provider.instance_id
+            "some-player",
+            provider_instance_id=provider.instance_id,
+            source_id=AUDIO_SOURCE_ID,
         )
 
     def test_the_owner_is_released_not_the_consuming_player(self) -> None:
@@ -391,7 +393,9 @@ class TestClearActivePlayer:
         provider._clear_active_player()
 
         provider.mass.players.deselect_source.assert_called_once_with(
-            "owner-player", provider_instance_id=provider.instance_id
+            "owner-player",
+            provider_instance_id=provider.instance_id,
+            source_id=AUDIO_SOURCE_ID,
         )
 
     def test_nothing_is_released_when_the_source_was_not_in_use(self) -> None:

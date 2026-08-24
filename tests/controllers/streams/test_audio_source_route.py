@@ -201,7 +201,11 @@ async def test_a_plugin_refusing_the_stream_takes_the_source_off_the_player() ->
     with pytest.raises(web.HTTPNotFound):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
-    ctrl.mass.players.deselect_source.assert_awaited_once_with(OWNER_ID)
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+    )
 
 
 async def test_failing_stream_details_also_takes_the_source_off_the_player() -> None:
@@ -213,7 +217,11 @@ async def test_failing_stream_details_also_takes_the_source_off_the_player() -> 
     with pytest.raises(web.HTTPNotFound):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
-    ctrl.mass.players.deselect_source.assert_awaited_once_with(OWNER_ID)
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+    )
 
 
 async def test_a_session_already_superseded_is_not_released() -> None:

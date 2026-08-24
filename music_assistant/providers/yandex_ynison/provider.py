@@ -1590,7 +1590,9 @@ class YandexYnisonProvider(PluginProvider):
                 # keeps it publishing this source, so its own queue stays unreachable
                 self.mass.create_task(
                     self.mass.players.deselect_source(
-                        owner_player_id, provider_instance_id=self.instance_id
+                        owner_player_id,
+                        provider_instance_id=self.instance_id,
+                        source_id=AUDIO_SOURCE_ID,
                     )
                 )
             self.mass.players.trigger_player_update(prev_player_id)

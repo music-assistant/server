@@ -435,6 +435,7 @@ class AirPlayReceiverProvider(PluginProvider):
                     prev_player_id,
                     stop_playback=False,
                     provider_instance_id=self.instance_id,
+                    source_id=AUDIO_SOURCE_ID,
                 )
             )
 

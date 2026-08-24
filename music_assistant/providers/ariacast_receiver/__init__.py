@@ -761,7 +761,9 @@ class AriaCastReceiver(PluginProvider):
             self._in_use_by_player = None
             self.mass.create_task(
                 self.mass.players.deselect_source(
-                    owner_player_id, provider_instance_id=self.instance_id
+                    owner_player_id,
+                    provider_instance_id=self.instance_id,
+                    source_id=AUDIO_SOURCE_ID,
                 )
             )
 

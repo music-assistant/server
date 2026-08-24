@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant.providers.ariacast_receiver import AriaCastReceiver
+from music_assistant.providers.ariacast_receiver import AUDIO_SOURCE_ID, AriaCastReceiver
 
 
 def _receiver(in_use_by_queue: str | None = "queue_1") -> SimpleNamespace:
@@ -135,7 +135,9 @@ async def test_the_sender_stopping_gives_the_source_back_to_its_owner() -> None:
     await _playback(receiver, False)
 
     receiver.mass.players.deselect_source.assert_called_once_with(
-        "owner-player", provider_instance_id=receiver.instance_id
+        "owner-player",
+        provider_instance_id=receiver.instance_id,
+        source_id=AUDIO_SOURCE_ID,
     )
     assert receiver._in_use_by_player is None
 

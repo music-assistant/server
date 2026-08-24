@@ -265,7 +265,9 @@ class SendspinSourceProvider(PluginProvider):
                             # the player, so stopping the queue would leave the source
                             # published on it while resetting the queue we are preserving
                             await self.mass.players.deselect_source(
-                                autostart_queue_id, provider_instance_id=self.instance_id
+                                autostart_queue_id,
+                                provider_instance_id=self.instance_id,
+                                source_id=source_id,
                             )
                         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
                             self.logger.debug(
@@ -539,7 +541,9 @@ class SendspinSourceProvider(PluginProvider):
         try:
             # Queue stop also cancels pending preload and enqueue timers.
             await self.mass.players.deselect_source(
-                session.owner_player_id, provider_instance_id=self.instance_id
+                session.owner_player_id,
+                provider_instance_id=self.instance_id,
+                source_id=client_id,
             )
         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
             self.logger.debug("Failed to stop player %s: %s", session.owner_player_id, err)
