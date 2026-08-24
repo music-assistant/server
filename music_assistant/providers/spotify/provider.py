@@ -569,10 +569,11 @@ class SpotifyProvider(MusicProvider):
         # Get (cached) episode data
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
-        # Parse and yield episodes with position
+        # API lists newest-first; number down so bigger position = newer
+        total = len(episodes_data)
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
-            episode.position = idx + 1
+            episode.position = total - idx
 
             # Set played status if sync is enabled and resume data exists
             if self.podcast_progress_sync_enabled and "resume_point" in episode_data:

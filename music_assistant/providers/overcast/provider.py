@@ -43,6 +43,7 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
     get_cached_podcast,
+    get_episode_positions,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -183,11 +184,13 @@ class OvercastProvider(MusicProvider):
         subscription = await self._get_subscription(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         podcast_name = podcast.get("title")
-        for cnt, parsed_episode in enumerate(podcast.get("episodes", [])):
+        episodes = podcast.get("episodes", [])
+        positions = get_episode_positions(episodes)
+        for position, parsed_episode in zip(positions, episodes, strict=True):
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,
@@ -373,7 +376,9 @@ class OvercastProvider(MusicProvider):
         newest_applied: datetime | None = None
         podcast_cover = parsed_podcast.get("cover_url")
         podcast_name = parsed_podcast.get("title")
-        for cnt, parsed_episode in enumerate(parsed_podcast.get("episodes", [])):
+        all_episodes = parsed_podcast.get("episodes", [])
+        positions = get_episode_positions(all_episodes)
+        for position, parsed_episode in zip(positions, all_episodes, strict=True):
             try:
                 stream_url, _ = get_stream_url_and_guid_from_episode(episode=parsed_episode)
             except ValueError:
@@ -392,7 +397,7 @@ class OvercastProvider(MusicProvider):
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=feed_url,
-                episode_cnt=cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast_name,
                 instance_id=self.instance_id,

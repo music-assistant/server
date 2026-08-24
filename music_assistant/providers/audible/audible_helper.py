@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -59,6 +60,8 @@ AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
 # Podcasts are normally reported as "PodcastParent", but (older) Audible Original
 # series are still reported with the legacy "Periodical" delivery type.
 PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
+# legacy series report their episodes as show issues rather than podcast episodes
+SHOW_CONTENT_TYPE = "Show"
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -886,7 +889,7 @@ class AudibleHelper:
 
         page = 1
         page_size = 50
-        position = 0
+        all_items: list[dict[str, Any]] = []
 
         while True:
             # Query for children of the podcast parent
@@ -903,18 +906,27 @@ class AudibleHelper:
             if not items:
                 break
 
-            for episode_data in items:
-                try:
-                    episode = self._parse_podcast_episode(episode_data, podcast, position)
-                    position += 1
-                    yield episode
-                except Exception as exc:
-                    asin = episode_data.get("asin", "unknown")
-                    self.logger.warning(f"Error parsing podcast episode {asin}: {exc}")
+            all_items.extend(items)
 
             page += 1
             if len(items) < page_size:
                 break
+
+        if all(ep.get("content_type") == SHOW_CONTENT_TYPE for ep in all_items):
+            # a legacy series is released in one go, so its publication timestamps record the
+            # ingestion rather than the episode order; the newest-first listing is all we have
+            positions = [len(all_items) - idx for idx in range(len(all_items))]
+        else:
+            # the API lists most shows newest-first but serialised ones oldest-first, so rank on
+            # the publication timestamp; release_date is date only and cannot separate episodes
+            # that a serialised show published on the same day
+            positions = rank_episodes_by_date([ep.get("publication_datetime") for ep in all_items])
+        for position, episode_data in zip(positions, all_items, strict=True):
+            try:
+                yield self._parse_podcast_episode(episode_data, podcast, position)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                asin = episode_data.get("asin", "unknown")
+                self.logger.warning(f"Error parsing podcast episode {asin}: {exc}")
 
     async def get_podcast_episode(self, episode_asin: str) -> PodcastEpisode:
         """
