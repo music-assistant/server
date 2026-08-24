@@ -110,8 +110,8 @@ def test_convert_skips_base_directory_at_root() -> None:
     assert [item.relative_path for item in result] == ["Artist"]
 
 
-def test_convert_uses_etag_as_checksum_with_lastmodified_fallback() -> None:
-    """The ETag is the change token; the HTTP date is only a fallback when the server omits it."""
+def test_convert_keeps_last_modified_checksum_and_carries_etag_separately() -> None:
+    """The HTTP date stays the checksum (compat); the ETag is carried as the sidecar token."""
     provider = _make_provider()
     webdav_items = [
         WebDAVItem(
@@ -134,8 +134,13 @@ def test_convert_uses_etag_as_checksum_with_lastmodified_fallback() -> None:
 
     result = provider._convert_webdav_items(webdav_items, "")
 
-    assert result[0].checksum == "abc123"
+    # the checksum is unaffected by the ETag, so an already-imported file's checksum survives
+    # an upgrade unchanged and is never treated as "changed" just because ETags are now read
+    assert result[0].checksum == "Wed, 01 Jan 2025 00:00:00 GMT"
     assert result[1].checksum == "Wed, 01 Jan 2025 00:00:00 GMT"
+    # the ETag (when present) is carried separately and sharpens sidecar-signature precision
+    assert result[0].sidecar_token == "abc123"
+    assert result[1].sidecar_token is None
 
 
 def test_changed_etag_changes_sidecar_signature_same_date_and_size() -> None:

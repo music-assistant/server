@@ -87,13 +87,13 @@ async def test_list_children_maps_sdk_items() -> None:
 
     items = await provider._api_list_children("folder-id")
 
-    assert items[0] == ("d1", "Albums", True, "folder", None)
-    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123)
-    assert items[2] == ("f2", "no-hash.mp3", False, "456", 456)
+    assert items[0] == ("d1", "Albums", True, "folder", None, None)
+    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123, "xor-1")
+    assert items[2] == ("f2", "no-hash.mp3", False, "456", 456, None)
 
 
-async def test_list_children_uses_sha_hash_when_quickxor_absent() -> None:
-    """Without a quickXorHash, a SHA content hash (not the size) is used as the change token."""
+async def test_list_children_uses_sha_hash_only_as_sidecar_token() -> None:
+    """A SHA hash sharpens the sidecar token but never changes the imported-media checksum."""
     provider, mocks = _make_provider()
     mocks.client.list_drive_items = AsyncMock(
         return_value=[
@@ -104,10 +104,35 @@ async def test_list_children_uses_sha_hash_when_quickxor_absent() -> None:
 
     items = await provider._api_list_children("folder-id")
 
-    # the content hash is the change token, so same-size files are distinguishable
-    assert items[0][3] == "sha-aaa"
-    assert items[1][3] == "sha-bbb"
-    assert items[0][3] != items[1][3]
+    # the checksum (imported-media compatibility) still falls back to the size, unchanged...
+    assert items[0][3] == "100"
+    assert items[1][3] == "100"
+    # ...but the SHA hash is carried separately, so same-size files are still distinguishable
+    assert items[0][5] == "sha-aaa"
+    assert items[1][5] == "sha-bbb"
+
+
+async def test_list_children_checksum_survives_upgrade_when_only_sha_changes() -> None:
+    """
+    A SHA-only file's checksum stays stable across an upgrade so it is not fully re-imported.
+
+    Before this change, a file with no quickXorHash (business/SharePoint accounts) used the size
+    as its checksum. A content change that only alters the SHA hash (same size) must not disturb
+    that checksum, even though it should still be visible to sidecar-signature detection.
+    """
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[_file("f1", "a.mp3", 100, sha1_hash="sha-before")]
+    )
+    before = await provider._api_list_children("folder-id")
+
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[_file("f1", "a.mp3", 100, sha1_hash="sha-after")]
+    )
+    after = await provider._api_list_children("folder-id")
+
+    assert before[0][3] == after[0][3] == "100"  # the imported-media checksum is unaffected
+    assert before[0][5] != after[0][5]  # the sidecar token still reflects the content change
 
 
 async def test_list_children_translates_errors() -> None:

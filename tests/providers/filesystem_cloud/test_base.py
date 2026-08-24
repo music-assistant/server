@@ -24,12 +24,12 @@ ROOT_ID = "root-id"
 # a small two-level tree: /Artist/track.mp3 + /cover.jpg
 TREE: dict[str, list[RawItem]] = {
     ROOT_ID: [
-        ("artist-id", "Artist", True, "2026-01-01", None),
-        ("cover-id", "cover.jpg", False, "2026-01-01", 4),
-        ("notes-id", "notes.txt", False, "2026-01-01", 2),
+        ("artist-id", "Artist", True, "2026-01-01", None, None),
+        ("cover-id", "cover.jpg", False, "2026-01-01", 4, None),
+        ("notes-id", "notes.txt", False, "2026-01-01", 2, None),
     ],
     "artist-id": [
-        ("track-id", "track.mp3", False, "2026-01-02", 1000),
+        ("track-id", "track.mp3", False, "2026-01-02", 1000, None),
     ],
 }
 FILE_DATA = {"cover-id": b"image-bytes", "track-id": b"audio-bytes", "notes-id": b"n"}
@@ -123,7 +123,9 @@ async def test_scandir_converts_raw_items() -> None:
 async def test_scandir_skips_duplicate_names() -> None:
     """Clouds may allow duplicate names in a folder; only the first wins."""
     provider = _make_provider(
-        tree={ROOT_ID: [("id1", "a.mp3", False, "1", 1), ("id2", "a.mp3", False, "2", 2)]}
+        tree={
+            ROOT_ID: [("id1", "a.mp3", False, "1", 1, None), ("id2", "a.mp3", False, "2", 2, None)]
+        }
     )
     logger = MagicMock()
     provider.logger = logger
@@ -137,7 +139,7 @@ async def test_scandir_skips_duplicate_names() -> None:
 
 async def test_scandir_sanitizes_slashes_in_names() -> None:
     """Slashes in cloud file names would corrupt the path scheme."""
-    provider = _make_provider(tree={ROOT_ID: [("id1", "AC/DC", True, "1", None)]})
+    provider = _make_provider(tree={ROOT_ID: [("id1", "AC/DC", True, "1", None, None)]})
 
     items = await provider._scandir("")
 
@@ -321,10 +323,10 @@ async def test_enumerate_subfolder_error_is_skipped() -> None:
     provider = _make_provider(
         tree={
             ROOT_ID: [
-                ("bad-id", "Bad", True, "1", None),
-                ("artist-id", "Artist", True, "1", None),
+                ("bad-id", "Bad", True, "1", None, None),
+                ("artist-id", "Artist", True, "1", None, None),
             ],
-            "artist-id": [("track-id", "track.mp3", False, "1", 1)],
+            "artist-id": [("track-id", "track.mp3", False, "1", 1, None)],
         }
     )
     provider.fail_list = {"bad-id"}
@@ -458,14 +460,14 @@ async def test_unload_without_registered_route() -> None:
 # tree with a playlist folder next to the music: /Playlists/list.m3u + /Artist/track.mp3
 PLAYLIST_TREE: dict[str, list[RawItem]] = {
     ROOT_ID: [
-        ("playlists-id", "Playlists", True, "2026-01-01", None),
-        ("artist-id", "Artist", True, "2026-01-01", None),
+        ("playlists-id", "Playlists", True, "2026-01-01", None, None),
+        ("artist-id", "Artist", True, "2026-01-01", None, None),
     ],
     "playlists-id": [
-        ("list-id", "list.m3u", False, "2026-01-01", 10),
+        ("list-id", "list.m3u", False, "2026-01-01", 10, None),
     ],
     "artist-id": [
-        ("track-id", "track.mp3", False, "2026-01-02", 1000),
+        ("track-id", "track.mp3", False, "2026-01-02", 1000, None),
     ],
 }
 

@@ -160,9 +160,14 @@ class FileSystemItem:
     - relative_path: Relative path to the item on this filesystem provider.
     - absolute_path: Absolute path to this item.
     - is_dir: Boolean if item is directory (not file).
-    - checksum: Checksum for this path (usually last modified time) None for dir.
+    - checksum: Checksum for this path (usually last modified time) None for dir. Kept stable
+      across releases (imported media compares against it) even when a higher-precision
+      ``sidecar_token`` becomes available later.
     - file_size : File size in number of bytes or None if unknown (or not a file).
     - created_at: File creation timestamp (Unix epoch) or None for directories.
+    - mtime_ns: Nanosecond mtime, the highest-resolution local change token.
+    - sidecar_token: A higher-precision content/revision token (e.g. a WebDAV ETag or cloud
+      content hash), used only for sidecar-signature purposes so it never displaces ``checksum``.
     """
 
     filename: str
@@ -173,6 +178,7 @@ class FileSystemItem:
     file_size: int | None = None
     created_at: int | None = None  # file creation timestamp (Unix epoch)
     mtime_ns: int | None = None  # nanosecond mtime, high-res sidecar change token (local only)
+    sidecar_token: str | None = None  # higher-precision revision token (WebDAV etag, cloud hash)
 
     @property
     def ext(self) -> str | None:
@@ -205,11 +211,16 @@ class FileSystemItem:
         """
         Return the highest-resolution change token available for this file.
 
-        The nanosecond mtime is preferred (local sidecars) so a same-second, same-size replacement
-        is still detected; providers without it (WebDAV/cloud) fall back to their etag-based checksum.
+        The nanosecond mtime is preferred (local sidecars) so a same-second, same-size
+        replacement is still detected. Providers without it fall back to their higher-precision
+        ``sidecar_token`` (a WebDAV ETag or cloud content hash) when available, and only then to
+        the plain ``checksum`` so a same-size replacement without one is still caught where
+        possible.
         """
         if self.mtime_ns is not None:
             return str(self.mtime_ns)
+        if self.sidecar_token is not None:
+            return self.sidecar_token
         return self.checksum
 
     @classmethod
@@ -252,7 +263,8 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
 
     Intended as a sidecar cache checksum: any file added, removed, replaced or retagged changes
     it. The nanosecond mtime is used when available so a same-second, same-size local replacement
-    is still detected; providers without it (WebDAV/cloud) fall back to their etag-based checksum.
+    is still detected; providers without it fall back to their higher-precision sidecar token
+    (a WebDAV ETag or cloud content hash) when available.
 
     :param items: The files to include in the digest.
     """
