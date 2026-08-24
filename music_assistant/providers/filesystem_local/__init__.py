@@ -3404,10 +3404,15 @@ class LocalFileSystemProvider(MusicProvider):
                     or None
                 )
             else:
-                # no readable filesystem track to rebuild the tag baseline: refresh artwork and
-                # advance the signature, but keep the previous NFO ownership snapshot so a later
-                # removal can still clear the values this NFO contributed
-                new_snapshot = prev_snapshot
+                # no representative track was found, neither directly nor through this
+                # artist's albums: defer instead of advancing the signature, so a later sync
+                # retries once a linked track/album becomes available rather than silently
+                # dropping this NFO edit
+                self.logger.warning(
+                    "Deferring artist sidecar refresh for %s: no representative track found",
+                    artist_path,
+                )
+                return False
         fresh_images = await self._get_local_images(
             artist_path, extra_thumb_names=("artist",), versioned=True
         )
@@ -3478,8 +3483,11 @@ class LocalFileSystemProvider(MusicProvider):
         """
         Rebuild an artist from one representative track under its own mapping directory.
 
-        Only tracks inside ``artist_path`` are considered and the returned artist must map to that
-        exact directory, so an artist with several filesystem paths refreshes the right one.
+        Tracks crediting the artist directly are tried first. An artist with no track-artist
+        relationship of its own (for example, an album-only ALBUMARTIST whose tracks credit
+        individual performers) falls back to the tracks of its own albums. Only tracks inside
+        ``artist_path`` are considered and the returned artist must map to that exact directory,
+        so an artist with several filesystem paths refreshes the right one.
 
         :raises SidecarReadError: When representative tracks exist but none could be read.
         """
@@ -3487,6 +3495,10 @@ class LocalFileSystemProvider(MusicProvider):
             library_artist_id, "library", provider_filter=self.instance_id
         )
         source = await self._representative_source(tracks, artist_path)
+        if source is None:
+            source = await self._representative_source(
+                await self._album_artist_tracks(library_artist_id), artist_path
+            )
         if source is None:
             return None
         kind, payload = source
@@ -3506,6 +3518,19 @@ class LocalFileSystemProvider(MusicProvider):
             if isinstance(candidate, Artist) and candidate.item_id == artist_path:
                 return candidate
         return None
+
+    async def _album_artist_tracks(self, library_artist_id: str) -> list[Track]:
+        """Return the (deduped) tracks of every album this artist is credited on."""
+        albums = await self.mass.music.artists.albums(
+            library_artist_id, "library", provider_filter=self.instance_id
+        )
+        tracks_by_id: dict[str, Track] = {}
+        for album in albums:
+            for track in await self.mass.music.albums.get_library_album_tracks(
+                album.item_id, provider_filter=[self.instance_id]
+            ):
+                tracks_by_id[track.item_id] = track
+        return [tracks_by_id[item_id] for item_id in sorted(tracks_by_id)]
 
     async def _representative_source(
         self, tracks: list[Track], root_dir: str

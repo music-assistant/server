@@ -356,6 +356,96 @@ async def test_removed_artist_nfo_reverts_sort_keeps_mbid() -> None:
     assert saved.metadata.description is None  # our bio cleared
 
 
+def _album_only_artist_track(provider: Any) -> None:
+    """Wire up an album-only artist: no track-artist rows, one album track under its path."""
+    provider.mass.music.artists.tracks = AsyncMock(return_value=[])
+    album = Album(item_id="10", provider="library", name="Album", provider_mappings=set())
+    provider.mass.music.artists.albums = AsyncMock(return_value=[album])
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="t1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="Artist/Album/track.mp3",
+                provider_domain="filesystem_local",
+                provider_instance=INSTANCE_ID,
+            )
+        },
+    )
+    provider.mass.music.albums.get_library_album_tracks = AsyncMock(return_value=[track])
+    provider.resolve = AsyncMock(return_value=_fs_file("Artist/Album/track.mp3", "1"))
+
+
+async def test_album_only_artist_nfo_edit_refreshes_metadata() -> None:
+    """An album-only ALBUMARTIST (no track-artist rows of its own) still gets an edited NFO applied."""
+    provider = _provider()
+    prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    _album_only_artist_track(provider)
+    fresh = _fresh_artist(
+        provider, {"description": "new bio", "genres": ["Electronic"], "external_ids": []}, set()
+    )
+    parsed_track = MagicMock(spec=Track)
+    parsed_track.artists = [fresh]
+    parsed_track.album = None
+    provider._parse_track = AsyncMock(return_value=parsed_track)
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        ok = await provider._refresh_artist_sidecars(
+            "Artist", True, "nfo2", "img1", ("nfo1", "img1", prev_snap)
+        )
+
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert saved.metadata.description == "new bio"
+    assert saved.metadata.genres == {"Ambient", "Electronic"}  # our Jazz->Electronic, other kept
+
+
+async def test_album_only_artist_nfo_removal_reverts_metadata() -> None:
+    """Removing an album-only artist's NFO still reverts to tag data via its album's tracks."""
+    provider = _provider()
+    prev_snap: dict[str, Any] = {
+        "description": "our nfo bio",
+        "genres": ["Jazz"],
+        "external_ids": [["musicbrainz_artistid", "old-nfo-artist-mbid"]],
+    }
+    stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
+    provider.mass.music.artists.get_library_item_by_prov_id = AsyncMock(return_value=stored)
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider._invalidate_artist_caches = AsyncMock()
+    provider._get_local_images = AsyncMock(return_value=UniqueList())
+    _album_only_artist_track(provider)
+    # NFO removed: the tag-only baseline carries no description/genres/ids of its own
+    fresh = _fresh_artist(provider, {"description": None, "genres": [], "external_ids": []}, set())
+    parsed_track = MagicMock(spec=Track)
+    parsed_track.artists = [fresh]
+    parsed_track.album = None
+    provider._parse_track = AsyncMock(return_value=parsed_track)
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        ok = await provider._refresh_artist_sidecars(
+            "Artist", True, EMPTY, "img1", ("nfo1", "img1", prev_snap)
+        )
+
+    assert ok is True
+    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
+    assert saved.sort_name == "Tag Artist"  # reverted to the tag baseline
+    assert saved.mbid == "old-nfo-artist-mbid"  # identity id is sticky, not cleared
+    assert saved.metadata.genres == {"Ambient"}  # our Jazz dropped, other provider's kept
+    assert saved.metadata.description is None  # our bio cleared
+
+
 async def test_collect_album_images_spans_all_disc_folders() -> None:
     """The complete album image set includes every real disc folder, not just one track's disc."""
     provider = _provider()
@@ -506,8 +596,8 @@ async def test_album_refresh_keeps_snapshot_when_no_representative_track() -> No
     assert saved.metadata.genres == {"Rock", "Electronic"}
 
 
-async def test_artist_refresh_keeps_snapshot_when_no_representative_track() -> None:
-    """A changed artist NFO with no readable representative track keeps the ownership snapshot."""
+async def test_artist_refresh_defers_when_no_representative_track() -> None:
+    """A changed artist NFO with no representative track anywhere defers instead of advancing."""
     provider = _provider()
     prev_snap = {"description": "our bio", "genres": ["Jazz"], "external_ids": []}
     stored = _stored_artist(provider._build_sidecar_details("nfo1", "img1", prev_snap))
@@ -520,14 +610,8 @@ async def test_artist_refresh_keeps_snapshot_when_no_representative_track() -> N
     ok = await provider._refresh_artist_sidecars(
         "Artist", True, "nfo2", "img2", ("nfo1", "img1", prev_snap)
     )
-    assert ok is True
-    saved = provider.mass.music.artists.update_item_in_library.await_args.args[1]
-    assert provider._parse_sidecar_details(provider._mapping_details(saved)) == (
-        "nfo2",
-        "img2",
-        prev_snap,
-    )
-    assert saved.metadata.genres == {"Jazz", "Ambient"}
+    assert ok is False  # deferred, so the stale nfo1/img1 signature is retried next sync
+    provider.mass.music.artists.update_item_in_library.assert_not_awaited()
 
 
 async def test_album_refresh_keeps_prior_metadata_when_nfo_malformed() -> None:
