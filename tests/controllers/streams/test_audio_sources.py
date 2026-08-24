@@ -796,8 +796,8 @@ class TestAudioSourceSilenceKeepalive:
             await asyncio.wait_for(stream.aclose(), timeout=1)
 
     @pytest.mark.asyncio
-    async def test_propagates_source_cancelled_error(self) -> None:
-        """A source-raised cancellation reaches the stream consumer."""
+    async def test_source_cancelled_error_completes(self) -> None:
+        """A source-raised cancellation cleanly ends the stream."""
         from music_assistant.helpers.audio import (  # noqa: PLC0415
             audio_source_silence_keepalive,
         )
@@ -806,10 +806,10 @@ class TestAudioSourceSilenceKeepalive:
             yield b"one"
             raise asyncio.CancelledError
 
-        stream = audio_source_silence_keepalive(_inner(), _audio_format())
-        assert await anext(stream) == b"one"
-        with pytest.raises(asyncio.CancelledError):
-            await anext(stream)
+        chunks = [
+            chunk async for chunk in audio_source_silence_keepalive(_inner(), _audio_format())
+        ]
+        assert chunks == [b"one"]
 
     @pytest.mark.asyncio
     async def test_custom_audio_source_path_applies_wrapper(

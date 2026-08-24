@@ -451,7 +451,7 @@ async def audio_source_silence_keepalive(
     raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
     silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
     silence_chunk = b"\x00" * silence_bytes
-    queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue(maxsize=8)
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
         try:
@@ -464,7 +464,8 @@ async def audio_source_silence_keepalive(
             # Cancellation must not wait for a queue the closing consumer no longer drains.
             if task.cancelling():
                 raise
-            await queue.put(err)
+            # A source-raised cancellation is a clean end, matching FFmpeg feeder semantics.
+            await queue.put(None if isinstance(err, asyncio.CancelledError) else err)
         else:
             await queue.put(None)
 
@@ -478,7 +479,7 @@ async def audio_source_silence_keepalive(
                 continue
             if item is None:
                 break
-            if isinstance(item, BaseException):
+            if isinstance(item, Exception):
                 raise item
             yield item
     finally:
