@@ -6,6 +6,7 @@ selecting anything else, or deselecting, gives the source back and tells the
 plugin so an upstream session stops pointing at Music Assistant.
 """
 
+import asyncio
 from contextlib import suppress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -203,6 +204,56 @@ async def test_deselecting_another_source_from_the_same_provider_is_rejected() -
     assert controller.get_audio_source_session(PLAYER_ID) is session
     provider.on_source_released.assert_not_awaited()
     controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_deselecting_finishes_before_new_playback_starts() -> None:
+    """Release and stop complete before queued playback or source selection starts."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    events: list[str] = []
+
+    async def release_source(_source_id: str, _player_id: str) -> None:
+        release_started.set()
+        await finish_release.wait()
+
+    async def stop_player(_player_id: str) -> None:
+        events.append("stop")
+
+    async def play_media(_player_id: str, _media: PlayerMedia) -> None:
+        events.append("play")
+
+    async def select_source(_player_id: str, _source_id: str | None) -> None:
+        events.append("select")
+
+    provider.on_source_released.side_effect = release_source
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_play_media = AsyncMock(side_effect=play_media)
+    controller._handle_select_source = AsyncMock(side_effect=select_source)
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID, provider_instance_id=PROVIDER_INSTANCE, source_id="main"
+        )
+    )
+    await release_started.wait()
+    play_task = asyncio.create_task(
+        controller.play_media(
+            PLAYER_ID,
+            PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK),
+        )
+    )
+    select_task = asyncio.create_task(controller.select_source(PLAYER_ID, PLAYER_ID))
+    await asyncio.sleep(0)
+    playback_waited = not events
+
+    finish_release.set()
+    await asyncio.gather(release_task, play_task, select_task)
+
+    assert playback_waited
+    assert events[0] == "stop"
+    assert set(events[1:]) == {"play", "select"}
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:

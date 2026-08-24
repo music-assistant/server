@@ -1158,7 +1158,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         elif player.state.synced_to:
             await self.cmd_ungroup(player_id)
         # Delegate to internal handler for actual implementation
-        await self._handle_select_source(player_id, source)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_select_source(player_id, source)
 
     async def deselect_source(
         self,
@@ -1181,43 +1182,44 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param provider_instance_id: Optional provider instance that owns the source session.
         :param source_id: Optional provider-scoped source id that owns the source session.
         """
-        player = self.get_player(player_id, raise_unavailable=False)
-        if not player:
-            return
-        session = self._source_sessions.get(player_id)
-        active_provider_instance_id = session.provider_instance_id if session else None
-        active_source_id = session.source_id if session else None
-        if provider_instance_id is not None and (
-            active_provider_instance_id != provider_instance_id
-            or (source_id is not None and active_source_id != source_id)
-        ):
-            self.logger.debug(
-                "Ignoring source release for provider %s source %s on player %s: "
-                "active source is provider %s source %s",
-                provider_instance_id,
-                source_id,
-                player_id,
-                active_provider_instance_id,
-                active_source_id,
-            )
-            return
-        await self._release_audio_source(player_id)
-        if not stop_playback:
-            return
-        replacement_session = self._source_sessions.get(player_id)
-        if provider_instance_id is not None and replacement_session is not None:
-            self.logger.debug(
-                "Not stopping player %s after releasing provider %s source %s: "
-                "provider %s source %s took over",
-                player_id,
-                provider_instance_id,
-                source_id,
-                replacement_session.provider_instance_id,
-                replacement_session.source_id,
-            )
-            return
-        with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
-            await self._handle_cmd_stop(player_id)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            player = self.get_player(player_id, raise_unavailable=False)
+            if not player:
+                return
+            session = self._source_sessions.get(player_id)
+            active_provider_instance_id = session.provider_instance_id if session else None
+            active_source_id = session.source_id if session else None
+            if provider_instance_id is not None and (
+                active_provider_instance_id != provider_instance_id
+                or (source_id is not None and active_source_id != source_id)
+            ):
+                self.logger.debug(
+                    "Ignoring source release for provider %s source %s on player %s: "
+                    "active source is provider %s source %s",
+                    provider_instance_id,
+                    source_id,
+                    player_id,
+                    active_provider_instance_id,
+                    active_source_id,
+                )
+                return
+            await self._release_audio_source(player_id)
+            if not stop_playback:
+                return
+            replacement_session = self._source_sessions.get(player_id)
+            if provider_instance_id is not None and replacement_session is not None:
+                self.logger.debug(
+                    "Not stopping player %s after releasing provider %s source %s: "
+                    "provider %s source %s took over",
+                    player_id,
+                    provider_instance_id,
+                    source_id,
+                    replacement_session.provider_instance_id,
+                    replacement_session.source_id,
+                )
+                return
+            with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
+                await self._handle_cmd_stop(player_id)
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """
