@@ -233,3 +233,34 @@ async def test_browse_decoding(provider: Audibleprovider) -> None:
     # Test Genre with slash (encoded)
     await provider.browse("audible://genres/Sci-Fi%2FFantasy")
     provider.helper.get_audiobooks_by_genre.assert_called_with("Sci-Fi/Fantasy")
+
+
+async def test_get_library_podcasts_includes_legacy_periodicals(helper: AudibleHelper) -> None:
+    """Test podcast sync also picks up series with the legacy Periodical delivery type."""
+    library_items = [
+        {
+            "asin": "P1",
+            "title": "Modern Podcast",
+            "content_delivery_type": "PodcastParent",
+        },
+        {
+            "asin": "P2",
+            "title": "Audible Original Show",
+            "content_delivery_type": "Periodical",
+        },
+        {
+            "asin": "B1",
+            "title": "Some Book",
+            "content_delivery_type": "SinglePartBook",
+        },
+    ]
+
+    async def side_effect(_: str, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("page") == 1:
+            return {"items": library_items}
+        return {"items": []}
+
+    with patch.object(helper, "_call_api", side_effect=side_effect):
+        podcasts = [podcast async for podcast in helper.get_library_podcasts()]
+
+    assert [podcast.item_id for podcast in podcasts] == ["P1", "P2"]
