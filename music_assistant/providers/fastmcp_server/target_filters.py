@@ -98,6 +98,31 @@ def enforce_target_filters(
             )
 
 
+def filter_collection_result(user: Any, command: str, result: Any) -> Any:
+    """
+    Hide collection rows the current user is not allowed to see.
+
+    :param user: Authenticated Music Assistant user.
+    :param command: Canonical command that produced ``result``.
+    :param result: Native command return value.
+    """
+    if (
+        user is None
+        or command != "player_queues/all"
+        or str(getattr(user, "role", "")).casefold() == "admin"
+    ):
+        return result
+    allowed = _allowed_values(getattr(user, "player_filter", None))
+    if allowed is None or not isinstance(result, list | tuple):
+        return result
+    filtered = tuple(
+        item
+        for item in result
+        if str(getattr(item, "queue_id", getattr(item, "player_id", ""))) in allowed
+    )
+    return filtered if isinstance(result, tuple) else list(filtered)
+
+
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "database", "library"})
@@ -126,6 +151,14 @@ def _enforce_allowed(requested: set[str], configured: Any) -> None:
         raise ToolError("Command target is not permitted for the current user")
 
 
+def _resolve_music_provider(mass: Any, submitted: str) -> Any:
+    """Resolve one submitted target without aliasing an unavailable instance."""
+    exact = mass.get_provider(submitted, return_unavailable=True)
+    if exact is not None and str(getattr(exact, "instance_id", "")) == submitted:
+        return exact
+    return mass.get_provider(submitted)
+
+
 def _enforce_music_providers(mass: Any, requested: set[str], configured: Any) -> None:
     """Resolve submitted domains and compare actual music-provider instance ids."""
     allowed = _allowed_values(configured)
@@ -134,7 +167,7 @@ def _enforce_music_providers(mass: Any, requested: set[str], configured: Any) ->
     for submitted in requested:
         if submitted in _INTERNAL_MUSIC_TARGETS or submitted in allowed:
             continue
-        provider = mass.get_provider(submitted)
+        provider = _resolve_music_provider(mass, submitted)
         provider_type = getattr(getattr(provider, "type", None), "value", None)
         if (
             provider is None

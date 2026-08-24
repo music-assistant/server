@@ -63,7 +63,7 @@ from .dynamic_signatures import (
 from .errors import ToolFailureCode, tool_failure
 from .performance import PerformanceTracker
 from .policy import PolicyMode, PolicySnapshot
-from .target_filters import enforce_target_filters
+from .target_filters import enforce_target_filters, filter_collection_result
 
 if TYPE_CHECKING:
     from fastmcp import Context
@@ -479,6 +479,12 @@ class DynamicAPIAdapter:
                     invocation.auth,
                     invocation.impersonated_user,
                     self._confirmed_capabilities(invocation).intersection(confirmation_evidence),
+                )
+                result = filter_collection_result(
+                    invocation.impersonated_user
+                    or (None if invocation.auth is None else invocation.auth[1]),
+                    invocation.entry.command,
+                    result,
                 )
                 result = await self._postflight(invocation, result)
         except TimeoutError as exc:

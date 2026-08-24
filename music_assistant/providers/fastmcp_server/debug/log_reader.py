@@ -100,7 +100,6 @@ class _Record:
 
     entry: LogLine
     offset: int
-    search_text: str = ""
     approx_bytes: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -198,9 +197,7 @@ class SafeLogTail:
                 entry.component and component_filter.search(entry.component)
             ):
                 continue
-            # Match the original record so a caller can locate a redacted
-            # credential without ever receiving it in the returned payload.
-            if search_filter and not search_filter.search(record.search_text):
+            if search_filter and not search_filter.search(entry.message):
                 continue
 
             if len(collected) >= lines:
@@ -502,7 +499,6 @@ class SafeLogTail:
                         timestamp=None, level=None, component=None, message=self._redact(raw)
                     ),
                     offset=0,
-                    search_text=raw,
                 )
 
     def _build_record(self, match: re.Match[str], continuation: list[str], offset: int) -> _Record:
@@ -524,7 +520,6 @@ class SafeLogTail:
                 message=message,
             ),
             offset=offset,
-            search_text=raw_message,
         )
 
     @staticmethod

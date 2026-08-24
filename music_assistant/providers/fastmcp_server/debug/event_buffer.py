@@ -18,7 +18,7 @@ from collections import Counter, deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from ..dynamic_serialization import json_value
+from ..dynamic_serialization import bounded_json_value
 from ..models import EventBufferStats, EventRecord
 
 if TYPE_CHECKING:
@@ -133,7 +133,12 @@ class EventBuffer:
 def _bounded_event_data(value: Any) -> Any:
     """Convert event payloads to compact JSON values without retaining MA objects."""
     try:
-        return _bound_json(json_value(value), depth=0)
+        return bounded_json_value(
+            value,
+            item_cap=100,
+            string_cap=1024,
+            max_depth=4,
+        ).value
     except Exception:
         return "<unserializable event data>"
 
@@ -178,23 +183,3 @@ def _safe_text(value: Any) -> str:
     except Exception:
         return "<unavailable>"
     return text if len(text) <= 1024 else f"{text[:1024]}…({len(text) - 1024} more chars)"
-
-
-def _bound_json(value: Any, *, depth: int) -> Any:
-    """Bound event depth, string length, and collection width for the ring buffer."""
-    if depth >= 4:
-        return "<max depth>"
-    if isinstance(value, str):
-        return value if len(value) <= 1024 else f"{value[:1024]}…({len(value) - 1024} more chars)"
-    if isinstance(value, list):
-        rows = [_bound_json(item, depth=depth + 1) for item in value[:100]]
-        if len(value) > 100:
-            rows.append(f"<{len(value) - 100} more items>")
-        return rows
-    if isinstance(value, dict):
-        rows = list(value.items())
-        result = {key: _bound_json(item, depth=depth + 1) for key, item in rows[:100]}
-        if len(rows) > 100:
-            result["<truncated>"] = f"{len(rows) - 100} more fields"
-        return result
-    return value

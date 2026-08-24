@@ -90,18 +90,39 @@ async def test_log_handlers_preserve_redaction_paging_stats_and_worker_thread(
     monkeypatch.setattr(SafeLogTail, "stats", recording_stats)
 
     page = await tail_log(mass, lines=1)
-    redacted = await tail_log(mass, lines=10, search="secret")
+    visible = await tail_log(mass, lines=10, search="failure")
+    secret_probe = await tail_log(mass, lines=10, search="secret")
     stats = await log_stats(mass)
 
     assert [line.message for line in page.lines] == ["second failure"]
     assert page.has_more is True
     assert page.next_call_hint is not None
-    assert "secret-token" not in redacted.lines[0].message
-    assert "<redacted>" in redacted.lines[0].message
+    assert [line.message for line in visible.lines] == ["first failure", "second failure"]
+    assert secret_probe.lines == []
     assert stats.total_records == 3
     assert stats.level_counts == {"ERROR": 2, "INFO": 1}
     assert seen_threads
     assert all(thread is not main_thread for thread in seen_threads)
+
+
+async def test_event_payload_is_bounded_during_capture(
+    mock_mass: MagicMock,
+    fake_event_emitter: Any,
+) -> None:
+    """Large event payloads are truncated while the subscriber is still running."""
+    payload: dict[str, object] = {"leaf": "x" * 5000}
+    for _index in range(8):
+        payload = {"next": payload}
+
+    buffer = EventBuffer(mock_mass, capacity=10)
+    buffer.start()
+    fake_event_emitter.emit(SimpleNamespace(event="huge", object_id="1", data=payload))
+
+    snapshot = await recent_events(buffer, limit=1)
+    stored = snapshot.events[0].data
+    encoded = str(stored)
+    assert "x" * 5000 not in encoded
+    assert len(encoded) < 8000
 
 
 async def test_event_handlers_preserve_limits_and_stats(

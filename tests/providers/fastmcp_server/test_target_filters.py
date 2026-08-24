@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 from music_assistant.providers.fastmcp_server.target_filters import (
     TargetKind,
     enforce_target_filters,
+    filter_collection_result,
     target_rule,
 )
 
@@ -84,7 +85,7 @@ def test_music_provider_domain_resolves_to_filtered_instance() -> None:
         {"provider_instance_id_or_domain": "spotify"},
     )
 
-    mass.get_provider.assert_called_once_with("spotify")
+    assert mass.get_provider.call_count >= 1
 
 
 def test_music_provider_domain_cannot_alias_a_filtered_out_instance() -> None:
@@ -104,6 +105,52 @@ def test_music_provider_domain_cannot_alias_a_filtered_out_instance() -> None:
             "music/albums/get",
             {"provider_instance_id_or_domain": "spotify"},
         )
+
+
+def test_unavailable_instance_does_not_alias_to_an_allowed_instance() -> None:
+    """An unavailable forbidden instance must not resolve to another allowed one."""
+    requested = SimpleNamespace(
+        instance_id="spotify--down",
+        domain="spotify",
+        type=SimpleNamespace(value="music"),
+    )
+    allowed = SimpleNamespace(
+        instance_id="spotify--user",
+        domain="spotify",
+        type=SimpleNamespace(value="music"),
+    )
+
+    def get_provider(key: str, return_unavailable: bool = False) -> object | None:
+        if key == "spotify--down":
+            return requested if return_unavailable else allowed
+        if key == "spotify":
+            return allowed
+        return None
+
+    mass = MagicMock()
+    mass.get_provider.side_effect = get_provider
+
+    with pytest.raises(ToolError, match="not permitted"):
+        enforce_target_filters(
+            mass,
+            _user(),
+            "music/albums/get",
+            {"provider_instance_id_or_domain": "spotify--down"},
+        )
+
+
+def test_queue_collection_hides_queues_outside_the_player_filter() -> None:
+    """Zero-argument queue listings cannot enumerate another user's queues."""
+    result = filter_collection_result(
+        _user(),
+        "player_queues/all",
+        (
+            SimpleNamespace(queue_id="kitchen"),
+            SimpleNamespace(queue_id="bedroom"),
+        ),
+    )
+
+    assert result == (SimpleNamespace(queue_id="kitchen"),)
 
 
 def test_provider_filter_is_not_applied_to_provider_management() -> None:
