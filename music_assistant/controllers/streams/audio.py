@@ -4196,7 +4196,11 @@ class StreamsAudio:
             if supported_sample_rates is not None
             else [sample_rate for sample_rate, _ in player.get_supported_sample_rates()]
         )
-        source_rate = streamdetails.audio_format.sample_rate
+        # the format the audio arrives in, not the one the source claims: a provider
+        # that decoded on our behalf may advertise a narrower format for display, and
+        # narrowing the stream to that would truncate it
+        source_format = arriving_audio_format(streamdetails)
+        source_rate = source_format.sample_rate
         if source_rate in resolved_sample_rates:
             output_sample_rate = source_rate
         else:
@@ -4204,15 +4208,14 @@ class StreamsAudio:
                 (rate for rate in resolved_sample_rates if rate <= source_rate),
                 default=min(resolved_sample_rates),
             )
-        bit_depth = streamdetails.audio_format.bit_depth
         return AudioFormat(
-            content_type=ContentType.from_bit_depth(bit_depth),
+            content_type=ContentType.from_bit_depth(source_format.bit_depth),
             sample_rate=output_sample_rate,
-            bit_depth=bit_depth,
+            bit_depth=source_format.bit_depth,
             # a realtime source may announce more channels than anything downstream can
             # carry (a VBAN stream can be configured up to 8), and player handoff formats
             # copy this count straight through, so fold it here
-            channels=min(streamdetails.audio_format.channels, 2),
+            channels=min(source_format.channels, 2),
         )
 
     def _flow_restart_context(

@@ -166,6 +166,7 @@ def _make_backend(
     instance_id: str = _INSTANCE_ID,
     base_dir: Path | None = None,
     consent: bool = True,
+    audio_quality: str = AUDIO_QUALITY_LOSSLESS,
 ) -> tuple[SoloistBackend, list[BackendEvent]]:
     """Build a backend on a mocked mass, capturing every emitted BackendEvent."""
     mass = MagicMock()
@@ -186,6 +187,7 @@ def _make_backend(
         api_key=_API_KEY,
         consent=consent,
         volume_mode=volume_mode,
+        audio_quality=audio_quality,
     )
     return backend, events
 
@@ -1352,16 +1354,55 @@ def test_sink_prefix_is_sanitized() -> None:
     assert backend._sink_prefix == "weird_id__"
 
 
-def test_audio_formats_report_the_capture_pcm() -> None:
-    """Display and decoded format both report the fixed capture PCM (s32le/44.1/2)."""
+def test_decoded_format_reports_the_capture_pcm() -> None:
+    """The decoded format is the fixed capture PCM (s32le/44.1/2) the pipe delivers."""
     backend, _events = _make_backend()
 
-    for fmt in (backend.audio_format, backend.decoded_audio_format):
-        assert fmt.content_type is ContentType.PCM_S32LE
-        assert fmt.sample_rate == 44100
-        assert fmt.bit_depth == 32
-        assert fmt.channels == 2
+    decoded = backend.decoded_audio_format
+    assert decoded.content_type is ContentType.PCM_S32LE
+    assert decoded.sample_rate == 44100
+    assert decoded.bit_depth == 32
+    assert decoded.channels == 2
     assert backend.get_audio_reader() is None
+
+
+@pytest.mark.parametrize(
+    ("audio_quality", "content_type", "bit_depth"),
+    [
+        (AUDIO_QUALITY_NORMAL, ContentType.OGG, 16),
+        (AUDIO_QUALITY_HIGH, ContentType.OGG, 16),
+        (AUDIO_QUALITY_VERY_HIGH, ContentType.OGG, 16),
+        (AUDIO_QUALITY_LOSSLESS, ContentType.FLAC, 24),
+    ],
+)
+def test_advertised_format_follows_the_configured_tier(
+    audio_quality: str, content_type: ContentType, bit_depth: int
+) -> None:
+    """The display format is the tier Spotify was asked for, not the capture PCM."""
+    backend, _events = _make_backend(audio_quality=audio_quality)
+
+    assert backend.audio_format.content_type is content_type
+    assert backend.audio_format.bit_depth == bit_depth
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "content_type"),
+    [
+        ("track", ContentType.FLAC),
+        ("episode", ContentType.OGG),
+        ("chapter", ContentType.OGG),
+    ],
+)
+async def test_spoken_content_is_never_advertised_as_lossless(
+    entity_type: str, content_type: ContentType
+) -> None:
+    """Spotify serves lossless for music only, whatever the tier is set to."""
+    backend, _events = _make_backend(audio_quality=AUDIO_QUALITY_LOSSLESS)
+    item = SoloistEntity(uri=f"spotify:{entity_type}:x1", entity_type=entity_type)
+
+    await backend._handle_event(_event("track_changed", SoloistTrackChanged(item=item)))
+
+    assert backend.audio_format.content_type is content_type
 
 
 async def test_transport_commands_map_to_client() -> None:
