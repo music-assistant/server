@@ -1092,6 +1092,11 @@ class _SoloistSession:
                 # the engine acted on the command before the failure got back to
                 # us, so it does play on into this item after all
                 return True
+            if isinstance(err, TimeoutError):
+                # the command may have landed engine-side regardless; keeping the
+                # channel makes the retry settle on it instead of queueing the
+                # same track a second time
+                return False
             del self._items[next_uri]
             with suppress(ValueError):
                 self._pending.remove(next_uri)

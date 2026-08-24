@@ -273,7 +273,12 @@ class _RealtimeTailHold:
         self._pcm_format = pcm_format
         self._audio_buffer = audio_buffer
         self._started: float | None = None
+        self._last_noted = 0.0
         self._received_bytes = 0
+
+    # an arrival gap this long is a suspension (pause, sink hold), not elapsed
+    # listening; counting it would wrongly erase the banked surplus for good
+    _SUSPEND_FORGIVE_S = 5.0
 
     def note_bytes(self, count: int) -> None:
         """
@@ -281,8 +286,12 @@ class _RealtimeTailHold:
 
         :param count: Number of PCM bytes received.
         """
+        now = asyncio.get_event_loop().time()
         if self._started is None:
-            self._started = asyncio.get_event_loop().time()
+            self._started = now
+        elif now - self._last_noted > self._SUSPEND_FORGIVE_S:
+            self._started += now - self._last_noted
+        self._last_noted = now
         self._received_bytes += count
 
     def hold_target(self, max_bytes: int, frame_size: int) -> int:
@@ -2201,26 +2210,31 @@ class StreamsAudio:
                     * pcm_format.pcm_sample_size
                 )
                 fadeout_share_bytes = (fadeout_share_bytes // frame_size) * frame_size
-                async for mix_chunk in self.smart_fades_mixer.mix(
+                mix_stream = self.smart_fades_mixer.mix(
                     smart_fade,
                     fade_in_part=_limited_fade_in(),
                     fade_out_part=fade_out_data,
                     pcm_format=pcm_format,
-                ):
-                    if first_part_written < fadeout_share_bytes:
-                        # split this chunk so A gets exactly fadeout_share_bytes
-                        remaining = fadeout_share_bytes - first_part_written
-                        if len(mix_chunk) > remaining:
-                            yield mix_chunk[:remaining]
-                            first_part_written += remaining
-                            bytes_written += remaining
-                            second_part_buf.extend(mix_chunk[remaining:])
+                )
+                # aclosing so an aborted stream tears the mix (and its feeder,
+                # which holds a read on the fade-in stream) down first
+                stack = aclosing(mix_stream)
+                async with stack:
+                    async for mix_chunk in mix_stream:
+                        if first_part_written < fadeout_share_bytes:
+                            # split this chunk so A gets exactly fadeout_share_bytes
+                            remaining = fadeout_share_bytes - first_part_written
+                            if len(mix_chunk) > remaining:
+                                yield mix_chunk[:remaining]
+                                first_part_written += remaining
+                                bytes_written += remaining
+                                second_part_buf.extend(mix_chunk[remaining:])
+                            else:
+                                yield mix_chunk
+                                first_part_written += len(mix_chunk)
+                                bytes_written += len(mix_chunk)
                         else:
-                            yield mix_chunk
-                            first_part_written += len(mix_chunk)
-                            bytes_written += len(mix_chunk)
-                    else:
-                        second_part_buf.extend(mix_chunk)
+                            second_part_buf.extend(mix_chunk)
                 # tail consumed by the mix but not credited to bytes_written
                 uncredited_tail_bytes = len(fade_out_data) - first_part_written
                 self._report_crossfade_mode(
@@ -2729,16 +2743,45 @@ class StreamsAudio:
                                 overlap_overshoot,
                             )
                             crossfade_buffer = bytearray()
+                            # The mix output is split live as it flows: the first
+                            # fadeout_share bytes are the outgoing track's (its held
+                            # tail, processed), the rest belong to this one. Credited
+                            # per chunk, because a single correction afterwards would
+                            # leave the queue's position mapping on the wrong track
+                            # for the whole (source-paced) duration of the blend. The
+                            # pre-counted tail makes way for that live credit.
+                            fadeout_share_seconds = (
+                                timing_info.pre_crossfade_duration + timing_info.crossfade_duration
+                            )
+                            fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
+                            fadeout_share = (fadeout_share // frame_size) * frame_size
+                            assert last_play_log_entry.seconds_streamed is not None
+                            last_play_log_entry.seconds_streamed -= (
+                                len(last_fadeout_part) / pcm_sample_size
+                            )
+                            mix_stream = self.smart_fades_mixer.mix(
+                                crossfade_smart_fade,
+                                fade_in_part=overlap_stream,
+                                fade_out_part=last_fadeout_part,
+                                pcm_format=pcm_format,
+                            )
                             try:
                                 crossfade_bytes_written = 0
-                                async for mix_chunk in self.smart_fades_mixer.mix(
-                                    crossfade_smart_fade,
-                                    fade_in_part=overlap_stream,
-                                    fade_out_part=last_fadeout_part,
-                                    pcm_format=pcm_format,
-                                ):
-                                    yield mix_chunk
-                                    crossfade_bytes_written += len(mix_chunk)
+                                # closed before item_stream on an aborted flow: its
+                                # teardown stops the feeder that still holds a read
+                                # on item_stream, which must not be closed mid-read
+                                async with aclosing(mix_stream):
+                                    async for mix_chunk in mix_stream:
+                                        yield mix_chunk
+                                        outgoing_part = min(
+                                            len(mix_chunk),
+                                            max(0, fadeout_share - crossfade_bytes_written),
+                                        )
+                                        last_play_log_entry.seconds_streamed += (
+                                            outgoing_part / pcm_sample_size
+                                        )
+                                        bytes_written += len(mix_chunk) - outgoing_part
+                                        crossfade_bytes_written += len(mix_chunk)
                                 remaining_bytes = bytes(overlap_overshoot)
                             except Exception as mix_err:
                                 if crossfade_bytes_written:
@@ -2749,16 +2792,40 @@ class StreamsAudio:
                                     queue_track.name,
                                     mix_err,
                                 )
+                                # the tail was un-counted for the live credit above;
+                                # it now plays as ordinary outgoing audio
+                                last_play_log_entry.seconds_streamed += (
+                                    len(last_fadeout_part) / pcm_sample_size
+                                )
                                 for pcm_slice in iter_pcm_slices(
                                     last_fadeout_part, pcm_format, 1000
                                 ):
                                     yield pcm_slice
                                     await asyncio.sleep(0)
-                                # full tail was pre-counted and is now yielded as-is
                                 crossfade_bytes_written = 0
-                                remaining_bytes = b"".join(fed_to_mixer) + bytes(overlap_overshoot)
+                                remaining_bytes = b""
                                 # mix failed — undo the eager seek_position
                                 queue_track.streamdetails.seek_position = raw_seek_position
+                                # The mixer teardown cancels its feeder, which was
+                                # likely parked reading item_stream - that ends the
+                                # stream itself. Play the track from a fresh stream
+                                # (its buffer still holds what the mixer consumed)
+                                # rather than silently losing its body.
+                                await item_stream.aclose()
+                                fallback_stream = self.get_queue_item_stream(
+                                    queue_track,
+                                    pcm_format=pcm_format,
+                                    seek_position=int(raw_seek_position),
+                                    playback_speed=track_playback_speed,
+                                    raise_on_error=False,
+                                    session_id=flow_session_id,
+                                )
+                                async with aclosing(fallback_stream):
+                                    async for fallback_chunk in fallback_stream:
+                                        if _superseded():
+                                            return
+                                        yield fallback_chunk
+                                        bytes_written += len(fallback_chunk)
                             if crossfade_bytes_written:
                                 # the blend really played, so credit both of its sides with it
                                 for faded_item in (queue_track, outgoing_queue_track):
@@ -2772,22 +2839,6 @@ class StreamsAudio:
                                         flow_session_id,
                                         overlay_enabled=overlay_active(queue),
                                     )
-                                # Split mix output at end-of-overlap: PRE+CF to A, POST to B.
-                                fadeout_share_seconds = (
-                                    timing_info.pre_crossfade_duration
-                                    + timing_info.crossfade_duration
-                                )
-                                fadeout_share = int(fadeout_share_seconds * pcm_sample_size)
-                                fadeout_share = (fadeout_share // frame_size) * frame_size
-                                fadeout_share = min(fadeout_share, crossfade_bytes_written)
-                                fadein_share = crossfade_bytes_written - fadeout_share
-                                bytes_written += fadein_share
-                                if last_play_log_entry:
-                                    assert last_play_log_entry.seconds_streamed is not None
-                                    # correct pre-counted full tail to the timing-based share
-                                    last_play_log_entry.seconds_streamed += (
-                                        fadeout_share - len(last_fadeout_part)
-                                    ) / pcm_sample_size
                             if remaining_bytes:
                                 for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
                                     yield pcm_slice
