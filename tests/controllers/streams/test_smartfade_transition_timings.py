@@ -1083,6 +1083,30 @@ class TestQuickFadeMasteredFadeDeadZone:
         self._build_fade(caplog, level=VERBOSE_LOG_LEVEL)
         assert "source=trim-closing-anchor" in caplog.text
 
+    def test_trim_closing_wins_when_the_ladder_outgrows_the_rescue_rung(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 4-bar dead zone ships the audible-end ladder rung, not the capped rescue rung."""
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=128.0,
+                duration=duration,
+                # longer mastered fade: the 7.78s trim gap exceeds even the 4-bar
+                # rung (7.5s) yet stays under the trim-closing generator's 8s gate
+                rms_energy=_rms_with_mastered_fade(duration, 228.4, 238.9),
+            ),
+            # 9.4% BPM gap: QUICK_FADE with the [4, 2, 1] rung ladder
+            fade_in_analysis=_analysis(bpm=140.0, duration=duration),
+        )
+        with caplog.at_level(logging.DEBUG):
+            fade.build(_seconds(45), _seconds(45), PCM)
+        assert "shipping a rescue-pass candidate (source=trim-closing-anchor)" in caplog.text
+        # the audible-end anchor keeps the full 4-bar overlap and trims nothing audible
+        assert fade.effective_end == pytest.approx(43.40, abs=0.05)
+        assert fade.timing_info.crossfade_duration == pytest.approx(7.78, abs=0.05)
+
 
 # ---------------------------------------------------------------------------
 # SmartCrossFade — rubberband stretch savings compensation
