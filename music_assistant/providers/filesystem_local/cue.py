@@ -476,6 +476,9 @@ class CueSheetHandler:
                     if idx < len(cue_track.musicbrainz_artistids)
                     else None
                 ),
+                # same reasoning as the album parse above: this performer may have their own
+                # artist.nfo/images, and only the CUE sheet's own path can be re-queued later
+                representative_track=cue_item.relative_path,
             )
             if artist:
                 track_artists.append(artist)

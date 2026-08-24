@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,7 +34,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps
+from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps, json_loads
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -218,7 +218,8 @@ class CacheController(CoreController):
 
         Use this instead of many individual :meth:`get` calls when a caller needs to check a
         large number of keys against the cache at once (e.g. while scanning a whole library),
-        since it issues a single query rather than one per key.
+        since it issues a single query and a single deserialization batch rather than one of
+        each per key.
 
         :param provider: Provider id to group cache objects.
         :param category: Category to group cache objects.
@@ -232,27 +233,18 @@ class CacheController(CoreController):
             {"category": category, "provider": provider, "cur_time": cur_time},
             limit=0,
         )
-        result: dict[str, Any] = {}
-        for row in rows:
-            try:
-                data = await async_json_loads(row["data"])
-            except ValueError as exc:
-                LOGGER.error(
-                    "Error parsing cache data for %s/%s/%s: %s",
-                    provider,
-                    category,
-                    row["key"],
-                    str(exc),
-                    exc_info=exc if self.logger.isEnabledFor(10) else None,
-                )
-                continue
-            if base_class is not None and data is not None:
-                data = (
+        # deserialize every row in one thread-pool submission instead of one per row, which
+        # otherwise means thousands of thread submissions/context switches on a large result
+        result = await asyncio.to_thread(self._deserialize_rows, rows, provider, category)
+        if base_class is not None:
+            for key, data in result.items():
+                if data is None:
+                    continue
+                result[key] = (
                     [base_class.from_dict(item) for item in data]
                     if isinstance(data, list)
                     else base_class.from_dict(data)
                 )
-            result[row["key"]] = data
         return result
 
     async def get_expiration(
@@ -411,6 +403,31 @@ class CacheController(CoreController):
                 db_size_mb,
                 MAX_CACHE_DB_SIZE_MB,
             )
+
+    def _deserialize_rows(
+        self, rows: list[Mapping[str, Any]], provider: str, category: int
+    ) -> dict[str, Any]:
+        """
+        JSON-deserialize a batch of raw cache rows synchronously, skipping unparsable ones.
+
+        :param rows: Raw ``key``/``data`` rows selected from the cache table.
+        :param provider: Provider id the rows were selected for, used only for error logging.
+        :param category: Category the rows were selected for, used only for error logging.
+        """
+        result: dict[str, Any] = {}
+        for row in rows:
+            try:
+                result[row["key"]] = json_loads(row["data"])
+            except ValueError as exc:
+                LOGGER.error(
+                    "Error parsing cache data for %s/%s/%s: %s",
+                    provider,
+                    category,
+                    row["key"],
+                    str(exc),
+                    exc_info=exc if self.logger.isEnabledFor(10) else None,
+                )
+        return result
 
     async def _get_cache_db_size_mb(self) -> float:
         """Return the on-disk size of the cache database (in MB)."""

@@ -112,6 +112,7 @@ from .constants import (
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
+    METADATA_FILE_EXTENSIONS,
     PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
@@ -1194,6 +1195,13 @@ class LocalFileSystemProvider(MusicProvider):
             # and is never deleted, only checked (after the walk) for a change worth
             # reparsing its registered representative track
             metadata_files.append(item)
+            return
+        if not item.is_dir and item.ext and item.ext.lower() in METADATA_FILE_EXTENSIONS:
+            # an nfo/image extension is walked only to catch a recognized metadata file above;
+            # an unrecognized one (wrong filename) must stay as invisible to the scan as before
+            # this feature widened the walk beyond SUPPORTED_EXTENSIONS, or a stray image/nfo
+            # on a wrong/empty mount could satisfy the "not empty" check below and silently
+            # bypass the safeguard against deleting an entire library
             return
         # a file this provider never imports gets no mapping, so it would flag as
         # changed on every sync; it is still on disk, so record it as present

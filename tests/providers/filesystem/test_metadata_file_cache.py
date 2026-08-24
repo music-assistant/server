@@ -305,6 +305,40 @@ def test_classify_scan_item_routes_metadata_file_without_recording_it() -> None:
     assert cur_filenames == set()  # never present/absent-tracked, so never deleted either
 
 
+def test_classify_scan_item_ignores_unrecognized_metadata_extension_files() -> None:
+    """
+    An unrecognized nfo/image (walked for its extension, not a recognized filename).
+
+    Must stay fully invisible to the scan - not routed to metadata_files (it isn't a
+    recognized metadata file) and not counted in cur_filenames either, or a stray file
+    like this on a wrong/empty mount would satisfy the "not empty" check and silently
+    bypass the safeguard against deleting an entire previously-synced library.
+    """
+    provider = _provider()
+    unrecognized_image = _item("Artist/Album/booklet.jpg")
+    unrecognized_nfo = _item("Artist/Album/random.nfo")
+    for item in (unrecognized_image, unrecognized_nfo):
+        items_to_process: list[tuple[FileSystemItem, str | None]] = []
+        cur_filenames: set[str] = set()
+        metadata_files: list[FileSystemItem] = []
+
+        provider._classify_scan_item(
+            item,
+            file_checksums={},
+            cue_file_checksums={},
+            cur_filenames=cur_filenames,
+            items_to_process=items_to_process,
+            unchanged_cue_items=[],
+            cue_stems=set(),
+            ignore_album_playlists=False,
+            metadata_files=metadata_files,
+        )
+
+        assert metadata_files == []
+        assert items_to_process == []
+        assert cur_filenames == set()
+
+
 def test_track_classification_uses_checksum_not_metadata_token() -> None:
     """A track's own change detection is driven only by checksum, imported-media compatible."""
     provider = _provider()
