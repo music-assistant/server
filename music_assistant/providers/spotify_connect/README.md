@@ -83,7 +83,8 @@ crossfade and streaming quality are provider settings, applied by the engines th
 (see the per-engine READMEs for the mechanics). Streaming quality is a ceiling, not a
 guarantee: Spotify still downshifts on a slow connection and falls back when a track or the
 account has no file at that tier, and what it actually delivered is not observable — so the
-reported source format stays the capture PCM rather than a guess.
+reported source format is the tier that was asked for, the same ceiling the Spotify apps
+show.
 
 ## Multi-instance support
 

@@ -118,15 +118,24 @@ marker that makes the engine honor the non-metered value. Measured against build
 (bytes fetched for a whole 4:20 track): `2` ≈ 96 kbps, `3` ≈ 160 kbps, `4` ≈ 320 kbps and
 `5` lossless FLAC (~810 kbps). **`5` is the ceiling** — values outside `1`-`5` are rejected
 and silently fall back to ~160 kbps, so an unrecognized tier must never reach the file.
-Despite the `FLAC_FLAC_24BIT` name in the binary, no value produced a 24-bit stream.
+That measurement only covers the wire: the capture sink always delivers s32le whatever the
+engine fetched, so the source bit depth cannot be read off the audio at all and the
+`FLAC_FLAC_24BIT` name in the binary is the only indication either way.
 
-The delivered quality is **not** observable, so it is never reported as the source format.
-The engine keeps no quality field on the WebSocket API, its audio cache is encrypted, and
-the log templates that would name the codec (`AudioRendererImpl ... format [...]`,
-`FileStreamer file average bitrate`) sit behind a log level with no exposed control: the
-daemon's real optstring is `hn:D:C:z:d:i:AVw:k:s:p` (no `-v`; the `-v, --verbose` string in
-the binary is dead text, and no environment variable raises the level either). The setting
-is therefore a ceiling only, and `_capture_format` stays the displayed format.
+The delivered quality is **not** observable. The engine keeps no quality field on the
+WebSocket API, its audio cache is encrypted, and the log templates that would name the
+codec (`AudioRendererImpl ... format [...]`, `FileStreamer file average bitrate`) sit
+behind a log level with no exposed control: the daemon's real optstring is
+`hn:D:C:z:d:i:AVw:k:s:p` (no `-v`; the `-v, --verbose` string in the binary is dead text,
+and no environment variable raises the level either).
+
+So the configured tier is what gets reported as the source format — the same ceiling the
+Spotify apps show, and the same claim the Spotify music provider makes. Spotify serves
+lossless for music only, so an episode or audiobook chapter is reported as Ogg Vorbis
+whatever the tier says; a Connect session plays whatever the app picked, so the item
+playing when the stream starts is the only media-type signal there is. `_capture_format`
+describes the PCM the FIFO delivers and is reported separately as the decoded format, so
+every decision about the bytes follows it and the tier claim stays display-only.
 
 ## Security
 

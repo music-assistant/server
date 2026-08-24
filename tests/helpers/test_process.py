@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 
 import pytest
 
+from music_assistant.helpers import process as process_module
 from music_assistant.helpers.process import AsyncProcess
 
 # Comfortably beyond the OS pipe capacity plus asyncio's default high-water mark,
 # so the bytes are guaranteed to still be queued in our own write buffer.
 _MORE_THAN_THE_PIPE_HOLDS = b"\x00" * (4 * 1024 * 1024)
+
+# Ignores SIGINT and keeps stdout open, so nothing but SIGKILL ends it and its
+# pipe never reaches EOF. The marker tells the test the handler is installed.
+_WEDGED_CHILD = (
+    "import signal, sys, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+    "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
+)
 
 
 @pytest.fixture(name="piped_process")
@@ -201,3 +210,27 @@ async def test_second_close_returns_without_waiting_out_the_stream_locks() -> No
     await proc.close()
 
     assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_that_never_closes_its_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A child holding its pipes open must not keep close() from reaping it.
+
+    Draining stdout is what lets a healthy process flush before it is reaped, so
+    an unbounded drain waits out a wedged child forever and the terminate/SIGKILL
+    escalation is never reached.
+    """
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    async with asyncio.timeout(20):
+        await proc.close()
+
+    assert proc.returncode is not None
