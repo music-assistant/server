@@ -1069,6 +1069,32 @@ async def test_the_hold_on_a_new_session_expires(tmp_path: Path) -> None:
     assert backend._held_by_app() is None
 
 
+async def test_an_audiobook_gives_up_on_capacity_instead_of_burning_chapters(
+    tmp_path: Path,
+) -> None:
+    """Skipping ahead would cost the audiobook its availability and the caller its retry."""
+    provider = _make_provider(tmp_path)
+    calls: list[str] = []
+
+    async def _refuse(uri: str, *_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        calls.append(uri)
+        for _ in ():  # never yields; only makes this an async generator
+            yield b""
+        raise SoloistAppControlError(provider, SoloistAppControl.TOOK_OVER)
+
+    provider.backend = MagicMock(stream_spotify_uri=_refuse)
+    streamdetails = MagicMock(
+        media_type=MediaType.AUDIOBOOK,
+        data={"chapters": [TRACK_A, TRACK_B, "spotify:track:ccc"], "chapters_data": []},
+    )
+
+    with pytest.raises(SoloistAppControlError):
+        async for _ in provider.get_audio_stream(streamdetails):
+            pass
+    # the first chapter's refusal ends it: no chapter is skipped over
+    assert calls == [TRACK_A]
+
+
 def test_the_playback_device_is_named_apart_from_the_connect_one() -> None:
     """Two identically named devices in the Spotify app is what causes the takeovers."""
     assert SOLOIST_DEVICE_NAME != DEFAULT_PUBLISH_NAME
