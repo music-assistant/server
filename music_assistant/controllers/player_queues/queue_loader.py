@@ -727,6 +727,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
         # items normally. Keys off is_dynamic since a finite-only queue records sources too.
+        # A NEXT of a track is exempt below: the user picked that exact track to play next,
+        # so it is expanded and inserted like on a linear queue instead of being folded into the pool
+        # (which would place it at a random position and subject it to the pool's recency gate).
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
 
         media_items: list[MediaItemType] = []
@@ -818,20 +821,29 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             user_initiated=True,
                         )
                     )
-                elif already_dynamic:
+                elif already_dynamic and not (
+                    option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                ):
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # not (yet) a managed pool: record the finite parent as a source (kept for a
-                    # later dynamic transition and for similar/autoplay seeds) and expand it into
-                    # the linear queue
-                    if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
-                        MediaType.TRACK,
-                        MediaType.ALBUM,
-                        MediaType.PLAYLIST,
-                        MediaType.ARTIST,
+                    # A NEXT track carved out of an already-dynamic pool above lands here too: it
+                    # is expanded like on a linear queue but must not become a source, or the pool
+                    # would re-dispatch (replay) it later.
+                    if (
+                        not already_dynamic
+                        and not isinstance(media_item, BrowseFolder)
+                        and media_item.media_type
+                        in (
+                            MediaType.TRACK,
+                            MediaType.ALBUM,
+                            MediaType.PLAYLIST,
+                            MediaType.ARTIST,
+                        )
                     ):
+                        # record the finite parent as a source (kept for a later dynamic
+                        # transition and for similar/autoplay seeds)
                         source_items.append(media_item)
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -861,6 +873,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # below all the same, and a dynamic queue's imposed shuffle must not survive that
             await self._apply_shuffle(queue_id, option, shuffle)
 
+        # whether this enqueue collected any new source items, captured before the reassignment
+        # below replaces the local with the queue's full (stored) source list
+        new_sources = bool(source_items)
         # overwrite or append the queue's source items
         replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
         if replace_sources:
@@ -873,13 +888,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
 
         if queue.is_dynamic:
-            # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into a
-            # single bounded, recency-orchestrated mix over ALL sources — existing finite content as
-            # materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s). Every add rebuilds
-            # from the buffer position, so the queue stays a fixed-size mix instead of growing by
-            # each added source's own batch.
-            await self._enter_dynamic_mode(queue_id, option)
-            return
+            if replace_sources or new_sources:
+                # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into
+                # a single bounded, recency-orchestrated mix over ALL sources — existing finite
+                # content as materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s). Only
+                # rebuilt when the sources actually changed, so a NEXT track carved out above (which
+                # adds no source) does not needlessly reshuffle the tail.
+                await self._enter_dynamic_mode(queue_id, option)
+            if not (option == QueueOption.NEXT and media_items):
+                return
+            # a NEXT track carved out of the pool above still needs to be inserted; fall through to
+            # the normal queue_items build + _enqueue_with_option call below, which inserts it right
+            # after the buffered index exactly like on a linear queue
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
