@@ -31,7 +31,7 @@ async def mount_connect_wizard(
     mass: MusicAssistant,
     mount_path: str,
     *,
-    enabled_tags_provider: Callable[[], list[str]],
+    default_profile_provider: Callable[[], str],
     extra_origins_csv: str = "",
     trust_forwarded_proto: bool = False,
 ) -> Callable[[], None]:
@@ -41,9 +41,8 @@ async def mount_connect_wizard(
     :param mass: MusicAssistant instance.
     :param mount_path: HTTP path prefix where the MCP server is mounted
         (e.g. ``/mcp/v1``); wizard routes nest under ``<mount_path>/connect``.
-    :param enabled_tags_provider: Zero-arg callable returning the list of
-        currently-enabled permission tag strings; called per-request so
-        permission hot-swaps surface in the UI without remount.
+    :param default_profile_provider: Zero-arg callable returning only the
+        current default policy profile name.
     :param extra_origins_csv: Comma-separated additional ``Origin`` values to
         accept beyond the auto-derived loopback + base_url + publish_ip set.
     :param trust_forwarded_proto: When True, accept a trusted reverse proxy's
@@ -55,7 +54,7 @@ async def mount_connect_wizard(
     ctx = WizardContext(
         mass=mass,
         mount_path=mount_path,
-        enabled_tags_provider=enabled_tags_provider,
+        default_profile_provider=default_profile_provider,
         origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
         trust_forwarded_proto=trust_forwarded_proto,
     )

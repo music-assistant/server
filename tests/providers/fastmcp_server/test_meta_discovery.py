@@ -1,219 +1,425 @@
-"""Tests for the opt-in simplified tool discovery (meta-tool) mode."""
-# mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
+"""Compatibility-level tests for the permanent meta-discovery surface."""
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import Any
-from unittest.mock import MagicMock
+from urllib.parse import urlencode
 
 import pytest
 from fastmcp import Client, FastMCP
-from fastmcp.client.elicitation import ElicitResult
 from fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 
+from music_assistant.providers.fastmcp_server import meta_discovery
 from music_assistant.providers.fastmcp_server.config import build_config_entries
-from music_assistant.providers.fastmcp_server.constants import (
-    CONF_META_TOOL_DISCOVERY,
-    DEFAULT_MOUNT_PATH,
-    HOT_SWAPPABLE_KEYS,
+from music_assistant.providers.fastmcp_server.constants import DEFAULT_MOUNT_PATH
+from music_assistant.providers.fastmcp_server.dynamic_api import (
+    CatalogSnapshot,
+    CatalogView,
+    DynamicEntry,
+    RequestCatalogContext,
 )
 from music_assistant.providers.fastmcp_server.meta_discovery import register_meta_discovery
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+from music_assistant.providers.fastmcp_server.policy import PolicyProfile, policy_snapshot
 from music_assistant.providers.fastmcp_server.server import build_tag_lookup
-from music_assistant.providers.fastmcp_server.tools import build_queue_server
-
-_ALL_TAGS = {"query:queue", "edit:queue", "delete:queue", "control:playback"}
-_META_NAMES = {"search_tools", "call_tool", "get_tool_schema"}
 
 
-def _server(
-    mock_mass: MagicMock,
-    *,
-    require_confirmation: bool = False,
-) -> tuple[FastMCP, dict[str, Any]]:
-    """
-    Build a root FastMCP mirroring the runtime wiring for meta-discovery tests.
+@dataclass
+class _Adapter:
+    """Minimal catalog adapter for direct-tool integration tests."""
 
-    Returns the server plus a mutable state dict: ``state["enabled"]`` gates
-    the meta mode and ``state["allowed"]`` is the live allowed-tag set, both
-    read through closures exactly like the runtime's hot-swap path.
-    """
-    state: dict[str, Any] = {"enabled": True, "allowed": set(_ALL_TAGS)}
+    _snapshot = CatalogSnapshot((1, "test", ()), ())
+
+    async def base_snapshot(self) -> CatalogSnapshot:
+        """Return the empty immutable base catalog."""
+        return self._snapshot
+
+    async def visible_catalog(self) -> CatalogView:
+        """Return the empty request-filtered catalog."""
+        return CatalogView(self._snapshot.fingerprint, ())
+
+    async def catalog_context(self) -> RequestCatalogContext:
+        """Return one empty same-generation request context."""
+        return RequestCatalogContext(
+            self._snapshot,
+            CatalogView(self._snapshot.fingerprint, ()),
+        )
+
+    async def visible_entries(self) -> list[DynamicEntry]:
+        """Return an empty dynamic catalog."""
+        return []
+
+    async def get_visible_entry(self, name: str) -> DynamicEntry | None:
+        """Resolve no names."""
+        del name
+        return None
+
+    async def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        response_mode: str,
+        fields: list[str] | None,
+        max_items: int | None,
+        ctx: Any,
+    ) -> dict[str, Any]:
+        """Reject calls because the adapter is intentionally empty."""
+        del name, arguments, response_mode, fields, max_items, ctx
+        raise AssertionError("unreachable")
+
+
+@dataclass(frozen=True, slots=True)
+class _RecordedCall:
+    """One adapter invocation captured after MCP-boundary normalization."""
+
+    name: str
+    arguments: dict[str, Any]
+    response_mode: str
+    fields: list[str] | None
+    max_items: int | None
+
+
+class _RecordingAdapter(_Adapter):
+    """Record call-tool inputs that crossed the real FastMCP transport."""
+
+    def __init__(self) -> None:
+        self.calls: list[_RecordedCall] = []
+
+    async def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        response_mode: str,
+        fields: list[str] | None,
+        max_items: int | None,
+        ctx: Any,
+    ) -> dict[str, Any]:
+        """Capture normalized containers and return a minimal envelope."""
+        del ctx
+        self.calls.append(_RecordedCall(name, arguments, response_mode, fields, max_items))
+        return {"ok": True}
+
+
+def _recording_server() -> tuple[FastMCP, _RecordingAdapter]:
+    """Build a call-tool server with an adapter-side transport probe."""
+    mcp: FastMCP = FastMCP(name="call-tool-test")
+    adapter = _RecordingAdapter()
+    register_meta_discovery(mcp, dynamic_adapter=adapter)
+    return mcp, adapter
+
+
+async def test_registers_exactly_three_real_tools() -> None:
+    """The direct MCP registration exposes no transform-time virtual tools."""
     mcp: FastMCP = FastMCP(name="test")
-    mcp.mount(
-        build_queue_server(mock_mass, require_confirmation=require_confirmation),
-        namespace="queue",
-    )
-    mcp.add_middleware(TagFilterMiddleware(lambda: state["allowed"], build_tag_lookup(mcp)))
+
+    @mcp.tool
+    async def old_tool() -> None:
+        """Former public tool."""
+
     register_meta_discovery(
         mcp,
-        enabled=lambda: bool(state["enabled"]),
-        allowed_tags_provider=lambda: state["allowed"],
-        lookup_component_tags=build_tag_lookup(mcp),
+        dynamic_adapter=_Adapter(),
     )
-    return mcp, state
-
-
-async def test_meta_off_keeps_full_catalog(mock_mass: MagicMock) -> None:
-    """With the toggle off the normal catalog is listed and no meta tool leaks."""
-    mcp, state = _server(mock_mass)
-    state["enabled"] = False
     async with Client(mcp) as client:
-        names = {t.name for t in await client.list_tools()}
-    assert "queue_get_active_queue" in names
-    assert not (_META_NAMES & names)
+        names = {tool.name for tool in await client.list_tools()}
+    assert names == {"search_tools", "call_tool", "get_tool_schema"}
 
 
-async def test_meta_on_lists_exactly_three_tools(mock_mass: MagicMock) -> None:
-    """With the toggle on the listing collapses to the three meta tools."""
-    mcp, _state = _server(mock_mass)
-    async with Client(mcp) as client:
-        names = {t.name for t in await client.list_tools()}
-    assert names == _META_NAMES
-
-
-async def test_toggle_hot_swaps_listing_without_rebuild(mock_mass: MagicMock) -> None:
-    """Flipping the flag changes the listing on the next request, same server."""
-    mcp, state = _server(mock_mass)
-    async with Client(mcp) as client:
-        assert {t.name for t in await client.list_tools()} == _META_NAMES
-        state["enabled"] = False
-        names = {t.name for t in await client.list_tools()}
-        assert "queue_set_shuffle" in names
-        assert not (_META_NAMES & names)
-        state["enabled"] = True
-        assert {t.name for t in await client.list_tools()} == _META_NAMES
-
-
-async def test_search_tools_returns_lightweight_results(mock_mass: MagicMock) -> None:
-    """search_tools ranks the catalog and never inlines schemas."""
-    mcp, _state = _server(mock_mass)
-    async with Client(mcp) as client:
-        result = await client.call_tool("search_tools", {"query": "shuffle queue"})
-    entries = result.data
-    names = [e["name"] for e in entries]
-    assert "queue_set_shuffle" in names
-    for entry in entries:
-        assert set(entry) == {"name", "description"}, (
-            f"search result must stay lightweight, got keys {set(entry)}"
-        )
-
-
-async def test_search_tools_respects_rbac(mock_mass: MagicMock) -> None:
-    """A tag-disabled tool never surfaces in search results."""
-    mcp, state = _server(mock_mass)
-    state["allowed"] = {"query:queue"}
-    async with Client(mcp) as client:
-        result = await client.call_tool("search_tools", {"query": "shuffle queue"})
-    names = [e["name"] for e in result.data]
-    assert "queue_set_shuffle" not in names, "edit:queue is disabled — must not surface"
-
-
-async def test_call_tool_proxies_execution(mock_mass: MagicMock) -> None:
-    """call_tool executes a permitted catalogued tool with the given arguments."""
-    mcp, _state = _server(mock_mass)
+async def test_call_tool_decodes_json_encoded_containers_once() -> None:
+    """Stringified top-level containers reach the adapter as native values."""
+    mcp, adapter = _recording_server()
     async with Client(mcp) as client:
         await client.call_tool(
             "call_tool",
-            {"name": "queue_set_shuffle", "arguments": {"queue_id": "q1", "enabled": True}},
+            {
+                "name": "ma_api:music/search",
+                "arguments": '{"query":"jazz","nested":"[1]"}',
+                "fields": '["name","uri"]',
+            },
         )
-    mock_mass.player_queues.set_shuffle.assert_awaited_once_with("q1", True)
+
+    assert adapter.calls == [
+        _RecordedCall(
+            "ma_api:music/search",
+            {"query": "jazz", "nested": "[1]"},
+            "compact",
+            ["name", "uri"],
+            None,
+        )
+    ]
 
 
-async def test_call_tool_blocked_for_disabled_tag(mock_mass: MagicMock) -> None:
-    """The proxy re-enters the middleware chain, so RBAC still blocks the call."""
-    mcp, state = _server(mock_mass)
-    state["allowed"] = {"query:queue"}
+@pytest.mark.parametrize(
+    ("arguments", "fields", "expected_arguments", "expected_fields"),
+    [
+        ({"query": "jazz"}, ["name"], {"query": "jazz"}, ["name"]),
+        (None, None, {}, None),
+    ],
+)
+async def test_call_tool_preserves_native_containers_and_defaults(
+    arguments: object,
+    fields: object,
+    expected_arguments: dict[str, Any],
+    expected_fields: list[str] | None,
+) -> None:
+    """Compatibility decoding does not alter native values or None defaults."""
+    mcp, adapter = _recording_server()
     async with Client(mcp) as client:
-        with pytest.raises((ToolError, McpError), match=r"disabled|not found"):
-            await client.call_tool(
-                "call_tool",
-                {"name": "queue_set_shuffle", "arguments": {"queue_id": "q1", "enabled": True}},
-            )
-    mock_mass.player_queues.set_shuffle.assert_not_awaited()
-
-
-async def test_get_tool_schema_returns_full_schema(mock_mass: MagicMock) -> None:
-    """get_tool_schema returns the input schema for one permitted tool."""
-    mcp, _state = _server(mock_mass)
-    async with Client(mcp) as client:
-        result = await client.call_tool("get_tool_schema", {"tool_name": "queue_set_shuffle"})
-    schema = result.data
-    assert schema["name"] == "queue_set_shuffle"
-    assert "queue_id" in schema["inputSchema"]["properties"]
-    assert "enabled" in schema["inputSchema"]["properties"]
-
-
-async def test_get_tool_schema_hides_disabled_tool(mock_mass: MagicMock) -> None:
-    """A tag-disabled tool's schema is not disclosed."""
-    mcp, state = _server(mock_mass)
-    state["allowed"] = {"query:queue"}
-    async with Client(mcp) as client:
-        with pytest.raises((ToolError, McpError), match="not found"):
-            await client.call_tool("get_tool_schema", {"tool_name": "queue_set_shuffle"})
-
-
-async def test_get_tool_schema_unknown_tool(mock_mass: MagicMock) -> None:
-    """An unknown tool name reports not-found."""
-    mcp, _state = _server(mock_mass)
-    async with Client(mcp) as client:
-        with pytest.raises((ToolError, McpError), match="not found"):
-            await client.call_tool("get_tool_schema", {"tool_name": "no_such_tool"})
-
-
-async def test_elicitation_fires_through_call_tool_proxy(mock_mass: MagicMock) -> None:
-    """Destructive-op confirmation still gates tools invoked via the proxy."""
-    prompts: list[str] = []
-
-    async def handler(message, response_type, params, context):  # noqa: ARG001
-        prompts.append(message)
-        return True
-
-    mcp, _state = _server(mock_mass, require_confirmation=True)
-    async with Client(mcp, elicitation_handler=handler) as client:
         await client.call_tool(
             "call_tool",
-            {"name": "queue_clear_queue", "arguments": {"queue_id": "q1"}},
+            {
+                "name": "ma_api:music/search",
+                "arguments": arguments,
+                "fields": fields,
+            },
         )
-    assert prompts, "elicitation prompt must reach the client through the proxy"
-    mock_mass.player_queues.clear.assert_called_once_with("q1")
+
+    assert adapter.calls[0].arguments == expected_arguments
+    assert adapter.calls[0].fields == expected_fields
 
 
-async def test_elicitation_decline_blocks_through_proxy(mock_mass: MagicMock) -> None:
-    """Declining the confirmation through the proxy leaves the queue untouched."""
-
-    async def decliner(message, response_type, params, context):  # noqa: ARG001
-        return ElicitResult(action="decline", content=None)
-
-    mcp, _state = _server(mock_mass, require_confirmation=True)
-    async with Client(mcp, elicitation_handler=decliner) as client:
-        with pytest.raises((ToolError, McpError)):
+@pytest.mark.parametrize(
+    ("parameter", "value", "message"),
+    [
+        (
+            "arguments",
+            '{"private":"secret-274-payload"',
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "arguments",
+            "secret-274-payload",
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "arguments",
+            "null",
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "arguments",
+            '["secret-274-payload"]',
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "arguments",
+            ["secret-274-payload"],
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "arguments",
+            '{"private":"secret-274-payload","value":NaN}',
+            "arguments must be an object or a JSON-encoded object",
+        ),
+        (
+            "fields",
+            '["name","secret-274-payload"',
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+        (
+            "fields",
+            "secret-274-payload",
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+        (
+            "fields",
+            "null",
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+        (
+            "fields",
+            '{"private":"secret-274-payload"}',
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+        (
+            "fields",
+            ["name", 274, "secret-274-payload"],
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+        (
+            "fields",
+            '["name",274,"secret-274-payload"]',
+            "fields must be an array of strings or a JSON-encoded array of strings",
+        ),
+    ],
+)
+async def test_call_tool_rejects_invalid_containers_without_echoing_payload(
+    parameter: str,
+    value: object,
+    message: str,
+) -> None:
+    """Invalid compatibility inputs produce stable redacted tool errors."""
+    mcp, adapter = _recording_server()
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError) as raised:
             await client.call_tool(
                 "call_tool",
-                {"name": "queue_clear_queue", "arguments": {"queue_id": "q1"}},
+                {"name": "ma_api:music/search", parameter: value},
             )
-    mock_mass.player_queues.clear.assert_not_called()
+
+    assert str(raised.value) == f"[invalid_arguments] {message}"
+    assert "secret-274-payload" not in str(raised.value)
+    assert "Traceback" not in str(raised.value)
+    assert adapter.calls == []
 
 
-async def test_direct_call_still_works_in_meta_mode(mock_mass: MagicMock) -> None:
-    """
-    Catalogued tools stay callable by name in meta mode (hidden, not blocked).
-
-    FastMCP's search transforms hide tools from the listing but keep
-    ``get_tool`` delegating, so a stale client that cached tool names keeps
-    working; RBAC still applies via the middleware.
-    """
-    mcp, _state = _server(mock_mass)
+async def test_call_tool_schema_keeps_container_only_contract() -> None:
+    """Compatibility decoding does not advertise string-valued containers."""
+    mcp, _adapter = _recording_server()
     async with Client(mcp) as client:
-        await client.call_tool("queue_set_shuffle", {"queue_id": "q1", "enabled": False})
-    mock_mass.player_queues.set_shuffle.assert_awaited_once_with("q1", False)
+        tool = next(item for item in await client.list_tools() if item.name == "call_tool")
+
+    arguments = tool.inputSchema["properties"]["arguments"]
+    fields = tool.inputSchema["properties"]["fields"]
+    assert {variant["type"] for variant in arguments["anyOf"]} == {"object", "null"}
+    assert {variant["type"] for variant in fields["anyOf"]} == {"array", "null"}
+    array_schema = next(variant for variant in fields["anyOf"] if variant["type"] == "array")
+    assert array_schema["items"] == {"type": "string"}
 
 
-async def test_config_entry_registered_default_off(mock_mass: MagicMock) -> None:
-    """The meta toggle ships as a Server-category boolean, default off."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    entry = entries[CONF_META_TOOL_DISCOVERY]
-    assert entry.default_value is False
-    assert entry.category == "server"
-    assert CONF_META_TOOL_DISCOVERY in HOT_SWAPPABLE_KEYS
+async def test_catalog_resource_template_is_discoverable_and_matches_tool_browse() -> None:
+    """The catalog resource exposes the same first page as empty tool browse."""
+    mcp: FastMCP = FastMCP(name="test")
+    register_meta_discovery(
+        mcp,
+        dynamic_adapter=_Adapter(),
+    )
+    async with Client(mcp) as client:
+        templates = {str(item.uriTemplate) for item in await client.list_resource_templates()}
+        tool_page = await client.call_tool("search_tools", {"query": "", "limit": 25})
+        contents = await client.read_resource("catalog://commands?limit=25")
+    payload = json.loads(next(item.text for item in contents if hasattr(item, "text")))
+    assert "catalog://commands{?cursor,limit}" in templates
+    assert tool_page.structured_content is not None
+    assert payload["items"] == tool_page.structured_content["items"]
+    assert payload["total"] == tool_page.structured_content["total"]
+    assert payload["catalog_revision"] == tool_page.structured_content["catalog_revision"]
+    assert payload["next_uri"] is None
+    assert set(payload) == {
+        "items",
+        "total",
+        "next_cursor",
+        "next_uri",
+        "catalog_revision",
+    }
+
+
+class _CatalogAdapter(_Adapter):
+    """Expose a fixed multi-entry catalog for resource paging tests."""
+
+    def __init__(self, entry_count: int) -> None:
+        entries = tuple(
+            DynamicEntry(
+                name=f"ma_api:music/command_{index:02d}",
+                command=f"music/command_{index:02d}",
+                description=f"Music command {index}",
+                input_schema={"type": "object", "properties": {}},
+                required_scope=None,
+                allow_impersonation=False,
+                handler=object(),
+            )
+            for index in range(entry_count)
+        )
+        self._snapshot = CatalogSnapshot(
+            (
+                1,
+                "catalog",
+                tuple((entry.command, index + 1) for index, entry in enumerate(entries)),
+            ),
+            entries,
+        )
+
+    async def visible_catalog(self) -> CatalogView:
+        """Make every catalog fixture entry visible."""
+        return CatalogView(self._snapshot.fingerprint, self._snapshot.entries)
+
+    async def catalog_context(self) -> RequestCatalogContext:
+        """Return the fixed catalog and matching all-visible view."""
+        return RequestCatalogContext(
+            self._snapshot,
+            CatalogView(self._snapshot.fingerprint, self._snapshot.entries),
+        )
+
+
+def _catalog_server(entry_count: int, *, middleware: bool = False) -> FastMCP:
+    """Build a resource-enabled catalog server, optionally with empty permissions."""
+    mcp: FastMCP = FastMCP(name="catalog-test")
+    register_meta_discovery(
+        mcp,
+        dynamic_adapter=_CatalogAdapter(entry_count),
+    )
+    if middleware:
+        mcp.add_middleware(
+            TagFilterMiddleware(
+                build_tag_lookup(mcp),
+                lambda: policy_snapshot(PolicyProfile.SAFE_QUERIES),
+            )
+        )
+    return mcp
+
+
+async def test_catalog_resource_next_uri_reads_the_next_page() -> None:
+    """The advertised resource URI resumes the alphabetical catalog page."""
+    mcp = _catalog_server(entry_count=3)
+    async with Client(mcp) as client:
+        first_contents = await client.read_resource("catalog://commands?limit=2")
+        first = json.loads(next(item.text for item in first_contents if hasattr(item, "text")))
+        second_contents = await client.read_resource(first["next_uri"])
+    second = json.loads(next(item.text for item in second_contents if hasattr(item, "text")))
+    assert len(first["items"]) == 2
+    assert len(second["items"]) == 1
+    assert second["next_cursor"] is None
+    assert second["next_uri"] is None
+    assert [item["name"] for item in first["items"] + second["items"]] == sorted(
+        item["name"] for item in first["items"] + second["items"]
+    )
+
+
+async def test_catalog_resource_rejects_search_cursor() -> None:
+    """Search continuations cannot be replayed through the catalog resource."""
+    mcp = _catalog_server(entry_count=3)
+    async with Client(mcp) as client:
+        search = await client.call_tool("search_tools", {"query": "music", "limit": 1})
+        assert search.structured_content is not None
+        with pytest.raises(McpError, match="invalid_cursor"):
+            await client.read_resource(
+                f"catalog://commands?{urlencode({'cursor': search.structured_content['next_cursor']})}"
+            )
+
+
+async def test_untagged_catalog_resource_survives_empty_tag_middleware() -> None:
+    """The catalog resource remains visible as untagged infrastructure."""
+    mcp = _catalog_server(entry_count=0, middleware=True)
+    async with Client(mcp) as client:
+        templates = {str(item.uriTemplate) for item in await client.list_resource_templates()}
+        contents = await client.read_resource("catalog://commands")
+    page = json.loads(next(item.text for item in contents if hasattr(item, "text")))
+    assert "catalog://commands{?cursor,limit}" in templates
+    assert page["items"] == []
+    assert page["total"] == 0
+
+
+def test_meta_discovery_service_is_a_direct_index_owner() -> None:
+    """Search indexing belongs to a service, rather than a FastMCP transform."""
+    assert getattr(meta_discovery, "MetaDiscoveryService", None) is not None
+
+
+def test_dynamic_risk_gate_entries_are_removed(mock_mass: Any) -> None:
+    """V2 command behavior no longer exposes legacy dynamic risk gates."""
+    entries = {entry.key: entry for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
+    assert {
+        "dynamic_api_read",
+        "dynamic_api_control",
+        "dynamic_api_write",
+        "dynamic_api_system",
+    }.isdisjoint(entries)
+
+
+def test_dynamic_entry_type_carries_no_classifier_risk_gate() -> None:
+    """Discovery descriptors do not expose the removed v1 risk class."""
+    assert "risk" not in DynamicEntry.__dataclass_fields__

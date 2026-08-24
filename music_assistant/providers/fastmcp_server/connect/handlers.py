@@ -4,7 +4,7 @@ HTTP handlers backing the Connect Wizard endpoints.
 Five endpoints are mounted under ``<mount_path>/connect``:
 
 * ``GET  /connect``           — serves the single-page HTML wizard.
-* ``GET  /connect/info``      — meta JSON (URLs, version, enabled permissions, clients).
+* ``GET  /connect/info``      — meta JSON (URLs, default policy, clients).
 * ``POST /connect/exchange``  — exchanges a bootstrap token for a session token.
 * ``POST /connect/login``     — username/password login fallback.
 * ``POST /connect/token``     — mints a per-client long-lived token.
@@ -37,7 +37,7 @@ class WizardContext:
 
     mass: MusicAssistant
     mount_path: str
-    enabled_tags_provider: Callable[[], list[str]]
+    default_profile_provider: Callable[[], str]
     origin_check: Callable[[web.Request], bool]
     # When True, a trusted reverse proxy's ``X-Forwarded-Proto: https`` (or
     # ``X-Forwarded-Scheme: https``) is accepted as proof the public hop was
@@ -239,17 +239,17 @@ def make_info(ctx: WizardContext) -> Callable[[web.Request], Any]:
         well_known = "/.well-known/oauth-protected-resource" + mount
 
         try:
-            permissions = list(ctx.enabled_tags_provider() or [])
-        except Exception:
-            LOGGER.exception("Connect Wizard: enabled_tags_provider raised")
-            permissions = []
+            profile = str(ctx.default_profile_provider())
+        except AttributeError, RuntimeError, TypeError, ValueError:
+            LOGGER.warning("Connect Wizard: default policy provider failed")
+            profile = "Safe queries"
 
         return web.json_response(
             {
                 "mount_path": ctx.mount_path,
                 "mcp_url_loopback": loopback,
                 "mcp_url_advertised": advertised,
-                "permissions": permissions,
+                "default_policy": {"profile": profile},
                 "clients": clients_to_json(),
                 "well_known_url": well_known,
             },

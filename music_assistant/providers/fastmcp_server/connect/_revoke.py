@@ -38,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 # install the import succeeds (it's the same module MA's own tests use —
 # tests/test_webserver_auth.py:19-22). In this repo's minimal dev venv the
 # transitive ``music_assistant.controllers.webserver`` package can't be
-# loaded (frontend / torch are not installed), so fall back to
+# loaded (frontend / chardet / torch are not installed), so fall back to
 # no-op shims for collect-time imports. Tests mock the API methods that
 # would actually read ``current_user``, so a no-op context manager is safe
 # there. Production always hits the real branch.

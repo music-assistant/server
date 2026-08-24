@@ -1,87 +1,62 @@
-"""ConfigEntry schema for the MCP Server provider."""
+"""Compose Music Assistant ConfigEntry values and surface settings."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
+from .capabilities import Capability
 from .constants import (
-    CONF_CONFIG_READ,
-    CONF_CONFIG_WRITE_CORE,
-    CONF_CONFIG_WRITE_PLAYER,
-    CONF_CONFIG_WRITE_PROVIDER,
-    CONF_CONFIG_WRITE_SECRET,
     CONF_CONNECT_EXTERNAL_URL,
-    CONF_CONTROL_MEDIA,
-    CONF_CONTROL_PLAYBACK,
-    CONF_CONTROL_PLAYERS,
-    CONF_CONTROL_VOLUME,
     CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-    CONF_DEBUG_EVENTS,
-    CONF_DEBUG_INSPECT,
-    CONF_DEBUG_LOGS,
-    CONF_DEBUG_PROVIDERS,
-    CONF_DEBUG_RELOAD,
-    CONF_DELETE_FAVORITES,
-    CONF_DELETE_LIBRARY,
-    CONF_DELETE_PLAYLISTS,
-    CONF_DELETE_QUEUE,
-    CONF_EDIT_FAVORITES,
-    CONF_EDIT_LIBRARY,
-    CONF_EDIT_PLAYLISTS,
-    CONF_EDIT_QUEUE,
+    CONF_DEFAULT_POLICY,
+    CONF_ENABLE_MCP_APP,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
-    CONF_LEAN_ADMIN_SCHEMA,
-    CONF_META_TOOL_DISCOVERY,
+    CONF_MANUAL_TOKEN_IDS,
     CONF_MOUNT_PATH,
-    CONF_QUERY_LIBRARY,
-    CONF_QUERY_METADATA,
-    CONF_QUERY_PLAYERS,
-    CONF_QUERY_QUEUE,
+    CONF_POLICY_TOKEN_SUFFIXES,
     CONF_REQUIRE_AUTH,
-    CONF_REQUIRE_CONFIRMATION,
     CONF_RES_LIBRARY,
     CONF_RES_PLAYER,
     CONF_RES_PROMPTS,
     CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
+from .policy import PolicyMode, PolicyProfile
+from .policy_config import (
+    INHERIT_POLICY,
+    PolicyToken,
+    policy_mode_key,
+    token_policy_key,
+)
+from .policy_config import (
+    manual_token_ids as normalize_manual_token_ids,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-def _bool(key: str, default: bool, category: str) -> ConfigEntry:
-    # Label/description intentionally unset: strings.json owns all entry text.
-    return ConfigEntry(
-        key=key,
-        type=ConfigEntryType.BOOLEAN,
-        default_value=default,
-        category=category,
-        required=False,
-    )
-
-
 def build_config_entries(
     mass: MusicAssistant,
     mount_path: str,
+    *,
+    tokens: Iterable[Any] = (),
+    manual_token_ids: Iterable[str] = (),
+    stored_value_provider: Callable[[str], Any] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return the full ConfigEntry schema for this provider.
-
-    :param mass: MusicAssistant instance, used to compose the info label.
-    :param mount_path: The configured mount path, used to compose the info label URL.
-    """
+    """Return endpoint, resource, prompt, and dynamic v2 policy entries."""
     base_url = mass.webserver.base_url.rstrip("/")
-    # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
-    # always renders a valid URL even if the user dropped the leading slash.
     mount_path = "/" + mount_path.strip("/")
-    info_label = f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Profile → Long-lived access tokens."
-
-    return (
+    info_label = (
+        f"MCP endpoint: {base_url}{mount_path}\n"
+        "Create tokens in Profile → Long-lived access tokens."
+    )
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key="info_label",
             type=ConfigEntryType.LABEL,
@@ -111,13 +86,6 @@ def build_config_entries(
             required=False,
         ),
         ConfigEntry(
-            key=CONF_REQUIRE_CONFIRMATION,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            category="server",
-            required=False,
-        ),
-        ConfigEntry(
             key=CONF_ENFORCE_AUDIENCE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
@@ -142,14 +110,6 @@ def build_config_entries(
             required=False,
         ),
         ConfigEntry(
-            key=CONF_LEAN_ADMIN_SCHEMA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="server",
-            advanced=True,
-            required=False,
-        ),
-        ConfigEntry(
             key=CONF_TRUST_FORWARDED_PROTO,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
@@ -157,56 +117,117 @@ def build_config_entries(
             advanced=True,
             required=False,
         ),
+        _policy_selector(CONF_DEFAULT_POLICY, None, allow_inherit=False),
         ConfigEntry(
-            key=CONF_META_TOOL_DISCOVERY,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="server",
+            key=CONF_POLICY_TOKEN_SUFFIXES,
+            type=ConfigEntryType.STRING,
+            default_value=[],
+            multi_value=True,
+            hidden=True,
+            category="policy",
+            required=False,
+            value=(
+                stored_value_provider(CONF_POLICY_TOKEN_SUFFIXES)
+                if stored_value_provider is not None
+                else None
+            ),
+        ),
+    ]
+    entries.extend(_custom_matrix(CONF_DEFAULT_POLICY))
+    entries.append(
+        ConfigEntry(
+            key=CONF_MANUAL_TOKEN_IDS,
+            type=ConfigEntryType.STRING,
+            default_value=[],
+            multi_value=True,
+            category="policy",
+            required=False,
             advanced=True,
-            required=False,
-        ),
-        # Query permissions
-        _bool(CONF_QUERY_LIBRARY, True, "query_permissions"),
-        _bool(CONF_QUERY_QUEUE, True, "query_permissions"),
-        _bool(CONF_QUERY_PLAYERS, True, "query_permissions"),
-        _bool(CONF_QUERY_METADATA, True, "query_permissions"),
-        # Control permissions
-        _bool(CONF_CONTROL_PLAYBACK, False, "control_permissions"),
-        _bool(CONF_CONTROL_VOLUME, False, "control_permissions"),
-        _bool(CONF_CONTROL_PLAYERS, False, "control_permissions"),
-        _bool(CONF_CONTROL_MEDIA, False, "control_permissions"),
-        # Edit permissions
-        _bool(CONF_EDIT_LIBRARY, False, "edit_permissions"),
-        _bool(CONF_EDIT_QUEUE, False, "edit_permissions"),
-        _bool(CONF_EDIT_PLAYLISTS, False, "edit_permissions"),
-        _bool(CONF_EDIT_FAVORITES, False, "edit_permissions"),
-        # Delete permissions
-        _bool(CONF_DELETE_LIBRARY, False, "delete_permissions"),
-        _bool(CONF_DELETE_QUEUE, False, "delete_permissions"),
-        _bool(CONF_DELETE_PLAYLISTS, False, "delete_permissions"),
-        _bool(CONF_DELETE_FAVORITES, False, "delete_permissions"),
-        # Resources / prompts
-        _bool(CONF_RES_LIBRARY, True, "mcp_resources"),
-        _bool(CONF_RES_PLAYER, True, "mcp_resources"),
-        _bool(CONF_RES_PROMPTS, True, "mcp_resources"),
-        # Debug namespace — all off-by-default. See specs/inprogress/0005-debug-namespace.md.
-        _bool(CONF_DEBUG_INSPECT, False, "debug"),
-        _bool(CONF_DEBUG_LOGS, False, "debug"),
-        _bool(CONF_DEBUG_EVENTS, False, "debug"),
-        _bool(CONF_DEBUG_PROVIDERS, False, "debug"),
-        _bool(CONF_DEBUG_RELOAD, False, "debug"),
-        ConfigEntry(
-            key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-            type=ConfigEntryType.INTEGER,
-            default_value=500,
-            range=(50, 5000),
-            category="debug",
-            required=False,
-        ),
-        # Config namespace — all off-by-default. See specs/inprogress/0006-config-read-write.md.
-        _bool(CONF_CONFIG_READ, False, "mcp_config"),
-        _bool(CONF_CONFIG_WRITE_PROVIDER, False, "mcp_config"),
-        _bool(CONF_CONFIG_WRITE_CORE, False, "mcp_config"),
-        _bool(CONF_CONFIG_WRITE_PLAYER, False, "mcp_config"),
-        _bool(CONF_CONFIG_WRITE_SECRET, False, "mcp_config"),
+        )
     )
+
+    rendered: dict[str, PolicyToken] = {}
+    for token in tokens:
+        token_id = str(getattr(token, "token_id", "")).strip()
+        if token_id:
+            rendered[token_id] = PolicyToken(token_id, str(getattr(token, "name", token_id)))
+    for token_id in normalize_manual_token_ids(manual_token_ids):
+        rendered.setdefault(token_id, PolicyToken(token_id, f"Manual MCP token ·{token_id[-8:]}"))
+    for token in sorted(rendered.values(), key=lambda value: (value.name, value.token_id)):
+        selector = token_policy_key(token.token_id)
+        selector_entry = _policy_selector(selector, token.name, allow_inherit=True)
+        if stored_value_provider is not None:
+            selector_entry.value = stored_value_provider(selector)
+        entries.append(selector_entry)
+        matrix = _custom_matrix(selector, token.token_id)
+        if stored_value_provider is not None:
+            for entry in matrix:
+                entry.value = stored_value_provider(entry.key)
+        entries.extend(matrix)
+
+    entries.extend(
+        (
+            _bool(CONF_RES_LIBRARY, True, "mcp_resources"),
+            _bool(CONF_RES_PLAYER, True, "mcp_resources"),
+            _bool(CONF_RES_PROMPTS, True, "mcp_resources"),
+            _bool(CONF_ENABLE_MCP_APP, False, "mcp_app"),
+            ConfigEntry(
+                key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=500,
+                range=(50, 5000),
+                category="debug",
+                required=False,
+            ),
+        )
+    )
+    return tuple(entries)
+
+
+def _bool(key: str, default: bool, category: str) -> ConfigEntry:
+    """Build one optional boolean provider entry."""
+    return ConfigEntry(
+        key=key,
+        type=ConfigEntryType.BOOLEAN,
+        default_value=default,
+        category=category,
+        required=False,
+    )
+
+
+def _policy_selector(key: str, label: str | None, *, allow_inherit: bool) -> ConfigEntry:
+    """Build one profile selector."""
+    values = ([INHERIT_POLICY] if allow_inherit else []) + [
+        profile.value for profile in PolicyProfile
+    ]
+    return ConfigEntry(
+        key=key,
+        type=ConfigEntryType.STRING,
+        default_value=INHERIT_POLICY if allow_inherit else PolicyProfile.SAFE_QUERIES.value,
+        options=[ConfigValueOption(value=value) for value in values],
+        translation_key="policy_token" if label is not None else None,
+        translation_params=[label] if label is not None else None,
+        category="policy",
+        required=False,
+    )
+
+
+def _custom_matrix(selector_key: str, token_id: str | None = None) -> list[ConfigEntry]:
+    """Build the conditional 26-capability Custom matrix for one selector."""
+    options = [ConfigValueOption(value=mode.value) for mode in PolicyMode]
+    return [
+        ConfigEntry(
+            key=policy_mode_key(capability, token_id),
+            type=ConfigEntryType.STRING,
+            default_value=PolicyMode.DENY.value,
+            options=options,
+            advanced=True,
+            depends_on=selector_key,
+            depends_on_value=PolicyProfile.CUSTOM.value,
+            translation_key="policy_capability",
+            translation_params=[str(capability)],
+            category="policy",
+            required=False,
+        )
+        for capability in Capability
+    ]

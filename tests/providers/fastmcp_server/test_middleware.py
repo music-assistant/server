@@ -8,7 +8,13 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 
+from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+from music_assistant.providers.fastmcp_server.policy import (
+    PolicyMode,
+    PolicyProfile,
+    policy_snapshot,
+)
 from music_assistant.providers.fastmcp_server.server import build_tag_lookup
 
 
@@ -16,12 +22,12 @@ def _build_server(allowed: set[str]) -> FastMCP:
     """Construct a FastMCP root with one tagged tool and the tag-filter middleware."""
     mcp: FastMCP = FastMCP(name="test-server")
 
-    @mcp.tool(tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.tool(tags={Capability.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def reads() -> str:
         """Return a read-only result."""
         return "ok"
 
-    @mcp.tool(tags={"delete"})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.tool(tags={Capability.DELETE_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]
     async def deletes() -> str:
         """Pretend to perform a destructive action."""
         return "deleted"
@@ -31,17 +37,32 @@ def _build_server(allowed: set[str]) -> FastMCP:
         """Return a value from an untagged tool — always exposed."""
         return "untagged"
 
-    @mcp.resource("data://thing/{thing_id}", tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.resource("data://thing/{thing_id}", tags={Capability.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     async def thing(thing_id: str) -> str:
         """Return a read-only resource value for the given id."""
         return f"thing:{thing_id}"
 
-    @mcp.prompt(name="suggest", tags={"query"})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.prompt(name="suggest", tags={Capability.QUERY_LIBRARY})  # type: ignore[untyped-decorator, unused-ignore]
     def suggest() -> str:
         """Return a sample prompt template."""
         return "Pick something."
 
-    mcp.add_middleware(TagFilterMiddleware(lambda: allowed, build_tag_lookup(mcp)))
+    mcp.add_middleware(
+        TagFilterMiddleware(
+            build_tag_lookup(mcp),
+            lambda: policy_snapshot(
+                PolicyProfile.CUSTOM,
+                {
+                    Capability.QUERY_LIBRARY: (
+                        PolicyMode.ALLOW if "query" in allowed else PolicyMode.DENY
+                    ),
+                    Capability.DELETE_QUEUE: (
+                        PolicyMode.ALLOW if "delete" in allowed else PolicyMode.DENY
+                    ),
+                },
+            ),
+        )
+    )
     return mcp
 
 
@@ -119,9 +140,9 @@ async def test_template_resource_read_via_concrete_uri() -> None:
     assert any("thing:42" in c.text for c in text_blocks)
 
 
-async def test_disabled_prompt_blocked_on_get() -> None:
-    """Getting a disabled prompt by name raises ``McpError`` (RPC envelope)."""
+async def test_prompt_visibility_is_not_controlled_by_capability_policy() -> None:
+    """Prompts follow only the global surface setting, not capability modes."""
     mcp = _build_server(allowed=set())
     async with Client(mcp) as client:
-        with pytest.raises(McpError):
-            await client.get_prompt("suggest", {})
+        result = await client.get_prompt("suggest", {})
+    assert any("Pick something" in message.content.text for message in result.messages)
