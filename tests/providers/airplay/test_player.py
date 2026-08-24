@@ -675,6 +675,9 @@ async def test_session_pcm_format_selects_processing_depth(
         sample_rate=48000,
         bit_depth=24,
     )
+    # nothing was decoded on our behalf here, and a MagicMock attribute would
+    # otherwise stand in for a real handoff format
+    streamdetails.decoded_audio_format = None
     streamdetails.media_type = MediaType.TRACK
     streamdetails.volume_normalization_mode = normalization_mode
     queue_item = MagicMock(streamdetails=streamdetails)

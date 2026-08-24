@@ -102,6 +102,8 @@ from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
+    DEFAULT_VOLUME_NORMALIZATION_MODE,
+    OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
     STREAM_SLOT_WAIT_TIMEOUT,
@@ -120,6 +122,7 @@ from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
+    arriving_audio_format,
     build_concat_filelist,
     calculate_content_length,
     get_bit_rate,
@@ -226,16 +229,6 @@ def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) ->
         return target
     lower = [r for r in supported_sample_rates if r < target]
     return max(lower) if lower else min(supported_sample_rates)
-
-
-def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
-    """Return True if two PCM formats describe identical raw bytes."""
-    return (
-        a.content_type == b.content_type
-        and a.sample_rate == b.sample_rate
-        and a.bit_depth == b.bit_depth
-        and a.channels == b.channels
-    )
 
 
 def overlay_active(queue: PlayerQueue) -> bool:
@@ -620,6 +613,7 @@ class StreamsAudio:
             self._get_volume_normalization_preference(streamdetails),
             volume_normalization_enabled,
             streamdetails,
+            self.mass.streams.source_normalizes_audio(streamdetails),
         )
 
         self.logger.debug(
@@ -1568,6 +1562,7 @@ class StreamsAudio:
                     self._get_volume_normalization_preference(streamdetails),
                     volume_normalization_enabled,
                     streamdetails,
+                    self.mass.streams.source_normalizes_audio(streamdetails),
                 )
 
         # get or create the AudioBuffer (stores raw decoded PCM). This runs before the
@@ -1703,9 +1698,14 @@ class StreamsAudio:
                 # tracks and sound effects are finite files that fill and close immediately;
                 # live sources (radio, audio_source) open an upstream connection that would
                 # sit idle and likely time out before the player actually consumes it.
+                # a realtime source is excluded for the same reason from the other side:
+                # the next item's audio does not exist yet at any point during this one,
+                # so only the source itself can say when it does - it triggers the
+                # pre-buffer through prepare_next_audio_buffer() when it gets there.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
+                    and not streamdetails.is_realtime
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
@@ -2299,11 +2299,15 @@ class StreamsAudio:
                     )
                     continue
                 # a realtime source delivers at playback pace, so it has no audio to spare
-                # for an overlap in either direction
+                # for an overlap in either direction - but one that crossfades its own
+                # playback still does that boundary itself, inside the audio it hands over
                 item_crossfade_mode = (
                     CrossfadeMode.DISABLED
                     if queue_track.streamdetails.is_realtime
                     else crossfade_mode
+                )
+                item_source_crossfade_mode = self.mass.streams.get_source_crossfade_mode(
+                    queue, queue_track
                 )
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
@@ -2428,12 +2432,13 @@ class StreamsAudio:
                             + (timing_info.fadein_trimmed_duration + timing_info.crossfade_duration)
                             * track_playback_speed
                         )
-                # no fade is credited to this track until one is really rendered below
+                # no fade is credited to this track until one is really rendered below,
+                # unless its own source is the one applying it
                 self._report_crossfade_mode(
                     queue.queue_id,
                     queue_track,
                     pcm_format,
-                    CrossfadeMode.DISABLED,
+                    item_source_crossfade_mode,
                     flow_session_id,
                     overlay_enabled=overlay_active(queue),
                 )
@@ -3006,9 +3011,14 @@ class StreamsAudio:
             if streamdetails.media_type == MediaType.RADIO
             else CONF_VOLUME_NORMALIZATION_TRACKS
         )
-        return VolumeNormalizationMode(
+        preference = VolumeNormalizationMode(
             self.mass.streams.get_config_value(conf_key, return_type=str)
         )
+        # a stored value the options never offered is not a preference: nothing
+        # validates a saved config value against them
+        if preference in OUTCOME_ONLY_NORMALIZATION_MODES:
+            return DEFAULT_VOLUME_NORMALIZATION_MODE
+        return preference
 
     def _update_radio_stream_metadata(
         self,
@@ -3515,11 +3525,7 @@ class StreamsAudio:
         cancelled = False
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
-        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
-        # AirPlay receivers piping PCM after their own decode), audio_format is
-        # the original source format meant for display while decoded_audio_format
-        # is what ffmpeg actually needs to read off the wire.
-        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
+        ffmpeg_input_format = arriving_audio_format(streamdetails)
         ffmpeg_proc = FFMpeg(
             audio_input=audio_source,
             input_format=ffmpeg_input_format,
@@ -3680,7 +3686,8 @@ class StreamsAudio:
         :param queue_id: Queue the item is streamed from.
         :param queue_item: Queue item the fade touches.
         :param pcm_format: Shared PCM format leaving queue processing.
-        :param crossfade_mode: Mode of the applied fade, or DISABLED when none is applied.
+        :param crossfade_mode: Mode of the applied fade, SOURCE when the item's own
+            source applies it, or DISABLED when none is applied.
         :param session_id: Queue session that owns processing-detail updates.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         """
@@ -3832,7 +3839,10 @@ class StreamsAudio:
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes]:
         """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
-        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
+        # deliberately the advertised format: an AudioSource provider states the
+        # PCM it delivers here, and providers that advertise a codec instead rely
+        # on the ffmpeg path below to notice their source ending
+        if streamdetails.audio_format == pcm_format:
             source_gen = self._open_audio_source_generator(streamdetails)
             async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
                 yield chunk
@@ -4149,12 +4159,16 @@ class StreamsAudio:
         needs_headroom = (
             crossfade_enabled
             or overlay_active
-            or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
+            or streamdetails.volume_normalization_mode
+            not in (VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE)
             or any(self._resolve_player_dsp_config(player).enabled for player in players)
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
-        bit_depth = streamdetails.audio_format.bit_depth
+        # the depth the audio arrives in, not the one the source claims: a
+        # provider that decoded on our behalf may advertise a narrower format
+        # for display, and narrowing the stream to that would truncate it
+        bit_depth = arriving_audio_format(streamdetails).bit_depth
         return ContentType.from_bit_depth(bit_depth), bit_depth
 
     def _select_audio_source_pcm_format(

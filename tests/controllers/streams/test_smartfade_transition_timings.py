@@ -27,6 +27,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.controllers.streams.smart_fades.mixer as mixer_module
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.fades import (
     CrossfadeTimingInfo,
     SmartCrossFade,
@@ -1003,6 +1004,108 @@ class TestSilenceAwareAnchoring:
         assert fade.timing_info.crossfade_duration <= fade.effective_end + 1e-6
         # the capped crossfade consumes the whole audible tail, so the stretch is skipped
         assert not any(isinstance(f, GradualTimeStretchFilter) for f in fade.filters)
+
+
+def _rms_with_mastered_fade(
+    track_duration: float, fade_start: float, fade_end: float
+) -> np.ndarray:
+    """Steady energy with the record's own gradual fade-out between the given media times."""
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    bin_seconds = track_duration / 1800
+    t = (np.arange(1800) + 0.5) * bin_seconds
+    ramp = 0.5 * (1.0 - (t - fade_start) / (fade_end - fade_start)) + 0.0005
+    return np.where(t < fade_start, bins, np.where(t >= fade_end, 0.0005, ramp)).astype(np.float32)
+
+
+class TestQuickFadeMasteredFadeDeadZone:
+    """
+    A mastered fade-out under a quick-fade tier lands in the audible-trim dead zone.
+
+    The 70% mix-out floor anchors mid-fade while the 5% audible floor sits
+    several seconds later; every quick-fade rung is far shorter than that gap,
+    so AudibleTrimPolicy rejects the entire main candidate set. The rescue
+    pass (ungated trim-closing ladder plus rescue rungs) then ships a
+    late-anchored fade.
+    """
+
+    def _build_fade(
+        self, caplog: pytest.LogCaptureFixture, level: int = logging.DEBUG
+    ) -> SmartCrossFade:
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=128.0,
+                duration=duration,
+                # the record fades itself out over 229s..237s: mix-out (70% floor)
+                # anchors near 231s while audible content (5% floor) runs to ~237s
+                rms_energy=_rms_with_mastered_fade(duration, 229.0, 237.0),
+            ),
+            # 17.2% BPM gap: QUICK_FADE with the [2, 1] rung ladder (3.75s / 1.88s)
+            fade_in_analysis=_analysis(bpm=150.0, duration=duration),
+        )
+        with caplog.at_level(level):
+            fade.build(_seconds(45), _seconds(45), PCM)
+        return fade
+
+    def test_main_pass_rejects_every_candidate_on_the_trim_guard_alone(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every main-pass candidate dies on the one guard; the rescue pass ships the fade."""
+        self._build_fade(caplog)
+        assert (
+            "all 2 candidates rejected (audible trim exceeds a short fade's own duration x2)"
+            in caplog.text
+        )
+        assert (
+            "shipping a rescue-pass candidate (source=rescue-anchor) instead of the "
+            "emergency handoff" in caplog.text
+        )
+
+    def test_rescue_ships_a_late_anchored_chain_within_the_trim_bound(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The shipped chain anchors near the audible end, honoring the short-fade trim bound."""
+        fade = self._build_fade(caplog)
+        # rescue anchor: last protective downbeat at/after audio_end - 2 bars (128 BPM)
+        assert fade.effective_end == pytest.approx(41.25, abs=0.05)
+        assert isinstance(fade.filters[0], FadeOutTrimFilter)
+        assert fade.filters[0].fadeout_end_pos == pytest.approx(fade.effective_end)
+        # the guard's own invariant holds on the shipped plan: audible material
+        # dropped past the anchor stays within the overlap length (~41.67s RMS boundary)
+        audible_trim = 41.67 - fade.effective_end
+        assert audible_trim <= fade.timing_info.crossfade_duration + 1e-6
+
+    def test_rescue_pass_scores_trim_closing_candidates(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The rescue pass runs the audible-end ladder ungated, so the selector scores it."""
+        self._build_fade(caplog, level=VERBOSE_LOG_LEVEL)
+        assert "source=trim-closing-anchor" in caplog.text
+
+    def test_trim_closing_wins_when_the_ladder_outgrows_the_rescue_rung(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 4-bar dead zone ships the audible-end ladder rung, not the capped rescue rung."""
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=128.0,
+                duration=duration,
+                # longer mastered fade: the 7.78s trim gap exceeds even the 4-bar
+                # rung (7.5s) yet stays under the trim-closing generator's 8s gate
+                rms_energy=_rms_with_mastered_fade(duration, 228.4, 238.9),
+            ),
+            # 9.4% BPM gap: QUICK_FADE with the [4, 2, 1] rung ladder
+            fade_in_analysis=_analysis(bpm=140.0, duration=duration),
+        )
+        with caplog.at_level(logging.DEBUG):
+            fade.build(_seconds(45), _seconds(45), PCM)
+        assert "shipping a rescue-pass candidate (source=trim-closing-anchor)" in caplog.text
+        # the audible-end anchor keeps the full 4-bar overlap and trims nothing audible
+        assert fade.effective_end == pytest.approx(43.40, abs=0.05)
+        assert fade.timing_info.crossfade_duration == pytest.approx(7.78, abs=0.05)
 
 
 # ---------------------------------------------------------------------------
