@@ -123,6 +123,7 @@ from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
     arriving_audio_format,
+    audio_source_silence_keepalive,
     build_concat_filelist,
     calculate_content_length,
     get_bit_rate,
@@ -3608,8 +3609,8 @@ class StreamsAudio:
             )
             # a nested source raises through the stdin feeder, where ffmpeg's own exit
             # would otherwise flatten it into a generic AudioError
-            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
-                raise ffmpeg_proc.stdin_feeder_exception
+            if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+                raise feeder_exception
             if ffmpeg_proc.returncode not in (0, None):
                 log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
                 raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
@@ -3622,8 +3623,12 @@ class StreamsAudio:
                 # we were cancelled, just raise
                 cancelled = True
                 raise
-            if isinstance(ffmpeg_proc.stdin_feeder_exception, ProviderStreamLimitError):
-                raise ffmpeg_proc.stdin_feeder_exception
+            if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+                if isinstance(feeder_exception, ProviderStreamLimitError):
+                    raise ffmpeg_proc.stdin_feeder_exception
+                err = feeder_exception
+            if isinstance(err, ProviderStreamLimitError):
+                raise
             # dump the last 10 lines of the log in case of an unclean exit
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
@@ -3778,18 +3783,24 @@ class StreamsAudio:
         """
         stream_type = streamdetails.stream_type
         if stream_type == StreamType.CUSTOM:
-            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape.
-            # Pin the exact instance: a domain fallback would stream from a sibling account
-            # while the source-stream slot is charged to the instance that issued the details.
-            provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
-            if provider is None or not provider.available:
-                raise ProviderUnavailableError(
-                    f"Provider {streamdetails.provider} for stream is no longer available"
+            if streamdetails.media_type == MediaType.AUDIO_SOURCE:
+                audio_source = self._open_audio_source_generator(
+                    streamdetails,
+                    seek_position=seek_position if streamdetails.can_seek else 0,
                 )
-            provider = cast("MusicProvider | PluginProvider", provider)
-            audio_source = provider.get_audio_stream(
-                streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
-            )
+            else:
+                # MusicProvider and PluginProvider both expose get_audio_stream with the same
+                # shape. Pin the exact instance: a domain fallback would stream from a sibling
+                # account while the source-stream slot is charged to the issuing instance.
+                provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
+                if provider is None or not provider.available:
+                    raise ProviderUnavailableError(
+                        f"Provider {streamdetails.provider} for stream is no longer available"
+                    )
+                provider = cast("MusicProvider | PluginProvider", provider)
+                audio_source = provider.get_audio_stream(
+                    streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
+                )
             return audio_source, 0 if streamdetails.can_seek else seek_position, extra_input_args
         if stream_type == StreamType.ICY:
             assert streamdetails.path is not None
@@ -3856,8 +3867,17 @@ class StreamsAudio:
         ):
             yield chunk
 
-    def _open_audio_source_generator(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
-        """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
+    def _open_audio_source_generator(
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Open the raw PCM generator for an AudioSource.
+
+        :param streamdetails: Details of the AudioSource to stream.
+        :param seek_position: Requested seek offset in seconds.
+        """
         if streamdetails.stream_type == StreamType.CUSTOM:
             # pin the exact instance, see _resolve_media_stream_source
             provider = self.mass.get_provider(streamdetails.provider, return_unavailable=True)
@@ -3866,7 +3886,12 @@ class StreamsAudio:
                     f"Provider {streamdetails.provider} for stream is no longer available"
                 )
             provider = cast("MusicProvider | PluginProvider", provider)
-            return provider.get_audio_stream(streamdetails)
+            audio_source = provider.get_audio_stream(
+                streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
+            )
+            return audio_source_silence_keepalive(
+                audio_source, arriving_audio_format(streamdetails)
+            )
         if streamdetails.stream_type == StreamType.NAMED_PIPE:
             assert isinstance(streamdetails.path, str)  # for type checking
             return read_named_pipe(streamdetails.path)
