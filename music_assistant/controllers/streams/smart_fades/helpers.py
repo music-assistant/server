@@ -13,7 +13,7 @@ SMART_CROSSFADE_DURATION = 45
 
 # Below this many seconds of audible tail, a smart crossfade is pointless;
 # the caller should fall back to a standard fade (which strips silence).
-MIN_EFFECTIVE_FADE_BUFFER = 10.0
+MIN_EFFECTIVE_FADE_BUFFER = 8.0
 
 # Fraction of sustained (median-active) energy below which the outro no longer
 # carries the groove; the crossfade should end at or before this point.

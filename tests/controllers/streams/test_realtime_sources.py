@@ -414,15 +414,15 @@ def test_realtime_incoming_source_climbs_the_fade_ladder_by_residency() -> None:
     )
     assert (mode, duration) == (CrossfadeMode.STANDARD_CROSSFADE, 8)
 
-    # a resident smart window (however it got there) earns the smart fade,
-    # sized by what is actually in hand rather than the full ceiling
+    # with a held tail that can carry the window, the smart fade applies and is
+    # sized by that tail: the incoming side streams in while the blend plays
     mode, duration = audio._select_buffered_crossfade(
-        _streamdetails_for_crossfade(_buffer(15, ready=True), is_realtime=True),
+        _streamdetails_for_crossfade(_buffer(2, ready=True), is_realtime=True),
         CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
         fade_out_seconds=20,
     )
-    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 15)
+    assert (mode, duration) == (CrossfadeMode.SMART_CROSSFADE, 20)
 
     # ... but not when the outgoing tail cannot carry its half of the window
     mode, duration = audio._select_buffered_crossfade(

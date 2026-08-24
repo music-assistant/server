@@ -3968,20 +3968,22 @@ class StreamsAudio:
         if (
             crossfade_mode == CrossfadeMode.SMART_CROSSFADE
             and audio_buffer.ready.is_set()
-            and available_seconds >= MIN_EFFECTIVE_FADE_BUFFER
             and (fade_out_seconds is None or fade_out_seconds >= MIN_EFFECTIVE_FADE_BUFFER)
         ):
-            return crossfade_mode, min(SMART_CROSSFADE_DURATION, available_seconds)
+            if streamdetails.is_realtime and fade_out_seconds is not None:
+                # The blend streams, so the incoming window does not have to be
+                # resident - it arrives at the source's own (overpaced) delivery
+                # rate while the blend plays. The held-back outgoing tail is what
+                # bounds the window a boundary can carry.
+                return crossfade_mode, min(SMART_CROSSFADE_DURATION, fade_out_seconds)
+            if available_seconds >= MIN_EFFECTIVE_FADE_BUFFER:
+                return crossfade_mode, min(SMART_CROSSFADE_DURATION, available_seconds)
 
         if streamdetails.is_realtime:
             # A realtime source cannot bank the whole standard overlap up front,
-            # but it does not have to: the standard mix streams, so the blend
-            # flows at the source's own (overpaced) delivery rate. The resident
+            # but it does not have to: the standard mix streams too. The resident
             # audio only has to prove the source is actually delivering; a source
-            # that is not there yet means this boundary simply plays without a
-            # fade. The smart rung above stays out of reach for now: a strictly
-            # sequential session cannot have the incoming window resident at the
-            # boundary, and the smart chain does not stream yet.
+            # that is not there yet means this boundary simply plays without a fade.
             if (
                 not audio_buffer.ready.is_set()
                 or standard_crossfade_duration < MIN_CROSSFADE_FALLBACK_DURATION
