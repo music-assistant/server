@@ -23,7 +23,14 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.models.setup_flow import SetupFlowError
 
 from . import CONF_AUTH_FILE, CONF_LOCALE
-from .audible_helper import audible_custom_login, audible_get_auth_info, remove_file
+from .audible_helper import (
+    audible_custom_login,
+    audible_get_auth_info,
+    check_file_exists,
+    deregister_auth_file,
+    evict_cached_authenticator,
+    remove_file,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -101,8 +108,19 @@ async def run_setup(session: SetupSession) -> None:
         }
         try:
             await session.finish(collected)
-            return
         except SetupFlowError as err:
             # the just-written token file is unusable if the load failed; drop it
+            evict_cached_authenticator(auth_file_path)
             await remove_file(auth_file_path)
             errors = {"base": err.translation_key or str(err)}
+            continue
+        # the new registration replaces the previous one; retire the old device
+        # registration and its token file
+        previous_auth_file = str(session.context.setup_data.get(CONF_AUTH_FILE) or "")
+        if previous_auth_file and previous_auth_file != auth_file_path:
+            with suppress(Exception):
+                await deregister_auth_file(previous_auth_file)
+            if await check_file_exists(previous_auth_file):
+                with suppress(OSError):
+                    await remove_file(previous_auth_file)
+        return

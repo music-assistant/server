@@ -113,31 +113,67 @@ async def refresh_access_token_compat(
     return {"access_token": access_token, "expires": expires}
 
 
-async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
+async def cached_authenticator_from_file(
+    path: str, locale: str | None = None
+) -> audible.Authenticator:
     """
     Get an authenticator from file with caching and signing auth validation.
 
     :param path: Path to the authenticator JSON file.
+    :param locale: The configured marketplace locale; when the stored file disagrees,
+        the configured locale wins and the file is corrected.
     :return: The cached or loaded Authenticator instance.
     """
     logger = logging.getLogger("audible_helper")
-    if path in _AUTH_CACHE:
-        return _AUTH_CACHE[path]
+    auth = _AUTH_CACHE.get(path)
+    if auth is None:
+        logger.debug("Loading authenticator from file %s and caching it", path)
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
 
-    logger.debug("Loading authenticator from file %s and caching it", path)
-    auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+        # Verify signing auth is available (not affected by API changes)
+        if auth.adp_token and auth.device_private_key:
+            logger.debug("Signing auth available - using stable RSA-signed requests")
+        else:
+            logger.warning(
+                "Signing auth not available - only bearer auth will work. "
+                "Consider re-authenticating for more stable auth."
+            )
 
-    # Verify signing auth is available (not affected by API changes)
-    if auth.adp_token and auth.device_private_key:
-        logger.debug("Signing auth available - using stable RSA-signed requests")
-    else:
+        _AUTH_CACHE[path] = auth
+
+    # auth files written by older versions can hold the marketplace from before a
+    # locale change; the configured locale is authoritative, so correct the file
+    if locale and (auth.locale is None or auth.locale.country_code != locale):
         logger.warning(
-            "Signing auth not available - only bearer auth will work. "
-            "Consider re-authenticating for more stable auth."
+            "Marketplace in auth file (%s) does not match the configured locale (%s), correcting",
+            auth.locale.country_code if auth.locale else None,
+            locale,
         )
+        auth.locale = audible.localization.Locale(locale)
+        await asyncio.to_thread(auth.to_file, path)
 
-    _AUTH_CACHE[path] = auth
     return auth
+
+
+def evict_cached_authenticator(path: str) -> None:
+    """
+    Drop the cached authenticator for the given file path, if any.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    _AUTH_CACHE.pop(path, None)
+
+
+async def deregister_auth_file(path: str) -> None:
+    """
+    Deregister the virtual device registration stored in the given auth file.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    auth = _AUTH_CACHE.pop(path, None)
+    if auth is None:
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+    await asyncio.to_thread(auth.deregister_device)
 
 
 class AudibleHelper:
