@@ -263,16 +263,17 @@ class _TailHold:
     # the player's supply must stay at least this far ahead of the wall clock
     _LEAD_RESERVE_S = 3.0
 
-    def __init__(self, pcm_format: AudioFormat, streamdetails: StreamDetails) -> None:
+    def __init__(self, pcm_format: AudioFormat, queue_item: QueueItem) -> None:
         """
         Initialize the tracker for one track's stream.
 
         :param pcm_format: PCM format of the stream's chunks.
-        :param streamdetails: Details of the track being streamed; its source buffer
-            is read at hold time, because opening the stream is what creates it.
+        :param queue_item: The item being streamed; its source buffer is resolved at
+            hold time, because opening the stream is what creates it - and a capacity
+            reselection can hand the item different details altogether.
         """
         self._pcm_format = pcm_format
-        self._streamdetails = streamdetails
+        self._queue_item = queue_item
         self._started: float | None = None
         self._last_noted = 0.0
         self._received_bytes = 0
@@ -304,7 +305,8 @@ class _TailHold:
         """
         if self._started is None:
             return 0
-        audio_buffer = cast("AudioBuffer | None", self._streamdetails.buffer)
+        streamdetails = self._queue_item.streamdetails
+        audio_buffer = cast("AudioBuffer | None", streamdetails.buffer) if streamdetails else None
         if audio_buffer is not None:
             if audio_buffer.has_error:
                 # a failed source is skipped without a fade, so its remaining audio
@@ -2024,7 +2026,7 @@ class StreamsAudio:
         # the holdback is grown out of the audio banked ahead of playback instead of
         # armed as one fixed window, so a source delivering near playback pace keeps
         # feeding the player
-        tail_hold = _TailHold(pcm_format, streamdetails) if crossfade_buffer_size > 0 else None
+        tail_hold = _TailHold(pcm_format, queue_item) if crossfade_buffer_size > 0 else None
         async for chunk in self.get_queue_item_stream(
             queue_item,
             pcm_format,
@@ -2584,7 +2586,7 @@ class StreamsAudio:
                 # of armed as one fixed window, so a source delivering near playback pace
                 # keeps feeding the player
                 tail_hold = (
-                    _TailHold(pcm_format, queue_track.streamdetails)
+                    _TailHold(pcm_format, queue_track)
                     if item_crossfade_mode != CrossfadeMode.DISABLED
                     else None
                 )

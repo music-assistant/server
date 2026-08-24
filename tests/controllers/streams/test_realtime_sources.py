@@ -296,8 +296,8 @@ async def test_tail_hold_grows_with_the_banked_surplus() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    streamdetails = SimpleNamespace(buffer=audio_buffer)
-    hold = _TailHold(pcm_format, cast("Any", streamdetails))
+    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer))
+    hold = _TailHold(pcm_format, cast("Any", queue_item))
 
     # nothing arrived yet: nothing may be held
     assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
@@ -313,7 +313,7 @@ async def test_tail_hold_grows_with_the_banked_surplus() -> None:
     assert int(9.5 * pcm_format.pcm_sample_size) < larger <= 10 * pcm_format.pcm_sample_size
 
     # barely above realtime: within the reserve nothing may be held at all
-    fresh = _TailHold(pcm_format, cast("Any", streamdetails))
+    fresh = _TailHold(pcm_format, cast("Any", queue_item))
     fresh.note_bytes(6 * pcm_format.pcm_sample_size)
     fresh._started = asyncio.get_event_loop().time() - 4.0
     assert fresh.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
@@ -332,7 +332,7 @@ async def test_tail_hold_sees_a_buffer_attached_after_it_was_created() -> None:
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     # the tracker is built before the stream is opened, so there is no buffer yet
     streamdetails = SimpleNamespace(buffer=None)
-    hold = _TailHold(pcm_format, cast("Any", streamdetails))
+    hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(streamdetails=streamdetails)))
     hold.note_bytes(pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time()
 
@@ -345,12 +345,32 @@ async def test_tail_hold_sees_a_buffer_attached_after_it_was_created() -> None:
     )
 
 
+async def test_tail_hold_follows_a_capacity_reselection() -> None:
+    """A reselection hands the item different details; the tracker must follow them."""
+    pcm_format = TEST_PCM_FORMAT
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
+    hold = _TailHold(pcm_format, cast("Any", queue_item))
+    hold.note_bytes(pcm_format.pcm_sample_size)
+    hold._started = asyncio.get_event_loop().time()
+
+    # the source was reselected: the item carries a different streamdetails now
+    queue_item.streamdetails = SimpleNamespace(buffer=SimpleNamespace(eof=True, has_error=False))
+
+    assert (
+        hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
+        == 45 * pcm_format.pcm_sample_size
+    )
+
+
 async def test_tail_hold_releases_everything_for_a_failed_source() -> None:
     """A failed source is skipped without a fade, so its remaining audio is played out."""
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=True, has_error=True, duration_available=30.0)
-    hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(buffer=audio_buffer)))
+    hold = _TailHold(
+        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
+    )
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
 
@@ -362,7 +382,9 @@ async def test_tail_hold_forgives_a_suspended_source() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(buffer=audio_buffer)))
+    hold = _TailHold(
+        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
+    )
 
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
@@ -377,7 +399,9 @@ async def test_tail_hold_works_without_a_source_buffer() -> None:
     """A source without a buffer still banks a holdback out of what it delivered."""
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(buffer=None)))
+    hold = _TailHold(
+        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=None)))
+    )
 
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
