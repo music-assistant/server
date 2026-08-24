@@ -9,7 +9,6 @@ CONF_EXTRA_ALLOWED_ORIGINS = "extra_allowed_origins"
 CONF_ENFORCE_AUDIENCE = "enforce_audience"
 CONF_CONNECT_EXTERNAL_URL = "connect_external_url"
 CONF_TRUST_FORWARDED_PROTO = "trust_forwarded_proto"
-CONF_ENABLE_MCP_APP = "enable_mcp_app"
 
 DEFAULT_MOUNT_PATH = "/mcp/v1"
 

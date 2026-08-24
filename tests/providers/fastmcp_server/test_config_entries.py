@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 from music_assistant.providers.fastmcp_server.constants import (
     CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-    CONF_ENABLE_MCP_APP,
     CONF_REQUIRE_AUTH,
     CONF_RES_LIBRARY,
     CONF_RES_PLAYER,
@@ -29,8 +28,7 @@ def test_retained_endpoint_resource_and_prompt_entries(mock_mass: MagicMock) -> 
     assert entries[CONF_RES_LIBRARY].default_value is True
     assert entries[CONF_RES_PLAYER].default_value is True
     assert entries[CONF_RES_PROMPTS].default_value is True
-    assert entries[CONF_ENABLE_MCP_APP].default_value is False
-    assert entries[CONF_ENABLE_MCP_APP].advanced is False
+    assert "enable_mcp_app" not in entries
     capacity = entries[CONF_DEBUG_EVENT_BUFFER_CAPACITY]
     assert capacity.default_value == 500
     assert capacity.range == (50, 5000)

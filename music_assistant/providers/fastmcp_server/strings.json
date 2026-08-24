@@ -83,17 +83,12 @@
     "res_prompts": {
       "label": "Expose canned prompts",
       "description": "Pre-defined prompts: find_and_play, party_playlist, now_playing_summary."
-    },
-    "enable_mcp_app": {
-      "label": "Enable MCP App",
-      "description": "Expose the optional Music Assistant player and queue interface. Changing this setting restarts the MCP runtime."
     }
   },
   "config_categories": {
     "policy": "Permissions & confirmations",
     "mcp_resources": "MCP Resources",
-    "mcp_config": "Config",
-    "mcp_app": "MCP App"
+    "mcp_config": "Config"
   },
   "setup_flow": {
     "connect": {

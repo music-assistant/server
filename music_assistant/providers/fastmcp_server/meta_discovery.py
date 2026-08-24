@@ -353,7 +353,6 @@ def register_meta_discovery(
     mcp: FastMCP,
     *,
     dynamic_adapter: DynamicAdapter,
-    additional_public_tools: frozenset[str] = frozenset(),
 ) -> None:
     """Register the permanent direct three-tool discovery surface."""
     service = MetaDiscoveryService(dynamic_adapter)
@@ -462,4 +461,4 @@ def register_meta_discovery(
 
     # Only the permanent discovery surface is exposed to model clients.
     mcp.disable(components={"tool"})
-    mcp.enable(names=_META_NAMES | additional_public_tools, components={"tool"})
+    mcp.enable(names=_META_NAMES, components={"tool"})

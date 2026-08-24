@@ -130,31 +130,30 @@ async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> 
     assert resp.headers.get("Cache-Control") == "no-store"
 
 
-async def test_scheme_guard_rejects_plaintext_non_loopback_login(
-    wizard_client: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    ("path", "payload", "auth_attr"),
+    [
+        ("/mcp/v1/connect/login", {"username": "admin", "password": "hunter2"}, "login"),
+        ("/mcp/v1/connect/exchange", {"bootstrap": "boot-1"}, "authenticate_with_token"),
+    ],
+)
+async def test_scheme_guard_rejects_plaintext_non_loopback_credentials(
+    wizard_client: TestClient,
+    wizard_mass: MagicMock,
+    path: str,
+    payload: dict[str, str],
+    auth_attr: str,
 ) -> None:
-    """
-    ``/connect/login`` over plaintext http to a non-loopback host is refused.
-
-    The wizard's only credential-bearing endpoints (login/exchange/token) must
-    not accept plaintext HTTP from a LAN-reachable host — the password and
-    bootstrap tokens would be sniffable. HTTPS is allowed, and so is
-    loopback (the bytes never leave the box). Anything else gets a 400.
-    """
-    # TestClient binds to 127.0.0.1, so the request scheme is http and we'd
-    # naturally pass the loopback exception. Force ``request.host`` to a LAN
-    # address via the Host header to exercise the rejection path.
+    """Credential endpoints refuse plaintext HTTP from a LAN-reachable host."""
     resp = await wizard_client.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
+        path,
+        json=payload,
         headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
     )
     assert resp.status == 400
     body = await resp.json()
     assert body["success"] is False
-    assert "plaintext" in body["error"].lower() or "https" in body["error"].lower()
-    # MA's login must NOT have been called — credentials never crossed the wire.
-    wizard_mass.webserver.auth.login.assert_not_awaited()
+    getattr(wizard_mass.webserver.auth, auth_attr).assert_not_awaited()
 
 
 async def test_scheme_guard_allows_loopback_plaintext_login(
@@ -168,19 +167,6 @@ async def test_scheme_guard_allows_loopback_plaintext_login(
     )
     assert resp.status == 200
     wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_rejects_plaintext_non_loopback_exchange(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Bootstrap exchange over plaintext non-loopback is refused before any MA call."""
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/exchange",
-        json={"bootstrap": "boot-1"},
-        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
-    )
-    assert resp.status == 400
-    wizard_mass.webserver.auth.authenticate_with_token.assert_not_awaited()
 
 
 def _install_fake_ingress_helper(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
@@ -309,57 +295,27 @@ async def test_scheme_guard_trust_proxy_off_ignores_forwarded_proto(
     wizard_mass.webserver.auth.login.assert_not_awaited()
 
 
-async def test_scheme_guard_trust_proxy_allows_forwarded_https(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    "forwarded_headers",
+    [
+        {"X-Forwarded-Proto": "https"},
+        {"X-Forwarded-Scheme": "https"},
+        {"X-Forwarded-Proto": "https, http"},
+    ],
+)
+async def test_scheme_guard_trust_proxy_treats_forwarded_https_as_secure(
+    wizard_client_trust_proxy: TestClient,
+    wizard_mass: MagicMock,
+    forwarded_headers: dict[str, str],
 ) -> None:
-    """
-    Trust on + ``X-Forwarded-Proto: https`` → request is treated as secure.
-
-    Reproduces the reverse-proxy deployment (nginx / NPM / Traefik / Caddy):
-    TLS terminates at the proxy, the proxy-to-MA hop is plain HTTP, and the
-    proxy reports the original scheme via ``X-Forwarded-Proto``.
-    """
+    """Trust on: proxy HTTPS signals make the plaintext MA hop acceptable."""
     resp = await wizard_client_trust_proxy.post(
         "/mcp/v1/connect/login",
         json={"username": "admin", "password": "hunter2"},
         headers={
             "Origin": "http://localhost:8095",
             "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_accepts_forwarded_scheme_header(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: Nginx-Proxy-Manager's ``X-Forwarded-Scheme: https`` also counts."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Scheme": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_multi_hop_uses_first_value(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: a chained ``https, http`` list is read as the client hop (https)."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https, http",
+            **forwarded_headers,
         },
     )
     assert resp.status == 200

@@ -13,7 +13,6 @@ from .constants import (
     CONF_CONNECT_EXTERNAL_URL,
     CONF_DEBUG_EVENT_BUFFER_CAPACITY,
     CONF_DEFAULT_POLICY,
-    CONF_ENABLE_MCP_APP,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
     CONF_MANUAL_TOKEN_IDS,
@@ -170,7 +169,6 @@ def build_config_entries(
             _bool(CONF_RES_LIBRARY, True, "mcp_resources"),
             _bool(CONF_RES_PLAYER, True, "mcp_resources"),
             _bool(CONF_RES_PROMPTS, True, "mcp_resources"),
-            _bool(CONF_ENABLE_MCP_APP, False, "mcp_app"),
             ConfigEntry(
                 key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
                 type=ConfigEntryType.INTEGER,

@@ -11,7 +11,6 @@ from .audit import NO_TOKEN_CLIENT_ID
 from .auth import LEGACY_TOKEN_CLIENT_ID, LOOKUP_FAILURE_CLIENT_ID
 from .capabilities import Capability
 from .constants import (
-    CONF_ENABLE_MCP_APP,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
     CONF_MOUNT_PATH,
@@ -305,21 +304,7 @@ class MCPServerRuntime:
             identity_provider=self._token_identities.lookup,
         )
         self._dynamic_adapter = adapter
-        additional_public_tools: frozenset[str] = frozenset()
-        if config_bool(CONF_ENABLE_MCP_APP):
-            # Keep Prefab/FastMCP App imports out of the default runtime path.
-            from .app_music_assistant import (  # noqa: PLC0415
-                APP_TOOL_NAME,
-                register_music_assistant_app,
-            )
-
-            register_music_assistant_app(mcp, adapter)
-            additional_public_tools = frozenset({APP_TOOL_NAME})
-        register_meta_discovery(
-            mcp,
-            dynamic_adapter=adapter,
-            additional_public_tools=additional_public_tools,
-        )
+        register_meta_discovery(mcp, dynamic_adapter=adapter)
 
     def _apply_tag_filter(self, mcp: Any) -> None:
         """Install request-policy component visibility on FastMCP."""
@@ -388,10 +373,7 @@ async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
     ``FastMCP.get_resource`` only finds statically-registered resources,
     so a request for a concrete URI backed by a
     ``@mcp.resource("scheme://{x}")`` template would otherwise be
-    misreported as not-found. Prefab renderers are synthesized only by
-    ``list_resources`` and ``read_resource``; an exact match against the
-    middleware-free listing keeps those virtual resources addressable without
-    treating arbitrary Prefab-looking URIs as infrastructure.
+    misreported as not-found.
     """
     try:
         if kind == "tool":
@@ -400,8 +382,6 @@ async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
             obj = await mcp.get_resource(key)
             if obj is None:
                 obj = await mcp.get_resource_template(key)
-            if obj is None:
-                obj = await _listed_prefab_resource(mcp, key)
         elif kind == "prompt":
             obj = await mcp.get_prompt(key)
         else:  # pragma: no cover - kind is Literal-typed at the caller
@@ -411,14 +391,6 @@ async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
     if obj is None:
         return None
     return {str(t) for t in (getattr(obj, "tags", None) or set())}
-
-
-async def _listed_prefab_resource(mcp: Any, uri: str) -> Any | None:
-    """Return an exact synthetic Prefab listing match without running middleware."""
-    if not uri.startswith("ui://prefab/tool/"):
-        return None
-    resources = await mcp.list_resources(run_middleware=False)
-    return next((resource for resource in resources if str(resource.uri) == uri), None)
 
 
 def build_tag_lookup(mcp: Any) -> Callable[[str, str], Awaitable[set[str] | None]]:
