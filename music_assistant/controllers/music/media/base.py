@@ -114,12 +114,6 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
 
-# When set (task-local), the current library update is authoritative and persists the given item
-# as the complete state, allowing fields the source no longer provides to be cleared. It is
-# deliberately kept off the public update command so external clients cannot request a
-# destructive full replace. Only album and artist honor it.
-FULL_REPLACE_UPDATE: ContextVar[bool] = ContextVar("FULL_REPLACE_UPDATE", default=False)
-
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
     # so we have use an additional column for this
@@ -1381,30 +1375,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         item_id: str | int,
         external_ids: Iterable[tuple[ExternalID, str]],
-        replace: bool = False,
     ) -> None:
         """
         Update the external_id_lookup table rows for the media item.
 
         An empty set never clears the stored rows: identifiers are the strongest
-        evidence available when matching an item across providers. An authoritative
-        caller can pass ``replace=True`` to persist the given set verbatim, deleting
-        existing rows even when the set is empty.
-
-        :param item_id: The library item id.
-        :param external_ids: The external ids to store for the item.
-        :param replace: Whether to delete rows not present in the given set (allows clearing).
+        evidence available when matching an item across providers.
         """
         db_id = int(item_id)  # ensure integer
-        external_ids = normalize_external_ids(external_ids)
-        if not external_ids and not replace:
+        if not (external_ids := normalize_external_ids(external_ids)):
             return
         await self.mass.music.database.delete(
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
-        if not external_ids:
-            return
         await self.mass.music.database.upsert_many(
             DB_TABLE_EXTERNAL_ID_LOOKUP,
             [

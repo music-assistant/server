@@ -75,9 +75,9 @@ async def test_list_children_maps_drive_fields() -> None:
 
     items = await provider._api_list_children("folder-id")
 
-    assert items[0] == ("d1", "Albums", True, "unknown", None, None)
-    assert items[1] == ("f1", "track.mp3", False, "2026-01-01", 123, None)
-    assert items[2] == ("f2", "no-meta.mp3", False, "unknown", None, None)
+    assert items[0] == ("d1", "Albums", True, "unknown", None)
+    assert items[1] == ("f1", "track.mp3", False, "2026-01-01", 123)
+    assert items[2] == ("f2", "no-meta.mp3", False, "unknown", None)
 
 
 async def test_list_children_translates_api_errors() -> None:

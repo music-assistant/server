@@ -147,17 +147,12 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         out: list[RawItem] = []
         for item in items:
             if isinstance(item, Folder):
-                out.append((item.id, item.name, True, "folder", item.size, None))
+                out.append((item.id, item.name, True, "folder", item.size))
                 continue
-            # quickXorHash is the imported-media checksum, kept as-is for compatibility with
-            # already-imported files; not every file has one, so fall back to the size
-            hashes = item.hashes
-            checksum = hashes.quick_xor_hash or str(item.size)
-            # the SHA hashes (business/SharePoint) are a stable content token even when
-            # quickXorHash is absent; carried separately so it only sharpens sidecar precision
-            # and never changes the primary checksum an already-imported file compares against
-            sidecar_token = hashes.quick_xor_hash or hashes.sha1_hash or hashes.sha256_hash
-            out.append((item.id, item.name, False, checksum, item.size, sidecar_token))
+            # quickXorHash is a stable content hash; not every file has one,
+            # so fall back to the size
+            checksum = item.hashes.quick_xor_hash or str(item.size)
+            out.append((item.id, item.name, False, checksum, item.size))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

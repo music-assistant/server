@@ -56,7 +56,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import FULL_REPLACE_UPDATE, MediaControllerBase
+from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1109,30 +1109,24 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        full_replace = FULL_REPLACE_UPDATE.get()
-        authoritative = overwrite or full_replace
         if isinstance(update, ItemMapping):
             # NOTE that artist is the only mediatype where its accepted we
             # receive an itemmapping from streaming providers
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = (
-                update.metadata
-                if full_replace
-                else metadata_for_update(cur_item.metadata, update.metadata, overwrite)
-            )
+            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
-        if (not mbid or authoritative) and getattr(update, "mbid", None):
+        if (not mbid or overwrite) and getattr(update, "mbid", None):
             if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
                 update.mbid = VARIOUS_ARTISTS_MBID
             if update.mbid == VARIOUS_ARTISTS_MBID:
                 update.name = VARIOUS_ARTISTS_NAME
 
-        name = update.name if authoritative else cur_item.name
-        sort_name = update.sort_name if authoritative else cur_item.sort_name or update.sort_name
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -1150,18 +1144,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # update/set external id lookup table
-        # artist identity ids are sticky: a non-empty authoritative set replaces them, but an
-        # empty one never clears the final id, since the same id may also be asserted by
-        # another authoritative source or a streaming provider, so this never passes replace=True
         await self.set_external_ids(
-            db_id,
-            update.external_ids if authoritative else cur_item.external_ids,
+            db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
         provider_mappings = provider_mappings_for_update(
-            cur_item.provider_mappings, update.provider_mappings, authoritative
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
-        await self.set_provider_mappings(db_id, provider_mappings, authoritative)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:
