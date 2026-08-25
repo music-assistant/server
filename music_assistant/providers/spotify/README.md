@@ -38,6 +38,29 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   id lowercased), which is the only place that identity is written down. Checked after
   pairing and before keeping an existing pairing on reconfigure; a session whose account
   cannot be read never blocks setup, mirroring the librespot credential check.
+- **A lost pairing is caught from the engine's own report.** The daemon narrates its
+  startup on stdout — `restoring session`, then `logged in as <username>` — and with
+  nothing to restore it advertises itself for pairing instead (`waiting for login -
+  connect to "<name>" from your Spotify app`) and sits there. That line fails the item and
+  raises `LoginFailed(soloist_pairing_required)`, which takes the provider out of service
+  and sends the user back through setup — but only once it is confirmed against the stored
+  session: a daemon still restoring one can announce itself the same way, and acting on
+  the line alone would fail playback on a perfectly good pairing.
+- **A pairing Spotify no longer accepts** — a password change, "sign out everywhere", a
+  revoked device — **is a blind spot.** What the engine does then has never been captured,
+  and the first thing to establish is whether it wipes the stored session — which the case
+  above catches only if the daemon announces itself for pairing afterwards, since that
+  line is what triggers the check — or keeps it, which nothing detects. `auth_state`
+  cannot carry that decision on its own: `logged_in=false` is also what a healthy daemon
+  reports before it finishes restoring, and nothing tells it apart from a daemon that
+  simply cannot reach Spotify. Nor can a guessed stdout marker, which would fail healthy
+  playback. So playback fails with a plain `Timeout waiting for audio data`: the queue's
+  readiness budget (`BUFFER_READY_TIMEOUT`, plus any capacity wait) starts before the
+  session's own `_STARTUP_TIMEOUT_S` and runs out first, cancelling the producer where it
+  waits. That also leaves `_raise_startup_error`'s "never logged in" branch to the case it
+  can still reach — a login lost after it was established. The daemon's own output is
+  logged at DEBUG behind the `[soloist]` prefix; capturing a real revocation is what
+  unblocks handling it.
 - **Streaming quality** is a provider option, shared with the Spotify Connect provider's
   tiers and defaulting to lossless. It is a ceiling: Spotify serves the best the account
   is entitled to below it. Hidden on librespot, which passes Spotify's own file through.
