@@ -2049,15 +2049,17 @@ class _ItemAudio:
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
         if self.seek_target_ms is None or self.seek_confirmed.is_set():
             return
-        if position_ms < self._seek_floor_ms:
-            # back below where the engine was when the seek went out: it has
-            # restarted the item, so what it reports from here on describes
-            # where the seek is taking it
-            self._seek_anchored = True
+        if not self._seek_anchored:
+            # anchor on the engine dropping back below where it was when the
+            # seek went out: it has restarted the item, so what it reports from
+            # here on describes where the seek is taking it. A backward seek
+            # lands below that mark too, so this only ever gates the first
+            # report - past it, position is judged against the target alone.
+            self._seek_anchored = position_ms < self._seek_floor_ms
             return
         # the floor of 1 keeps a report of position 0 from landing inside the
         # tolerance window of a small seek target
-        if self._seek_anchored and position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
+        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
             # what the engine reports as the seek lands is where this item's own
             # audio begins
             self.started_at_ms = position_ms

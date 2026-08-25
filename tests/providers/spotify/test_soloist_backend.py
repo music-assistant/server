@@ -150,6 +150,18 @@ def test_the_restored_position_of_the_same_item_cannot_confirm_a_seek(tmp_path: 
     assert item.seek_confirmed.is_set()
 
 
+def test_a_backward_seek_is_confirmed_below_where_the_engine_was(tmp_path: Path) -> None:
+    """Seeking back into an item confirms on the target, not on where it came from."""
+    item = _make_item(tmp_path, TRACK_A)
+    # the engine restored this item well past the point being seeked back to
+    item.observe_position(117_000)
+    item.arm_seek(30_000)
+    item.observe_position(0)
+    item.observe_position(30_000)
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 30_000
+
+
 def test_position_never_regresses_and_stops_at_the_cut(tmp_path: Path) -> None:
     """The furthest position is kept, and reports after the cut belong to the next item."""
     item = _make_item(tmp_path, TRACK_A)
