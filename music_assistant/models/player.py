@@ -942,6 +942,18 @@ class Player(ABC):
             "enqueue_next_media needs to be implemented when PlayerFeature.ENQUEUE is set"
         )
 
+    @property
+    def applies_announcement_volume(self) -> bool:
+        """
+        Return True if the player applies the announcement volume itself.
+
+        A player that mixes an announcement into audio it is already playing knows when
+        the clip becomes audible, so it applies and restores the level at that moment -
+        through the volume control that owns its output. The players controller then
+        leaves the volume alone instead of raising it before the announcement starts.
+        """
+        return False
+
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:

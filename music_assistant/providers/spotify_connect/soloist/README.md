@@ -65,9 +65,12 @@ a FIFO. The daemon is spawned with `PULSE_SERVER`/`PULSE_SINK` pointing at its s
   recreation always respawns the soloist daemon (it holds the sink name in its spawn env).
 - Failed sink volume operations **fail closed**: sink and daemon are torn down and rebuilt
   rather than risking audio through a sink with an unknown gain.
-- The pipe-sink emits **silence when paused** (no EOF), so `stream_ends_on_pause` is
-  False: the provider actively stops the MA player on a `PAUSED` event (bounded, replaced
-  by a quick resume).
+- The pipe-sink **never signals end of stream**, so `stream_ends_on_pause` is False: the
+  provider actively stops the MA player on a `PAUSED` event (bounded, replaced by a quick
+  resume). The sink renders only while a client is connected — it emits silence while the
+  daemon holds its stream open and nothing at all once the daemon drops it, and suspending
+  the sink does not produce an EOF either. A reader that outlives the pause blocks until
+  the stall timeout, so MA must end the stream itself.
 
 ## Volume modes
 
