@@ -94,7 +94,59 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
     )
 
 
-async def test_import_with_match_providers_filter_restricts_snapshot() -> None:
+async def test_import_with_library_matching_true_defaults_to_best_effort() -> None:
+    """The deprecated library_matching=True still schedules matching, at BEST_EFFORT."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist("#EXTM3U\n", library_matching=True)
+
+    ctrl_any.mass.tasks.run_background_task.assert_called_once()
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    assert call_kwargs["metadata"]["match_policy"] == "best_effort"
+    await call_kwargs["handler"]()
+    builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+    )
+
+
+async def test_import_with_explicit_match_policy_overrides_library_matching() -> None:
+    """An explicit match_policy takes precedence over the deprecated library_matching flag."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist(
+            "#EXTM3U\n", library_matching=True, match_policy=PlaylistMatchPolicy.EXACT
+        )
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    assert call_kwargs["metadata"]["match_policy"] == "exact"
     """match_providers narrows the snapshot to the requested instances/domains."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)

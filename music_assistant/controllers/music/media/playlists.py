@@ -353,8 +353,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def import_playlist(
         self,
         m3u_data: str,
-        match_policy: PlaylistMatchPolicy | None = None,
+        library_matching: bool = False,
         match_providers: list[str] | None = None,
+        match_policy: PlaylistMatchPolicy | None = None,
     ) -> Playlist:
         """
         Import a playlist from M3U8 format.
@@ -364,11 +365,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         providers for a substitute for the remaining entries, when requested.
 
         :param m3u_data: The M3U8 playlist data as a string.
-        :param match_policy: Lowest track-match confidence accepted for a substitute when
-            an entry's original provider is unavailable. Omit to skip matching entirely and
-            leave those entries unresolved.
+        :param library_matching: Deprecated, use match_policy instead. When True and
+            match_policy is not set, matching runs at PlaylistMatchPolicy.BEST_EFFORT.
         :param match_providers: Optional list of provider instance IDs or domains to search
-            when match_policy is set. Defaults to all providers available to the current user.
+            when matching runs. Defaults to all providers available to the current user.
+        :param match_policy: Lowest track-match confidence accepted for a substitute when
+            an entry's original provider is unavailable. Leave unset together with
+            library_matching=False to skip matching and leave those entries unresolved.
         """
         provider = self.mass.get_provider("builtin")
         if not provider or not isinstance(provider, MusicProvider):
@@ -378,7 +381,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for prov_mapping in playlist.provider_mappings:
             prov_mapping.in_library = True
         db_playlist = await self.add_item_to_library(playlist, False)
-        if match_policy is not None:
+        effective_match_policy = match_policy or (
+            PlaylistMatchPolicy.BEST_EFFORT if library_matching else None
+        )
+        if effective_match_policy is not None:
             prov_playlist_id = playlist.item_id
             user = get_current_user()
             # snapshot the current user's allowed provider instances now: the matching
@@ -395,7 +401,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 name=f"Import playlist {db_playlist.name}",
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id,
-                    match_policy,
+                    effective_match_policy,
                     tuple(sorted(allowed_provider_instances)),
                 ),
                 translation_key="import_playlist_matching",
@@ -406,7 +412,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "task_domain": "playlist_import_matching",
                     "playlist_id": str(db_playlist.item_id),
                     "playlist_name": db_playlist.name,
-                    "match_policy": match_policy.value,
+                    "match_policy": effective_match_policy.value,
                 },
                 allow_retry=True,
                 allow_cancel=True,

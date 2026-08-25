@@ -655,9 +655,11 @@ class BuiltinProvider(MusicProvider):
             ("retained", "exact", "same_recording", "best_effort", "ambiguous", "unmatched"), 0
         )
         substitutions: list[tuple[str, str, str]] = []
+        # (original, replacement) pairs, applied against a freshly re-read playlist below so
+        # edits made elsewhere while this (possibly long-running) pass was searching aren't lost
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
-        changed = False
 
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
@@ -696,21 +698,15 @@ class BuiltinProvider(MusicProvider):
                     report_current_task_failure(f"{result.label}: {reason.lower()}")
                 unmatched_items.append((result.label, reason))
                 continue
-            parsed_items[index] = result.entry
-            changed = True
+            pending_substitutions.append((item, result.entry))
             tier = _CONFIDENCE_COUNT_KEY[result.confidence]
             counts[tier] += 1
             substitutions.append(
                 (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
             )
 
-        if changed:
-            await self._write_m3u_file(
-                prov_playlist_id,
-                playlist.name,
-                parsed_items,
-                self._get_playlist_image_url(playlist),
-            )
+        if pending_substitutions:
+            await self._apply_import_substitutions(prov_playlist_id, pending_substitutions)
 
         set_current_task_report(
             _build_import_report(
@@ -867,6 +863,46 @@ class BuiltinProvider(MusicProvider):
             await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
         except OSError as err:
             self.logger.warning("Failed to update playlist metadata: %s", err)
+
+    async def _apply_import_substitutions(
+        self,
+        prov_playlist_id: str,
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+    ) -> None:
+        """
+        Write resolved substitutes into the playlist's current contents.
+
+        Matching can take a while, so entries are matched by value against a fresh read of
+        the playlist under its lock rather than overwriting the whole snapshot taken at the
+        start of the pass - this preserves edits made elsewhere while matching was running.
+
+        :param prov_playlist_id: The provider-side playlist ID to update.
+        :param pending_substitutions: (original, replacement) pairs found during matching.
+        """
+        async with self._get_playlist_lock(prov_playlist_id):
+            current_items = parse_m3u(await self._read_m3u_file(prov_playlist_id))
+            remaining = list(pending_substitutions)
+            updated_items: list[PlaylistItem] = []
+            changed = False
+            for current_item in current_items:
+                match_index = next(
+                    (i for i, (original, _) in enumerate(remaining) if original == current_item),
+                    None,
+                )
+                if match_index is None:
+                    updated_items.append(current_item)
+                    continue
+                updated_items.append(remaining.pop(match_index)[1])
+                changed = True
+            if not changed:
+                return
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                updated_items,
+                self._get_playlist_image_url(playlist),
+            )
 
     async def _resolve_import_track(
         self,
