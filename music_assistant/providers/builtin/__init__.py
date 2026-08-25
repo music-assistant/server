@@ -663,15 +663,18 @@ class BuiltinProvider(MusicProvider):
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
-        # results are cached by the entry's original path so a track that is duplicated
-        # in the playlist is only probed and searched once, however many times it repeats
-        resolved_by_path: dict[str, _ImportTrackMatchResult] = {}
+        # results are cached by the entry's full content (not just its path) so a track
+        # that is byte-for-byte duplicated in the playlist is only probed and searched
+        # once, however many times it repeats - entries sharing a path but differing in
+        # any resolution input (title, artists, providers, ...) are resolved independently
+        resolved_by_entry: dict[str, _ImportTrackMatchResult] = {}
 
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
                 index, total, f"Matching track {index + 1}/{total}"
             )
-            result = resolved_by_path.get(item.path)
+            entry_key = repr(item)
+            result = resolved_by_entry.get(entry_key)
             if result is None:
                 result = await self._resolve_import_track(
                     item,
@@ -679,7 +682,7 @@ class BuiltinProvider(MusicProvider):
                     allowed_provider_instance_set,
                     failed_provider_instances,
                 )
-                resolved_by_path[item.path] = result
+                resolved_by_entry[entry_key] = result
             self._tally_import_track_result(
                 item,
                 result,

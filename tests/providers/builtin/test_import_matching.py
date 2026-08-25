@@ -548,6 +548,82 @@ async def test_duplicate_original_entries_are_resolved_only_once() -> None:
     assert "| Exact release | 3 |" in report_markdown
 
 
+async def test_duplicate_path_with_different_metadata_is_resolved_independently() -> None:
+    """Entries sharing a path but differing in title/artists are not conflated by the cache."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("404")),
+    )
+    first = _make_playlist_item(
+        path="https://example.com/shared.mp3",
+        title="Artist One - Song One",
+        artists=[
+            ArtistInfo(name="Artist One", provider_domain="", item_id="", provider_instance="")
+        ],
+    )
+    second = _make_playlist_item(
+        path="https://example.com/shared.mp3",
+        title="Artist Two - Song Two",
+        artists=[
+            ArtistInfo(name="Artist Two", provider_domain="", item_id="", provider_instance="")
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [first, second]))
+    track_one = _make_track(
+        "Song One",
+        artists=["Artist One"],
+        provider_mappings={
+            ProviderMapping(item_id="one", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    track_two = _make_track(
+        "Song Two",
+        artists=["Artist Two"],
+        provider_mappings={
+            ProviderMapping(item_id="two", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment_one = TrackProviderEnrichment(
+        track=track_one,
+        matches=(
+            TrackProviderMatch(
+                track=track_one,
+                mapping=next(iter(track_one.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    enrichment_two = TrackProviderEnrichment(
+        track=track_two,
+        matches=(
+            TrackProviderMatch(
+                track=track_two,
+                mapping=next(iter(track_two.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    enrich_mock = AsyncMock(side_effect=[enrichment_one, enrichment_two])
+    prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
+
+    await prov.match_imported_playlist_tracks(
+        "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+    )
+
+    # a metadata-poor or different first duplicate must not suppress resolution of the
+    # second entry - each is matched against its own title/artist evidence
+    assert enrich_mock.await_count == 2
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert written_items[0].providers[0].item_id == "one"
+    assert written_items[1].providers[0].item_id == "two"
+
+
 async def test_unmatched_stale_mapping_does_not_crash_or_get_reused() -> None:
     """A preserved but unverified mapping with no actual match is unmatched, not a crash."""
     prov = _make_provider()
