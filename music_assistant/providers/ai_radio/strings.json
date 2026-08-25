@@ -11,12 +11,28 @@
     "weather_country": {
       "label": "Weather Country",
       "description": "Country used to look up the weather forecast for stations that reference it."
+    },
+    "weather_provider": {
+      "label": "Weather Provider",
+      "description": "Service used to fetch the weather forecast for stations that reference it.",
+      "options": {
+        "open_meteo": "Open-Meteo",
+        "disabled": "Disabled"
+      }
+    },
+    "weather_timeout_seconds": {
+      "label": "Weather Request Timeout",
+      "description": "How long to wait for the weather provider to respond, in seconds, before giving up."
+    },
+    "tts_loudness_boost": {
+      "label": "Spoken Clip Loudness Boost",
+      "description": "How many decibels above the music the spoken sections should sit. Peaks are always limited so the audio can never clip, so the last few decibels arrive mostly as compression rather than loudness. Set to 0 to keep spoken clips at the same level as the music."
     }
   },
   "setup_flow": {
     "user": {
-      "title": "Choose the AI Radio engines",
-      "description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them."
+      "title": "Set up AI Radio",
+      "description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them. Optionally set a weather location for stations that mention the weather."
     },
     "abort": {
       "no_ai_engine": "AI Radio needs an AI engine. Set up a plugin that provides AI first, for example the Home Assistant plugin with an AI task entity.",

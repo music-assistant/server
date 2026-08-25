@@ -16,10 +16,16 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    FlowStepType,
+    MediaType,
+    ProviderType,
+)
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
@@ -507,6 +513,29 @@ def test_core_owned_strings_moved_out_of_common() -> None:
     assert "common.config_entries.bind_port.label" in source
 
 
+def test_setup_flow_finish_library_sync_is_shared() -> None:
+    """
+    The FINISH step explaining the initial library import resolves for any music provider.
+
+    The copy is authored once in common, so a provider that ships no strings of its own still
+    gets it via the owner -> common fallback.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    step = SetupFlowStep(
+        flow_id="test",
+        step_id="finish_library_sync",
+        type=FlowStepType.FINISH,
+        translation_owner="provider.qobuz",
+    )
+    with _active_resolver(ctrl, None):
+        serialized = step.to_dict()
+    assert (
+        serialized["description"]
+        == ctrl._source["common.setup_flow.finish_library_sync.description"]
+    )
+
+
 def test_config_action_result_localized_serialization() -> None:
     """ConfigActionResult resolves its message from the owner's config_actions group."""
     ctrl = _make_controller()
@@ -587,6 +616,25 @@ def test_error_result_message_provider_specific_override() -> None:
     )
     with _active_resolver(ctrl, "nl"):
         assert msg.to_dict()["details"] == "Je Spotify-sessie is verlopen."
+
+
+def test_error_result_message_provider_stream_limit() -> None:
+    """The provider stream limit error resolves with provider name and limit interpolated."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    msg = ErrorResultMessage(
+        "m",
+        7,
+        "Spotify has reached its limit of 5 concurrent source streams.",
+        translation_key="provider_stream_limit",
+        translation_args=["Spotify", 5],
+    )
+    with _active_resolver(ctrl, None):
+        details = msg.to_dict()["details"]
+    assert details == (
+        "Spotify has reached its limit of 5 simultaneous streams. "
+        "Stop playback on another player and try again."
+    )
 
 
 def test_error_result_message_unresolved_key_keeps_details() -> None:

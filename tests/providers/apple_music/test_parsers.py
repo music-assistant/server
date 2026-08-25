@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import Album, ItemMapping
 
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
@@ -94,6 +94,20 @@ def _artists_relationship(*names: str) -> dict[str, Any]:
             ]
         }
     }
+
+
+def test_parse_album_preserves_provider_upc() -> None:
+    """Apple UPC values are not padded before shared identifier normalization."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "upc": "00724354283857"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert (ExternalID.BARCODE, "00724354283857") in result.external_ids
 
 
 def test_parse_album_compilation_uses_album_level_artist_name() -> None:
@@ -302,6 +316,42 @@ def test_parse_track_library_song_uses_library_album_name_fallback() -> None:
 
     assert isinstance(result.album, ItemMapping)
     assert result.album.name == "Album From Library"
+
+
+def test_parse_track_empty_artists_relationship_uses_artist_name() -> None:
+    """An artists relationship without data should fall back to artistName."""
+    provider = _create_provider_mock()
+    track_obj = {
+        "id": "i.librarytrack1",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Mr. Brightside",
+            "artistName": "The Killers",
+            "durationInMillis": 222000,
+            "playParams": {"catalogId": "1526194192"},
+        },
+        "relationships": {
+            "artists": {"data": []},
+            "catalog": {
+                "data": [
+                    {
+                        "id": "1526194192",
+                        "attributes": {
+                            "name": "Mr. Brightside",
+                            "artistName": "The Killers",
+                            "durationInMillis": 222000,
+                            "playParams": {"id": "1526194192"},
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    result = parse_track(provider, track_obj)
+
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "The Killers"
 
 
 @pytest.mark.asyncio

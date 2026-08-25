@@ -11,9 +11,8 @@ on:
   push:
     branches:
       - dev
-    paths:
-      - pyproject.toml
-      - requirements_all.txt
+  # Manual escape hatch to drain a stranded bump PR without a human merge commit
+  workflow_dispatch:
 
 env:
   EXPECTED_APP_BOT_LOGIN: musicassistant-bot[bot]
@@ -278,12 +277,37 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The merge must be enabled with the App token: the merge actor is whoever
+      # enabled auto-merge, and GitHub never triggers workflows for pushes made by
+      # GITHUB_TOKEN, so the discover-stale job below would not run on the merge.
+      - name: Create merge token
+        id: merge_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.merge_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.merge_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
       # Enable auto-merge with squash
       - name: Enable auto-merge
         run: |
           gh pr merge "${{ steps.pr.outputs.number }}" -R "${{ github.repository }}" --auto --squash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.merge_token.outputs.token }}
 
       - name: Comment on success
         if: success()
@@ -295,7 +319,7 @@ jobs:
   # Re-cutting raises a synchronize event, which puts the PR back through the job above.
   discover-stale:
     name: Find stale dependency PRs
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

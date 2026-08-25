@@ -153,8 +153,8 @@ class PlexGDMAdvertiser:
                 await self._send_announcement()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                LOGGER.exception(f"Error sending GDM announcement: {e}")
+            except Exception:
+                LOGGER.exception("Error sending GDM announcement")
                 await asyncio.sleep(30)
 
     async def _listen_loop(self) -> None:
@@ -189,8 +189,8 @@ class PlexGDMAdvertiser:
 
                 sock.close()
 
-            except Exception as e:
-                LOGGER.exception(f"Failed to start GDM listener: {e}")
+            except Exception:
+                LOGGER.exception("Failed to start GDM listener")
 
         await asyncio.to_thread(listen)
 
@@ -221,5 +221,5 @@ class PlexGDMAdvertiser:
                 self._hello_message, (GDM_BROADCAST_ADDR, GDM_BROADCAST_PORT)
             )
 
-        except Exception as e:
-            LOGGER.exception(f"Failed to send GDM announcement: {e}")
+        except Exception:
+            LOGGER.exception("Failed to send GDM announcement")

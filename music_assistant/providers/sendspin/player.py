@@ -16,11 +16,15 @@ from aiosendspin.models.management import (
     SetStaticPinConfig,
     SetUnpairedAccessConfig,
 )
-from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand
+from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
 from aiosendspin.models.visualizer import BeatAvailability, BeatTiming
 from aiosendspin.noise.driver import HandshakeAbortedError
-from aiosendspin.noise.pairing import PairingError
+from aiosendspin.noise.pairing import (
+    SERVER_FIRST_MESSAGE_TIMEOUT_S,
+    SERVER_GESTURE_TIMEOUT_S,
+    PairingError,
+)
 from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -93,11 +97,14 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
+    CONF_SOURCE_AUTOSTART_TARGET,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
     PAIR_METHOD_TOKEN,
     PAIR_METHOD_UNPAIRED,
+    SOURCE_AUTOSTART_OFF,
 )
 from .helpers import (
     AlertText,
@@ -108,6 +115,7 @@ from .helpers import (
     effective_unpaired_access,
     error_alert,
     mac_from_bridge_client_id,
+    pair_method_descriptor,
 )
 from .playback import SendspinPlaybackSession
 
@@ -130,6 +138,13 @@ SUPPORTED_GROUP_COMMANDS = [
 # Config constants for Sendspin audio format
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
 SENDSPIN_FORMAT_AUTOMATIC = "automatic"
+
+# Player types that can render a line-in, so groups and pairs stay selectable.
+SOURCE_AUTOSTART_TARGET_TYPES = {
+    PlayerType.PLAYER,
+    PlayerType.STEREO_PAIR,
+    PlayerType.GROUP,
+}
 
 
 def format_to_option_value(fmt: SupportedAudioFormat) -> str:
@@ -196,8 +211,9 @@ _MANAGEMENT_ACTIONS = {
     ),
 }
 
-# Seconds the setup flow waits for the device to enter pairing mode (show its PIN).
-PAIR_GESTURE_TIMEOUT = 120.0
+# Seconds the setup flow gives the operator to enter the PIN. Advisory: the authoritative end
+# is the device's own attempt timeout (spec-recommended 2 minutes), which aborts the attempt.
+PAIR_PIN_ENTRY_TIMEOUT = 120.0
 # Seconds the setup flow waits for pairing to complete after the PIN is submitted.
 PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
@@ -207,9 +223,28 @@ CAST_APP_READY_TIMEOUT = 30.0
 # anything else falls back to the generic "pairing_failed" abort.
 _PAIRING_ABORT_REASONS = {
     "pairing_error_concurrent": "pairing_error_concurrent",
-    "pairing_error_locked_out": "pairing_error_locked_out",
     "pairing_error_no_pin_method": "no_pair_methods",
     "pairing_error_not_connected": "pairing_error_not_connected",
+}
+
+# How the operator gets a method's secret, per the device's own descriptor hints: where a
+# configured secret is found, or which channel conveys a per-session PIN. Values outside these
+# maps render nothing.
+_SECRET_HINT_LABELS = {
+    PairMethod.STATIC_PIN: {
+        "device": "static_pin_location_device",
+        "leaflet": "static_pin_location_leaflet",
+        "operator": "static_pin_location_operator",
+    },
+    PairMethod.PAIRING_PSK: {
+        "device": "pairing_psk_location_device",
+        "leaflet": "pairing_psk_location_leaflet",
+        "operator": "pairing_psk_location_operator",
+    },
+    PairMethod.DYNAMIC_PIN: {
+        "display": "dynamic_pin_channel_display",
+        "speaker": "dynamic_pin_channel_speaker",
+    },
 }
 
 
@@ -282,7 +317,6 @@ class SendspinBasePlayer(Player):
         self.unsub_event_cb = None
         self.unsub_group_event_cb = None
         self.logger = self.provider.logger.getChild(player_id)
-        self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
@@ -370,6 +404,7 @@ class SendspinBasePlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         entries = await super().get_config_entries()
         entries.extend(await self._get_security_config_entries())
+        entries.extend(self._get_source_autostart_config_entries())
         return entries
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
@@ -419,8 +454,8 @@ class SendspinBasePlayer(Player):
                         key=CONF_PAIRING_METHOD,
                         type=ConfigEntryType.STRING,
                         required=True,
-                        default_value=options[0],
                         options=[ConfigValueOption(value=option) for option in options],
+                        expanded_options=True,
                     )
                 ],
                 step_id="select_method",
@@ -435,6 +470,61 @@ class SendspinBasePlayer(Player):
                 session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
         await session.finish({})
+
+    def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
+        """Return the line-in autostart entries, for source clients that can sense a signal."""
+        if not self._supports_line_sense():
+            return []
+        # A source that is also a player defaults to playing on itself, which for a
+        # protocol player means the visible player it belongs to.
+        own_target = self.protocol_parent_id or self.player_id
+        options = [
+            ConfigValueOption(SOURCE_AUTOSTART_OFF),
+            *(
+                ConfigValueOption(
+                    player.player_id,
+                    title=None if player.player_id == own_target else player.display_name,
+                    translation_key="this_device" if player.player_id == own_target else None,
+                )
+                for player in sorted(
+                    self.mass.players.all_players(False, False),
+                    # Lead with the device's own player, so the default sits at the top
+                    # of the list rather than alphabetically among every other player.
+                    key=lambda player: (
+                        player.player_id != own_target,
+                        player.display_name.lower(),
+                    ),
+                )
+                # Only players that render audio, so lights, displays and other
+                # capture-only clients are not offered as somewhere to play a line-in.
+                if player.type in SOURCE_AUTOSTART_TARGET_TYPES
+            ),
+        ]
+        valid = {option.value for option in options}
+        default = (
+            own_target if "player" in self._negotiated_families() and own_target in valid else None
+        )
+        return [
+            ConfigEntry(
+                key=CONF_SOURCE_AUTOSTART_TARGET,
+                type=ConfigEntryType.STRING,
+                options=options,
+                default_value=default or SOURCE_AUTOSTART_OFF,
+            ),
+        ]
+
+    def _negotiated_families(self) -> set[str]:
+        """Role families the client negotiated, which survive an inactive/unpaired state."""
+        return {role_family(role_id) for role_id in self.api.negotiated_role_ids}
+
+    def _supports_line_sense(self) -> bool:
+        """Whether this client has a source role that reports line-in signal presence."""
+        if "source" not in self._negotiated_families():
+            return False
+        info = self.api.info_or_none
+        support = info.source_support if info else None
+        features = support.features if support else None
+        return bool(features and features.line_sense)
 
     @property
     def _is_bridge_or_web_player(self) -> bool:
@@ -687,7 +777,7 @@ class SendspinBasePlayer(Player):
             if management_config is not None:
                 entries.extend(self._management_section_entries(management_config))
                 return entries
-        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
+        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER))
         entries.append(action_entry(CONF_ACTION_UNPAIR, advanced=True))
         return entries
 
@@ -731,7 +821,7 @@ class SendspinBasePlayer(Player):
         if method is None:
             return []
         action = disable_action if method.enabled else enable_action
-        return [action_entry(action)]
+        return [action_entry(action, advanced=True)]
 
     async def _handle_security_action(
         self, provider: SendspinProvider, action: str
@@ -781,15 +871,18 @@ class SendspinBasePlayer(Player):
             descriptor.method
             for descriptor in pair_methods
             if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-            and not descriptor.locked_out
         }
         options: list[str] = []
         if usable_pin_methods:
-            options.append(PAIR_METHOD_PIN)
-            # Static PIN is only a distinct, meaningful choice when both PIN methods are usable.
-            if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
+            # Static PIN is only a distinct, meaningful choice when both PIN methods are usable;
+            # opposite it the other option names the dynamic PIN rather than PINs in general.
+            both_pin_methods = usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}
+            options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
+            if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+        elif any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            # Only show the token pairing method in case the client doesn't implement any other one.
+            # token pairing should only be used as a last resort due to the worse UX.
             options.append(PAIR_METHOD_TOKEN)
         if offer_unpaired and effective_unpaired_access(info, pairing_config):
             options.append(PAIR_METHOD_UNPAIRED)
@@ -815,7 +908,7 @@ class SendspinBasePlayer(Player):
         info = self.api.info_or_none
         pairing_config = provider.pairing_config_snapshot(self.player_id)
         offers_dynamic_pin = any(
-            descriptor.method is PairMethod.DYNAMIC_PIN and not descriptor.locked_out
+            descriptor.method is PairMethod.DYNAMIC_PIN
             for descriptor in effective_pair_methods(info, pairing_config)
         )
         # presence proven by a dynamic-PIN pairing itself needs no re-verification
@@ -832,10 +925,10 @@ class SendspinBasePlayer(Player):
         verify: bool = False,
     ) -> None:
         """
-        Pair via PIN: gesture wait, PIN entry and the retry-in-place loop.
+        Pair via PIN: the device wait, PIN entry and the retry-in-place loop.
 
         A retryable failure re-renders the PIN form (start_pin_pairing resumes the session in
-        place); a terminal failure aborts the flow and an expired gesture wait propagates as a
+        place); a terminal failure aborts the flow and an expired device wait propagates as a
         timed_out abort. On any non-success exit the finally tears down a device-side session
         still in flight - including when the flow is cancelled.
 
@@ -852,13 +945,7 @@ class SendspinBasePlayer(Player):
                     )
                 except SecurityActionError as err:
                     raise AbortFlow(_pairing_abort_reason(err)) from err
-                if pin_session.awaiting_gesture:
-                    await session.progress_until(
-                        pin_session.pin_request_event.wait(),
-                        step_id="awaiting_gesture",
-                        text="awaiting_gesture",
-                        expires_in=PAIR_GESTURE_TIMEOUT,
-                    )
+                await self._await_pin_request(session, pin_session)
                 if not pin_session.awaiting_pin:
                     # The attempt ended before a PIN could be entered.
                     if await self._pairing_succeeded(provider, pin_session):
@@ -868,11 +955,18 @@ class SendspinBasePlayer(Player):
                         errors = {"base": _pin_error_slug(pin_session.error)}
                         continue
                     raise AbortFlow(_pairing_abort_reason(pin_session.error))
-                pin_values = await session.form(
-                    [ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)],
-                    step_id="verify_pin" if verify else "enter_pin",
-                    errors=errors,
-                )
+                try:
+                    pin_values = await session.form(
+                        self._pin_form_entries(provider, pin_session),
+                        step_id="verify_pin" if verify else "enter_pin",
+                        errors=errors,
+                        expires_in=PAIR_PIN_ENTRY_TIMEOUT,
+                    )
+                except StepExpiredError:
+                    # The countdown mirrors the device's attempt timeout, which aborts the
+                    # attempt around now; retry in place rather than dropping the flow.
+                    errors = {"base": "pairing_error_timeout"}
+                    continue
                 errors = None
                 try:
                     provider.submit_pin(self.player_id, str(pin_values[CONF_PAIRING_PIN]).strip())
@@ -903,6 +997,67 @@ class SendspinBasePlayer(Player):
             elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
 
+    async def _await_pin_request(
+        self,
+        session: SetupSession,
+        pin_session: PinPairingSession,
+    ) -> None:
+        """Wait until the device asks for its PIN, showing what it is waiting on."""
+        if pin_session.awaiting_first_message:
+            await session.progress_until(
+                pin_session.wait_first_message(),
+                step_id="awaiting_device",
+                text="awaiting_device",
+                expires_in=SERVER_FIRST_MESSAGE_TIMEOUT_S,
+            )
+        if pin_session.awaiting_gesture:
+            await session.progress_until(
+                pin_session.wait_pin_request(),
+                step_id="awaiting_gesture",
+                text="awaiting_gesture",
+                expires_in=SERVER_GESTURE_TIMEOUT_S,
+            )
+
+    def _pin_form_entries(
+        self, provider: SendspinProvider, pin_session: PinPairingSession
+    ) -> list[ConfigEntry]:
+        """Return the PIN form fields, hinting how the operator gets the PIN and how long it is."""
+        entries = self._secret_hint_entries(provider, pin_session.method)
+        if pin_session.pin_length is not None:
+            entries.append(
+                ConfigEntry(
+                    key="dynamic_pin_digits",
+                    type=ConfigEntryType.LABEL,
+                    translation_params=[str(pin_session.pin_length)],
+                )
+            )
+        entries.append(
+            ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)
+        )
+        return entries
+
+    def _secret_hint_entries(
+        self, provider: SendspinProvider, method: PairMethod
+    ) -> list[ConfigEntry]:
+        """Return LABEL entries for the device's hints on obtaining a method's pairing secret."""
+        descriptor = pair_method_descriptor(
+            effective_pair_methods(
+                self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
+            ),
+            method,
+        )
+        if descriptor is None:
+            return []
+        hints = (
+            descriptor.out_channels if method is PairMethod.DYNAMIC_PIN else descriptor.locations
+        )
+        labels = _SECRET_HINT_LABELS[method]
+        return [
+            ConfigEntry(key=key, type=ConfigEntryType.LABEL)
+            for hint in hints or []
+            if (key := labels.get(hint)) is not None
+        ]
+
     async def _run_token_pairing_flow(
         self, session: SetupSession, provider: SendspinProvider
     ) -> None:
@@ -910,7 +1065,10 @@ class SendspinBasePlayer(Player):
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
-                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                [
+                    *self._secret_hint_entries(provider, PairMethod.PAIRING_PSK),
+                    ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True),
+                ],
                 step_id="enter_token",
                 errors=errors,
             )
@@ -962,6 +1120,7 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         hello_payload = initial_hello or self.api.info
         self.playback_session = SendspinPlaybackSession(self)
         self._attr_supported_features = {
@@ -1056,61 +1215,9 @@ class SendspinPlayer(SendspinBasePlayer):
             self._attr_device_info.add_identifier(id_type, id_value)
         self.is_web_player = False
         self._attr_hidden_by_default = False
+        self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_type = PlayerType.PROTOCOL
-
-    def _subscribe_client_callbacks(self) -> None:
-        """Subscribe to client and group events for the currently bound client."""
-        super()._subscribe_client_callbacks()
-        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-        if controller_role := self._controller_role:
-            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
-
-    def _refresh_client_info(
-        self,
-        sendspin_client: SendspinClient,
-        hello_payload: ClientHelloPayload | None = None,
-    ) -> None:
-        """Refresh player attributes from a Sendspin client hello/info payload."""
-        super()._refresh_client_info(sendspin_client, hello_payload=hello_payload)
-        client_info = hello_payload or sendspin_client.info
-        if device_info := client_info.device_info:
-            # determine if this is a web/app player based on product name or manufacturer
-            # TODO: make this part of the spec and let clients explicitly report if they
-            # are a web/app player instead of relying on heuristics
-            self.is_web_player = (
-                device_info.product_name
-                in (
-                    "Web Browser",
-                    "Web Player",
-                    "Mobile Application",
-                    "PWA",
-                )
-                or device_info.manufacturer == "Music Assistant"
-            )
-        else:
-            self.is_web_player = False
-        if client_info.player_support:
-            for role in sendspin_client.roles_by_family("player"):
-                volume = role.get_player_volume()
-                muted = role.get_player_muted()
-                if volume is not None:
-                    self._attr_volume_level = volume
-                if muted is not None:
-                    self._attr_volume_muted = muted
-                if volume is not None or muted is not None:
-                    break
-        # virtual players are server-owned anchors that follow the same
-        # hidden/standalone semantics as web players, without relying on the
-        # device-info heuristics above
-        is_standalone = self.is_web_player or cast(
-            "SendspinProvider", self.provider
-        ).is_virtual_player(self.player_id)
-        self._attr_expose_to_ha_by_default = not is_standalone
-        self._attr_hidden_by_default = is_standalone
-        # register web/app player as native player type because it doesn't need to be linked
-        # every web/app player is just a standalone player.
-        self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""
@@ -1130,32 +1237,6 @@ class SendspinPlayer(SendspinBasePlayer):
                     )
             case _:
                 super().event_cb(client, event)
-
-    def _on_group_changed(self, new_group: SendspinGroup) -> None:
-        """Handle group change with controller commands and playback session cancellation."""
-        if controller_role := self._controller_role:
-            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
-        # Cancel active playback - push stream belongs to the old group
-        self.mass.create_task(self.playback_session.cancel("group changed"))
-        super()._on_group_changed(new_group)
-
-    def _on_group_stopped(self) -> None:
-        """Cancel playback session when group stops and we are the leader."""
-        if self.synced_to is not None:
-            return
-        # Bind the cancel to the session task that is live right now: by the time
-        # the deferred task below runs, play_media may already have started a fresh
-        # session, which must not be torn down by this stale group-stopped event.
-        stale_task = self.playback_session.playback_task
-        if stale_task is None or stale_task.done():
-            return
-        self.mass.create_task(self._cancel_stale_playback_session(stale_task))
-
-    async def _cancel_stale_playback_session(self, task: asyncio.Task[None]) -> None:
-        """Cancel the playback session only if the given task is still the active one."""
-        if self.playback_session.playback_task is not task:
-            return
-        await self.playback_session.cancel("group stopped")
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
@@ -1201,68 +1282,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 if self.synced_to is None:
                     self.mass.create_task(self._handle_controller_event(controller_event))
 
-    async def _handle_controller_event(self, event: ControllerEvent) -> None:
-        """Handle a controller event from the ControllerGroupRole."""
-        queue = self.mass.player_queues.get_active_queue(self.player_id)
-        match event:
-            case ControllerPlayEvent():
-                await self.mass.players.cmd_play(self.player_id)
-            case ControllerPauseEvent():
-                await self.mass.players.cmd_pause(self.player_id)
-            case ControllerStopEvent():
-                await self.mass.players.cmd_stop(self.player_id)
-            case ControllerNextEvent():
-                await self.mass.players.cmd_next_track(self.player_id)
-            case ControllerPreviousEvent():
-                await self.mass.players.cmd_previous_track(self.player_id)
-            case ControllerRepeatEvent(mode=mode) if queue:
-                match mode:
-                    case SendspinRepeatMode.OFF:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
-                    case SendspinRepeatMode.ONE:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
-                    case SendspinRepeatMode.ALL:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
-            case ControllerShuffleEvent(shuffle=shuffle) if queue:
-                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
-            case ControllerSeekEvent(position_ms=position_ms) if (
-                queue and queue.current_item and queue.current_item.duration
-            ):
-                # Clamp in case track duration changed after we advertised the seek range.
-                duration_ms = int(queue.current_item.duration * 1000)
-                await self.mass.player_queues.seek(
-                    queue.queue_id, max(0, min(position_ms, duration_ms)) // 1000
-                )
-            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if (
-                queue and queue.current_item and queue.current_item.duration
-            ):
-                # Clamp current position + offset to the 0..duration range.
-                target_ms = int(queue.corrected_elapsed_time * 1000) + offset_ms
-                duration_ms = int(queue.current_item.duration * 1000)
-                await self.mass.player_queues.seek(
-                    queue.queue_id, max(0, min(target_ms, duration_ms)) // 1000
-                )
-
-    async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
-        """Sync MA/player + playback session membership from authoritative group state."""
-        # Ignore stale events from a group we no longer belong to.
-        if group is not self.api.group:
-            return
-        group_client_ids = [client.client_id for client in group.clients]
-        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
-        desired_group_members = group_client_ids if is_leader else []
-        desired_session_members = group_client_ids[1:] if is_leader else []
-        if self._attr_group_members != desired_group_members:
-            self._attr_group_members = desired_group_members
-            self.update_state()
-        # Only use STOP when we actually lead other members.
-        self.api.disconnect_behaviour = (
-            DisconnectBehaviour.STOP
-            if is_leader and len(desired_session_members) > 0
-            else DisconnectBehaviour.UNGROUP
-        )
-        await self.playback_session.sync_members(set(desired_session_members))
-
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         roles = self.api.roles_by_family("player")
@@ -1298,16 +1317,6 @@ class SendspinPlayer(SendspinBasePlayer):
         finally:
             await self.playback_session.cancel("stop command")
 
-    def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
-        """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
-        chromecast_provider = self.mass.get_provider("chromecast")
-        if chromecast_provider is None:
-            return None
-        manager = getattr(chromecast_provider, "bridge_manager", None)
-        if manager is None:
-            return None
-        return cast("SendspinBridgeManager", manager)
-
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self.logger.debug(
@@ -1318,7 +1327,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
 
-        await self.playback_session.cancel("new media requested")
+        # The spec reserves stream/end for queue-empty, not track changes.
+        await self.playback_session.cancel("new media requested", keep_stream=True)
 
         # Cast-only: reset future before start() to avoid racing _on_stream_start
         # and to cancel any stale pending future from a previous timed-out attempt.
@@ -1355,51 +1365,6 @@ class SendspinPlayer(SendspinBasePlayer):
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
         await self._apply_static_delay()
-
-    async def _apply_preferred_format(self) -> None:
-        """Read config and set/clear the players preferred format."""
-        player_role = self._player_role
-        if player_role is None:
-            return
-
-        config_value = cast(
-            "str",
-            self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
-        )
-        if config_value == SENDSPIN_FORMAT_AUTOMATIC:
-            # Automatic mode: clear override and let client decide.
-            player_role.set_preferred_format(None, None)
-            return
-
-        parsed = option_value_to_format(config_value)
-        if parsed is None:
-            self.logger.warning(
-                "Invalid audio format config value '%s' for player %s",
-                config_value,
-                self.display_name,
-            )
-            return
-
-        codec, audio_format = parsed
-        if not player_role.set_preferred_format(audio_format, codec):
-            self.logger.warning(
-                "Failed to set preferred audio format %s %s for player %s",
-                codec.name,
-                audio_format,
-                self.display_name,
-            )
-
-    async def _apply_static_delay(self) -> None:
-        """Read config and send set_static_delay command if supported."""
-        player_role = self._player_role
-        if player_role is None:
-            return
-
-        config_value = cast(
-            "int",
-            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
-        )
-        player_role.set_static_delay(config_value)
 
     async def set_members(
         self,
@@ -1483,6 +1448,367 @@ class SendspinPlayer(SendspinBasePlayer):
                 if not f.done():
                     f.cancel()
         # self.group_members will be updated by the group event callback
+
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if self.synced_to is not None:
+            # Only leader sends metadata
+            return
+        self.mass.create_task(
+            self.send_current_media_metadata(),
+            task_id=f"sendspin_metadata_{self.player_id}",
+            abort_existing=True,
+        )
+
+    async def send_current_media_metadata(self) -> None:
+        """Send the current media metadata to the sendspin group."""
+        if not self.available:
+            return
+        current_media = self.state.current_media
+        if current_media is None:
+            await self._clear_current_media_metadata()
+            return
+        # check if we are playing a MA queue item
+        queue_item: QueueItem | None = None
+        queue: PlayerQueue | None = None
+        if current_media.source_id and current_media.queue_item_id:
+            queue = self.mass.player_queues.get(current_media.source_id)
+            queue_item = self.mass.player_queues.get_item(
+                current_media.source_id, current_media.queue_item_id
+            )
+
+        # Runs even without a queue item so radio / Spotify Connect streams still get art.
+        await self._send_album_artwork(current_media)
+        if queue_item:
+            await self._send_artist_artwork(queue_item)
+
+        track_number: int | None = None
+        year: int | None = None
+        album_artist: str | None = None
+        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
+            track = queue_item.media_item
+            track_number = track.track_number or None
+            album_mapping = track.album
+            if album_mapping is not None:
+                year = album_mapping.year
+                if not isinstance(album_mapping, Album):
+                    # Cheap DB-only lookup, no external API call; None if not in library
+                    result = await self.mass.music.get_library_item_by_prov_id(
+                        MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
+                    )
+                    full_album: Album | None = result if isinstance(result, Album) else None
+                else:
+                    full_album = album_mapping
+                if full_album and full_album.artists:
+                    album_artist = full_album.artist_str
+
+        track_duration = current_media.duration or 0
+        if controller_role := self._controller_role:
+            controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
+        repeat = SendspinRepeatMode.OFF
+        if queue and queue.repeat_mode == RepeatMode.ALL:
+            repeat = SendspinRepeatMode.ALL
+        elif queue and queue.repeat_mode == RepeatMode.ONE:
+            repeat = SendspinRepeatMode.ONE
+
+        shuffle = queue.shuffle_enabled if queue else False
+        is_playing = self.state.playback_state == PlaybackState.PLAYING
+        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
+
+        metadata = Metadata(
+            title=current_media.title,
+            artist=current_media.artist,
+            album_artist=album_artist,
+            album=current_media.album,
+            artwork_url=current_media.image_url,
+            year=year,
+            track=track_number,
+            track_duration=track_duration * 1000 if track_duration is not None else None,
+            track_progress=track_progress,
+            playback_speed=1000 if is_playing else 0,
+            repeat=repeat,
+            shuffle=shuffle,
+        )
+
+        # Send metadata to the group
+        if (metadata_role := self._metadata_role) is not None:
+            metadata_role.set_metadata(metadata)
+
+        self._publish_repeat_shuffle(repeat, shuffle=shuffle)
+
+        # Send color palette derived from the cover art (already computed by
+        # the players controller with the Sendspin defined minimum contrast values).
+        if (color_role := self._color_role) is not None:
+            self._send_color_palette(color_role, current_media.palette)
+
+        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        entries: list[ConfigEntry] = []
+        # Show alert if this Cast device is known to lack AudioContext support
+        if self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
+        ):
+            entries.append(
+                ConfigEntry(
+                    key="cast_audio_unsupported",
+                    type=ConfigEntryType.ALERT,
+                    required=False,
+                )
+            )
+        entries.extend(await super().get_config_entries())
+        # Build dynamic format options from player's supported formats
+        player_role = self._player_role
+        if player_role is not None:
+            supported_formats = player_role.get_supported_formats()
+            if supported_formats:
+                format_options = [
+                    ConfigValueOption(SENDSPIN_FORMAT_AUTOMATIC),
+                ]
+                for fmt in supported_formats:
+                    format_options.append(
+                        ConfigValueOption(
+                            format_to_option_value(fmt), title=format_to_display_string(fmt)
+                        )
+                    )
+                entries.append(
+                    ConfigEntry(
+                        key=CONF_PREFERRED_SENDSPIN_FORMAT,
+                        type=ConfigEntryType.STRING,
+                        category="protocol_generic",
+                        default_value=SENDSPIN_FORMAT_AUTOMATIC,
+                        options=format_options,
+                        advanced=True,
+                    )
+                )
+
+        if (
+            player_role is not None
+            and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
+        ):
+            entries.append(
+                ConfigEntry(
+                    key=CONF_SENDSPIN_STATIC_DELAY,
+                    type=ConfigEntryType.INTEGER,
+                    required=False,
+                    default_value=self.static_delay_default_ms,
+                    range=(0, 5000),
+                    immediate_apply=True,
+                    # Not a advanced option since this will only show up for players where it is likely
+                    # necessary to adjust the delay.
+                    advanced=False,
+                )
+            )
+
+        if self._hass_announce_entity_id is not None:
+            # announcements are relayed to the device via Home Assistant,
+            # which has no volume control for announcements
+            entries.extend(HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES)
+
+        return entries
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await self.playback_session.close()
+        await super().on_unload()
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to client and group events for the currently bound client."""
+        super()._subscribe_client_callbacks()
+        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
+        if controller_role := self._controller_role:
+            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+
+    def _refresh_client_info(
+        self,
+        sendspin_client: SendspinClient,
+        hello_payload: ClientHelloPayload | None = None,
+    ) -> None:
+        """Refresh player attributes from a Sendspin client hello/info payload."""
+        super()._refresh_client_info(sendspin_client, hello_payload=hello_payload)
+        client_info = hello_payload or sendspin_client.info
+        if device_info := client_info.device_info:
+            # determine if this is a web/app player based on product name or manufacturer
+            # TODO: make this part of the spec and let clients explicitly report if they
+            # are a web/app player instead of relying on heuristics
+            self.is_web_player = (
+                device_info.product_name
+                in (
+                    "Web Browser",
+                    "Web Player",
+                    "Mobile Application",
+                    "PWA",
+                )
+                or device_info.manufacturer == "Music Assistant"
+            )
+        else:
+            self.is_web_player = False
+        if client_info.player_support:
+            for role in sendspin_client.roles_by_family("player"):
+                volume = role.get_player_volume()
+                muted = role.get_player_muted()
+                if volume is not None:
+                    self._attr_volume_level = volume
+                if muted is not None:
+                    self._attr_volume_muted = muted
+                if volume is not None or muted is not None:
+                    break
+        # virtual players are server-owned anchors that follow the same
+        # hidden/standalone semantics as web players, without relying on the
+        # device-info heuristics above
+        is_standalone = self.is_web_player or cast(
+            "SendspinProvider", self.provider
+        ).is_virtual_player(self.player_id)
+        self._attr_expose_to_ha_by_default = not is_standalone
+        self._attr_hidden_by_default = is_standalone
+        self._attr_private = is_standalone
+        # register web/app player as native player type because it doesn't need to be linked
+        # every web/app player is just a standalone player.
+        self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
+
+    def _on_group_changed(self, new_group: SendspinGroup) -> None:
+        """Handle group change with controller commands and playback session cancellation."""
+        if controller_role := self._controller_role:
+            controller_role.set_supported_commands(SUPPORTED_GROUP_COMMANDS)
+        # Cancel active playback - push stream belongs to the old group
+        self.mass.create_task(self.playback_session.cancel("group changed"))
+        super()._on_group_changed(new_group)
+
+    def _on_group_stopped(self) -> None:
+        """Cancel playback session when group stops and we are the leader."""
+        if self.synced_to is not None:
+            return
+        # Bind the cancel to the session task that is live right now: by the time
+        # the deferred task below runs, play_media may already have started a fresh
+        # session, which must not be torn down by this stale group-stopped event.
+        stale_task = self.playback_session.playback_task
+        if stale_task is None or stale_task.done():
+            return
+        self.mass.create_task(self._cancel_stale_playback_session(stale_task))
+
+    async def _cancel_stale_playback_session(self, task: asyncio.Task[None]) -> None:
+        """Cancel the playback session only if the given task is still the active one."""
+        if self.playback_session.playback_task is not task:
+            return
+        await self.playback_session.cancel("group stopped")
+
+    async def _handle_controller_event(self, event: ControllerEvent) -> None:
+        """Handle a controller event from the ControllerGroupRole."""
+        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        match event:
+            case ControllerPlayEvent():
+                await self.mass.players.cmd_play(self.player_id)
+            case ControllerPauseEvent():
+                await self.mass.players.cmd_pause(self.player_id)
+            case ControllerStopEvent():
+                await self.mass.players.cmd_stop(self.player_id)
+            case ControllerNextEvent():
+                await self.mass.players.cmd_next_track(self.player_id)
+            case ControllerPreviousEvent():
+                await self.mass.players.cmd_previous_track(self.player_id)
+            case ControllerRepeatEvent(mode=mode) if queue:
+                match mode:
+                    case SendspinRepeatMode.OFF:
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+                    case SendspinRepeatMode.ONE:
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+                    case SendspinRepeatMode.ALL:
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+            case ControllerShuffleEvent(shuffle=shuffle) if queue:
+                await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
+            case ControllerSeekEvent(position_ms=position_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp in case track duration changed after we advertised the seek range.
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(position_ms, duration_ms)) // 1000
+                )
+            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp current position + offset to the 0..duration range.
+                target_ms = int(queue.corrected_elapsed_time * 1000) + offset_ms
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(target_ms, duration_ms)) // 1000
+                )
+
+    async def _sync_membership_from_group(self, group: SendspinGroup) -> None:
+        """Sync MA/player + playback session membership from authoritative group state."""
+        # Ignore stale events from a group we no longer belong to.
+        if group is not self.api.group:
+            return
+        group_client_ids = [client.client_id for client in group.clients]
+        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
+        desired_group_members = group_client_ids if is_leader else []
+        desired_session_members = group_client_ids[1:] if is_leader else []
+        if self._attr_group_members != desired_group_members:
+            self._attr_group_members = desired_group_members
+            self.update_state()
+        # Only use STOP when we actually lead other members.
+        self.api.disconnect_behaviour = (
+            DisconnectBehaviour.STOP
+            if is_leader and len(desired_session_members) > 0
+            else DisconnectBehaviour.UNGROUP
+        )
+        await self.playback_session.sync_members(set(desired_session_members))
+
+    def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
+        """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
+        chromecast_provider = self.mass.get_provider("chromecast")
+        if chromecast_provider is None:
+            return None
+        manager = getattr(chromecast_provider, "bridge_manager", None)
+        if manager is None:
+            return None
+        return cast("SendspinBridgeManager", manager)
+
+    async def _apply_preferred_format(self) -> None:
+        """Read config and set/clear the players preferred format."""
+        player_role = self._player_role
+        if player_role is None:
+            return
+
+        config_value = cast(
+            "str",
+            self.config.get_value(CONF_PREFERRED_SENDSPIN_FORMAT, SENDSPIN_FORMAT_AUTOMATIC),
+        )
+        if config_value == SENDSPIN_FORMAT_AUTOMATIC:
+            # Automatic mode: clear override and let client decide.
+            player_role.set_preferred_format(None, None)
+            return
+
+        parsed = option_value_to_format(config_value)
+        if parsed is None:
+            self.logger.warning(
+                "Invalid audio format config value '%s' for player %s",
+                config_value,
+                self.display_name,
+            )
+            return
+
+        codec, audio_format = parsed
+        if not player_role.set_preferred_format(audio_format, codec):
+            self.logger.warning(
+                "Failed to set preferred audio format %s %s for player %s",
+                codec.name,
+                audio_format,
+                self.display_name,
+            )
+
+    async def _apply_static_delay(self) -> None:
+        """Read config and send set_static_delay command if supported."""
+        player_role = self._player_role
+        if player_role is None:
+            return
+
+        config_value = cast(
+            "int",
+            self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
+        )
+        player_role.set_static_delay(config_value)
 
     async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """
@@ -1573,17 +1899,6 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
-    def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated."""
-        if self.synced_to is not None:
-            # Only leader sends metadata
-            return
-        self.mass.create_task(
-            self.send_current_media_metadata(),
-            task_id=f"sendspin_metadata_{self.player_id}",
-            abort_existing=True,
-        )
-
     async def _clear_current_media_metadata(self) -> None:
         """Clear all metadata and artwork from the sendspin group."""
         # Stop any in-flight beat-analysis polling task
@@ -1616,6 +1931,24 @@ class SendspinPlayer(SendspinBasePlayer):
         if (controller_role := self._controller_role) is not None:
             controller_role.set_repeat(repeat)
             controller_role.set_shuffle(shuffle=shuffle)
+
+    def _send_color_palette(
+        self, color_role: ColorGroupRole, palette: MediaItemPalette | None
+    ) -> None:
+        """Push the palette already attached to current_media to the sendspin group."""
+        if palette is None:
+            color_role.clear()
+            return
+        color_role.set_color(
+            Color(
+                background_dark=palette.background_dark,
+                background_light=palette.background_light,
+                primary=palette.primary,
+                accent=palette.accent,
+                on_dark=palette.on_dark,
+                on_light=palette.on_light,
+            )
+        )
 
     def _compute_track_progress_ms(self, current_media: PlayerMedia, *, is_playing: bool) -> int:
         """
@@ -1653,107 +1986,6 @@ class SendspinPlayer(SendspinBasePlayer):
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
         await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
-
-    async def send_current_media_metadata(self) -> None:
-        """Send the current media metadata to the sendspin group."""
-        if not self.available:
-            return
-        current_media = self.state.current_media
-        if current_media is None:
-            await self._clear_current_media_metadata()
-            return
-        # check if we are playing a MA queue item
-        queue_item: QueueItem | None = None
-        queue: PlayerQueue | None = None
-        if current_media.source_id and current_media.queue_item_id:
-            queue = self.mass.player_queues.get(current_media.source_id)
-            queue_item = self.mass.player_queues.get_item(
-                current_media.source_id, current_media.queue_item_id
-            )
-
-        # Runs even without a queue item so radio / Spotify Connect streams still get art.
-        await self._send_album_artwork(current_media)
-        if queue_item:
-            await self._send_artist_artwork(queue_item)
-
-        track_number: int | None = None
-        year: int | None = None
-        album_artist: str | None = None
-        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
-            track = queue_item.media_item
-            track_number = track.track_number or None
-            album_mapping = track.album
-            if album_mapping is not None:
-                year = album_mapping.year
-                if not isinstance(album_mapping, Album):
-                    # Cheap DB-only lookup, no external API call; None if not in library
-                    result = await self.mass.music.get_library_item_by_prov_id(
-                        MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
-                    )
-                    full_album: Album | None = result if isinstance(result, Album) else None
-                else:
-                    full_album = album_mapping
-                if full_album and full_album.artists:
-                    album_artist = full_album.artist_str
-
-        track_duration = current_media.duration or 0
-        if controller_role := self._controller_role:
-            controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
-        repeat = SendspinRepeatMode.OFF
-        if queue and queue.repeat_mode == RepeatMode.ALL:
-            repeat = SendspinRepeatMode.ALL
-        elif queue and queue.repeat_mode == RepeatMode.ONE:
-            repeat = SendspinRepeatMode.ONE
-
-        shuffle = queue.shuffle_enabled if queue else False
-        is_playing = self.state.playback_state == PlaybackState.PLAYING
-        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
-
-        metadata = Metadata(
-            title=current_media.title,
-            artist=current_media.artist,
-            album_artist=album_artist,
-            album=current_media.album,
-            artwork_url=current_media.image_url,
-            year=year,
-            track=track_number,
-            track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=track_progress,
-            playback_speed=1000 if is_playing else 0,
-            repeat=repeat,
-            shuffle=shuffle,
-        )
-
-        # Send metadata to the group
-        if (metadata_role := self._metadata_role) is not None:
-            metadata_role.set_metadata(metadata)
-
-        self._publish_repeat_shuffle(repeat, shuffle=shuffle)
-
-        # Send color palette derived from the cover art (already computed by
-        # the players controller with the Sendspin defined minimum contrast values).
-        if (color_role := self._color_role) is not None:
-            self._send_color_palette(color_role, current_media.palette)
-
-        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
-
-    def _send_color_palette(
-        self, color_role: ColorGroupRole, palette: MediaItemPalette | None
-    ) -> None:
-        """Push the palette already attached to current_media to the sendspin group."""
-        if palette is None:
-            color_role.clear()
-            return
-        color_role.set_color(
-            Color(
-                background_dark=palette.background_dark,
-                background_light=palette.background_light,
-                primary=palette.primary,
-                accent=palette.accent,
-                on_dark=palette.on_dark,
-                on_light=palette.on_light,
-            )
-        )
 
     @staticmethod
     def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
@@ -1927,76 +2159,6 @@ class SendspinPlayer(SendspinBasePlayer):
             if self._beat_retry_queue_item_id == queue_item_id:
                 self._beat_retry_queue_item_id = None
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        entries: list[ConfigEntry] = []
-        # Show alert if this Cast device is known to lack AudioContext support
-        if self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
-        ):
-            entries.append(
-                ConfigEntry(
-                    key="cast_audio_unsupported",
-                    type=ConfigEntryType.ALERT,
-                    required=False,
-                )
-            )
-        entries.extend(await super().get_config_entries())
-        # Build dynamic format options from player's supported formats
-        player_role = self._player_role
-        if player_role is not None:
-            supported_formats = player_role.get_supported_formats()
-            if supported_formats:
-                format_options = [
-                    ConfigValueOption(SENDSPIN_FORMAT_AUTOMATIC),
-                ]
-                for fmt in supported_formats:
-                    format_options.append(
-                        ConfigValueOption(
-                            format_to_option_value(fmt), title=format_to_display_string(fmt)
-                        )
-                    )
-                entries.append(
-                    ConfigEntry(
-                        key=CONF_PREFERRED_SENDSPIN_FORMAT,
-                        type=ConfigEntryType.STRING,
-                        category="protocol_generic",
-                        default_value=SENDSPIN_FORMAT_AUTOMATIC,
-                        options=format_options,
-                        advanced=True,
-                    )
-                )
-
-        if (
-            player_role is not None
-            and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
-        ):
-            entries.append(
-                ConfigEntry(
-                    key=CONF_SENDSPIN_STATIC_DELAY,
-                    type=ConfigEntryType.INTEGER,
-                    required=False,
-                    default_value=self.static_delay_default_ms,
-                    range=(0, 5000),
-                    immediate_apply=True,
-                    # Not a advanced option since this will only show up for players where it is likely
-                    # necessary to adjust the delay.
-                    advanced=False,
-                )
-            )
-
-        if self._hass_announce_entity_id is not None:
-            # announcements are relayed to the device via Home Assistant,
-            # which has no volume control for announcements
-            entries.extend(HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES)
-
-        return entries
-
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await self.playback_session.close()
-        await super().on_unload()
-
 
 class SendspinVisualizerPlayer(SendspinBasePlayer):
     """A non-audio Sendspin player for visualizer/lighting devices."""
@@ -2019,6 +2181,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
         :param initial_hello: Optional hello payload from the client.
         """
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
 
     async def set_members(
@@ -2035,3 +2198,18 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             member = self.mass.players.get_player(player_id, True)
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
+
+
+class SendspinSourcePlayer(SendspinBasePlayer):
+    """
+    A capture-only Sendspin player for clients that just feed audio in.
+
+    Renders nothing and is never a playback or grouping target. It exists so a
+    source-only device still has a settings page for pairing, enabling and the
+    line-in autostart target. The sendspin_source plugin exposes the audio itself.
+    """
+
+    _attr_type = PlayerType.UNKNOWN
+    _attr_hidden_by_default = True
+    _attr_private = True
+    _attr_expose_to_ha_by_default = False

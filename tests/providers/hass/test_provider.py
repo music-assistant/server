@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 from math import ceil
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,9 +14,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.enums import EventType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
@@ -656,8 +662,26 @@ async def test_ai_query_not_advertised_without_entity() -> None:
 def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     """Let the Home Assistant tts_get_url endpoint return a URL and return the post mock."""
     response = AsyncMock()
+    response.ok = True
     response.raise_for_status = MagicMock()
     response.json.return_value = {"url": "http://homeassistant.local/tts.mp3"}
+    post = cast("MagicMock", provider.mass.http_session.post)
+    post.return_value.__aenter__.return_value = response
+    return post
+
+
+def _mock_tts_error_response(
+    provider: HomeAssistantProvider, error_message: str | None, status: int = 400
+) -> MagicMock:
+    """Let the tts_get_url endpoint fail with the given status and HA error body."""
+    response = AsyncMock()
+    response.ok = False
+    response.status = status
+    response.reason = HTTPStatus(status).phrase
+    if error_message is None:
+        response.json.side_effect = ValueError("not json")
+    else:
+        response.json.return_value = {"error": error_message}
     post = cast("MagicMock", provider.mass.http_session.post)
     post.return_value.__aenter__.return_value = response
     return post
@@ -699,6 +723,111 @@ async def test_tts_not_advertised_without_entity() -> None:
 
         with pytest.raises(UnsupportedFeaturedException):
             await provider.get_tts_message("Hello")
+
+
+async def test_tts_sends_options_in_the_payload() -> None:
+    """A host's TTS options are forwarded in the tts_get_url payload."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message(
+            "Hello", options={"voice": "en_US-lessac-medium", "length_scale": 1.2}
+        )
+
+        assert post.call_args.kwargs["json"] == {
+            "engine_id": "tts.first",
+            "message": "Hello",
+            "options": {"voice": "en_US-lessac-medium", "length_scale": 1.2},
+        }
+
+
+async def test_tts_omits_options_from_the_payload_when_empty() -> None:
+    """An empty options dict is not sent to Home Assistant."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", options={})
+
+        assert post.call_args.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
+
+
+async def test_tts_invalid_option_raises_music_assistant_error() -> None:
+    """HA rejecting an unknown TTS option surfaces as MusicAssistantError with HA's message."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, "Invalid options found: ['speaking_cadance']")
+
+        with pytest.raises(MusicAssistantError, match=r"Invalid options found"):
+            await provider.get_tts_message("Hello", options={"speaking_cadance": 1})
+
+
+async def test_tts_error_body_that_is_not_json_still_raises_the_generic_way() -> None:
+    """An unparsable error body raises the generic error naming the endpoint and status."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=400)
+
+        with pytest.raises(MusicAssistantError, match=r"tts_get_url") as excinfo:
+            await provider.get_tts_message("Hello", options={"x": 1})
+
+        assert "400" in str(excinfo.value)
+
+
+async def test_tts_unsupported_language_raises_typed_error() -> None:
+    """An unsupported-language 400 raises the typed error naming the language."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, "Language 'xx' not supported")
+
+        with pytest.raises(TTSLanguageNotSupportedError, match=r"'xx'"):
+            await provider.get_tts_message("Hello", language="xx")
+
+
+async def test_tts_bare_500_with_language_is_classified_as_possible_language_rejection() -> None:
+    """A bare 500 (HA's masked validation failure) with a language is a possible rejection."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=500)
+
+        with pytest.raises(TTSLanguageNotSupportedError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert "500" in str(excinfo.value)
+        assert "possibly" in str(excinfo.value)
+
+
+async def test_tts_401_points_at_the_access_token() -> None:
+    """An auth failure points at the connection settings instead of the core log."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=401)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "401 (Unauthorized)" in str(excinfo.value)
+        assert "access token" in str(excinfo.value)
+
+
+async def test_tts_bare_503_with_language_raises_generic_error() -> None:
+    """A bodyless 5xx other than 500 is an outage, not a masked validation error."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=503)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello", language="en-US")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "503" in str(excinfo.value)
+
+
+async def test_tts_bare_500_without_language_raises_generic_error() -> None:
+    """A bare 500 with no language requested has nothing to blame on a rejection."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, _):
+        _mock_tts_error_response(provider, None, status=500)
+
+        with pytest.raises(MusicAssistantError) as excinfo:
+            await provider.get_tts_message("Hello")
+
+        assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
+        assert "tts_get_url" in str(excinfo.value)
+        assert "500" in str(excinfo.value)
 
 
 async def test_registry_update_refreshes_the_engines() -> None:

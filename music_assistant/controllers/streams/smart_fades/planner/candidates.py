@@ -77,7 +77,8 @@ _TRIM_GUARD_LOW_FLOOR: float = 0.25
 _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 
 # Trim-closing anchors engage only when the audible end sits this much past
-# the energy anchor; below it the default anchor's trim is already acceptable
+# the energy anchor; below it the default anchor leads the main pass (the
+# rescue pass re-runs this generator ungated when that pass rejects everything)
 _TRIM_CLOSING_MIN_GAP_S: float = 8.0
 
 # Lazy-overlay length: a long unphrased equal-power blend, not a rung on any ladder
@@ -329,10 +330,14 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
 
     name = "trim-closing-anchor"
 
+    def __init__(self, min_gap: float = _TRIM_CLOSING_MIN_GAP_S) -> None:
+        """Initialize the generator with the smallest stranded-tail gap that engages it."""
+        self._min_gap = min_gap
+
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
         """Emit every ladder rung at the audible end, or nothing when the trim gap is small."""
         anchor = ctx.audio_end
-        if anchor - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
+        if anchor - ctx.default_anchor < self._min_gap:
             return
         # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
         _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)

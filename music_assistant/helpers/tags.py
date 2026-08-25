@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -733,7 +734,7 @@ def parse_tags(
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
-        if not input_file.startswith("http") and os.path.isfile(input_file):
+        if not input_file.startswith("http") and Path(input_file).is_file():
             extra_tags = parse_tags_mutagen(input_file)
             if extra_tags:
                 tags.tags.update(extra_tags)
@@ -1463,7 +1464,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
     # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
-    if not input_file.startswith(("http://", "https://")) and os.path.isfile(input_file):
+    if not input_file.startswith(("http://", "https://")) and Path(input_file).is_file():
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):

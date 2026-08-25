@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -27,6 +28,7 @@ from music_assistant_models.media_items import (
     ArtistSummary,
     Audiobook,
     ItemMapping,
+    MediaCollection,
     ProviderMapping,
     Track,
 )
@@ -39,8 +41,13 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.music.helpers import (
+    metadata_for_update,
+    provider_mappings_for_update,
+)
 from music_assistant.helpers.compare import (
     compare_album,
+    compare_album_name,
     compare_artist,
     compare_strings,
     compare_track,
@@ -161,6 +168,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType | None = None,
         *,
         summary: bool = True,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Artist]:
         """
@@ -177,7 +185,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param artist_type: The artist's type
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if artist_type:
@@ -194,12 +208,13 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
+            reachable_via=reachable_via,
         )
 
     async def tracks(
@@ -319,17 +334,47 @@ class ArtistsController(MediaControllerBase[Artist]):
             item_id, provider_instance_id_or_domain, limit=limit
         )
 
+    if TYPE_CHECKING:
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[False] = False,
+        ) -> list[Audiobook]: ...
+
+        @overload
+        async def audiobooks(
+            self,
+            item_id: str,
+            provider_instance_id_or_domain: str,
+            artist_type: ArtistType = ArtistType.AUTHOR,
+            in_library_only: bool = False,
+            *,
+            collapse_collections: Literal[True],
+        ) -> list[Audiobook | MediaCollection[Audiobook]]: ...
+
     async def audiobooks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
-    ) -> list[Audiobook]:
+        *,
+        collapse_collections: bool = False,
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Return audiobooks for an artist.
 
         Artist_type can be omitted for in-library artists.
+
+        :param collapse_collections: Collapse available collections. Only applies to
+            in-library items; when in_library_only is False, provider items are
+            appended as plain audiobooks alongside the collapsed collections.
         """
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
@@ -355,15 +400,23 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
 
         db_items = await self.get_library_author_narrator_audiobooks(
-            library_artist.item_id, artist_type=library_artist.artist_type
+            library_artist.item_id,
+            artist_type=library_artist.artist_type,
+            collapse_collections=collapse_collections,
         )
-        result: list[Audiobook] = db_items
+        result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
             # return in-library items only
             return result
         # return all (unique) items from all providers
         # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_ids: set[str] = set()
+        for item in db_items:
+            if isinstance(item, MediaCollection):
+                for collection_item in item.items:
+                    unique_ids.add(f"{collection_item.name}.{collection_item.version}")
+            else:
+                unique_ids.add(f"{item.name}.{item.version}")
         unique_providers = self.mass.music.get_unique_providers()
         audiobook_method = (
             self.get_provider_author_audiobooks
@@ -394,7 +447,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str | int,
         artist_type: ArtistType,
-    ) -> list[Audiobook]:
+        *,
+        collapse_collections: bool = False,
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
@@ -408,6 +463,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
+            collapse_collections=collapse_collections,
         )
 
     async def get_provider_author_audiobooks(
@@ -873,9 +929,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         Try to find match on (streaming) provider for the provided (database) artist.
 
         This is used to link objects of different providers/qualities together.
+
+        :param strict: How strictly the candidate artist itself must match; the reference
+            track/album only ever has to corroborate it, never match exactly.
         """
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
-        matches: list[ProviderMapping] = []
         # try to get a match with some reference tracks of this artist
         ref_tracks = await self.mass.music.artists.tracks(db_artist.item_id, db_artist.provider)
         if len(ref_tracks) < 10:
@@ -889,22 +947,14 @@ class ArtistsController(MediaControllerBase[Artist]):
             search_str = f"{db_artist.name} - {ref_track.name}"
             search_results = await self.mass.music.tracks.search(search_str, provider.domain)
             for search_result_item in search_results:
-                if not compare_strings(search_result_item.name, ref_track.name, strict=strict):
+                # the reference track must corroborate the candidate, not merely share its title
+                if not compare_track(ref_track, search_result_item, strict=False):
                     continue
                 # get matching artist from track
                 for search_item_artist in search_result_item.artists:
-                    if not compare_strings(search_item_artist.name, db_artist.name, strict=strict):
-                        continue
-                    # 100% track match
-                    # get full artist details so we have all metadata
-                    prov_artist = await self.get_provider_item(
-                        search_item_artist.item_id,
-                        search_item_artist.provider,
-                        fallback=search_item_artist,
-                    )
-                    # 100% match
-                    matches.extend(prov_artist.provider_mappings)
-                    if matches:
+                    if matches := await self._confirm_artist_match(
+                        db_artist, search_item_artist, strict
+                    ):
                         return matches
         # try to get a match with some reference albums of this artist
         ref_albums = await self.mass.music.artists.albums(db_artist.item_id, db_artist.provider)
@@ -923,30 +973,21 @@ class ArtistsController(MediaControllerBase[Artist]):
             search_str = f"{db_artist.name} - {ref_album.name}"
             search_result_albums = await self.mass.music.albums.search(search_str, provider.domain)
             for search_result_album in search_result_albums:
-                if not search_result_album.artists:
+                # only the album's identity matters here: a different edition is still the
+                # same record by the same artist, so the credits below decide the match
+                if not compare_album_name(search_result_album.name, ref_album.name):
                     continue
-                if not compare_strings(search_result_album.name, ref_album.name, strict=strict):
-                    continue
-                # artist must match 100%
-                if not compare_artist(db_artist, search_result_album.artists[0], strict=strict):
-                    continue
-                # 100% match
-                # get full artist details so we have all metadata
-                prov_artist = await self.get_provider_item(
-                    search_result_album.artists[0].item_id,
-                    search_result_album.artists[0].provider,
-                    fallback=search_result_album.artists[0],
-                )
-                matches.extend(prov_artist.provider_mappings)
-                if matches:
-                    return matches
-        if not matches:
-            self.logger.debug(
-                "Could not find match for Artist %s on provider %s",
-                db_artist.name,
-                provider.name,
-            )
-        return matches
+                for search_album_artist in search_result_album.artists:
+                    if matches := await self._confirm_artist_match(
+                        db_artist, search_album_artist, strict
+                    ):
+                        return matches
+        self.logger.debug(
+            "Could not find match for Artist %s on provider %s",
+            db_artist.name,
+            provider.name,
+        )
+        return []
 
     async def match_providers(self, db_artist: Artist) -> None:
         """
@@ -967,7 +1008,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.ARTIST):
+            if MediaType.ARTIST not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
@@ -1006,6 +1047,28 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider_filter '{provider_filter}' does not match the requested "
                 f"provider '{provider_instance_id_or_domain}'"
             )
+
+    async def _confirm_artist_match(
+        self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
+    ) -> list[ProviderMapping]:
+        """
+        Return the provider mappings of a candidate artist that confirms as the given artist.
+
+        :param candidate: The artist as credited on a search result, which may be a simplified
+            object without external ids.
+        """
+        if not compare_artist(db_artist, candidate, strict=strict):
+            return []
+        # only the full artist carries the external ids and artist type that can still reject
+        # the candidate, so a credit the provider cannot resolve confirms nothing; a credit
+        # that resolves to a library item is already owned by another artist
+        with contextlib.suppress(MediaNotFoundError):
+            prov_artist = await self.get_provider_item(candidate.item_id, candidate.provider)
+            if prov_artist.provider != "library" and compare_artist(
+                db_artist, prov_artist, strict=strict
+            ):
+                return list(prov_artist.provider_mappings)
+        return []
 
     async def _add_library_item(
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
@@ -1052,7 +1115,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             update = self.artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
-            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+            metadata = metadata_for_update(cur_item.metadata, update.metadata, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -1085,13 +1148,21 @@ class ArtistsController(MediaControllerBase[Artist]):
             db_id, update.external_ids if overwrite else cur_item.external_ids
         )
         # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
+        provider_mappings = provider_mappings_for_update(
+            cur_item.provider_mappings, update.provider_mappings, overwrite
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:
+        """Validate that two artists have the same role."""
+        await super()._validate_library_item_merge(target, source)
+        if target.artist_type != source.artist_type:
+            msg = (
+                f"Cannot merge artist '{source.name}' into '{target.name}': "
+                "artists must have the same role."
+            )
+            raise InvalidDataError(msg)
 
     async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove artist albums

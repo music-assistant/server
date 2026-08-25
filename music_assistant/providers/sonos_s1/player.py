@@ -14,21 +14,31 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
+from music_assistant_models.enums import (
+    IdentifierType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerState,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    AVAILABILITY_TIMEOUT,
     COMMAND_POLL_DELAY,
     DURATION_SECONDS,
     LINEIN_SOURCE_IDS,
-    LINEIN_SOURCES,
+    LINEIN_SOURCE_MAPPING,
     NEVER_TIME,
     PLAYER_FEATURES,
     PLAYER_SOURCE_MAP,
@@ -37,7 +47,6 @@ from .constants import (
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
     SOURCE_LINEIN,
-    SOURCE_MAPPING,
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
@@ -46,6 +55,7 @@ from .constants import (
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
@@ -66,14 +76,23 @@ class SonosPlayer(Player):
         self,
         provider: SonosPlayerProvider,
         soco: SoCo,
+        fixed_volume: bool,
     ) -> None:
-        """Initialize SonosPlayer instance."""
+        """
+        Initialize SonosPlayer instance.
+
+        :param fixed_volume: Whether the speaker is set to fixed volume output.
+        """
         super().__init__(provider, soco.uid)
         self.soco = soco
         self.household_id: str = soco.household_id
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
+        # a speaker playing out at a fixed level (a Connect or Port wired into an amplifier)
+        # rejects volume commands, so it is left without volume and mute control at all
+        if not fixed_volume:
+            self._attr_supported_features |= {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
         # S1 hardware is fixed to 16-bit at 44.1/48 kHz
         self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         self._attr_name = soco.player_name
@@ -119,6 +138,10 @@ class SonosPlayer(Player):
         await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
         await self.mass.players.register_or_update(self)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all provider-specific configuration entries for the player."""
+        return [CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED]
 
     async def offline(self) -> None:
         """Handle removal of speaker when unavailable."""
@@ -283,7 +306,6 @@ class SonosPlayer(Player):
         else:
             await self.stop()
 
-    @soco_error()
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -301,14 +323,12 @@ class SonosPlayer(Player):
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_remove.soco.unjoin)
-                    player_to_remove.schedule_poll()
+                    await player_to_remove._unjoin()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
                 if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
-                    await asyncio.to_thread(player_to_add.soco.join, self.soco)
-                    player_to_add.schedule_poll()
+                    await player_to_add._join(self.soco)
 
     def schedule_poll(self) -> None:
         """Read the speaker state back shortly after a command was sent to it."""
@@ -324,9 +344,18 @@ class SonosPlayer(Player):
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
 
-        await self._check_availability()
-        if self._attr_available:
+        if not self._attr_available:
+            await self._check_availability()
+            if not self._attr_available:
+                return
+        try:
             await asyncio.to_thread(_poll)
+        except OSError, SoCoException, SonosUpdateError:
+            # a single failed poll does not mean the speaker is gone; the availability
+            # check decides based on how long it has been silent
+            await self._check_availability()
+        else:
+            self._speaker_activity("poll")
 
     @soco_error()
     def poll_media(self) -> None:
@@ -562,6 +591,22 @@ class SonosPlayer(Player):
             any_speaker = cast("SonosPlayer", players[0])
             any_speaker.soco.zone_group_state.clear_cache()
 
+    @soco_error()
+    async def _join(self, coordinator: SoCo) -> None:
+        """
+        Join this speaker to the group of the given coordinator.
+
+        :param coordinator: The SoCo instance of the speaker leading the group.
+        """
+        await asyncio.to_thread(self.soco.join, coordinator)
+        self.schedule_poll()
+
+    @soco_error()
+    async def _unjoin(self) -> None:
+        """Remove this speaker from the group it is currently in."""
+        await asyncio.to_thread(self.soco.unjoin)
+        self.schedule_poll()
+
     def _extract_mac_from_player_id(self) -> str | None:
         """
         Extract MAC address from Sonos player_id.
@@ -592,6 +637,11 @@ class SonosPlayer(Player):
 
     async def _check_availability(self) -> None:
         """Check if the player is still available."""
+        # skip the ping while events or polls recently succeeded, so one slow or dropped
+        # request does not mark a healthy speaker unavailable. An unavailable speaker is
+        # always pinged so it recovers quickly, no matter why it went offline.
+        if self._attr_available and time.monotonic() - self._last_activity < AVAILABILITY_TIMEOUT:
+            return
         try:
             await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
@@ -756,12 +806,18 @@ class SonosPlayer(Player):
         except SonosUpdateError as err:
             self.logger.warning("Fetching track info failed: %s", err)
             return
-        if not track_info["uri"]:
-            return
         uri = track_info["uri"]
+        if not uri:
+            # no current track means nothing is loaded, so no source is active either.
+            # Stopping a line-in source empties the transport, so this is a normal path.
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            self._attr_active_source = None
+            self._attr_current_media = None
+            return
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if (source_id := SOURCE_MAPPING.get(audio_source)) and audio_source in LINEIN_SOURCES:
+        if source_id := LINEIN_SOURCE_MAPPING.get(audio_source):
             self._attr_elapsed_time = None
             self._attr_elapsed_time_last_updated = None
             self._attr_active_source = source_id

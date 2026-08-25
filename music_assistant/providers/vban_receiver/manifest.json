@@ -1,7 +1,7 @@
 {
   "type": "plugin",
   "domain": "vban_receiver",
-  "stage": "beta",
+  "stage": "stable",
   "name": "VBAN Receiver",
   "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender",
   "codeowners": ["@sprocket-9"],

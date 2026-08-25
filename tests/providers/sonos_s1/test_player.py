@@ -4,23 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from soco.core import SoCo
 from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import (
+    AVAILABILITY_TIMEOUT,
     POLL_INTERVAL,
+    SOURCE_LINEIN,
     SUBSCRIPTION_SERVICES,
     TRANSITION_POLL_INTERVAL,
 )
+from music_assistant.providers.sonos_s1.helpers import SonosUpdateError
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 if TYPE_CHECKING:
@@ -46,7 +51,7 @@ def sonos_player() -> SonosPlayer:
     """Create a SonosPlayer with a mocked soco device and provider."""
     provider = MagicMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value=STREAM_URL)
-    return SonosPlayer(provider=provider, soco=_make_soco())
+    return SonosPlayer(provider=provider, soco=_make_soco(), fixed_volume=False)
 
 
 @pytest.fixture
@@ -72,7 +77,7 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     provider = MagicMock()
     provider.mass = mass
     provider.topology_condition = asyncio.Condition()
-    return SonosPlayer(provider=provider, soco=_make_soco(uid, name))
+    return SonosPlayer(provider=provider, soco=_make_soco(uid, name), fixed_volume=False)
 
 
 def _poll_id(player: SonosPlayer) -> str:
@@ -118,6 +123,24 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert call_args.args[0] == STREAM_URL
     assert STREAM_URL in call_args.kwargs["meta"]
     assert "library://track/123" not in call_args.kwargs["meta"]
+
+
+def test_pause_is_advertised_as_a_supported_feature(sonos_player: SonosPlayer) -> None:
+    """Without the feature the player controller converts every pause into a stop."""
+    assert PlayerFeature.PAUSE in sonos_player.supported_features
+
+
+def test_volume_is_advertised_for_a_regular_speaker(sonos_player: SonosPlayer) -> None:
+    """A speaker with its own amplifier is driven over its native volume control."""
+    assert PlayerFeature.VOLUME_SET in sonos_player.supported_features
+    assert PlayerFeature.VOLUME_MUTE in sonos_player.supported_features
+
+
+def test_volume_is_not_advertised_for_a_fixed_volume_speaker() -> None:
+    """A speaker with fixed line-out rejects volume commands, so it must not offer them."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=True)
+    assert PlayerFeature.VOLUME_SET not in player.supported_features
+    assert PlayerFeature.VOLUME_MUTE not in player.supported_features
 
 
 class _RecordingSoco:
@@ -170,6 +193,12 @@ def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
     sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
 
 
+def _set_track_info(sonos_player: SonosPlayer, uri: str, position: str = "") -> None:
+    """Make the mocked speaker report the given track uri, classified as SoCo would."""
+    sonos_player.soco.get_current_track_info.return_value = {"uri": uri, "position": position}
+    sonos_player.soco.music_source_from_uri = SoCo.music_source_from_uri
+
+
 def test_transitional_state_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
     """A transitional transport state keeps the last known state and is watched closely."""
     sonos_player._attr_playback_state = PlaybackState.IDLE
@@ -203,6 +232,50 @@ def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer
     sonos_player._handle_avtransport_event(event)
 
     assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+def test_line_in_is_reported_as_the_active_source(sonos_player: SonosPlayer) -> None:
+    """A speaker playing line-in reports it as its source and offers it in the source list."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source == SOURCE_LINEIN
+    assert [source.id for source in sonos_player._attr_source_list] == [SOURCE_LINEIN]
+
+
+def test_source_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """Stopping line-in empties the transport, which must not leave the source behind."""
+    _set_track_info(sonos_player, "x-rincon-stream:RINCON_000E58AAAAAA01400")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+
+
+def test_media_is_cleared_once_the_speaker_has_nothing_loaded(sonos_player: SonosPlayer) -> None:
+    """A stopped speaker must not keep reporting the track it was playing."""
+    _set_track_info(sonos_player, "http://192.168.1.2:8097/track.flac", position="0:00:42")
+    sonos_player._set_basic_track_info()
+
+    _set_track_info(sonos_player, "")
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_current_media is None
+    assert sonos_player._attr_elapsed_time is None
+    assert sonos_player._attr_elapsed_time_last_updated is None
+
+
+def test_spotify_connect_is_not_reported_as_a_source(sonos_player: SonosPlayer) -> None:
+    """Line-in and TV are the only sources this provider reports."""
+    _set_track_info(sonos_player, "x-sonos-vli:RINCON_000E58AAAAAA01400:2,spotify:abc")
+
+    sonos_player._set_basic_track_info()
+
+    assert sonos_player._attr_active_source is None
+    assert sonos_player._attr_source_list == []
 
 
 async def test_repeated_commands_collapse_to_one_pending_poll(
@@ -247,17 +320,58 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
 
 
-async def test_grouping_failure_is_reported_as_a_player_command_failure(
+async def test_join_failure_names_the_speaker_that_refused(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A speaker that refuses to join surfaces as a typed player command failure."""
+    """A speaker that refuses to join is named in the failure, not the group leader."""
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
     study.soco.join.side_effect = SoCoException("the speaker refused to join")
 
-    with pytest.raises(PlayerCommandFailed, match="Kitchen"):
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
         await kitchen.set_members(player_ids_to_add=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
+
+
+async def test_grouping_leaves_the_speakers_after_a_failure_untouched(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Speakers joined before a failure keep their poll, the ones after it are never reached."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
+    attic = _make_player(timer_mass, "RINCON_000E58DDDDDD01400", "Attic")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {
+        study.player_id: study,
+        hallway.player_id: hallway,
+        attic.player_id: attic,
+    }.get
+    hallway.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Hallway"):
+        await kitchen.set_members(
+            player_ids_to_add=[study.player_id, hallway.player_id, attic.player_id]
+        )
+
+    assert _pending_polls(timer_mass) == [_poll_id(study)]
+    attic.soco.join.assert_not_called()
+
+
+async def test_unjoin_failure_names_the_speaker_that_refused(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to leave a group is named in the failure, not the group leader."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.unjoin.side_effect = SoCoException("the speaker refused to leave")
+
+    with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
+        await kitchen.set_members(player_ids_to_remove=[study.player_id])
+
+    assert "Kitchen" not in str(exc_info.value)
 
 
 async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
@@ -386,6 +500,77 @@ async def test_speaker_answering_a_poll_again_is_resubscribed(
     with patch.object(player, "subscribe", AsyncMock()) as subscribe:
         await player.poll()
 
+    subscribe.assert_called_once()
+    assert player._attr_available is True
+
+
+async def test_failed_poll_keeps_a_recently_active_speaker_available(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A failed poll does not mark a recently active speaker unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping") as ping,
+    ):
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._attr_available is True
+
+
+async def test_speaker_silent_too_long_and_unreachable_is_marked_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that is silent too long and fails a ping is marked unavailable."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player._last_activity = time.monotonic() - AVAILABILITY_TIMEOUT
+
+    with (
+        patch.object(player, "poll_media", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "ping", side_effect=SonosUpdateError("no response")),
+        patch.object(player, "offline", AsyncMock()) as offline,
+    ):
+        await player.poll()
+
+    offline.assert_awaited_once()
+
+
+async def test_successful_poll_counts_as_speaker_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A successful poll counts as activity, so the speaker is not pinged."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    before = time.monotonic()
+
+    with patch.object(player, "ping") as ping:
+        await player.poll()
+
+    ping.assert_not_called()
+    assert player._last_activity >= before
+
+
+async def test_unavailable_speaker_is_pinged_despite_recent_activity(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker taken offline by a failed renewal is pinged so it can recover quickly."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    player._attr_available = False
+    player._last_activity = time.monotonic()
+
+    with (
+        patch.object(player, "ping") as ping,
+        patch.object(player, "subscribe", AsyncMock()) as subscribe,
+    ):
+        await player.poll()
+
+    ping.assert_called_once_with()
     subscribe.assert_called_once()
     assert player._attr_available is True
 
@@ -535,7 +720,7 @@ async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPla
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()
-    player = SonosPlayer(provider=provider, soco=_make_soco())
+    player = SonosPlayer(provider=provider, soco=_make_soco(), fixed_volume=False)
     subscription = MagicMock()
     subscription.unsubscribe = AsyncMock(side_effect=partial(asyncio.sleep, 5))
     player._subscriptions = [subscription]
@@ -562,7 +747,7 @@ async def _subscribe_with_failing_speaker(player: SonosPlayer) -> None:
 
 async def test_failed_subscribe_marks_the_speaker_offline() -> None:
     """A failed subscription must take the speaker offline and release the lock."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
 
     await _subscribe_with_failing_speaker(player)
 
@@ -572,7 +757,7 @@ async def test_failed_subscribe_marks_the_speaker_offline() -> None:
 
 async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
     """A speaker that failed to subscribe must still be able to subscribe later."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     await _subscribe_with_failing_speaker(player)
 
     with patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target:
@@ -584,7 +769,7 @@ async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
 
 async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> None:
     """A speaker that goes offline while subscribing must not keep the subscriptions it created."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     subscribing = asyncio.Event()
     speaker_responds = asyncio.Event()
 
@@ -615,7 +800,7 @@ async def test_speaker_taken_offline_mid_subscribe_keeps_no_subscriptions() -> N
 
 async def test_speaker_going_offline_is_not_resubscribed_halfway() -> None:
     """No new subscriptions may be created while a speaker is still going offline."""
-    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco(), fixed_volume=False)
     unsubscribing = asyncio.Event()
     speaker_responds = asyncio.Event()
 

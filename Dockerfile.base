@@ -179,6 +179,9 @@ RUN set -x \
 
 FROM python:${PYTHON_VERSION}-slim-trixie
 
+# Ensure UTF-8 encoding across system
+ENV LANG=C.UTF-8
+
 # Enable non-free and contrib repositories for codec libraries
 # (trixie uses the deb822 sources format)
 RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
@@ -241,10 +244,13 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
-        # Allows pipewire devices to be detected when running in docker container. (local audio)
-        pipewire-alsa \
+        # PipeWire stack (daemon + libs) required by the pipewire-alsa plugin
+        # unpacked below (host pipewire access in docker, local audio)
+        pipewire \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
+        # PulseAudio daemon for MA's private audio-capture server (spotify connect soloist)
+        pulseaudio \
         libvorbisidec1 \
         libflac14 \
         libavahi-client3 \
@@ -252,6 +258,23 @@ RUN set -x \
         # AirPlay receiver dependencies (shairport-sync)
         libconfig11 \
         libpopt0 \
+    # pipewire-alsa (ALSA apps -> host pipewire, needed for local audio in docker)
+    # declares Conflicts: pulseaudio because both want to own the ALSA default
+    # device, but there is no file overlap, so unpack it outside dpkg and keep
+    # the ALSA default routed to pipewire by removing pulseaudio's
+    # default-routing and autospawn snippets.
+    # NOTE: the unpacked package is not registered in dpkg, so package/CVE
+    # scanners will not list pipewire-alsa.
+    # This whole workaround (and the pipewire package above) exists only for
+    # the local audio provider and can be dropped once that moves to its own
+    # dedicated container, leaving a plain apt install of pulseaudio.
+    && (cd /tmp && apt-get download pipewire-alsa) \
+    && dpkg-deb -x /tmp/pipewire-alsa_*.deb / \
+    && rm /tmp/pipewire-alsa_*.deb \
+    && rm -f \
+        /etc/alsa/conf.d/99-pulse.conf \
+        /usr/share/alsa/alsa.conf.d/pulse.conf \
+        /etc/pulse/client.conf.d/01-enable-autospawn.conf \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f \
@@ -285,14 +308,14 @@ RUN set -x \
 # The release binaries statically link libvorbis/libogg/libFLAC, so the only dynamic
 # dependency is libasound2 (already installed above for Snapcast).
 # The pinned SHA256 per arch is verified before extraction; bump both when changing the version.
-ARG GO_LIBRESPOT_VERSION=0.7.4
+ARG GO_LIBRESPOT_VERSION=0.9.0
 RUN set -x \
     && if [ "$TARGETARCH" = "arm64" ]; then \
         GO_LIBRESPOT_ARCH="arm64"; \
-        GO_LIBRESPOT_SHA256="62b6c7ebee6abb1f59fa3cf20a9374dd5e8c5c1ca5dab329dd312f66b59faa8d"; \
+        GO_LIBRESPOT_SHA256="79b80bb3723b7973165d2d94c428676b8582780aeca7c54694589206ab741e91"; \
     else \
         GO_LIBRESPOT_ARCH="x86_64"; \
-        GO_LIBRESPOT_SHA256="ee521eed02100ee4aa9919a147304aed5afc908c5a0c99f515c3da0aed89acf7"; \
+        GO_LIBRESPOT_SHA256="87b27ce57cc7871bad6ffac8acba7e2a89c72a7e6c7990b88bec404f449f381e"; \
     fi \
     && wget -q "https://github.com/devgianlu/go-librespot/releases/download/v${GO_LIBRESPOT_VERSION}/go-librespot_linux_${GO_LIBRESPOT_ARCH}.tar.gz" -O /tmp/go-librespot.tar.gz \
     && echo "${GO_LIBRESPOT_SHA256}  /tmp/go-librespot.tar.gz" | sha256sum -c - \

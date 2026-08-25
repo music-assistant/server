@@ -12,7 +12,8 @@ import hashlib
 import html
 import inspect
 import os
-import urllib.parse
+import secrets
+import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
@@ -31,7 +32,11 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -97,6 +102,13 @@ CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+# A preview URL only has to survive the hop from the API response to the audio element
+# that plays it. It stays usable for the whole window rather than being single-use,
+# because players routinely re-request a media URL they have already opened.
+PREVIEW_TOKEN_TTL = 60
+# Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
+# every signed-in client; the cap keeps a chatty or hostile one from growing the store.
+MAX_PREVIEW_TOKENS = 500
 
 
 def _get_publish_addresses(
@@ -180,6 +192,9 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # Preview tokens keyed on the token in the URL, value is
+        # (provider instance id or domain, item id, monotonic expiry).
+        self._preview_tokens: dict[str, tuple[str, str, float]] = {}
 
     @property
     def base_url(self) -> str:
@@ -427,24 +442,55 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
-    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+    def update_active_user_filters(
+        self,
+        user_id: str,
+        player_filter: list[str] | None = None,
+        provider_filter: list[str] | None = None,
+    ) -> None:
         """
-        Set the sendspin player_id on websocket clients for a specific user.
+        Apply updated access filters to the live sessions of a user.
+
+        Call this after the filters of a user were changed in the database, so the
+        change takes effect right away instead of only on the next connection.
+
+        :param user_id: ID of the user whose sessions must be updated.
+        :param player_filter: The new player filter, or None to leave it untouched.
+        :param provider_filter: The new provider filter, or None to leave it untouched.
+        """
+        for client in list(self.clients):
+            user = client._authenticated_user
+            if user is None or user.user_id != user_id:
+                continue
+            # updated in place: the connection's context holds this very object
+            if player_filter is not None:
+                user.player_filter[:] = player_filter
+            if provider_filter is not None:
+                user.provider_filter[:] = provider_filter
+            self.logger.debug("Updated the access filters of a live session of %s", user.username)
+
+    def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
+        """
+        Set the sendspin player_id on the websocket clients holding the given token.
 
         This is called by the sendspin proxy when a client connects, allowing
-        the player controller to auto-whitelist the player for that user's session.
+        the player controller to auto-whitelist the player for that session.
+        Party guests all share one guest account, so the token (one per guest
+        device) decides which sessions (all tabs of that browser) a web player
+        belongs to, not the user.
 
-        :param user_id: The user ID to set the sendspin player for.
+        :param token: The access token the sendspin proxy authenticated with.
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._authenticated_user and client._authenticated_user.user_id == user_id:
-                client._sendspin_player_id = player_id
-                self.logger.debug(
-                    "Set sendspin player %s for websocket client of user %s",
-                    player_id,
-                    client._authenticated_user.username,
-                )
+            if client._current_token != token:
+                continue
+            client._sendspin_player_id = player_id
+            self.logger.debug(
+                "Set sendspin player %s for websocket client of user %s",
+                player_id,
+                client._authenticated_user.username if client._authenticated_user else "unknown",
+            )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """
@@ -472,10 +518,41 @@ class WebserverController(CoreController):
                 )
                 return
 
+    def create_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
+        """
+        Return a short-lived path on this server that serves a preview clip of the given item.
+
+        Relative on purpose: a client reaches this server through whatever address its own
+        setup uses - Home Assistant ingress, a reverse proxy, or the remote connection - and
+        the advertised base URL is not necessarily any of them.
+
+        :param provider_instance_id_or_domain: Music provider that holds the item.
+        :param item_id: Id of the item on that provider.
+        """
+        now = time.monotonic()
+        # minting is the only regular traffic on this store, so it is where expired
+        # tokens are swept as well
+        for expired in [key for key, entry in self._preview_tokens.items() if entry[2] <= now]:
+            del self._preview_tokens[expired]
+        if len(self._preview_tokens) >= MAX_PREVIEW_TOKENS:
+            # every token is still within its lifetime, so drop the oldest to make room
+            # rather than letting a caller grow this without bound
+            del self._preview_tokens[
+                min(self._preview_tokens, key=lambda k: self._preview_tokens[k][2])
+            ]
+        token = secrets.token_urlsafe(16)
+        self._preview_tokens[token] = (
+            provider_instance_id_or_domain,
+            item_id,
+            now + PREVIEW_TOKEN_TTL,
+        )
+        return f"/preview?token={token}"
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
-        provider_instance_id_or_domain = request.query["provider"]
-        item_id = urllib.parse.unquote(request.query["item_id"])
+        if not (preview := self._resolve_preview_token(request.query.get("token", ""))):
+            raise web.HTTPNotFound(reason="Unknown or expired preview token")
+        provider_instance_id_or_domain, item_id = preview
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
         preview_stream = self.mass.streams.get_preview_stream(
@@ -688,7 +765,7 @@ class WebserverController(CoreController):
             return self._localized_json_response(result, locale)
         except InsufficientPermissions as e:
             return web.Response(status=403, text=str(e))
-        except InvalidDataError as e:
+        except (InvalidDataError, UserNotFoundError) as e:
             return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
@@ -711,8 +788,8 @@ class WebserverController(CoreController):
             return None
         try:
             user = await get_authenticated_user(request)
-        except Exception as e:
-            self.logger.exception("Authentication error: %s", e)
+        except Exception:
+            self.logger.exception("Authentication error")
             return web.Response(
                 status=401,
                 text="Authentication failed",
@@ -1217,6 +1294,16 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+    def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
+        """Return the provider and item a preview token grants, or None when it is not valid."""
+        if not token or not (entry := self._preview_tokens.get(token)):
+            return None
+        provider_instance_id_or_domain, item_id, expires = entry
+        if time.monotonic() >= expires:
+            del self._preview_tokens[token]
+            return None
+        return provider_instance_id_or_domain, item_id
 
 
 def _serialize_script_value(value: str) -> str:
