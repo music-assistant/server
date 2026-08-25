@@ -8,11 +8,13 @@ this controller turns them back into MA queue commands.
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from music_assistant.providers.chromecast.constants import DASHBOARD_NAMESPACE
+from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.receiver_commands import MassCastCommandController
 
 
@@ -53,3 +55,54 @@ def test_unhandled_messages_are_ignored(data: dict[str, object]) -> None:
 
     assert controller.receive_message(MagicMock(), data) is False
     on_command.assert_not_called()
+
+
+### Dispatch into the queue controller
+
+
+def _fake_cast(
+    *,
+    player_id: str = "cast_id",
+    protocol_parent_id: str | None = None,
+    active_cast_group: str | None = None,
+) -> MagicMock:
+    """Build a MagicMock Cast that records the coroutine passed to the event loop."""
+    fake = MagicMock()
+    fake.player_id = player_id
+    fake.protocol_parent_id = protocol_parent_id
+    fake.active_cast_group = active_cast_group
+    # call_soon_threadsafe runs the callback inline so the call is observable
+    fake.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
+    return fake
+
+
+def _dispatch(fake: MagicMock, command: str) -> None:
+    ChromecastPlayer._handle_receiver_command(cast("ChromecastPlayer", fake), command)
+
+
+def test_next_command_targets_the_queue_owner() -> None:
+    """A Cast wrapped by a universal player forwards next to the parent's queue."""
+    fake = _fake_cast(protocol_parent_id="up_universal")
+
+    _dispatch(fake, "next")
+
+    fake.mass.create_task.assert_called_once()
+    fake.mass.player_queues.next.assert_called_once_with("up_universal")
+
+
+def test_previous_command_targets_the_queue_owner() -> None:
+    """Previous is routed to the same resolved queue id."""
+    fake = _fake_cast()
+
+    _dispatch(fake, "previous")
+
+    fake.mass.player_queues.previous.assert_called_once_with("cast_id")
+
+
+def test_command_prefers_the_active_cast_group() -> None:
+    """A Cast group child mirrors the group's queue, taking precedence."""
+    fake = _fake_cast(protocol_parent_id="up_universal", active_cast_group="cast_group")
+
+    _dispatch(fake, "next")
+
+    fake.mass.player_queues.next.assert_called_once_with("cast_group")
