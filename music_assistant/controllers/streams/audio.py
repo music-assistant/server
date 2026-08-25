@@ -133,6 +133,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
@@ -3050,12 +3051,16 @@ class StreamsAudio:
         if next_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: next item is not a track")
             return False
+        # an item picks up its library album only once it is loaded, so a queue fed straight
+        # from a provider can hold the provider album on the side that is not loaded yet.
+        # Matching on the provider mappings recognises both shapes as the same album; the
+        # uri-based equality of the album objects does not.
         if (
             isinstance(queue_item.media_item, Track)
             and isinstance(next_item.media_item, Track)
             and queue_item.media_item.album
             and next_item.media_item.album
-            and queue_item.media_item.album == next_item.media_item.album
+            and compare_item_ids(queue_item.media_item.album, next_item.media_item.album)
             and not self.mass.config.get_raw_core_config_value(
                 "streams", CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
             )
