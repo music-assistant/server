@@ -44,6 +44,7 @@ def _controller(session: AudioSourceSession | None) -> tuple[Any, MagicMock, Mag
     ctrl = StreamsController.__new__(StreamsController)
     ctrl.mass = MagicMock()
     ctrl.logger = MagicMock()
+    ctrl._active_output_streams = 0
     # a truthy MagicMock here would send _log_request down the verbose path
     ctrl.logger.isEnabledFor = MagicMock(return_value=False)
     provider = MagicMock(spec=PluginProvider)
@@ -164,11 +165,15 @@ def test_a_direct_pcm_request_from_a_superseded_session_is_refused() -> None:
         )
 
 
-def test_a_direct_pcm_request_carrying_the_live_token_is_served() -> None:
+async def test_a_direct_pcm_request_carrying_the_live_token_is_served() -> None:
     """A consumer naming the session that is playing gets its stream."""
     session = _session()
     ctrl, _provider, _player = _controller(session)
-    ctrl._get_audio_source_session_stream = MagicMock(return_value="pcm-stream")
+
+    async def _session_stream() -> AsyncGenerator[bytes]:
+        yield b"pcm-stream"
+
+    ctrl._get_audio_source_session_stream = MagicMock(return_value=_session_stream())
 
     result = ctrl.get_stream(
         PlayerMedia(
@@ -181,7 +186,7 @@ def test_a_direct_pcm_request_carrying_the_live_token_is_served() -> None:
         player_id=CONSUMER_ID,
     )
 
-    assert result == "pcm-stream"
+    assert [chunk async for chunk in result] == [b"pcm-stream"]
     ctrl._get_audio_source_session_stream.assert_called_once_with(
         session, AudioFormat(), CONSUMER_ID
     )
