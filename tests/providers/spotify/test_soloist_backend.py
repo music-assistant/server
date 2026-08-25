@@ -554,6 +554,24 @@ async def test_a_lost_pairing_is_caught_the_moment_the_daemon_reports_it(
     unload_with_error.assert_called_once()
 
 
+async def test_a_lost_pairing_fails_the_item_without_waiting_for_the_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The item fails on the lost pairing, not on the endpoint that is no longer coming."""
+    session = _make_session(tmp_path)
+    session._logged_in = None
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", MagicMock())
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    # the endpoint never appears, so the wait for it must not swallow the failure:
+    # sitting it out would outlast the queue's own patience for the audio
+    with pytest.raises(LoginFailed) as err:
+        async with asyncio.timeout(5):
+            await session._play(TRACK_A, 0, asyncio.Event())
+    assert err.value.translation_key == "soloist_pairing_required"
+
+
 async def test_a_daemon_still_restoring_its_session_is_left_alone(tmp_path: Path) -> None:
     """The engine advertises for pairing while restoring too; the stored session decides."""
     session = _make_session(tmp_path)

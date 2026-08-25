@@ -1198,10 +1198,15 @@ class _SoloistSession:
         # then restores its session and logs in. A command sent before that last
         # step is dropped and its acknowledgement never arrives, so wait for the
         # login the engine announces rather than for the socket alone.
+        # A failure reported while the endpoint is still awaited - the engine
+        # having no session to log in with - is watched for throughout: waiting
+        # the endpoint out would outlast the queue's own patience for the audio,
+        # and the item would fail with a timeout instead of its real cause.
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT_S):
-                await client_ready.wait()
-                while not self._error and not (client.connected and self._logged_in):
+                while not self._error and not (
+                    client_ready.is_set() and client.connected and self._logged_in
+                ):
                     await asyncio.sleep(_CONNECT_POLL_S)
         except TimeoutError:
             self._raise_startup_error("did not connect and log in", spotify_uri)

@@ -35,7 +35,6 @@ from music_assistant.providers.spotify.constants import (
 from music_assistant.providers.spotify.helpers import (
     pair_soloist_session,
     soloist_session_account,
-    soloist_session_present,
 )
 from music_assistant.providers.spotify_connect.soloist import UnsupportedPlatformError
 
@@ -444,7 +443,23 @@ async def test_pairing_success_stores_a_session(
     data_dir = tmp_path / "pairdir"
     _install_fake_soloist(monkeypatch, returncode=0, on_wait=lambda: _store_session(data_dir))
     await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
-    assert soloist_session_present(data_dir)
+    assert (data_dir / "settings" / "Users" / "spotify-user-user").is_dir()
+
+
+async def test_a_pairing_that_stored_no_account_is_not_mistaken_for_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run leaving only what every spawn leaves behind never paired: it must not be adopted."""
+    data_dir = tmp_path / "pairdir"
+
+    def _leave_spawn_debris() -> None:
+        (data_dir / "settings").mkdir(parents=True)
+        (data_dir / "settings" / "prefs").write_text("audio.normalize_v2=false\n", encoding="utf-8")
+        (data_dir / "soloist.pid").write_text("42", encoding="utf-8")
+
+    _install_fake_soloist(monkeypatch, returncode=0, on_wait=_leave_spawn_debris)
+    with pytest.raises(LoginFailed, match="did not store"):
+        await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
 
 
 def _store_session(data_dir: Path, account: str = "spotify-user") -> None:
