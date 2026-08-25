@@ -96,9 +96,17 @@ def _queue_item(item_id: str, album: Album | ItemMapping | None) -> QueueItem:
 
 
 def _controller(
-    items: list[QueueItem], enqueued: list[Album | Playlist | Track] | None = None
+    items: list[QueueItem],
+    enqueued: list[Album | Playlist | Track] | None = None,
+    library_album: Album | None = None,
 ) -> PlayerQueuesController:
-    """Build a bare controller whose queue holds the given items and enqueued parents."""
+    """
+    Build a bare controller whose queue holds the given items and enqueued parents.
+
+    :param items: The items the queue holds.
+    :param enqueued: The parent media items the user enqueued on it.
+    :param library_album: The library album the items' own album resolves to while loading.
+    """
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
     controller._queue_data = {
@@ -116,7 +124,9 @@ def _controller(
     }
     tracks_by_uri = {item.uri: item.media_item for item in items}
     mass = MagicMock()
-    mass.music.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.music.get_library_item_by_prov_id = AsyncMock(
+        side_effect=lambda media_type, *_: library_album if media_type == MediaType.ALBUM else None
+    )
     mass.music.get_item_by_uri = AsyncMock(side_effect=lambda uri: tracks_by_uri[uri])
     mass.streams.audio.get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     controller.mass = mass
@@ -261,6 +271,41 @@ async def test_enqueued_album_survives_a_restart() -> None:
 
     controller._queue_data[QUEUE_ID] = restored
     await controller._load_item(restored.items[0])
+
+    get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
+    assert get_stream_details.call_args.kwargs["prefer_album_loudness"]
+
+
+async def test_enqueued_provider_album_matches_an_items_slim_library_album() -> None:
+    """
+    A queue item may hold only a slim mapping of its album until it is loaded.
+
+    That mapping carries no provider ids of its own, so it can only be matched against the
+    album the user enqueued once loading resolved it to the full library album.
+    """
+    library_album_mapping = ItemMapping(
+        media_type=MediaType.ALBUM,
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+    )
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={
+            ProviderMapping(
+                item_id="album-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    items = [_queue_item("track-1", library_album_mapping)]
+    # loading resolves that slim mapping to the full library album, which does carry them
+    controller = _controller(items, enqueued=[provider_album], library_album=LIBRARY_ALBUM)
+
+    await controller._load_item(items[0])
 
     get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
     assert get_stream_details.call_args.kwargs["prefer_album_loudness"]

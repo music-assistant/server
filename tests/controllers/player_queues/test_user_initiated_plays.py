@@ -264,7 +264,11 @@ async def test_configured_add_default_keeps_the_previously_enqueued_items() -> N
         provider="library",
         name="T1",
         provider_mappings={
-            ProviderMapping(item_id="t1", provider_domain="library", provider_instance="library")
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
         },
     )
     ctrl = _play_media_controller(track, QueueOption.ADD.value)
@@ -285,7 +289,11 @@ async def test_configured_replace_default_clears_the_previously_enqueued_items()
         provider="library",
         name="T1",
         provider_mappings={
-            ProviderMapping(item_id="t1", provider_domain="library", provider_instance="library")
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
         },
     )
     ctrl = _play_media_controller(track, QueueOption.REPLACE.value)
