@@ -86,6 +86,7 @@ class _AudioSourceProcessingSession:
 
     session_id: str
     context_ready: bool = False
+    pcm_format: AudioFormat | None = None
     crossfade_mode: CrossfadeMode = CrossfadeMode.UNKNOWN
     volume_normalization_mode: VolumeNormalizationMode = VolumeNormalizationMode.UNKNOWN
     outputs: dict[str | None, dict[str, _AudioOutputEntry]] = field(default_factory=dict)
@@ -205,6 +206,7 @@ class AudioProcessingManager:
         player_id: str,
         session_id: str,
         *,
+        pcm_format: AudioFormat,
         crossfade_enabled: bool | None,
         volume_normalization_enabled: bool | None,
     ) -> None:
@@ -213,6 +215,7 @@ class AudioProcessingManager:
 
         :param player_id: Player that owns the source selection.
         :param session_id: Source playback session that owns the update.
+        :param pcm_format: PCM format the source's audio is decoded to.
         :param crossfade_enabled: Whether the source applies crossfade, or None if unknown.
         :param volume_normalization_enabled: Whether the source normalizes, or None if unknown.
         """
@@ -220,6 +223,7 @@ class AudioProcessingManager:
         if session is None:
             return
         session.context_ready = True
+        session.pcm_format = deepcopy(pcm_format)
         if crossfade_enabled is None:
             session.crossfade_mode = CrossfadeMode.UNKNOWN
         elif crossfade_enabled:
@@ -251,9 +255,10 @@ class AudioProcessingManager:
         :param output_plan: Effective output processing and private intermediate formats.
         :param shared_player_ids: Additional players receiving this identical output path.
             An empty iterable marks a path that can gain shared destinations later.
-        :param queue_id: Queue identifier that owns the output.
-        :param session_id: Queue session identifier that owns the output.
-        :param queue_item_id: Queue item for single-item output, or None for flow output.
+        :param queue_id: Queue that owns the output, or the player holding a live source.
+        :param session_id: Queue session or source playback session that owns the output.
+        :param queue_item_id: Queue item for single-item output, or None for flow output
+            and for a live source.
         :return: Whether the effective output changed.
         """
         source_session = (
@@ -529,6 +534,7 @@ class AudioProcessingManager:
             outputs=self._group_outputs(
                 streamdetails,
                 self._get_outputs(processing, None),
+                item=_source_processing_item(processing),
             ),
         )
         if source_session.active_source_audio == details:
@@ -582,24 +588,14 @@ class AudioProcessingManager:
         self,
         streamdetails: StreamDetails,
         player_outputs: dict[str, _AudioOutputEntry],
-        *,
-        item: _AudioProcessingItem | None = None,
+        item: _AudioProcessingItem,
     ) -> list[AudioOutputDetails]:
         """Group players with identical effective output processing."""
         grouped: list[AudioOutputDetails] = []
         for player_id, entry in sorted(player_outputs.items()):
             output = deepcopy(entry.details)
             output.player_ids = [player_id]
-            output.fidelity = (
-                _get_output_fidelity(streamdetails, item, entry)
-                if item is not None
-                else AudioFidelity(
-                    quality=_get_effective_quality(
-                        streamdetails.audio_format,
-                        output.output_format,
-                    )
-                )
-            )
+            output.fidelity = _get_output_fidelity(streamdetails, item, entry)
             for existing in grouped:
                 if _output_details_equal_ignoring_players(existing, output):
                     existing.player_ids.append(player_id)
@@ -733,6 +729,35 @@ def get_normalization_details(
         target_lufs=streamdetails.target_loudness,
         measured_lufs=measured_lufs,
         applied_gain_db=applied_gain_db,
+    )
+
+
+def _source_processing_item(
+    processing: _AudioSourceProcessingSession,
+) -> _AudioProcessingItem:
+    """
+    Describe a live source's audio path in the shared processing shape.
+
+    :param processing: Runtime processing state of the live source selection.
+    """
+    # Music Assistant mixes nothing into a live source: it neither crossfades,
+    # normalizes, changes speed nor overlays one. Only a step the source reported
+    # applying is carried over, and one it did not report counts as none: either
+    # way it reaches us already mixed and leaves our own path untouched.
+    return _AudioProcessingItem(
+        queue_processing=AudioQueueProcessing(
+            pcm_format=processing.pcm_format,
+            normalization=(
+                AudioNormalizationDetails(mode=VolumeNormalizationMode.SOURCE)
+                if processing.volume_normalization_mode == VolumeNormalizationMode.SOURCE
+                else None
+            ),
+            crossfade_mode=(
+                CrossfadeMode.SOURCE
+                if processing.crossfade_mode == CrossfadeMode.SOURCE
+                else CrossfadeMode.DISABLED
+            ),
+        ),
     )
 
 

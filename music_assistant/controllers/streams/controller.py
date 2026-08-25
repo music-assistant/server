@@ -1826,7 +1826,7 @@ class StreamsController(CoreController):
             queue_id=session.player_id,
             session_id=session.playback_session_id,
         ).filter_params
-        self._update_audio_source_processing_context(session, provider)
+        self._update_audio_source_processing_context(session, provider, pcm_format)
         if (
             output_format.content_type == ContentType.WAV
             and not filter_params
@@ -1901,7 +1901,7 @@ class StreamsController(CoreController):
                     session.source_id, MediaType.AUDIO_SOURCE
                 )
                 session.attach_streamdetails(streamdetails)
-            self._update_audio_source_processing_context(session, prov)
+            self._update_audio_source_processing_context(session, prov, pcm_format)
             serving = True
             async for chunk in self.audio.get_audio_source_stream(
                 streamdetails=streamdetails,
@@ -2076,18 +2076,21 @@ class StreamsController(CoreController):
         self,
         session: AudioSourceSession,
         provider: PluginProvider,
+        pcm_format: AudioFormat,
     ) -> None:
         """
         Publish source-owned processing for a live AudioSource.
 
         :param session: Active source session to publish.
         :param provider: Plugin delivering the live source.
+        :param pcm_format: PCM format the source's audio is decoded to.
         """
         if session.streamdetails is None:
             return
         self.audio_processing.update_source_context(
             session.player_id,
             session.playback_session_id,
+            pcm_format=pcm_format,
             crossfade_enabled=provider.delivers_crossfaded_audio(session.streamdetails),
             volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
