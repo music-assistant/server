@@ -47,6 +47,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.audio import resolve_output_player_ids
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 
@@ -747,11 +748,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         album = getattr(media_item, "album", None)
         if album is None:
             return None
+        # the album the user pressed play on keeps the shape of the listing it was picked
+        # from, while the queue's tracks carry the library album. Matching on the provider
+        # mappings recognises both shapes as the same album.
         enqueued = next(
             (
                 item
                 for item in queue_data.enqueued_media_items
-                if isinstance(item, Album) and item == album
+                if isinstance(item, Album) and compare_item_ids(item, album)
             ),
             None,
         )
@@ -774,7 +778,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> bool:
         """Return whether a played item was explicitly chosen by the user."""
-        return media_item in queue_data.enqueued_media_items
+        # a played item is the library one where the enqueued item may still be the provider
+        # one it was picked from. The media type is compared alongside it because the library
+        # numbers each type from one, so ids collide freely across types.
+        return any(
+            item.media_type == media_item.media_type and compare_item_ids(item, media_item)
+            for item in queue_data.enqueued_media_items
+        )
 
     async def _mark_album_played(
         self, album: Album, track: MediaItemType, queue_data: PlayerQueueData

@@ -195,3 +195,59 @@ def test_enqueued_album_decision() -> None:
     assert tracker._enqueued_album_for_track(data, items[1], t2) is None
     # a track whose album was never enqueued -> not credited
     assert tracker._enqueued_album_for_track(data, items[2], t3) is None
+
+
+def test_enqueued_provider_album_credits_its_library_tracks() -> None:
+    """An album picked from a provider listing is credited, though its tracks are library ones."""
+    mapping = ProviderMapping(
+        item_id="album-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    # the album object a provider listing hands to play_media
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    # the album its tracks carry, because the album is also in the library
+    library_album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    other_album = Album(
+        item_id="8",
+        provider="library",
+        name="Sketches of Spain",
+        provider_mappings={
+            ProviderMapping(
+                item_id="album-prov-2",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+        album_type=AlbumType.ALBUM,
+    )
+    t1 = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    t2 = Track(item_id="t2", provider="library", name="T2", provider_mappings=set())
+    t3 = Track(item_id="t3", provider="library", name="T3", provider_mappings=set())
+    items = [QueueItem.from_media_item("q1", track) for track in (t1, t2, t3)]
+    # loading an item for playback puts the full library album on it
+    t1.album = library_album
+    t2.album = library_album
+    t3.album = other_album
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    queue = cast("PlayerQueue", Mock(queue_id="q1"))
+    data = PlayerQueueData(queue=queue, items=items, enqueued_media_items=[provider_album])
+    tracker._queue_data = {"q1": data}
+
+    # the enqueued album is credited on the first track of its run
+    assert tracker._enqueued_album_for_track(data, items[0], t1) is provider_album
+    # and only once for that run
+    assert tracker._enqueued_album_for_track(data, items[1], t2) is None
+    # a track from an album the user never enqueued is not credited
+    assert tracker._enqueued_album_for_track(data, items[2], t3) is None

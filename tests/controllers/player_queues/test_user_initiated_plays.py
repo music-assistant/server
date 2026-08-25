@@ -190,3 +190,39 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     enqueued = ctrl._queue_data["q1"].enqueued_media_items
     assert enqueued == [track]
     assert ctrl._is_user_initiated_play(ctrl._queue_data["q1"], track) is True
+
+
+def test_track_picked_from_a_provider_listing_is_user_initiated() -> None:
+    """A track picked from a provider listing counts as explicit once it resolves to the library."""
+    mapping = ProviderMapping(
+        item_id="track-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    # the track object a provider listing hands to play_media
+    provider_track = Track(
+        item_id="track-prov-1",
+        provider="spotify--abc",
+        name="T",
+        provider_mappings={mapping},
+    )
+    # the same track as it is reported once loaded for playback
+    library_track = Track(item_id="12", provider="library", name="T", provider_mappings={mapping})
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[provider_track]))
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    assert tracker._is_user_initiated_play(data, library_track) is True
+
+
+def test_library_ids_are_not_matched_across_media_types() -> None:
+    """The library numbers each media type from one, so an album id never matches a track id."""
+    album = Album(
+        item_id="7",
+        provider="library",
+        name="A",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(item_id="7", provider="library", name="T", provider_mappings=set())
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[album]))
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    assert tracker._is_user_initiated_play(data, track) is False
