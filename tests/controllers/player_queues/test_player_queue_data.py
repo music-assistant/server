@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from music_assistant_models.enums import RepeatMode
-from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
+from music_assistant_models.enums import AlbumType, RepeatMode
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -21,6 +27,19 @@ def _track(item_id: str) -> Track:
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
+    )
+
+
+def _album(item_id: str) -> Album:
+    """Build a minimal library Album."""
+    return Album(
+        item_id=item_id,
+        provider="library",
+        name=f"Album {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+        album_type=AlbumType.ALBUM,
     )
 
 
@@ -68,6 +87,7 @@ def _data_with_dynamic_source() -> PlayerQueueData:
         transitioning=True,
         play_action_refcount=3,
         last_counted_play="t1",
+        credited_albums={_album("a1")},
         flow_buffer_completed="sess-1",
     )
 
@@ -95,6 +115,7 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
     assert restored.transitioning is False
     assert restored.play_action_refcount == 0
     assert restored.last_counted_play is None
+    assert restored.credited_albums == set()
     assert restored.flow_buffer_completed is None
 
 

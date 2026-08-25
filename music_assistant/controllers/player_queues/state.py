@@ -16,7 +16,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.media_items import ItemMapping, MediaItemType, media_from_dict
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    MediaItemType,
+    media_from_dict,
+)
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
@@ -56,6 +61,10 @@ class PlayerQueueData:
     transitioning: bool = False
     play_action_refcount: int = 0
     last_counted_play: str | None = None
+    # the enqueued albums already credited as played on this queue; an album is credited once
+    # per time it is enqueued, so re-enqueueing it (or a new play that clears the enqueued
+    # list) arms it again
+    credited_albums: set[Album] = field(default_factory=set)
     # session_id whose flow stream was fully generated
     flow_buffer_completed: str | None = None
     # session_id whose flow stream ended because the queue ran out of items, as opposed

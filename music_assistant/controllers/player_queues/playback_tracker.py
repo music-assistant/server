@@ -685,9 +685,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 )
             )
             if fully_played and not is_playing:
-                if credit_album := self._enqueued_album_for_track(
-                    queue_data, item_to_report, media_item
-                ):
+                if credit_album := self._enqueued_album_for_track(queue_data, media_item):
                     self.mass.create_task(
                         self._mark_album_played(credit_album, media_item, queue_data)
                     )
@@ -736,14 +734,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         )
 
     def _enqueued_album_for_track(
-        self, queue_data: PlayerQueueData, item_to_report: QueueItem, media_item: MediaItemType
+        self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> Album | None:
         """
         Return the album to credit for this played track, or None.
 
-        Only an album the user explicitly enqueued is eligible, and only on the first
-        track of a contiguous run of its tracks (the previous queue item must belong to
-        a different album), so a single album play is credited once.
+        Only an album the user explicitly enqueued is eligible, and only the first of its
+        tracks to complete since it was enqueued, so a single album play is credited once
+        however its tracks ended up ordered in the queue.
         """
         album = getattr(media_item, "album", None)
         if album is None:
@@ -759,19 +757,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             ),
             None,
         )
-        if enqueued is None:
+        if enqueued is None or enqueued in queue_data.credited_albums:
             return None
-        queue_id = queue_data.queue.queue_id
-        index = self.index_by_id(queue_id, item_to_report.queue_item_id)
-        if index:
-            prev_item = self.get_item(queue_id, index - 1)
-            prev_album = (
-                getattr(prev_item.media_item, "album", None)
-                if prev_item and prev_item.media_item
-                else None
-            )
-            if prev_album == album:
-                return None
+        queue_data.credited_albums.add(enqueued)
         # credit the album the track carries, which is the library one whenever the album is
         # in the library, so the play lands on the row an explicit library play writes instead
         # of a second provider-scoped one.
