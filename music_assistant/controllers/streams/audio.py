@@ -3843,12 +3843,11 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
-            # ffmpeg wedged on an input that will never deliver again pays close()'s
-            # full drain (5s stdout + 5s stderr + 2s communicate) under a held player
-            # lock before the SIGKILL that was always coming. Once the process has
-            # exited close() is free, and kill() would return before cleaning up the
-            # stdin feeder behind it.
-            if finished or ffmpeg_proc.returncode is not None:
+            # An ffmpeg wedged on an input that will never deliver again pays close()'s
+            # full drain - some 12 seconds in practice - under a held player lock,
+            # before the SIGKILL that was always coming. Once the process has exited
+            # close() is free, and it is what cleans up the stdin feeder behind it.
+            if ffmpeg_proc.returncode is not None:
                 await ffmpeg_proc.close()
             else:
                 await ffmpeg_proc.kill()

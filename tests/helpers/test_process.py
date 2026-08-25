@@ -25,6 +25,12 @@ _WEDGED_CHILD = (
     "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
 )
 
+# Writes more than a pipe buffer holds and never exits, so its output is still
+# undelivered when the process is killed.
+_NOISY_CHILD = (
+    "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
+)
+
 
 @pytest.fixture(name="piped_process")
 async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
@@ -239,6 +245,25 @@ async def test_kill_retrieves_the_exception_of_a_finished_stdin_feeder(
     # set the task is the one that triggers "Task exception was never retrieved"
     assert feeder._log_traceback is False
     assert "feeder blew up" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_kill_returns_promptly_with_output_left_in_the_pipes() -> None:
+    """
+    Killing a process whose pipes still hold output returns without delay.
+
+    The reap only completes once every pipe has disconnected, and nothing reads
+    them after a kill, so the pipes have to be drained for it to finish.
+    """
+    proc = AsyncProcess([sys.executable, "-c", _NOISY_CHILD], stdout=True, stderr=True)
+    await proc.start()
+    await asyncio.sleep(0.5)
+
+    started = time.monotonic()
+    await proc.kill()
+
+    assert proc.returncode is not None
+    assert time.monotonic() - started < 1
 
 
 @pytest.mark.asyncio
