@@ -155,10 +155,11 @@ async def _announce_over_live_session(
         async with player._lock:
             members = _live_members(player)
             if not members:
-                # the feature is only advertised while there is live audio to mix
-                # into, so this is playback that ended since the controller resolved it
+                # the feature is only advertised while there is live audio to mix into,
+                # so by now that playback ended or moved to a stream we do not own
                 raise PlayerCommandFailed(
-                    f"Cannot announce on {player.display_name}: the player stopped playing"
+                    f"Cannot announce on {player.display_name}: "
+                    "there is no live playback to mix the announcement into"
                 )
             streams: dict[str, AirPlayStream] = {}
             for member in members:

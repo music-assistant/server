@@ -231,7 +231,7 @@ async def test_player_without_live_audio_is_refused() -> None:
     """Without audio to mix into the announcement is refused, releasing the render."""
     player = _make_player("solo")
 
-    with pytest.raises(PlayerCommandFailed, match="stopped playing"):
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
         await announce.play_announcement(player, _make_announcement(), 40)
 
     player.mass.streams.announcement_renderer.release.assert_awaited_once()
@@ -563,7 +563,7 @@ async def test_synced_member_without_live_playback_is_refused() -> None:
     parked_session = parked_stream.session
     parked_session.stop = AsyncMock()
 
-    with pytest.raises(PlayerCommandFailed, match="stopped playing"):
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
         await announce.play_announcement(member, _make_announcement(), None)
 
     parked_stream.announce.assert_not_awaited()
@@ -641,7 +641,7 @@ async def test_bridged_player_without_a_stream_to_mix_into_is_refused() -> None:
     bridge = MagicMock(owns_airplay_stream=False)
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=bridge)
 
-    with pytest.raises(PlayerCommandFailed, match="stopped playing"):
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
         await announce.play_announcement(player, _make_announcement(), None)
 
     stream.announce.assert_not_awaited()
