@@ -893,11 +893,12 @@ class SpotifyConnectProvider(PluginProvider):
             was_playing = self._playing
             self._playing = False
             # A pause/stop is the definitive "don't start": cancel a deferred fire
-            # from a now-stale 'playing'. The active get_audio_stream sees the PCM
-            # stop and ends the stream (clean EOF), so the player leaves the playing
-            # state; the next 'playing' event re-fires play_media to resume.
+            # from a now-stale 'playing'. On a backend whose stream ends on pause the
+            # active get_audio_stream sees the PCM stop and ends the stream (clean
+            # EOF), so the player leaves the playing state and the next 'playing'
+            # event re-fires play_media to resume.
             self._cancel_pending_play_media()
-            # A pipe-fed backend keeps delivering silence on pause (no EOF), so
+            # A backend without a stream end on pause never signals EOF, so
             # the player must be stopped actively; the claim stays so the next
             # 'playing' event resumes playback like the EOF path does. Only the
             # playing→paused transition fires it: the backend reports a pause

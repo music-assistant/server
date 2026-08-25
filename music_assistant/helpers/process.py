@@ -392,17 +392,30 @@ class AsyncProcess:
 
         pid = self.proc.pid
 
-        # Cancel stdin feeder task if any
-        if self._stdin_feeder_task and not self._stdin_feeder_task.done():
-            self._stdin_feeder_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+        # Cancel stdin feeder task if any. A task that already finished is still
+        # awaited, so an exception it ended with is retrieved rather than reported
+        # as unhandled once it is garbage collected - and logged, so retrieving it
+        # does not swallow the only trace of the failure.
+        if self._stdin_feeder_task:
+            if not self._stdin_feeder_task.done():
+                self._stdin_feeder_task.cancel()
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                LOGGER.warning("Process stdin feeder task ended with error: %s", err)
 
-        # Cancel stderr reader task if any
-        if self._stderr_reader_task and not self._stderr_reader_task.done():
-            self._stderr_reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+        # Same for the stderr reader task
+        if self._stderr_reader_task:
+            if not self._stderr_reader_task.done():
+                self._stderr_reader_task.cancel()
+            try:
                 await self._stderr_reader_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                LOGGER.warning("Process stderr reader task ended with error: %s", err)
 
         # Close stdin to signal we're done sending data
         # Note: Don't manually call feed_eof() on stdout/stderr - this causes
@@ -416,6 +429,16 @@ class AsyncProcess:
         self.logger.debug("Killing process %s with PID %s", self.name, pid)
         with suppress(ProcessLookupError, OSError):
             os.kill(pid, 9)  # SIGKILL = 9
+
+        # SIGKILL leaves whatever the child already wrote in the pipes, and the reap
+        # below only completes once they disconnect - so drain them here rather than
+        # waiting that out for output nobody is going to read
+        try:
+            await asyncio.wait_for(self.proc.communicate(), 2)
+        except TimeoutError:
+            pass  # the escalation below takes over
+        except Exception as err:
+            self.logger.warning("Failed to drain the pipes of PID %s: %s", pid, err)
 
         # Wait for process to actually terminate
         try:

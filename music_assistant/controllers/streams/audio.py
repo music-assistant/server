@@ -3843,8 +3843,14 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
-            # always ensure close is called which also handles all cleanup
-            await ffmpeg_proc.close()
+            # An ffmpeg wedged on an input that will never deliver again pays close()'s
+            # full drain - some 12 seconds in practice - under a held player lock,
+            # before the SIGKILL that was always coming. Once the process has exited
+            # close() is free, and it is what cleans up the stdin feeder behind it.
+            if ffmpeg_proc.returncode is not None:
+                await ffmpeg_proc.close()
+            else:
+                await ffmpeg_proc.kill()
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
