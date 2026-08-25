@@ -266,8 +266,10 @@ async def test_partial_success_warns_and_does_not_fall_back(
 async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     """The volume bump lands at the acked audible instant, the restore after the clip."""
     ack_at_unix_ms = int(time.time() * 1000) + 200
-    # the acked duration includes the 1s ducked-silence tail: 2s of content
-    stream = _make_stream(ack=(ack_at_unix_ms, 3000))
+    # the acked duration includes the 1s ducked-silence tail: 0.8s of content,
+    # which keeps the bias out of the short-clip cap while the audible-end hold
+    # this call ends on stays short
+    stream = _make_stream(ack=(ack_at_unix_ms, 1800))
     members = _make_playing_group(stream)
     member = members[0]
     member.volume_level = 30
@@ -291,12 +293,12 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     # the bump lands on what was left of the acked instant when it was
     # scheduled (0.2s out here), plus the 0.3s into-the-clip bias; the restore
     # follows the CONTENT length (the acked duration minus the silence tail)
-    # plus the (zeroed) pad, so it lands inside the ducked cushion - 1.7s
+    # plus the (zeroed) pad, so it lands inside the ducked cushion - 0.5s
     # after the bump here
     left_at_least = max(0.0, ack_at_unix_ms / 1000 - scheduled_at[0])
     left_at_most = max(0.0, ack_at_unix_ms / 1000 - before_s)
     assert left_at_least + 0.3 <= bump.args[0] <= left_at_most + 0.3
-    assert restore.args[0] - bump.args[0] == pytest.approx(1.7)
+    assert restore.args[0] - bump.args[0] == pytest.approx(0.5)
 
 
 def test_member_duck_compensates_the_volume_bump() -> None:
