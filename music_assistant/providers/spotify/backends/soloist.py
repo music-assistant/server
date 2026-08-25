@@ -185,6 +185,10 @@ _REPEAT_OFF: Final[str] = "off"
 # exiting with a plain code 1 - its message is the only way to tell that case
 # apart from any other startup failure.
 _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
+# A daemon that cannot log in advertises itself for pairing instead of failing,
+# and then sits there until the startup budget runs out. The engine reports no
+# other way that a stored session is gone.
+_UNPAIRED_MARKER: Final[str] = "waiting for login"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 # How many pauses from the Spotify app are put back before the session gives up.
@@ -743,6 +747,8 @@ class _SoloistSession:
         self._teardown_done = False
         # None until the engine reports its login state for the first time
         self._logged_in: bool | None = None
+        # set once the daemon is known to have no stored session to log in with
+        self._unpaired = False
         # set once this daemon is the active Connect device; losing that again is
         # the user moving playback elsewhere from their Spotify app
         self._was_active = False
@@ -1280,7 +1286,7 @@ class _SoloistSession:
         # a pairing that never logged in is checked first: it also fails the
         # session, and its recovery (back through the setup flow) beats failing
         # every track with a generic error
-        if self._logged_in is False:
+        if self._unpaired or self._logged_in is False:
             # the stored session no longer logs in: route the user through the
             # setup flow instead of failing every item (mirrors librespot's
             # INVALID_CREDENTIALS handling)
@@ -1335,6 +1341,8 @@ class _SoloistSession:
             text = line.replace(api_key, "<redacted>") if api_key else line
             if _DATA_DIR_BUSY_MARKER in text:
                 self._data_dir_busy = True
+            if _UNPAIRED_MARKER in text and not self._unpaired:
+                await self._check_pairing_lost()
             self.logger.debug("[soloist] %s", text)
 
     async def _read_capture(self) -> None:
@@ -1736,6 +1744,20 @@ class _SoloistSession:
             return
         self.mass.player_queues.prepare_next_audio_buffer(queue_id)
 
+    async def _check_pairing_lost(self) -> None:
+        """
+        Fail the session when the engine has no stored session left to log in with.
+
+        The engine advertises itself for pairing while it is still restoring a
+        session too, so its report is confirmed against the stored session:
+        acting on it alone would fail every playback on a pairing that is only
+        moments away from logging in.
+        """
+        if await asyncio.to_thread(self.backend._has_stored_session):
+            return
+        self._unpaired = True
+        self._fail("the stored session is gone")
+
     def _observe_auth_state(self, *, logged_in: bool) -> None:
         """
         Follow the engine's login state.
@@ -1744,9 +1766,8 @@ class _SoloistSession:
         its session, so its first snapshot reports logged_in=False even for a
         perfectly good pairing. That is a startup race, not a lost pairing, and
         failing on it would break every playback. Only losing a login that was
-        already established is fatal; a pairing that never logs in surfaces when
-        the item fails to start, where _raise_startup_error routes the user back
-        through the setup flow.
+        already established is fatal; a pairing that is gone altogether is caught
+        by :meth:`_check_pairing_lost`.
 
         :param logged_in: Whether the engine reports an active login.
         """

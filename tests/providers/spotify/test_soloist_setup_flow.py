@@ -35,6 +35,7 @@ from music_assistant.providers.spotify.constants import (
 from music_assistant.providers.spotify.helpers import (
     pair_soloist_session,
     soloist_session_account,
+    soloist_session_present,
 )
 from music_assistant.providers.spotify_connect.soloist import UnsupportedPlatformError
 
@@ -192,8 +193,7 @@ async def test_reconfigure_keeps_the_existing_paired_session(
     monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
     paired_dirs = _record_pairing(monkeypatch)
     canonical = tmp_path / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME
-    canonical.mkdir(parents=True)
-    (canonical / "session.bin").write_bytes(b"session")
+    (canonical / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
     session = _make_session(
         tmp_path,
         [
@@ -404,7 +404,7 @@ async def test_pairing_captures_its_output_and_redacts_the_api_key(
     _install_fake_soloist(
         monkeypatch,
         0,
-        on_wait=lambda: (tmp_path / "data" / "session.bin").write_bytes(b"x"),
+        on_wait=lambda: _store_session(tmp_path / "data"),
         spawns=spawns,
         output_lines=(f"starting with --api-key {api_key}",),
     )
@@ -442,11 +442,14 @@ async def test_pairing_success_stores_a_session(
 ) -> None:
     """A pairing run that stores a session completes without error."""
     data_dir = tmp_path / "pairdir"
-    _install_fake_soloist(
-        monkeypatch, returncode=0, on_wait=lambda: (data_dir / "session.bin").write_bytes(b"x")
-    )
+    _install_fake_soloist(monkeypatch, returncode=0, on_wait=lambda: _store_session(data_dir))
     await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
-    assert (data_dir / "session.bin").is_file()
+    assert soloist_session_present(data_dir)
+
+
+def _store_session(data_dir: Path, account: str = "spotify-user") -> None:
+    """Write a paired session the way the engine records it."""
+    (data_dir / "settings" / "Users" / f"{account}-user").mkdir(parents=True, exist_ok=True)
 
 
 async def _run_awaitable(awaitable: Any, **_kwargs: Any) -> Any:
