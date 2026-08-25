@@ -2458,27 +2458,6 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
 
 
 @pytest.mark.asyncio
-async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
-    """A volume explicitly requested for the session is pushed, even without ownership."""
-    player = _make_player()
-    player.owns_volume = False
-    player.volume_muted = False
-    stream = AirPlayStream(player)
-    stream._connected.set()
-    stream.session = MagicMock(requested_volume=85)
-
-    with (
-        patch.object(stream, "_cli_proc", MagicMock()),
-        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
-        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
-        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
-    ):
-        await stream.wait_for_connection()
-
-    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
-
-
-@pytest.mark.asyncio
 async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
     """A binary that never attaches to the command pipe can never be anchored: fail the connect."""
     player = _make_player()

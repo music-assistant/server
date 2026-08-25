@@ -359,13 +359,8 @@ class AirPlayStream:
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
-        # set to. A latched mute would start the stream silent, and a volume explicitly
-        # requested for this session (an announcement) is not an unsolicited push.
-        if (
-            self.player.owns_volume
-            or self.player.volume_muted
-            or (self.session is not None and self.session.requested_volume is not None)
-        ):
+        # set to. A latched mute would start the stream silent, so it does travel along.
+        if self.player.owns_volume or self.player.volume_muted:
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.

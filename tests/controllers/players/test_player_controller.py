@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
-from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -4375,6 +4375,38 @@ class TestNativeAnnouncementVolumeRouting:
 
         # the output cannot attenuate what another control is already attenuating,
         # so the level goes through that control and the output announces at unity
+        assert setup.volume_set.await_args_list == [
+            call("parent", self.ANNOUNCE_VOLUME),
+            call("parent", 20),
+        ]
+        setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+    async def test_output_that_applies_the_volume_itself_gets_it_handed_down(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        An output that applies the announcement volume itself is left to do so.
+
+        A player that mixes the clip into audio it is already playing knows when the
+        clip becomes audible; setting the level up front would raise the music that
+        is still playing instead. Any other output has it applied before it starts.
+        """
+        setup = self._make_setup(mock_mass, "sibling")
+
+        with patch.object(
+            type(setup.output),
+            "applies_announcement_volume",
+            new_callable=PropertyMock,
+            return_value=True,
+        ):
+            await self._announce(setup)
+
+        setup.volume_set.assert_not_awaited()
+        setup.play_announcement.assert_awaited_once_with(ANY, self.ANNOUNCE_VOLUME)
+        setup.play_announcement.reset_mock()
+
+        await self._announce(setup)
+
         assert setup.volume_set.await_args_list == [
             call("parent", self.ANNOUNCE_VOLUME),
             call("parent", 20),
