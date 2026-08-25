@@ -290,7 +290,10 @@ async def test_configured_replace_default_clears_the_previously_enqueued_items()
     )
     ctrl = _play_media_controller(track, QueueOption.REPLACE.value)
     ctrl._queue_data["q1"].enqueued_media_items.append(album)
+    ctrl._queue_data["q1"].credited_albums.add(album)
 
     await ctrl._handle_play_media("q1", track)
 
     assert ctrl._queue_data["q1"].enqueued_media_items == [track]
+    # the credits only mark which enqueued albums were counted, so they go with them
+    assert ctrl._queue_data["q1"].credited_albums == set()

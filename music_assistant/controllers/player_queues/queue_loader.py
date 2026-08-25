@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 
@@ -410,6 +411,17 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             for item in queue_data.enqueued_media_items
         )
 
+    def _reset_enqueued_media_items(self, queue_data: PlayerQueueData) -> None:
+        """
+        Forget what was enqueued on a queue that is being replaced by a new one.
+
+        :param queue_data: The queue whose enqueued items are no longer what it plays.
+        """
+        queue_data.enqueued_media_items.clear()
+        # the credits only mark which of those enqueued albums were already counted, so they
+        # are meaningless once the items they refer to are gone
+        queue_data.credited_albums.clear()
+
     def _apply_probed_duration(self, queue_item: QueueItem) -> None:
         """
         Apply a duration determined while streaming to the queue item and its media item.
@@ -717,12 +729,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ]
             radio_mode = False
 
-        # Clear the 'enqueued media item' list when a new queue is requested. A caller that left
-        # the option to the config gets this once the first item resolved it, below: it is the
+        # Forget the previous queue's enqueued items when a new queue is requested. A caller that
+        # left the option to the config gets this once the first item resolved it, below: it is the
         # option that says whether this is a new queue or an addition to the current one.
         if option is not None and option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue_data.enqueued_media_items.clear()
-            queue_data.credited_albums.clear()
+            self._reset_enqueued_media_items(queue_data)
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -772,7 +783,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     config_value = self.get_config_value(config_key, return_type=str)
                     option = QueueOption(config_value)
                     if option not in (QueueOption.ADD, QueueOption.NEXT):
-                        queue_data.enqueued_media_items.clear()
+                        self._reset_enqueued_media_items(queue_data)
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
