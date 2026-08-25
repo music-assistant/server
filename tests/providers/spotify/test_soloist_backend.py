@@ -670,6 +670,57 @@ def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     assert item.buffered == remainder
 
 
+@pytest.mark.parametrize(
+    ("target_ms", "reports"),
+    [
+        # seeking the restored item to where the engine already was
+        (117_000, (117_000, 0, 117_000)),
+        # seeking back into it, where every report lands below where it was
+        (30_000, (117_000, 0, 30_000)),
+    ],
+)
+async def test_the_seek_retries_until_the_engine_reports_the_target(
+    tmp_path: Path, target_ms: int, reports: tuple[int, ...]
+) -> None:
+    """A seek dropped while the track loads is re-sent until a report confirms it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    client = cast("Any", session._client)
+    # the engine restored this item part-way in, before the seek goes out
+    item.observe_position(117_000)
+
+    async def _report_positions() -> None:
+        for position_ms in reports:
+            await asyncio.sleep(0)
+            item.observe_position(position_ms)
+
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        # bounded so a regression fails fast instead of sitting out the real budget
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 1.0),
+    ):
+        reporter = asyncio.create_task(_report_positions())
+        await session._cold_seek(client, item, target_ms)
+        await reporter
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == target_ms
+    assert client.seek.await_count >= 1
+
+
+async def test_a_seek_that_only_ever_sees_the_restored_position_fails(tmp_path: Path) -> None:
+    """A seek nothing confirms fails loudly rather than streaming from elsewhere."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    # the engine sits at the restored position and never reloads the track
+    item.observe_position(117_000)
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 0.05),
+        pytest.raises(AudioError, match="did not confirm seeking"),
+    ):
+        await session._cold_seek(cast("Any", session._client), item, 117_000)
+
+
 async def test_a_seek_the_engine_ignored_does_not_cut_the_item_short(tmp_path: Path) -> None:
     """An item the engine plays from its start is bounded by its full duration."""
     session = _make_session(tmp_path)
@@ -700,6 +751,9 @@ async def test_a_seek_that_landed_still_bounds_the_item_at_its_remainder(tmp_pat
     assert item._overrun_limit() == 59 * _BYTES_PER_SECOND + int(
         _ITEM_OVERRUN_S * _BYTES_PER_SECOND
     )
+    # later reports do not move the latch, which would shrink the bound
+    item.observe_position(150_000)
+    assert item.started_at_ms == 117_000
     # so it still fails once it runs that far past the seek point
     item.claim()
     item.write(b"\x01" * (89 * _BYTES_PER_SECOND))

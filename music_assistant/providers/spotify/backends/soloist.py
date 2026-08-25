@@ -2128,8 +2128,10 @@ class _ItemAudio:
 
         A seeked item starts part-way in, so only what is left of it is ever
         delivered — the full duration would be a target nothing can reach.
+        Measured from where the engine reported the seek landing, which is not
+        always the position it was asked for.
         """
-        return self._remaining_bytes(self.seek_target_ms or 0)
+        return self._remaining_bytes(self.started_at_ms or self.seek_target_ms or 0)
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
