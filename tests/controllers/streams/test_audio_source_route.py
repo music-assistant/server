@@ -374,7 +374,6 @@ async def test_direct_pcm_stream_stops_when_the_session_is_reselected() -> None:
     ctrl.audio_processing.update_source_context.assert_called_once_with(
         OWNER_ID,
         session.playback_session_id,
-        pcm_format=pcm_format,
         crossfade_enabled=provider.delivers_crossfaded_audio.return_value,
         volume_normalization_enabled=provider.delivers_normalized_audio.return_value,
     )
