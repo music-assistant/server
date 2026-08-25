@@ -286,7 +286,7 @@ gets the generic announcement handling from the players controller instead.
 The clip file is wrapped in ducked silence, because the binary holds the duck for the
 whole file:
 
-| | |
+| Part | What happens |
 |---|---|
 | lead-in | music already ducked, nothing said yet — the announcement volume is raised here |
 | clip | the announcement itself, at the announcement volume |

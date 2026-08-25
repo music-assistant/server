@@ -606,14 +606,14 @@ class AirPlayPlayer(Player):
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """
-        Play an announcement natively: mixed over live playback, or as its own session.
+        Play an announcement natively, mixed over the audio the player is rendering.
 
         :param announcement: Details of the announcement that needs to be played.
         :param volume_level: Optional volume level for the announcement.
         """
-        # The lock windows live inside the orchestration: the dispatch decision
-        # and session mutations hold self._lock like play_media does, while the
-        # multi-second clip waits run outside it (see announce.py).
+        # The lock windows live inside the orchestration: the dispatch decision and
+        # the arming hold self._lock like play_media does, while the multi-second
+        # clip waits run outside it (see announce.py).
         await announce.play_announcement(self, announcement, volume_level)
 
     async def volume_set(self, volume_level: int) -> None:
@@ -787,7 +787,7 @@ class AirPlayPlayer(Player):
 
         cur_volume = self.volume_level or 0
         if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
-            self.mass.create_task(self.volume_set(volume))
+            self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume
             self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
@@ -978,6 +978,18 @@ class AirPlayPlayer(Player):
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    async def _adopt_device_volume(self, volume: int) -> None:
+        """
+        Take over a level the device set itself.
+
+        :param volume: The level the device reported.
+        """
+        await self.volume_set(volume)
+        # Writing the level back is a volume command like any other and opens the echo
+        # window, but this one only hands the device its own level: leaving the window
+        # open would swallow the rest of a volume the user is still turning up.
+        self._volume_reports_ignored_until = 0.0
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""

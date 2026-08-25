@@ -432,20 +432,30 @@ def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
     """
     Return the music duck (dB) for one member, compensated for its volume bump.
 
-    The announcement volume raises the music bed together with the clip. The
-    AirPlay volume scale is linear dB (see AIRPLAY_VOLUME_DB_PER_POINT), so that
-    rise is exactly known and the duck is deepened by the same amount - the music
-    keeps its configured perceived duck depth while the clip plays at the
-    configured announcement loudness. A bump DOWN (a night-mode announcement
-    quieter than the music) symmetrically shallows the duck, and the result never
-    leaves the binary's usable range.
+    The announcement volume raises the music bed together with the clip, so the duck
+    is deepened by that same rise and the music keeps its configured perceived duck
+    depth while the clip plays at the configured announcement loudness. A bump DOWN
+    (a night-mode announcement quieter than the music) symmetrically shallows the
+    duck, and the result never leaves the binary's usable range.
+
+    The rise is read off the AirPlay volume scale, which is linear dB (see
+    AIRPLAY_VOLUME_DB_PER_POINT). A level that lands on another control (the native
+    volume of the device this output renders for) follows that control's own taper,
+    so there the compensation is an approximation - still far closer than leaving the
+    bed to ride up with the clip.
     """
     duck_db = float(AIRPLAY_ANNOUNCE_DUCK_DB)
     if volume_level is None:
         return duck_db
-    if (prev_volume := _volume_target(member).state.volume_level) is None:
+    target = _volume_target(member)
+    if (prev_volume := target.state.volume_level) is None:
         return duck_db
-    bump_db = (volume_level - prev_volume) * AIRPLAY_VOLUME_DB_PER_POINT
+    # the levels are logical, and the volume limits configured on the target decide
+    # what they land on: the device levels are what the rise is actually made of
+    scale = member.mass.players.scale_volume_to_device
+    bump_db = (
+        scale(target.player_id, volume_level) - scale(target.player_id, prev_volume)
+    ) * AIRPLAY_VOLUME_DB_PER_POINT
     return min(0.0, max(-60.0, duck_db - bump_db))
 
 

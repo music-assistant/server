@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import time
-from typing import cast
+from collections.abc import Coroutine
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -1024,6 +1025,43 @@ def test_volume_report_suppression_expires(airplay_player: AirPlayPlayer) -> Non
         assert airplay_player.ignore_volume_reports is True
     with patch("music_assistant.providers.airplay.player.time.time", return_value=expired):
         assert airplay_player.ignore_volume_reports is False
+
+
+@pytest.mark.asyncio
+async def test_adopting_a_device_level_keeps_the_next_report_visible(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Writing a device-reported level back does not blind us to the reports after it.
+
+    That write is a volume command like any other and so arms the echo grace, but it
+    only hands the device its own level: left armed it would swallow the rest of a
+    volume the user is still turning up.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    stream = MagicMock(running=True)
+    # the running stream arms the grace for every level it delivers
+    stream.send_cli_command = AsyncMock(
+        side_effect=lambda _command: airplay_player.suppress_volume_reports()
+    )
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(55)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player._attr_volume_level == 55
+    stream.send_cli_command.assert_awaited_once_with("VOLUME=55")
+
+    # the user keeps turning the knob: the report that follows is acted on
+    airplay_player.update_volume_from_device(70)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player._attr_volume_level == 70
 
 
 @pytest.mark.asyncio

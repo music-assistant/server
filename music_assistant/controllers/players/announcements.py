@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 # the caller waits for this command and it holds the player's playback lock while it runs,
 # so a wedged engine must give up well before the generic (background) engine timeout
@@ -268,7 +269,7 @@ class AnnouncementsMixin:
                 pre_announce,
                 url,
             )
-            announce_player = self._resolve_announce_player(player)
+            announce_player = await self._resolve_ready_announce_player(player, render, url)
             native_announce_support = announce_player is not None
             if announce_player is None:
                 announce_player = player
@@ -285,14 +286,6 @@ class AnnouncementsMixin:
             )
             # handle native announce support (player or linked protocol)
             if native_announce_support:
-                # hand the url to the player as soon as there is audio to serve from;
-                # its exact length is resolved further downstream, while it plays
-                if not await render.wait_ready():
-                    self.logger.warning(
-                        "Announcement to player %s - no audio available for %s",
-                        player.state.name,
-                        url,
-                    )
                 await self._play_native_announcement(
                     player, announce_player, announcement, volume_level
                 )
@@ -406,6 +399,36 @@ class AnnouncementsMixin:
                 require_active=False,
             )
         return None
+
+    async def _resolve_ready_announce_player(
+        self, player: Player, render: AnnouncementRender, url: str
+    ) -> Player | None:
+        """
+        Return the player that plays the announcement natively, once its audio is ready.
+
+        Returns None when nothing in the chain announces natively (any more), so the
+        caller has to fall back to the default implementation.
+
+        :param player: The player the announcement is played on.
+        :param render: The announcement audio being rendered.
+        :param url: URL of the announcement, for logging.
+        """
+        if (announce_player := self._resolve_announce_player(player)) is None:
+            return None
+        # hand the url to the player as soon as there is audio to serve from;
+        # its exact length is resolved further downstream, while it plays
+        if not await render.wait_ready():
+            self.logger.warning(
+                "Announcement to player %s - no audio available for %s",
+                player.state.name,
+                url,
+            )
+        if PlayerFeature.PLAY_ANNOUNCEMENT not in announce_player.supported_features:
+            # Rendering the audio can take a while. An output that announces by mixing
+            # the clip into what it is already playing stops offering the feature once
+            # that playback ended, and the default implementation takes over.
+            return None
+        return announce_player
 
     async def _render_announcement_message(
         self, message: str, tts_engine: str | None, language: str | None

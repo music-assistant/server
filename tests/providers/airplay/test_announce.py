@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -88,6 +88,10 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
         side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
     )
     player.mass.players.cmd_volume_set = AsyncMock()
+    # what the controller's scaling returns for the default 0/100 volume limits
+    player.mass.players.scale_volume_to_device = MagicMock(
+        side_effect=lambda _player_id, level: level
+    )
     player.provider._announce_plans = {}
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=None)
     renderer = player.mass.streams.announcement_renderer
@@ -109,6 +113,26 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
 def _make_announcement() -> MagicMock:
     """Build the announcement PlayerMedia handed down by the player controller."""
     return MagicMock(custom_data=dict(ANNOUNCE_DATA))
+
+
+def _record_spawned_tasks(player: MagicMock) -> list[asyncio.Task[None]]:
+    """
+    Make the player's task spawner record what it starts, and return that record.
+
+    :param player: The player the announcement targets; the restore its teardown
+        falls back on runs from a task of its own.
+    """
+    tasks: list[asyncio.Task[None]] = []
+
+    def create_task(
+        coro: Coroutine[Any, Any, None], *_args: Any, **_kwargs: Any
+    ) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(coro)
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = MagicMock(side_effect=create_task)
+    return tasks
 
 
 @contextmanager
@@ -420,6 +444,25 @@ def test_member_duck_compensates_the_volume_target_bump() -> None:
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
 
 
+def test_member_duck_compensates_the_bump_the_device_actually_gets() -> None:
+    """
+    The compensation is made of the DEVICE levels, not the logical ones.
+
+    A volume limit configured on the target scales every logical level down before it
+    reaches the device, so the music rises by less than the logical delta says and a
+    duck deepened by that delta would bury it.
+    """
+    member = _make_player("m")
+    member.state.volume_level = 30
+    # max_volume 60: logical 30 lands on device 18, logical 55 on device 33
+    member.mass.players.scale_volume_to_device = MagicMock(
+        side_effect=lambda _player_id, level: (level * 60) // 100
+    )
+
+    # +15 device points is +4.5 dB, where the logical +25 would read as +7.5 dB
+    assert announce._member_duck_db(member, 55) == pytest.approx(-22.5)
+
+
 def test_volume_target_is_the_protocol_parent() -> None:
     """The volume of a member with a protocol parent is owned by that parent."""
     member = _make_player("child")
@@ -441,6 +484,94 @@ async def test_no_volume_level_leaves_the_volume_alone() -> None:
     await announce.play_announcement(members[0], _make_announcement(), None)
 
     members[0].mass.players.cmd_volume_set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_announcement_hands_the_bumped_volume_back() -> None:
+    """
+    An announcement cancelled after the raise still puts the previous level back.
+
+    The music plays on, so the speaker must not be left sitting at the announcement
+    level. The restore runs from a task of its own, since an await in the cancelled
+    call would be cancelled right along with it.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    spawned = _record_spawned_tasks(member)
+    raised = asyncio.Event()
+    parked = asyncio.Event()
+    member.mass.players.cmd_volume_set = AsyncMock(side_effect=lambda *_args: raised.set())
+
+    async def hold_until(_unix_ms: float) -> None:
+        if not raised.is_set():
+            return
+        # the hold in the ducked tail, where the cancel lands
+        parked.set()
+        await asyncio.Event().wait()
+
+    with patch.object(announce, "_hold_until", hold_until):
+        announcing = asyncio.create_task(
+            announce.play_announcement(member, _make_announcement(), 55)
+        )
+        await parked.wait()
+        announcing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await announcing
+    await asyncio.gather(*spawned)
+
+    assert member.mass.players.cmd_volume_set.await_args_list == [
+        call("member_0", 55),
+        call("member_0", 30),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_completed_announcement_leaves_nothing_to_restore() -> None:
+    """
+    An announcement that ran its course needs no restore behind it.
+
+    Its own timeline put the level back inline, so the teardown's safety net finds
+    nothing left to hand over and never spawns a second restore.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    spawned = _record_spawned_tasks(member)
+
+    with _timeline(member):
+        await announce.play_announcement(member, _make_announcement(), 55)
+
+    assert spawned == []
+    assert member.mass.players.cmd_volume_set.await_args_list == [
+        call("member_0", 55),
+        call("member_0", 30),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_keeps_its_level_for_a_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A level that could not be restored stays behind for a later call, and is logged.
+
+    Dropping it would leave the speaker at the announcement level with nothing left
+    that knows what to put back.
+    """
+    player = _make_player("solo")
+    bumped = {"solo": 30, "other": 40}
+    player.mass.players.cmd_volume_set = AsyncMock(
+        side_effect=[RuntimeError("device unreachable"), None]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await announce._restore_announcement_volume(player, bumped)
+
+    assert bumped == {"solo": 30}
+    assert "Could not restore the volume of solo" in caplog.text
+
+    player.mass.players.cmd_volume_set = AsyncMock()
+    await announce._restore_announcement_volume(player, bumped)
+
+    assert bumped == {}
+    player.mass.players.cmd_volume_set.assert_awaited_once_with("solo", 30)
 
 
 @pytest.mark.asyncio

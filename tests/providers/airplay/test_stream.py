@@ -1203,6 +1203,50 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+    """
+    A delivered volume command makes the player ignore the echo of it.
+
+    The receiver reports every level it is handed back over DACP; read at face value
+    that echo is the user reaching for the volume and is written straight back out.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("VOLUME=40") is True
+
+    player.suppress_volume_reports.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_delivered_other_command_leaves_the_echo_grace_alone() -> None:
+    """A command that is not a level cannot come back as one, so it blinds nothing."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("ACTION=STANDBY") is True
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dropped_volume_command_leaves_the_echo_grace_alone() -> None:
+    """A volume command the binary never got is never echoed, so the reports stay live."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
+        assert await stream.send_cli_command("VOLUME=40") is False
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_connect_does_not_write_before_the_binary_can_read() -> None:
     """Connecting lays out the command pipe and starts cliairplay, pushing nothing into it."""
     player = _make_player()

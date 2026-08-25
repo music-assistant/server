@@ -247,8 +247,8 @@ AIRPLAY_ANNOUNCE_DUCK_LEAD_S: Final[float] = 0.5
 AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
 # On top of the lead to the commanded instant: how long to wait for a member's
 # announce_started before treating that member as not announcing. An outdated
-# binary silently ignores the unknown command, so this bounded wait is also
-# what detects that and routes the announcement to the fallback path.
+# binary silently ignores the unknown command, so this bounded wait is also what
+# detects that, and the announcement then fails instead of playing nowhere.
 AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS: Final[int] = 3000
 # On top of the clip's audible end: how long to wait for announce_done. The
 # wait stays bounded because a queue that ends mid-clip emits its eof, which
