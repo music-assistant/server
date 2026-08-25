@@ -629,6 +629,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         # The override is layered AFTER protocol/sync resolution, so it wins
         assert player.state.elapsed_time == 42
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 42
 
     def test_audio_source_elapsed_time_last_updated_fallback(
         self,
