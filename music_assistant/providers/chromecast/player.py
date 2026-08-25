@@ -920,22 +920,21 @@ class ChromecastPlayer(Player):
 
         :param command: Either "next" or "previous".
         """
-        # Same resolution as _flow_stream_underrun: a Cast group child mirrors the
-        # group's queue, and a Cast exposed as a protocol player is wrapped by a
-        # universal player that owns the queue.
-        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
         queue_command = (
             self.mass.player_queues.next if command == "next" else self.mass.player_queues.previous
         )
 
         def dispatch() -> None:
-            # Read queue state on the event loop thread, not the socket thread the
-            # command arrives on: a dashboard-only session (no active MA queue) would
-            # otherwise raise InvalidCommand and spam the log on every button press.
-            queue = self.mass.player_queues.get(queue_id)
+            # Resolve the queue on the event loop thread, not the socket thread the
+            # command arrives on. get_active_queue follows sync/group/protocol parents;
+            # a dashboard-only session (no active queue anywhere up the chain) is
+            # dropped instead of raising InvalidCommand on every button press.
+            queue = self.mass.players.get_active_queue(self)
             if queue is None or not queue.active:
-                self.logger.debug("Ignoring %s command: queue %s is not active", command, queue_id)
+                self.logger.debug(
+                    "Ignoring %s command: no active queue for %s", command, self.display_name
+                )
                 return
-            self.mass.create_task(queue_command(queue_id))
+            self.mass.create_task(queue_command(queue.queue_id))
 
         self.mass.loop.call_soon_threadsafe(dispatch)

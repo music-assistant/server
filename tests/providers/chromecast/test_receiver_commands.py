@@ -60,22 +60,19 @@ def test_unhandled_messages_are_ignored(data: dict[str, object]) -> None:
 ### Dispatch into the queue controller
 
 
-def _fake_cast(
-    *,
-    player_id: str = "cast_id",
-    protocol_parent_id: str | None = None,
-    active_cast_group: str | None = None,
-) -> MagicMock:
+def _fake_cast(*, queue_id: str | None = "cast_queue", queue_active: bool = True) -> MagicMock:
     """Build a MagicMock Cast whose call_soon_threadsafe hop runs the callback inline."""
     fake = MagicMock()
-    fake.player_id = player_id
-    fake.protocol_parent_id = protocol_parent_id
-    fake.active_cast_group = active_cast_group
+    fake.display_name = "Fake Cast"
     # call_soon_threadsafe runs the callback inline so the dispatch is observable
     fake.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
-    # deliberately active: the resolved queue must exist and be active for a
-    # command to reach player_queues.next/previous, see test_inactive_queue_is_ignored
-    fake.mass.player_queues.get.return_value.active = True
+    if queue_id is None:
+        fake.mass.players.get_active_queue.return_value = None
+    else:
+        queue = MagicMock()
+        queue.queue_id = queue_id
+        queue.active = queue_active
+        fake.mass.players.get_active_queue.return_value = queue
     return fake
 
 
@@ -83,41 +80,41 @@ def _dispatch(fake: MagicMock, command: str) -> None:
     ChromecastPlayer._handle_receiver_command(cast("ChromecastPlayer", fake), command)
 
 
-def test_next_command_targets_the_queue_owner() -> None:
-    """A Cast wrapped by a universal player forwards next to the parent's queue."""
-    fake = _fake_cast(protocol_parent_id="up_universal")
+def test_next_command_targets_the_active_queue() -> None:
+    """Next is dispatched to the queue that get_active_queue resolves for this player."""
+    fake = _fake_cast(queue_id="up_universal")
 
     _dispatch(fake, "next")
 
     fake.mass.loop.call_soon_threadsafe.assert_called_once()
+    fake.mass.players.get_active_queue.assert_called_once_with(fake)
     fake.mass.create_task.assert_called_once()
     fake.mass.player_queues.next.assert_called_once_with("up_universal")
 
 
-def test_previous_command_targets_the_queue_owner() -> None:
+def test_previous_command_targets_the_active_queue() -> None:
     """Previous is routed to the same resolved queue id."""
     fake = _fake_cast()
 
     _dispatch(fake, "previous")
 
     fake.mass.loop.call_soon_threadsafe.assert_called_once()
-    fake.mass.player_queues.previous.assert_called_once_with("cast_id")
+    fake.mass.player_queues.previous.assert_called_once_with("cast_queue")
 
 
-def test_command_prefers_the_active_cast_group() -> None:
-    """A Cast group child mirrors the group's queue, taking precedence."""
-    fake = _fake_cast(protocol_parent_id="up_universal", active_cast_group="cast_group")
+def test_no_active_queue_is_ignored() -> None:
+    """A command without any resolvable queue (dashboard-only session) is dropped."""
+    fake = _fake_cast(queue_id=None)
 
     _dispatch(fake, "next")
 
-    fake.mass.loop.call_soon_threadsafe.assert_called_once()
-    fake.mass.player_queues.next.assert_called_once_with("cast_group")
+    fake.mass.player_queues.next.assert_not_called()
+    fake.mass.create_task.assert_not_called()
 
 
 def test_inactive_queue_is_ignored() -> None:
-    """A command on a dashboard-only session (no active MA queue) is dropped, not dispatched."""
-    fake = _fake_cast()
-    fake.mass.player_queues.get.return_value.active = False
+    """A command whose resolved queue is not active is dropped, not dispatched."""
+    fake = _fake_cast(queue_active=False)
 
     _dispatch(fake, "next")
 
