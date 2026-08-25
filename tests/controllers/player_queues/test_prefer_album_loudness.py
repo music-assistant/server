@@ -245,3 +245,22 @@ async def test_next_item_is_loaded_with_the_album_decision() -> None:
     await controller.load_next_queue_item(QUEUE_ID, items[0].queue_item_id)
     get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
     assert get_stream_details.call_args.kwargs["prefer_album_loudness"]
+
+
+async def test_enqueued_album_survives_a_restart() -> None:
+    """
+    An album queue restored from cache still plays as an album.
+
+    The decision reads the enqueued parent, which is only recognised as an album while it
+    round-trips as one; a mapping-shaped restore would silently drop to track loudness.
+    """
+    items = [_queue_item("track-1", PROVIDER_ALBUM)]
+    controller = _controller(items, enqueued=[LIBRARY_ALBUM])
+    queue_data = controller._queue_data[QUEUE_ID]
+    restored = PlayerQueueData.from_cache(queue_data.to_cache(), queue_data.items_to_cache())
+
+    controller._queue_data[QUEUE_ID] = restored
+    await controller._load_item(restored.items[0])
+
+    get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
+    assert get_stream_details.call_args.kwargs["prefer_album_loudness"]
