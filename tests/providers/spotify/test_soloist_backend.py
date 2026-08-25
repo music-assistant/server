@@ -33,6 +33,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
     _IDLE_TIMEOUT_S,
+    _ITEM_OVERRUN_S,
     _MAX_APP_PAUSE_RESUMES,
     _MAX_LEAD_TRIM_S,
     _READ_CHUNK_SIZE,
@@ -117,6 +118,22 @@ def test_small_seek_target_is_not_confirmed_by_a_pre_seek_zero_report(tmp_path: 
     item.observe_position(0)
     assert not item.seek_confirmed.is_set()
     item.observe_position(1_500)
+    assert item.seek_confirmed.is_set()
+
+
+def test_the_restored_position_of_the_same_item_cannot_confirm_a_seek(tmp_path: Path) -> None:
+    """The state a fresh session restores does not pass for the seek landing."""
+    item = _make_item(tmp_path, TRACK_A)
+    item.duration_ms = 176_000
+    # the engine restores the account's last state: this very item, sitting at
+    # the position the seek is aiming for
+    item.observe_position(117_000)
+    item.arm_seek(117_000)
+    item.observe_position(117_000)
+    assert not item.seek_confirmed.is_set()
+    # only once the engine has reloaded the track does its seek count
+    item.observe_position(0)
+    item.observe_position(117_000)
     assert item.seek_confirmed.is_set()
 
 
@@ -626,6 +643,38 @@ def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     # and the padding silence after it is refused
     item.write(b"\x00" * 4096)
     assert item.buffered == remainder
+
+
+async def test_a_seek_the_engine_ignored_does_not_cut_the_item_short(tmp_path: Path) -> None:
+    """An item the engine plays from its start is bounded by its full duration."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    item.claim()
+    # the engine never made the seek and is playing the item from its start, so
+    # the audio it delivers runs well past what the seeked remainder would allow
+    item.observe_position(80_000)
+    item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
+    item.close()
+    delivered = 0
+    async for chunk in item.read():
+        delivered += len(chunk)
+    assert delivered == 89 * _BYTES_PER_SECOND
+
+
+def test_a_seek_that_landed_still_bounds_the_item_at_its_remainder(tmp_path: Path) -> None:
+    """An item the engine really seeked into stays bounded by what is left of it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    # ten seconds of the remainder played, and reported from the seek target
+    item._delivered = 10 * _BYTES_PER_SECOND
+    item.observe_position(127_000)
+    assert item._overrun_limit() == 59 * _BYTES_PER_SECOND + int(
+        _ITEM_OVERRUN_S * _BYTES_PER_SECOND
+    )
 
 
 def test_the_lead_trim_never_exceeds_its_budget() -> None:

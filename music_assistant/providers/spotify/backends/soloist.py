@@ -1322,7 +1322,12 @@ class _SoloistSession:
         The sink is still suspended, so no pre-seek audio enters the FIFO; PCM
         demand only starts once a position report confirms the seek landed.
         """
-        item.seek_target_ms = target_ms
+        # A fresh session restores the account's last playback state before it
+        # takes commands, and a seek into the item that was already playing (a
+        # resume, or a seek of the current track) makes that restored position
+        # the seek target itself. Arming discards it, so only a report that
+        # follows one short of the target counts as the seek landing.
+        item.arm_seek(target_ms)
         # the engine silently drops a seek that arrives while the track is still
         # loading (verified via event trace), so re-send it until a position
         # anchor confirms it landed
@@ -1903,6 +1908,7 @@ class _ItemAudio:
         self._buffered = 0
         self._written = 0
         self._delivered = 0
+        self._seek_anchored = False
         self._tail_target: int | None = None
         self.draining = False
         self._available = asyncio.Event()
@@ -2016,6 +2022,16 @@ class _ItemAudio:
         self._available.set()
         self._drop_undelivered()
 
+    def arm_seek(self, target_ms: int) -> None:
+        """
+        Arm a seek to the given position, so position reports can confirm it.
+
+        :param target_ms: The position the engine is being seeked to.
+        """
+        self.seek_target_ms = target_ms
+        self.seek_confirmed.clear()
+        self._seek_anchored = False
+
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
         if self._closed:
@@ -2025,11 +2041,16 @@ class _ItemAudio:
         # of an item reports position 0 and must not erase the progress the
         # completeness validation relies on (verified live)
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
-        # the floor of 1 keeps a pre-seek report of position 0 from confirming a
-        # small seek target that falls inside the tolerance window
-        if self.seek_target_ms is not None and position_ms >= max(
-            1, self.seek_target_ms - _SEEK_TOLERANCE_MS
-        ):
+        if self.seek_target_ms is None:
+            return
+        # the floor of 1 keeps a report of position 0 from landing inside the
+        # tolerance window of a small seek target
+        window_start = max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS)
+        if position_ms < window_start:
+            # short of the target, so every report after this one describes the
+            # item the seek is moving
+            self._seek_anchored = True
+        elif self._seek_anchored:
             self.seek_confirmed.set()
 
     async def read(self) -> AsyncGenerator[bytes]:
@@ -2096,16 +2117,30 @@ class _ItemAudio:
         A seeked item starts part-way in, so only what is left of it is ever
         delivered — the full duration would be a target nothing can reach.
         """
-        if self.duration_ms is None:
-            return None
-        remaining_ms = max(0, self.duration_ms - (self.seek_target_ms or 0))
-        return remaining_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+        return self._remaining_bytes(self.seek_target_ms or 0)
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
-        if (own_audio := self._duration_bytes()) is None:
+        # measured rather than assumed: a seek the engine did not make would
+        # otherwise shrink this bound by an offset the item never started at,
+        # and cut a track that is still playing perfectly well
+        if (own_audio := self._remaining_bytes(self._played_from_ms())) is None:
             return None
         return own_audio + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
+
+    def _played_from_ms(self) -> int:
+        """Return where in the item the engine actually started playing it."""
+        if self.last_position_ms is None:
+            # nothing reported back yet: the requested position is all there is to go on
+            return self.seek_target_ms or 0
+        delivered_ms = self._delivered * 1000 // _BYTES_PER_SECOND
+        return max(0, self.last_position_ms - delivered_ms)
+
+    def _remaining_bytes(self, start_ms: int) -> int | None:
+        """Return the bytes of this item's audio left from the given position, when known."""
+        if self.duration_ms is None:
+            return None
+        return max(0, self.duration_ms - start_ms) * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
 
 
 def _decorated_duration_ms(item: object) -> int | None:
