@@ -813,14 +813,15 @@ async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -
     assert session.has_pending is False
 
 
-async def test_seeking_the_playing_item_restarts_the_session(
+async def test_a_seek_the_session_cannot_take_restarts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    A seek re-opens the item that is playing, which is a restart of the session.
+    A seek the running session cannot serve falls back to restarting it.
 
     A realtime source has not captured anything past the play position, so any
-    forward seek lands outside the buffer and comes back here.
+    forward seek lands outside the buffer and comes back here; the session is
+    seeked in place when it can be, and replaced when it cannot.
     """
     backend = _make_backend(tmp_path)
     backend._server = MagicMock()
@@ -2166,6 +2167,13 @@ def _client_of(session: _SoloistSession) -> AsyncMock:
     return cast("AsyncMock", session._client)
 
 
+def _current_of(session: _SoloistSession) -> _ItemAudio:
+    """Return the channel the session is playing, which the caller knows exists."""
+    item = session._current
+    assert item is not None
+    return item
+
+
 def _sink_of(session: _SoloistSession) -> AsyncMock:
     """Return the session's mocked capture sink."""
     return cast("AsyncMock", session._sink)
@@ -2210,3 +2218,179 @@ def _install_fake_binary_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = MagicMock()
     manager.ensure_fresh = AsyncMock(return_value=Path("/nonexistent/soloist"))
     monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", MagicMock(return_value=manager))
+
+
+async def test_seeking_the_playing_item_keeps_the_session(tmp_path: Path) -> None:
+    """The engine is moved where it stands rather than the session being respawned."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.claim()
+    playing.duration_ms = 260_000
+    playing.playing_seen = True
+    playing.observe_position(30_000)
+    # the pre-seek audio nobody may hear again
+    playing.write(b"\x01" * 32)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 120_000)
+
+    assert item is not playing
+    assert session.current is item
+    assert item.claimed
+    # what the track is stays with it; where it was does not
+    assert item.duration_ms == 260_000
+    assert item.playing_seen
+    assert item.started_at_ms == 120_000
+    assert not item._chunks
+    _client_of(session).seek.assert_awaited_once_with(120_000, await_result=True)
+
+
+async def test_a_seek_of_the_playing_item_is_sent_only_once(tmp_path: Path) -> None:
+    """A landed seek is never repeated: a repeat restarts the item, audibly."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    await session.seek_current(TRACK_A, 120_000)
+    assert _client_of(session).seek.await_count == 1
+
+
+async def test_seeking_back_is_not_confirmed_by_the_position_seeked_away_from(
+    tmp_path: Path,
+) -> None:
+    """A report still describing the pre-seek position cannot land a backward seek."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    playing.observe_position(200_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        item = _current_of(session)
+        # a report from before the seek is still in flight; it sits above the
+        # target's tolerance window and must not pass for the landing
+        item.observe_position(200_000)
+        assert not item.seek_confirmed.is_set()
+        item.observe_position(position_ms)
+        item.observe_position(position_ms + 2)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 60_000)
+    assert item.started_at_ms == 60_002
+
+
+async def test_audio_in_flight_across_an_in_place_seek_is_dropped(tmp_path: Path) -> None:
+    """Only audio from past the seek reaches the fresh channel."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        # still rendering the position being left behind
+        session._write_if_wanted(b"\x01" * 32)
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    with _capture_holding(session, fifo_bytes=2 * _FRAME_BYTES, reader_bytes=_FRAME_BYTES):
+        item = await session.seek_current(TRACK_A, 120_000)
+    # nothing rendered while the engine was being moved reached the channel
+    assert not item._chunks
+    # and what the pipeline still held at the confirmation is dropped after it
+    assert session._stale_budget == 3 * _FRAME_BYTES
+    session._write_if_wanted(b"\x02" * (3 * _FRAME_BYTES))
+    session._write_if_wanted(b"\x03" * 16)
+    assert b"".join(item._chunks) == b"\x03" * 16
+
+
+async def test_the_sink_is_suspended_while_a_seek_is_in_flight(tmp_path: Path) -> None:
+    """No pre-seek audio enters the capture while the engine is being moved."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._sink_running = True
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    suspended_during_seek = False
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        nonlocal suspended_during_seek
+        suspended_during_seek = not session._sink_running
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    await session.seek_current(TRACK_A, 120_000)
+    assert suspended_during_seek
+    _sink_of(session).suspend.assert_awaited()
+
+
+async def test_a_seek_the_engine_never_confirms_fails_the_item(tmp_path: Path) -> None:
+    """An unconfirmed seek is reported rather than served from the wrong position."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    with (
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 0.01),
+        pytest.raises(AudioError, match="did not confirm"),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+
+
+async def test_a_refused_seek_command_reports_soloist(tmp_path: Path) -> None:
+    """A rejected seek names the engine, so the caller can fall back."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    _client_of(session).seek.side_effect = SoloistError("nope")
+    with pytest.raises(AudioError, match="would not seek"):
+        await session.seek_current(TRACK_A, 120_000)
+
+
+async def test_seeking_an_item_the_engine_is_not_on_is_refused(tmp_path: Path) -> None:
+    """Only the item the session is actually playing can be seeked in place."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    with pytest.raises(AudioError, match="is not playing"):
+        await session.seek_current(TRACK_B, 120_000)
+
+
+async def test_a_seek_of_the_playing_item_is_served_by_the_running_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session is seeked where it stands instead of being replaced."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    # its own stream is still attached when the seek re-opens it
+    item.claim()
+    item.observe_position(30_000)
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    got_session, got_item = await backend._acquire(TRACK_A, 90, "player1")
+
+    assert got_session is session
+    assert got_item is not item
+    assert got_item.claimed
+    stopped.assert_not_awaited()
+    _client_of(session).seek.assert_awaited_once_with(90_000, await_result=True)
