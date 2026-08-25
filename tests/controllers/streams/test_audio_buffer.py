@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -320,6 +322,31 @@ async def test_fill_error_no_data() -> None:
 
     with pytest.raises(RuntimeError, match="test error"):
         await _consume()
+
+
+@pytest.mark.asyncio
+async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) -> None:
+    """The readiness deadline reports the provider, the wait and how much audio arrived."""
+
+    async def _silent_source() -> AsyncGenerator[bytes]:
+        await asyncio.sleep(10)
+        yield ONE_SECOND_CHUNK
+
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    streamdetails.buffer = buf
+    buf.fill(_silent_source(), source_name=streamdetails.uri)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(AudioError, match="Timeout waiting for audio data"),
+    ):
+        await buf._wait_until_ready(streamdetails, ready_timeout=0.05)
+
+    assert "Gave up after" in caplog.text
+    assert "waiting for audio from builtin" in caplog.text
+    assert "0s buffered" in caplog.text
+    assert streamdetails.buffer is None
 
 
 @pytest.mark.asyncio

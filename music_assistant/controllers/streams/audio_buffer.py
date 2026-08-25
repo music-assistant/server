@@ -106,6 +106,8 @@ class AudioBuffer:
         self._space_available = asyncio.Condition(self._lock)
         self._eof_received = False
         self._producer_task: asyncio.Task[None] | None = None
+        self._fill_started = time.monotonic()
+        self._source_name = "unknown"
         self._last_access_time: float = time.time()
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False
@@ -309,6 +311,8 @@ class AudioBuffer:
         :param audio_source: Async generator yielding 1-second PCM audio chunks.
         :param source_name: Name for logging purposes.
         """
+        self._fill_started = time.monotonic()
+        self._source_name = source_name
 
         async def _fill_task() -> None:
             chunk_count = 0
@@ -570,6 +574,13 @@ class AudioBuffer:
                 try:
                     await asyncio.wait_for(self.ready.wait(), timeout=ready_timeout)
                 except TimeoutError as err:
+                    LOGGER.warning(
+                        "Gave up after %.1fs waiting for audio from %s (%s), %ss buffered",
+                        time.monotonic() - self._fill_started,
+                        streamdetails.provider,
+                        streamdetails.uri,
+                        self.seconds_available,
+                    )
                     producer_error = await self._clear_failed_buffer(streamdetails)
                     if isinstance(producer_error, AudioError):
                         raise producer_error from err
@@ -633,6 +644,11 @@ class AudioBuffer:
                 or len(self._chunks) >= self.max_size_seconds
             ):
                 self.ready.set()
+                LOGGER.debug(
+                    "AudioBuffer: %s became ready after %.2fs",
+                    self._source_name,
+                    time.monotonic() - self._fill_started,
+                )
 
             self._data_available.notify_all()
 
