@@ -652,12 +652,7 @@ class AudioBuffer:
                 self._discarded_chunks + len(self._chunks) >= self._ready_at_chunk
                 or len(self._chunks) >= self.max_size_seconds
             ):
-                self.ready.set()
-                LOGGER.debug(
-                    "AudioBuffer: %s became ready after %.2fs",
-                    self._source_name,
-                    time.monotonic() - self._fill_started,
-                )
+                self._mark_ready()
 
             self._data_available.notify_all()
 
@@ -671,9 +666,21 @@ class AudioBuffer:
             )
             self._eof_received = True
             if not self.ready.is_set():
-                self.ready.set()
+                self._mark_ready()
             self._data_available.notify_all()
             self._space_available.notify_all()
+
+    def _mark_ready(self) -> None:
+        """Signal that the buffer holds audio a consumer can start playing."""
+        self.ready.set()
+        # a source that ended without delivering anything also lands here,
+        # and never became playable
+        if self._chunks:
+            LOGGER.debug(
+                "AudioBuffer: %s became ready after %.2fs",
+                self._source_name,
+                time.monotonic() - self._fill_started,
+            )
 
     async def _get(self, chunk_number: int = 0) -> bytes:
         """

@@ -342,6 +342,30 @@ async def test_logs_time_to_first_playable_audio(caplog: pytest.LogCaptureFixtur
 
 
 @pytest.mark.asyncio
+async def test_logs_time_to_ready_for_a_stream_below_its_threshold(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stream that ends before reaching its ready threshold still reports its startup time."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL, ready_threshold=8)
+    with caplog.at_level(logging.DEBUG, logger="music_assistant.audio_buffer"):
+        buf.fill(_make_source(2), source_name="test://short")
+        await buf.ready.wait()
+
+    assert "test://short became ready after" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_is_not_reported_as_ready(caplog: pytest.LogCaptureFixture) -> None:
+    """A source that ends without delivering audio never became playable."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    with caplog.at_level(logging.DEBUG, logger="music_assistant.audio_buffer"):
+        buf.fill(_make_source(0), source_name="test://empty")
+        await buf.ready.wait()
+
+    assert "became ready after" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) -> None:
     """The readiness deadline reports the caller, provider and how much audio arrived."""
     streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
