@@ -1,13 +1,13 @@
 {
   "setup_flow": {
     "abort": {
-      "provider_retired": "The local audio provider within Music Assistant will be retired in favor of running a sendspin add-on such as the [official Local Audio App](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon)."
+      "provider_retired": "The local audio provider within Music Assistant has been retired in favor of running a sendspin add-on such as the [official Local Audio App](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon)."
     }
   },
   "errors": {
-    "provider_retired": "The local audio provider within Music Assistant will be retired in favor of running a sendspin add-on such as the [official Local Audio App](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon)."
+    "provider_retired": "The local audio provider within Music Assistant has been retired in favor of running a sendspin add-on such as the [official Local Audio App](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon)."
   },
   "manifest": {
-    "description": "Play audio through locally attached soundcards (USB DACs, built-in speakers, etc.)."
+    "description": "Retired: local audio output has moved to the Local Audio App, run as a Sendspin add-on outside Music Assistant."
   }
 }
