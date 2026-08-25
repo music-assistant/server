@@ -412,7 +412,7 @@ class BuiltinProvider(MusicProvider):
             # user-created playlist removal - delete the M3U file
             playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
             if await asyncio.to_thread(os.path.isfile, playlist_file):
-                async with self._playlist_lock:
+                async with self._get_playlist_lock(prov_item_id):
                     await asyncio.to_thread(os.remove, playlist_file)
             return True
         else:
@@ -858,14 +858,15 @@ class BuiltinProvider(MusicProvider):
         if playlist_id in BUILTIN_PLAYLISTS:
             # builtin playlists are not editable
             return
-        m3u_data = await self._read_m3u_file(playlist_id)
-        if not m3u_data:
-            return
-        existing_items = parse_m3u(m3u_data)
-        try:
-            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
-        except OSError as err:
-            self.logger.warning("Failed to update playlist metadata: %s", err)
+        async with self._get_playlist_lock(playlist_id):
+            m3u_data = await self._read_m3u_file(playlist_id)
+            if not m3u_data:
+                return
+            existing_items = parse_m3u(m3u_data)
+            try:
+                await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+            except OSError as err:
+                self.logger.warning("Failed to update playlist metadata: %s", err)
 
     async def _apply_import_substitutions(
         self,
@@ -919,7 +920,7 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)
-        if await self._original_source_is_playable(item, media_item):
+        if await self._original_source_is_playable(item, media_item, allowed_provider_instances):
             # the original source still resolves, or its provider is merely down right
             # now - either way there is nothing to substitute
             return _ImportTrackMatchResult(label=label, retained=True)
@@ -957,22 +958,37 @@ class BuiltinProvider(MusicProvider):
         ) as err:
             message = str(err).strip() or f"Matching failed ({type(err).__name__})"
             return _ImportTrackMatchResult(label=label, error=message)
-        if not enrichment.track.provider_mappings:
+        if not enrichment.matches:
+            # nothing was actually matched - the track's provider_mappings may still carry
+            # an untrusted, unverified original mapping (trust_track_mappings=False keeps
+            # it around unless a same-domain match displaces it), so branch on the matches
+            # that were actually found rather than on the mapping set itself
             return _ImportTrackMatchResult(
                 label=label,
                 ambiguous_providers=enrichment.ambiguous_providers,
                 failed_providers=enrichment.failed_providers,
             )
         best_confidence = max(match.confidence for match in enrichment.matches)
+        matched_domains = {match.mapping.provider_domain for match in enrichment.matches}
+        matched_track = replace(
+            enrichment.track,
+            provider_mappings={
+                mapping
+                for mapping in enrichment.track.provider_mappings
+                if mapping.provider_domain in matched_domains
+            },
+        )
         return _ImportTrackMatchResult(
             label=label,
-            entry=media_item_to_playlist_item(enrichment.track),
+            entry=media_item_to_playlist_item(matched_track),
             confidence=best_confidence,
             ambiguous_providers=enrichment.ambiguous_providers,
             failed_providers=enrichment.failed_providers,
         )
 
-    async def _original_source_is_playable(self, item: PlaylistItem, track: Track) -> bool:
+    async def _original_source_is_playable(
+        self, item: PlaylistItem, track: Track, allowed_provider_instances: set[str]
+    ) -> bool:
         """
         Check whether an imported entry's original source is still usable.
 
@@ -982,7 +998,9 @@ class BuiltinProvider(MusicProvider):
         metadata was last written. Falls back to parsing the raw path itself for plain
         M3U entries that carry a bare Music Assistant URI without ``#EXTPROV`` metadata.
         A provider that is merely down right now counts as still usable, so a transient
-        outage does not trigger a permanent substitution.
+        outage does not trigger a permanent substitution. Candidates are only resolved
+        within the initiating user's own provider instances, so a domain or an
+        unavailable instance can never be probed against an inaccessible account.
         """
         candidates = [
             (mapping.provider_instance or mapping.provider_domain, mapping.item_id)
@@ -994,7 +1012,7 @@ class BuiltinProvider(MusicProvider):
                 candidates.append((provider_instance_or_domain, raw_item_id))
         for provider_instance_or_domain, provider_item_id in candidates:
             provider = self.mass.get_provider(provider_instance_or_domain, return_unavailable=True)
-            if provider is None:
+            if provider is None or provider.instance_id not in allowed_provider_instances:
                 continue
             if not provider.available:
                 return True

@@ -759,9 +759,10 @@ class TracksController(MediaControllerBase[Track]):
         best_matches = [
             (rank, match) for rank, match in candidates if match.confidence == best_confidence
         ]
-        if best_confidence == TrackMatchConfidence.LOOSE and not self._matches_are_compatible(
-            [match for _, match in best_matches]
-        ):
+        if not self._matches_are_compatible([match for _, match in best_matches]):
+            # missing source evidence (e.g. no explicitness tag) can let unrelated
+            # candidates tie at the same confidence - checked at every tier, not just
+            # LOOSE, since a quality tie-break would otherwise pick one arbitrarily
             return TrackProviderMatchResult(ambiguous=True)
         _, best_match = max(
             best_matches,
@@ -881,6 +882,13 @@ class TracksController(MediaControllerBase[Track]):
                 failed_providers.append(provider.name)
                 continue
             if result.match:
+                if matches and not self._matches_are_compatible([*matches, result.match]):
+                    # this provider's match is not the same recording as a match
+                    # already accepted from another provider (missing source evidence,
+                    # e.g. no explicitness tag, can let unrelated candidates tie) -
+                    # treat it as ambiguous instead of merging conflicting mappings
+                    ambiguous_providers.append(provider.name)
+                    continue
                 enriched_track.provider_mappings = {
                     mapping
                     for mapping in enriched_track.provider_mappings

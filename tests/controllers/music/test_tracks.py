@@ -676,6 +676,51 @@ async def test_find_provider_match_reports_ambiguous_loose_candidates(
     assert result.ambiguous is True
 
 
+async def test_tied_likely_matches_from_missing_evidence_are_ambiguous(
+    music: MusicController,
+) -> None:
+    """Tied LIKELY matches that disagree (e.g. explicit vs. clean) are ambiguous, not arbitrary."""
+    # the base track carries no explicitness metadata, so neither candidate is rejected
+    # against it individually - only comparing the candidates to each other exposes the conflict
+    base = create_track("spotify_1", "base", isrc="BASE")
+    explicit_version = create_track("qobuz_1", "explicit", isrc="EXPLICIT")
+    explicit_version.metadata.explicit = True
+    clean_version = create_track("qobuz_1", "clean", isrc="CLEAN")
+    clean_version.metadata.explicit = False
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[explicit_version, clean_version])),
+        ),
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(
+                side_effect=lambda item_id, *_args, **_kwargs: {
+                    "explicit": explicit_version,
+                    "clean": clean_version,
+                }[item_id]
+            ),
+        ),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
+
+    assert result.match is None
+    assert result.ambiguous is True
+
+
 def test_tied_loose_matches_require_pairwise_compatibility() -> None:
     """A middle-duration candidate can not make incompatible outer candidates look equivalent."""
     tracks = [
@@ -906,6 +951,80 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     assert find_match.await_count == 2
     assert qobuz_mapping in result.track.provider_mappings
     assert result.matches == (match,)
+
+
+async def test_enrich_provider_mappings_rejects_incompatible_cross_provider_match(
+    music: MusicController,
+) -> None:
+    """A second provider's match that disagrees with an accepted one is ambiguous, not merged."""
+    source = create_track("spotify_1", "source")
+    # missing explicitness evidence on the source lets each candidate independently tie
+    # with it, but the two candidates plainly disagree with each other (explicit vs. clean)
+    qobuz_track = create_track("qobuz_1", "qobuz-track", isrc="QOBUZ")
+    qobuz_track.metadata.explicit = True
+    qobuz_mapping = next(iter(qobuz_track.provider_mappings))
+    deezer_track = create_track("deezer_1", "deezer-track", isrc="DEEZER")
+    deezer_track.metadata.explicit = False
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    qobuz_match = TrackProviderMatch(
+        track=qobuz_track, mapping=qobuz_mapping, confidence=TrackMatchConfidence.LIKELY
+    )
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.LIKELY
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(match=qobuz_match),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": qobuz_provider,
+                "deezer_1": deezer_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "deezer_1"},
+        )
+
+    assert result.matches == (deezer_match,)
+    assert "Qobuz" in result.ambiguous_providers
+    assert qobuz_mapping not in result.track.provider_mappings
+    assert deezer_mapping in result.track.provider_mappings
 
 
 async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(
