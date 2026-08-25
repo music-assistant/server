@@ -25,6 +25,10 @@ inputs:
     description: 'Important notes to display at the top (breaking changes, critical info, etc.)'
     required: false
     default: ''
+  blog-post-url:
+    description: 'URL of the accompanying blog post, linked at the top of the release notes'
+    required: false
+    default: ''
 outputs:
   release-notes:
     description: 'The complete generated release notes including frontend changes'
@@ -55,6 +59,7 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SERVER_URL: ${{ github.server_url }}
         IMPORTANT_NOTES: ${{ inputs.important-notes }}
+        BLOG_POST_URL: ${{ inputs.blog-post-url }}
       run: |
         cd "${{ inputs.repository-path }}"
         chmod +x ${{ github.action_path }}/generate_notes.py

@@ -278,9 +278,20 @@ def generate_release_notes(  # noqa: PLR0915
     previous_tag,
     frontend_changes=None,
     important_notes=None,
+    blog_post_url=None,
 ) -> str:
     """Generate the formatted release notes."""
     lines = []
+
+    banner = None
+    if blog_post_url and blog_post_url.strip():
+        version = os.environ.get("VERSION", "")
+        match = re.match(r"^(\d+)\.(\d+)", version)
+        release = f"{match.group(1)}.{match.group(2)}" if match else version
+        banner = (
+            f"> 🎉 **Music Assistant {release} is here!** "
+            f"Read the [release announcement]({blog_post_url.strip()}) on our blog."
+        )
 
     # Add important notes section first if provided
     if important_notes and important_notes.strip():
@@ -305,7 +316,13 @@ def generate_release_notes(  # noqa: PLR0915
         if channel:
             lines.append(f"## 📦 {channel} Release")
             lines.append("")
+        if banner:
+            lines.append(banner)
+            lines.append("")
         lines.append(f"_Changes since [{previous_tag}]({repo_url}/releases/tag/{previous_tag})_")
+        lines.append("")
+    elif banner:
+        lines.append(banner)
         lines.append("")
 
     # Add categorized PRs - first pass: categories without "after-other" flag
@@ -398,7 +415,7 @@ def generate_release_notes(  # noqa: PLR0915
     return "\n".join(lines)
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915
     """Generate release notes for the target version."""
     # Get environment variables
     github_token = os.environ.get("GITHUB_TOKEN")
@@ -408,6 +425,7 @@ def main() -> None:
     channel = os.environ.get("CHANNEL")
     repo_name = os.environ.get("GITHUB_REPOSITORY")
     important_notes = os.environ.get("IMPORTANT_NOTES", "")
+    blog_post_url = os.environ.get("BLOG_POST_URL", "")
 
     if not all([github_token, version, head_sha, channel, repo_name]):
         print("Error: Missing required environment variables")  # noqa: T201
@@ -466,6 +484,7 @@ def main() -> None:
             previous_tag,
             frontend_changes_list,
             important_notes,
+            blog_post_url=blog_post_url,
         )
 
     # Output to GitHub Actions

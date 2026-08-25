@@ -23,6 +23,9 @@ on:
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
+      blog_post_url:
+        description: "URL of the accompanying blog post, shown at the top of the release notes"
+        required: false
   workflow_call:
     inputs:
       version:
@@ -39,6 +42,10 @@ on:
         type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
+        required: false
+        type: string
+      blog_post_url:
+        description: "URL of the accompanying blog post, shown at the top of the release notes"
         required: false
         type: string
     secrets:
@@ -155,6 +162,22 @@ jobs:
               echo "base_image_version=${{ env.BASE_IMAGE_VERSION_NIGHTLY }}" >> "$GITHUB_OUTPUT"
               ;;
           esac
+
+      - name: Verify blog post URL
+        if: inputs.blog_post_url != ''
+        env:
+          BLOG_POST_URL: ${{ inputs.blog_post_url }}
+        run: |
+          if [[ "$BLOG_POST_URL" != https://* ]]; then
+            echo "blog_post_url must start with https://" >&2
+            exit 1
+          fi
+          status=$(curl -sSL -o /dev/null -w '%{http_code}' \
+            --retry 3 --max-time 30 "$BLOG_POST_URL")
+          if [ "$status" != "200" ]; then
+            echo "blog_post_url returned HTTP $status" >&2
+            exit 1
+          fi
 
       - name: Create immutable-settings token
         id: immutable_token
@@ -568,6 +591,7 @@ jobs:
           channel: ${{ inputs.channel }}
           github-token: ${{ github.token }}
           important-notes: ${{ inputs.important_notes }}
+          blog-post-url: ${{ inputs.blog_post_url }}
 
       - name: Format release title
         id: title

@@ -71,7 +71,9 @@ The scheduled workflow checks nightly releases automatically. For a manual versi
 Auto-release calculates the next version and invokes **Create Release** with its captured
 source SHA. **Create Release** can also be dispatched directly with an explicit version;
 for direct runs it resolves and freezes the current channel branch head itself unless you
-pass `source_sha` to recover an exact draft or published release source.
+pass `source_sha` to recover an exact draft or published release source. For big releases
+dispatched this way, `blog_post_url` links the announcement at the top of the release
+notes; the workflow verifies the URL is live before releasing.
 
 Do not create or publish a GitHub release manually. A draft created outside the workflow
 is accepted only when its exact tag name and target SHA match; conflicting tags,

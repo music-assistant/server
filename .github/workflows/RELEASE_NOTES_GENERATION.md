@@ -36,6 +36,8 @@ contributors. The generator:
 4. Extracts notes from frontend dependency-update pull requests in the same comparison.
 5. Merges and deduplicates server and frontend contributors.
 6. Places manually supplied important notes first.
+7. Renders an optional blog post link as a banner between the channel header and the
+   changes-since line.
 
 The resulting body is finalized on the matching draft before publication. Reruns may
 refresh draft notes, but release assets and the source SHA must remain exact. After

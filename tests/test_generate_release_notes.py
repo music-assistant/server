@@ -188,3 +188,32 @@ def test_minor_release_with_diverged_previous_tag(
     prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "headsha")
 
     assert [pr.number for pr in prs] == [100, 120]
+
+
+def test_blog_post_url_banner_renders_below_channel_header(
+    generate_notes: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blog post URL renders between the channel header and the changes-since line."""
+    monkeypatch.setenv("VERSION", "2.10.0")
+    monkeypatch.setenv("CHANNEL", "stable")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "music-assistant/server")
+
+    notes = generate_notes.generate_release_notes(
+        config={"categories": []},
+        categories={},
+        uncategorized=[],
+        contributors=[],
+        previous_tag="2.9.9",
+        frontend_changes=None,
+        important_notes="Something breaking",
+        blog_post_url="https://music-assistant.io/blog/2-10/",
+    )
+
+    banner = (
+        "> 🎉 **Music Assistant 2.10 is here!** "
+        "Read the [release announcement](https://music-assistant.io/blog/2-10/) on our blog."
+    )
+    header_pos = notes.index("## 📦 Stable Release")
+    assert notes.index("## ⚠️ Important Notes") < header_pos
+    assert header_pos < notes.index(banner) < notes.index("_Changes since")
