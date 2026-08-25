@@ -324,14 +324,26 @@ async def test_fill_error_no_data() -> None:
         await _consume()
 
 
+async def _silent_source() -> AsyncGenerator[bytes]:
+    """Create an async generator that never delivers audio."""
+    await asyncio.sleep(10)
+    yield ONE_SECOND_CHUNK
+
+
+@pytest.mark.asyncio
+async def test_logs_time_to_first_playable_audio(caplog: pytest.LogCaptureFixture) -> None:
+    """A buffer reports how long its first playable audio took."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    with caplog.at_level(logging.DEBUG, logger="music_assistant.audio_buffer"):
+        buf.fill(_make_source(2), source_name="test://item")
+        await buf.ready.wait()
+
+    assert "test://item became ready after" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) -> None:
-    """The readiness deadline reports the provider, the wait and how much audio arrived."""
-
-    async def _silent_source() -> AsyncGenerator[bytes]:
-        await asyncio.sleep(10)
-        yield ONE_SECOND_CHUNK
-
+    """The readiness deadline reports the caller, provider and how much audio arrived."""
     streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
     streamdetails.buffer = buf
@@ -341,12 +353,33 @@ async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) 
         caplog.at_level(logging.WARNING),
         pytest.raises(AudioError, match="Timeout waiting for audio data"),
     ):
-        await buf._wait_until_ready(streamdetails, ready_timeout=0.05)
+        await buf._wait_until_ready(streamdetails, 0.05, "get_buffer[prepare]")
 
-    assert "Gave up after" in caplog.text
-    assert "waiting for audio from builtin" in caplog.text
-    assert "0s buffered" in caplog.text
+    assert "get_buffer[prepare]: Gave up on builtin" in caplog.text
+    assert ", 0s buffered" in caplog.text
     assert streamdetails.buffer is None
+
+
+@pytest.mark.asyncio
+async def test_ready_timeout_stays_quiet_for_a_released_buffer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A buffer released to free a stream slot is not reported as a provider stall."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    streamdetails.buffer = buf
+    buf.fill(_silent_source(), source_name=streamdetails.uri)
+
+    with caplog.at_level(logging.WARNING):
+        waiter = asyncio.create_task(
+            buf._wait_until_ready(streamdetails, 0.05, "get_buffer[prepare_next]")
+        )
+        await asyncio.sleep(0)
+        await buf.clear()
+        with pytest.raises(AudioError, match="Timeout waiting for audio data"):
+            await waiter
+
+    assert "Gave up on" not in caplog.text
 
 
 @pytest.mark.asyncio

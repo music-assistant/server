@@ -469,7 +469,9 @@ class AudioBuffer:
                     existing_buffer._discarded_chunks,
                 )
                 if wait_ready:
-                    await existing_buffer._wait_until_ready(streamdetails, ready_timeout)
+                    await existing_buffer._wait_until_ready(
+                        streamdetails, ready_timeout, log_prefix
+                    )
                 return existing_buffer
 
         # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
@@ -556,31 +558,38 @@ class AudioBuffer:
         audio_buffer.fill(audio_source, source_name=streamdetails.uri)
 
         if wait_ready:
-            await audio_buffer._wait_until_ready(streamdetails, ready_timeout)
+            await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
 
         return audio_buffer
 
     # -- Private methods --
 
-    async def _wait_until_ready(self, streamdetails: StreamDetails, ready_timeout: float) -> None:
+    async def _wait_until_ready(
+        self, streamdetails: StreamDetails, ready_timeout: float, log_prefix: str
+    ) -> None:
         """
         Wait until this buffer can serve playback or raise its producer failure.
 
         :param streamdetails: Stream details currently referencing this buffer.
         :param ready_timeout: Maximum seconds to wait for enough buffered audio.
+        :param log_prefix: Caller context for logging.
         """
         async with self._ready_wait_lock:
             if not self.ready.is_set():
                 try:
                     await asyncio.wait_for(self.ready.wait(), timeout=ready_timeout)
                 except TimeoutError as err:
-                    LOGGER.warning(
-                        "Gave up after %.1fs waiting for audio from %s (%s), %ss buffered",
-                        time.monotonic() - self._fill_started,
-                        streamdetails.provider,
-                        streamdetails.uri,
-                        self.seconds_available,
-                    )
+                    # clear() does not wake this wait, so a buffer released elsewhere
+                    # (to free a stream slot) lands here on an abort of our own making
+                    if not self.cancelled:
+                        LOGGER.warning(
+                            "%s: Gave up on %s (%s) after %.2fs, %ss buffered",
+                            log_prefix,
+                            streamdetails.provider,
+                            streamdetails.uri,
+                            time.monotonic() - self._fill_started,
+                            self.seconds_available,
+                        )
                     producer_error = await self._clear_failed_buffer(streamdetails)
                     if isinstance(producer_error, AudioError):
                         raise producer_error from err
