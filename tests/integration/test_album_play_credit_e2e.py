@@ -85,3 +85,26 @@ async def test_album_credit_is_cleared_when_a_new_play_replaces_the_queue(
 
     await _play(e2e_mass, queue_id, other_album)
     assert queue_data.credited_albums == set()
+
+
+@pytest.mark.asyncio
+async def test_album_credit_is_dropped_when_the_album_leaves_the_enqueued_list(
+    e2e_mass: MusicAssistant,
+) -> None:
+    """A credit is forgotten once its album falls off the (capped) enqueued list."""
+    queue_id = demo_players(e2e_mass)[2].player_id
+    album, track = await _album_with_track(e2e_mass, "0_0")
+    tracker = e2e_mass.player_queues
+
+    await _play(e2e_mass, queue_id, album)
+    queue_data = tracker.queue_data(queue_id)
+    assert tracker._claim_enqueued_album_credit(queue_data, track) is not None
+    assert queue_data.credited_albums == {album}
+
+    # push the album out of the enqueued list, which holds the last 10 items
+    for index in range(1, 12):
+        other, _ = await _album_with_track(e2e_mass, f"{index}_0")
+        await _play(e2e_mass, queue_id, other, option=QueueOption.ADD)
+
+    assert album not in queue_data.enqueued_media_items
+    assert queue_data.credited_albums == set()

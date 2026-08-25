@@ -781,7 +781,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 ):
                     queue_data.enqueued_media_items.append(media_item)
                     if len(queue_data.enqueued_media_items) > 10:
-                        queue_data.enqueued_media_items.pop(0)
+                        evicted = queue_data.enqueued_media_items.pop(0)
+                        # an album that dropped off the list can no longer be matched, so its
+                        # credit is dead weight unless another entry still stands for it
+                        if isinstance(evicted, Album) and evicted not in (
+                            queue_data.enqueued_media_items
+                        ):
+                            queue_data.credited_albums.discard(evicted)
                     # enqueueing an album again is a new play of it, so let it be credited again
                     if isinstance(media_item, Album):
                         queue_data.credited_albums.discard(media_item)
