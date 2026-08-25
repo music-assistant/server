@@ -296,22 +296,8 @@ class AsyncProcess:
         if not self.proc:
             return
 
-        # cancel existing stdin feeder task if any
         if self._stdin_feeder_task:
-            if not self._stdin_feeder_task.done():
-                self._stdin_feeder_task.cancel()
-            # Always await the task to consume any exception and prevent
-            # "Task exception was never retrieved" errors.
-            try:
-                await self._stdin_feeder_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                # Log unexpected exceptions from the stdin feeder before suppressing
-                LOGGER.warning(
-                    "Process stdin feeder task ended with error: %s",
-                    err,
-                )
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):
@@ -392,30 +378,10 @@ class AsyncProcess:
 
         pid = self.proc.pid
 
-        # Cancel stdin feeder task if any. A task that already finished is still
-        # awaited, so an exception it ended with is retrieved rather than reported
-        # as unhandled once it is garbage collected - and logged, so retrieving it
-        # does not swallow the only trace of the failure.
         if self._stdin_feeder_task:
-            if not self._stdin_feeder_task.done():
-                self._stdin_feeder_task.cancel()
-            try:
-                await self._stdin_feeder_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                LOGGER.warning("Process stdin feeder task ended with error: %s", err)
-
-        # Same for the stderr reader task
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
         if self._stderr_reader_task:
-            if not self._stderr_reader_task.done():
-                self._stderr_reader_task.cancel()
-            try:
-                await self._stderr_reader_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                LOGGER.warning("Process stderr reader task ended with error: %s", err)
+            await self._cancel_and_await(self._stderr_reader_task, "stderr reader")
 
         # Close stdin to signal we're done sending data
         # Note: Don't manually call feed_eof() on stdout/stderr - this causes
@@ -543,6 +509,28 @@ class AsyncProcess:
             with suppress(RuntimeError):
                 transport.set_write_buffer_limits(high=high, low=low)
         return True
+
+    async def _cancel_and_await(self, task: asyncio.Task[None], description: str) -> None:
+        """
+        Cancel one of this process' helper tasks and wait for it to end.
+
+        A task that already finished is awaited too, so it is never left with an
+        unretrieved exception. An unexpected error is logged rather than raised.
+
+        :param task: The task to cancel and await.
+        :param description: How the task is named when logging an unexpected error.
+        """
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # expected when we cancel the task
+        except Exception as err:
+            # retrieving the failure is what keeps asyncio from reporting it as
+            # unhandled once the task is collected, so log it here rather than
+            # dropping the only trace of it
+            self.logger.warning("The %s task ended with error: %s", description, err)
 
 
 async def check_output(
