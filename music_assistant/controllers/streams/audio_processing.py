@@ -529,9 +529,12 @@ class AudioProcessingManager:
             volume_normalization_mode=processing.volume_normalization_mode,
             outputs=_group_outputs(
                 _player_output_details(
-                    streamdetails, _source_processing_item(processing, entry), player_id, entry
+                    streamdetails,
+                    _source_processing_item(processing, entry),
+                    consumer_player_id,
+                    entry,
                 )
-                for player_id, entry in sorted(self._get_outputs(processing, None).items())
+                for consumer_player_id, entry in sorted(self._get_outputs(processing, None).items())
             ),
         )
         if source_session.active_source_audio == details:
