@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import soxr
 import torch
-from beat_this.inference import Spect2Frames
+from beat_this.inference import Spect2Frames, aggregate_prediction, split_piece
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from torchaudio.transforms import SpectralCentroid
@@ -58,6 +58,17 @@ ANALYSIS_SAMPLE_RATE = 22050
 # informational notice (see get_config_entries) as it may be tight under load.
 RECOMMENDED_RAM_GB = 6.0
 RECOMMENDED_CPU_CORES = 4
+# Beat This predicts a long track as fixed windows. These are the values the model was trained
+# and released with (30s at 50 fps, plus the loss-border frames its predictions are unreliable
+# on), so a windowed prediction is identical to a whole-track one. Do not tune them: a window
+# of another length puts the model off its training distribution across the whole window.
+BEAT_WINDOW_FRAMES = 1500
+BEAT_WINDOW_BORDER_FRAMES = 6
+BEAT_WINDOW_OVERLAP_MODE = "keep_first"
+# While a player streams, wait this many times a window's own compute time before starting the
+# next one, so beat inference never occupies a core continuously and never holds the shared
+# analysis slot for more than one window at a time.
+BEAT_WINDOW_PACE_RATIO = 1.0
 
 
 @dataclass
@@ -525,10 +536,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         key_features: torch.Tensor | None,
     ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
         """Run beat inference followed by musical key inference."""
-        beats, downbeats, beats_per_bar = await self._run_offloaded(
-            self._infer_beat_timings,
-            beat_features,
-        )
+        beats, downbeats, beats_per_bar = await self._infer_beat_timings(beat_features)
         if len(beats) < 2:
             raise AudioAnalysisError("no rhythmic beat detected")
         key, mode = await self._run_offloaded(self._infer_musical_key, key_features)
@@ -609,48 +617,125 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
         return parts[0], parts[1].lower()
 
-    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
-        """Run Beat This model inference to detect beat/downbeat timings and the meter."""
-        assert self._beat_this_model is not None
-        assert self._beat_this_post_processor is not None
+    async def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+        """
+        Run Beat This model inference to detect beat/downbeat timings and the meter.
 
-        tensor = torch.from_numpy(feats).to(self._device)
+        :param feats: Log-mel features for the whole track, shaped (frames, mel bins).
+        """
+        # Resolved once and passed down: an idle unload may clear the fields while the
+        # windows below are still being dispatched.
+        beat_this = self._beat_this_model
+        post_processor = self._beat_this_post_processor
+        assert beat_this is not None
+        assert post_processor is not None
 
-        inference_start = time.perf_counter()
+        spect = torch.from_numpy(feats).to(self._device)
+        windows, starts = split_piece(
+            spect,
+            BEAT_WINDOW_FRAMES,
+            border_size=BEAT_WINDOW_BORDER_FRAMES,
+            avoid_short_end=True,
+        )
+        predictions = []
+        model_seconds = 0.0
+        for window in windows:
+            prediction, elapsed = await self._run_offloaded_timed(
+                self._infer_beat_window, beat_this.model, window
+            )
+            predictions.append(prediction)
+            model_seconds += elapsed
+            await self._pace_beat_windows(elapsed)
+
+        (beats, downbeats, beats_per_bar), post_seconds = await self._run_offloaded_timed(
+            self._decode_beat_timings, post_processor, predictions, starts, len(spect)
+        )
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Model inference: %.1fms compute over %d windows, postprocessing: %.1fms, "
+            "detected %d beats, %d downbeats",
+            model_seconds * 1000,
+            len(windows),
+            post_seconds * 1000,
+            len(beats),
+            len(downbeats),
+        )
+        return beats, downbeats, beats_per_bar
+
+    async def _pace_beat_windows(self, window_seconds: float) -> None:
+        """
+        Idle between beat inference windows for as long as the last one computed.
+
+        :param window_seconds: Compute time of the window that just finished.
+        """
+        if not self.mass.streams.audio_analysis.playback_active():
+            return
+        await asyncio.sleep(window_seconds * BEAT_WINDOW_PACE_RATIO)
+
+    def _infer_beat_window(
+        self, model: torch.nn.Module, window: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        """
+        Run one Beat This window and return its beat and downbeat logits.
+
+        :param model: The Beat This module to run.
+        :param window: One window of log-mel features, shaped (frames, mel bins).
+        """
+        # inference_mode is thread-local, so it has to be entered on the worker thread.
         with torch.inference_mode():
-            beat_logits, downbeat_logits = self._beat_this_model(tensor)
-        model_elapsed = (time.perf_counter() - inference_start) * 1000
+            prediction = model(window.unsqueeze(0))
+        return {"beat": prediction["beat"][0], "downbeat": prediction["downbeat"][0]}
 
-        # Prepare activations for DBN: sigmoid + clamp + combine
-        post_start = time.perf_counter()
+    def _decode_beat_timings(
+        self,
+        post_processor: DBNDownBeatTracker,
+        predictions: list[dict[str, torch.Tensor]],
+        starts: np.ndarray,
+        total_frames: int,
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        """
+        Stitch per-window logits back together and decode them into beat timings.
+
+        :param post_processor: The DBN decoder to run on the stitched activations.
+        :param predictions: Per-window beat/downbeat logits, in window order.
+        :param starts: Frame offset of each window, as returned by split_piece.
+        :param total_frames: Frame count of the whole track.
+        """
+        beat_logits, downbeat_logits = aggregate_prediction(
+            predictions,
+            starts,
+            total_frames,
+            BEAT_WINDOW_FRAMES,
+            BEAT_WINDOW_BORDER_FRAMES,
+            BEAT_WINDOW_OVERLAP_MODE,
+            self._device,
+        )
+        dbn_out, beats_per_bar = post_processor(
+            self._beat_activations(beat_logits.float(), downbeat_logits.float())
+        )
+        beats = dbn_out[:, 0]
+        downbeats = dbn_out[dbn_out[:, 1] == 1, 0]
+        return beats, downbeats, beats_per_bar
+
+    @staticmethod
+    def _beat_activations(beat_logits: torch.Tensor, downbeat_logits: torch.Tensor) -> np.ndarray:
+        """
+        Convert beat/downbeat logits into the (T, 2) activations the DBN expects.
+
+        :param beat_logits: Per-frame beat logits for the whole track.
+        :param downbeat_logits: Per-frame downbeat logits for the whole track.
+        """
         beat_prob = torch.sigmoid(beat_logits).cpu().numpy()
         downbeat_prob = torch.sigmoid(downbeat_logits).cpu().numpy()
         epsilon = 1e-5
         beat_prob = beat_prob * (1 - epsilon) + epsilon / 2
         downbeat_prob = downbeat_prob * (1 - epsilon) + epsilon / 2
-        combined_act = np.column_stack(
+        return np.column_stack(
             [
                 np.maximum(beat_prob - downbeat_prob, epsilon / 2),
                 downbeat_prob,
             ]
         )
-
-        dbn_out, beats_per_bar = self._beat_this_post_processor(combined_act)
-        post_elapsed = (time.perf_counter() - post_start) * 1000
-
-        beats = dbn_out[:, 0]
-        downbeats = dbn_out[dbn_out[:, 1] == 1, 0]
-
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Model inference: %.1fms, postprocessing: %.1fms, detected %d beats, %d downbeats",
-            model_elapsed,
-            post_elapsed,
-            len(beats),
-            len(downbeats),
-        )
-
-        return beats, downbeats, beats_per_bar
 
     def _clear_session_data(self, data: SmartFadesData) -> None:
         """Release all state retained for an analysis session."""

@@ -7,18 +7,24 @@ import math
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 import pytest
 import torch
+from beat_this.inference import Spect2Frames
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
-from music_assistant.providers.smart_fades.provider import ANALYSIS_SAMPLE_RATE, SmartFadesProvider
+from music_assistant.providers.smart_fades.provider import (
+    ANALYSIS_SAMPLE_RATE,
+    BEAT_WINDOW_PACE_RATIO,
+    SmartFadesProvider,
+)
 from music_assistant.providers.smart_fades.vocal_activity import (
     FIRERED_MEL_BINS,
     infer_firered_chunk,
@@ -90,6 +96,7 @@ def mass_mock() -> Mock:
     mass.streams.audio_analysis = Mock()
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
+    mass.streams.audio_analysis.playback_active = Mock(return_value=False)
     mass.config = Mock()
     mass.config.get = Mock(return_value={})
     return mass
@@ -126,6 +133,8 @@ async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> S
         sample_rate=ANALYSIS_SAMPLE_RATE,
         hop_length=512,
     )
+    prov._beat_this_model = Mock()
+    prov._beat_this_post_processor = Mock()
     prov._firered_model = Mock()
     prov._firered_cmvn_means = np.zeros(FIRERED_MEL_BINS, dtype=np.float64)
     prov._firered_cmvn_inverse_std = np.ones(FIRERED_MEL_BINS, dtype=np.float64)
@@ -151,10 +160,12 @@ def deterministic_provider(
         patch.object(
             feature_provider,
             "_infer_beat_timings",
-            return_value=(
-                np.asarray(EXPECTED_BEATS, dtype=np.float32),
-                np.asarray(EXPECTED_DOWNBEATS, dtype=np.float32),
-                4,
+            new=AsyncMock(
+                return_value=(
+                    np.asarray(EXPECTED_BEATS, dtype=np.float32),
+                    np.asarray(EXPECTED_DOWNBEATS, dtype=np.float32),
+                    4,
+                )
             ),
         ),
         patch.object(
@@ -396,7 +407,7 @@ async def test_finalize_raises_when_not_enough_beats(
         patch.object(
             feature_provider,
             "_infer_beat_timings",
-            return_value=(np.array([0.5]), np.array([]), 4),
+            new=AsyncMock(return_value=(np.array([0.5]), np.array([]), 4)),
         ),
         pytest.raises(AudioAnalysisError, match="beat"),
     ):
@@ -605,13 +616,14 @@ async def test_vocal_inference_starts_before_beat_finishes(
     vocal_started = asyncio.Event()
     beat_finished = False
 
-    async def run_offloaded(func: Callable[..., object], *args: object) -> object:
+    async def infer_beat_timings(_feats: np.ndarray) -> object:
         nonlocal beat_finished
-        if func.__name__ == "_infer_beat_timings":
-            beat_started.set()
-            await asyncio.wait_for(vocal_started.wait(), timeout=1)
-            beat_finished = True
-            return np.array([0.0, 0.5]), np.array([0.0]), 4
+        beat_started.set()
+        await asyncio.wait_for(vocal_started.wait(), timeout=1)
+        beat_finished = True
+        return np.array([0.0, 0.5]), np.array([0.0]), 4
+
+    async def run_offloaded(func: Callable[..., object], *args: object) -> object:
         if func is infer_firered_chunk:
             assert beat_started.is_set()
             vocal_started.set()
@@ -627,6 +639,7 @@ async def test_vocal_inference_starts_before_beat_finishes(
         return await run_offloaded(func, *args), 0.0
 
     with (
+        patch.object(provider, "_infer_beat_timings", side_effect=infer_beat_timings),
         patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
         patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
     ):
@@ -689,11 +702,12 @@ async def test_beat_failure_cancels_vocal_inference(
     vocal_cancelled = asyncio.Event()
     never_finish = asyncio.Event()
 
+    async def infer_beat_timings(_feats: np.ndarray) -> object:
+        # Fail only once the vocal branch is in flight, so cancellation is observable.
+        await asyncio.wait_for(vocal_started.wait(), timeout=1)
+        return np.array([0.0]), np.array([]), 0
+
     async def run_offloaded(func: Callable[..., object], *_args: object) -> object:
-        if func.__name__ == "_infer_beat_timings":
-            # Fail only once the vocal branch is in flight, so cancellation is observable.
-            await asyncio.wait_for(vocal_started.wait(), timeout=1)
-            return np.array([0.0]), np.array([]), 0
         if func is infer_firered_chunk:
             vocal_started.set()
             try:
@@ -707,6 +721,7 @@ async def test_beat_failure_cancels_vocal_inference(
         return await run_offloaded(func, *args), 0.0
 
     with (
+        patch.object(provider, "_infer_beat_timings", side_effect=infer_beat_timings),
         patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
         patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
         pytest.raises(AudioAnalysisError, match="no rhythmic beat"),
@@ -783,3 +798,71 @@ async def test_vocal_inference_with_unloaded_model_is_retryable(
         await provider._infer_vocal_activity(np.zeros((10, 80), dtype=np.float32), 0.1)
 
     assert excinfo.value.retry_at is not None
+
+
+class _StubBeatModel(torch.nn.Module):
+    """Beat This stand-in whose logits depend on where a frame sits inside its window."""
+
+    def forward(self, spect: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return per-frame beat/downbeat logits that shift with the frame's window offset."""
+        # Position-dependent like the real model's attention, and kept small enough that the
+        # sigmoid in _beat_activations stays sensitive to a misplaced frame.
+        content = spect.mean(dim=-1)
+        offsets = torch.arange(content.shape[-1], dtype=content.dtype) * 0.001
+        return {"beat": content + offsets, "downbeat": content - offsets}
+
+
+async def test_windowed_inference_matches_whole_track_prediction(
+    provider: SmartFadesProvider,
+) -> None:
+    """Running the track as windows reproduces Beat This's own whole-track prediction."""
+    rng = np.random.default_rng(3)
+    feats = rng.normal(size=(4000, 128)).astype(np.float32)
+    stub = _StubBeatModel()
+    provider._beat_this_model = Mock(model=stub)
+    captured: list[np.ndarray] = []
+
+    def post_processor(activations: np.ndarray) -> tuple[np.ndarray, int]:
+        captured.append(activations)
+        return np.array([[0.0, 1.0], [0.5, 2.0]]), 4
+
+    provider._beat_this_post_processor = post_processor
+
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return func(*args), 0.0
+
+    with patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed):
+        await provider._infer_beat_timings(feats)
+
+    # Beat This' own whole-track entry point, driven with the same stub model.
+    reference = SimpleNamespace(model=stub, float16=False, device=torch.device("cpu"))
+    beat_logits, downbeat_logits = Spect2Frames.spect2frames(reference, torch.from_numpy(feats))
+    expected = SmartFadesProvider._beat_activations(beat_logits, downbeat_logits)
+
+    assert len(captured) == 1
+    assert np.array_equal(captured[0], expected)
+
+
+@pytest.mark.parametrize(
+    ("playing", "expect_paced"),
+    [(True, True), (False, False)],
+)
+async def test_beat_windows_are_paced_only_while_a_player_streams(
+    provider: SmartFadesProvider,
+    mass_mock: Mock,
+    playing: bool,
+    expect_paced: bool,
+) -> None:
+    """Inference windows idle between each other only when a queue stream is live."""
+    mass_mock.streams.audio_analysis.playback_active = Mock(return_value=playing)
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    with patch("music_assistant.providers.smart_fades.provider.asyncio.sleep", fake_sleep):
+        await provider._pace_beat_windows(0.4)
+
+    assert bool(delays) is expect_paced
+    if expect_paced:
+        assert delays == [0.4 * BEAT_WINDOW_PACE_RATIO]
