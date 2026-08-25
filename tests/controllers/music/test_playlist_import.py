@@ -147,6 +147,9 @@ async def test_import_with_explicit_match_policy_overrides_library_matching() ->
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     assert call_kwargs["metadata"]["match_policy"] == "exact"
+
+
+async def test_import_with_match_providers_narrows_snapshot() -> None:
     """match_providers narrows the snapshot to the requested instances/domains."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
