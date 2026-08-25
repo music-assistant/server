@@ -1639,6 +1639,25 @@ def test_compare_track_evidence_uses_isrc_duration_tolerance() -> None:
     )
 
 
+def test_compare_track_evidence_treats_unknown_duration_as_loose_not_reject() -> None:
+    """A title/artist match isn't rejected just because one side's duration is unknown."""
+    base = _provider_track("base", "provider_a", duration=200)
+    # 0 is the unset default; -1 is the M3U convention for an unadvertised duration
+    missing_duration = _provider_track(
+        "missing", "provider_b", duration=0, album_name="Compilation"
+    )
+    unknown_duration = _provider_track(
+        "unknown", "provider_b", duration=-1, album_name="Compilation"
+    )
+
+    assert (
+        compare.compare_track_evidence(base, missing_duration) == compare.TrackMatchConfidence.LOOSE
+    )
+    assert (
+        compare.compare_track_evidence(base, unknown_duration) == compare.TrackMatchConfidence.LOOSE
+    )
+
+
 def test_compare_track_evidence_rejects_explicitness_conflicts() -> None:
     """Explicit and clean recordings are not interchangeable migration matches."""
     explicit = _provider_track("explicit", "provider_a")

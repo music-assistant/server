@@ -565,6 +565,10 @@ def compare_track_evidence(
         return TrackMatchConfidence.LIKELY
     if _track_durations_match(base_item, compare_item, _LOOSE_TRACK_DURATION_TOLERANCE):
         return TrackMatchConfidence.LOOSE
+    if not _track_durations_conflict(base_item, compare_item, _LOOSE_TRACK_DURATION_TOLERANCE):
+        # title and artist already matched above; a duration that is merely unknown on
+        # one side (e.g. an M3U entry with no #EXTINF length) isn't evidence against it
+        return TrackMatchConfidence.LOOSE
     return TrackMatchConfidence.NO_MATCH
 
 
@@ -1185,9 +1189,18 @@ def _same_album_position_conflicts(
 
 def _track_durations_match(base_track: Track, compare_track: Track, tolerance: int) -> bool:
     """Return whether two known track durations are within tolerance."""
-    if not base_track.duration or not compare_track.duration:
+    if base_track.duration <= 0 or compare_track.duration <= 0:
+        # 0 is the unset default and -1 is the M3U convention for "unknown duration"
         return False
     return _duration_close(base_track.duration, compare_track.duration, tolerance)
+
+
+def _track_durations_conflict(base_track: Track, compare_track: Track, tolerance: int) -> bool:
+    """Return whether both durations are known and fall outside tolerance."""
+    if base_track.duration <= 0 or compare_track.duration <= 0:
+        # a missing/unknown duration on either side is not evidence of a mismatch
+        return False
+    return not _duration_close(base_track.duration, compare_track.duration, tolerance)
 
 
 def _is_missing_remaster_version(base_version: str, compare_version_value: str) -> bool:
