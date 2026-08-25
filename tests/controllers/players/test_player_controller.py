@@ -4841,22 +4841,37 @@ class TestNativeAnnouncementRouting:
         native_path.assert_awaited_once()
         assert native_path.call_args.args[1] is proto
 
-    async def test_active_protocol_child_beats_own_native_support(
+    async def test_own_native_support_beats_the_active_protocol_child(
         self, mock_mass: MagicMock
     ) -> None:
         """
-        The output that is actively rendering wins over the player's own support.
+        The player's own announcement handler wins over the output rendering the audio.
 
-        E.g. a Sonos playing through its AirPlay child: the announcement rides
-        the same audio path as the music (mixed into the live stream, in sync
-        with the rest of a group) instead of a second mechanism firing beside
-        the playback.
+        E.g. a Sonos playing through its AirPlay child announces with audioClip,
+        which overlays the clip on that stream.
         """
-        controller, _player, proto, native_path, _generic_path = (
+        controller, player, _proto, native_path, _generic_path = (
             self._make_player_with_linked_child(
                 mock_mass,
                 PlaybackState.PLAYING,
                 parent_supports_announce=True,
+                active_protocol="proto_1",
+            )
+        )
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is player
+
+    async def test_active_protocol_child_announces_without_own_support(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that cannot announce itself announces through its rendering output."""
+        controller, _player, proto, native_path, _generic_path = (
+            self._make_player_with_linked_child(
+                mock_mass,
+                PlaybackState.PLAYING,
                 active_protocol="proto_1",
             )
         )
