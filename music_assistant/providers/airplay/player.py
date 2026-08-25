@@ -34,6 +34,7 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
+    AIRPLAY_VOLUME_ECHO_GRACE_S,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
@@ -110,6 +111,7 @@ class AirPlayPlayer(Player):
         self.address = address
         self.stream: AirPlayStream | None = None
         self.last_command_sent = 0.0
+        self._volume_reports_ignored_until = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         self._rejoin_task: asyncio.Task[None] | None = None
@@ -310,22 +312,25 @@ class AirPlayPlayer(Player):
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
         features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
-        # A player with a Sendspin bridge CONFIGURED still announces natively
-        # whenever there is a stream to mix into: its own (session-backed)
-        # AirPlay stream, or the bridge's stream while Sendspin plays through
-        # it. Only a bridged player with neither hides the feature - a
-        # dedicated announcement session on it would race the bridge for the
-        # device, so those announcements keep their existing routing (the
-        # generic flow via the Sendspin parent).
-        prov = cast("AirPlayProvider", self.provider)
-        bridge = prov.bridge_manager.get_bridge(self.player_id)
-        if (
-            bridge is not None
-            and not bridge.owns_airplay_stream
-            and not (self.stream is not None and self.stream.running and self.stream.session)
-        ):
+        # An announcement is mixed into the audio the player is already rendering, so
+        # the feature is only offered while there is live playback to mix into. Without
+        # it the players controller plays the announcement its own way, which leaves
+        # the device to whatever else may be streaming to it.
+        if not self.has_live_audio:
             features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
         return features
+
+    @property
+    def has_live_audio(self) -> bool:
+        """Return True if the player is rendering audio an announcement can mix into."""
+        if self.playback_state != PlaybackState.PLAYING:
+            return False
+        return self.stream is not None and self.stream.running and self.stream.connected
+
+    @property
+    def applies_announcement_volume(self) -> bool:
+        """Return True: the announcement volume is applied around the mixed clip."""
+        return True
 
     @property
     def can_group_with(self) -> set[str]:
@@ -753,14 +758,31 @@ class AirPlayPlayer(Player):
             # always update the state after modifying group members
             self.update_state()
 
-    def update_volume_from_device(self, volume: int) -> None:
-        """Update volume from device feedback."""
-        ignore_volume_report = (
+    @property
+    def ignore_volume_reports(self) -> bool:
+        """Return True if the device's own volume reports must not be acted on."""
+        if self._volume_reports_ignored_until > time.time():
+            # a level we sent ourselves is still echoing back
+            return True
+        return bool(
             self.config.get_value(CONF_IGNORE_VOLUME)
             or self.device_info.manufacturer.lower() == "apple"
         )
 
-        if ignore_volume_report:
+    def suppress_volume_reports(self, seconds: float = AIRPLAY_VOLUME_ECHO_GRACE_S) -> None:
+        """
+        Ignore the device's own volume reports for the given time.
+
+        :param seconds: How long from now the reports are ignored; a window that is
+            already open is only ever extended.
+        """
+        self._volume_reports_ignored_until = max(
+            self._volume_reports_ignored_until, time.time() + seconds
+        )
+
+    def update_volume_from_device(self, volume: int) -> None:
+        """Update volume from device feedback."""
+        if self.ignore_volume_reports:
             return
 
         cur_volume = self.volume_level or 0

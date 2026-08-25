@@ -1769,6 +1769,9 @@ class AirPlayStream:
         command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
         if command_delivered:
             self.player.last_command_sent = time.time()
+            if command.startswith("VOLUME="):
+                # the receiver echoes every level it is handed back over DACP
+                self.player.suppress_volume_reports()
         return command_delivered
 
     def _check_password_preflight(self) -> None:

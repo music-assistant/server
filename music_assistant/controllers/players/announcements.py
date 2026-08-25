@@ -474,8 +474,10 @@ class AnnouncementsMixin:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, False))
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
-            if announcement_volume is not None and not self._output_owns_volume(
-                player, announce_player
+            if (
+                announcement_volume is not None
+                and not announce_player.applies_announcement_volume
+                and not self._output_owns_volume(player, announce_player)
             ):
                 # The level is resolved on the scale of the control that owns the player's
                 # volume, so an output that does not own it cannot apply it: whatever that

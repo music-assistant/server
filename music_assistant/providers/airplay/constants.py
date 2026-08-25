@@ -233,13 +233,17 @@ AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
 # and out itself. <= -60 mutes the music entirely. -18 dB puts the music
 # clearly in the background under speech (-12 was field-judged too shallow).
 AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -18
+# Silence prepended to every announcement clip. The binary holds the music duck
+# for the whole clip file, so this is a window in which the music is already
+# ducked and the announcement has not started yet: the announcement volume is
+# raised inside it, where it cannot be heard as the music getting louder. It
+# has to cover the duck's ramp plus the round trip of the volume command.
+AIRPLAY_ANNOUNCE_DUCK_LEAD_S: Final[float] = 0.5
 # Silence appended to every announcement clip, so the volume restore has a
-# cushion to land in. Mixed over live playback the binary holds the duck for
-# the whole clip, so the restore lands while the music is still ducked instead
-# of racing the duck's 200 ms tail ramp (a restore that lands after the ramp
-# plays a moment of full-level music at the still-bumped device volume). On a
-# dedicated announcement session it keeps the stream alive past the clip, which
-# is what a volume command needs to reach the receiver at all.
+# cushion to land in. The binary holds the duck for the whole clip, so the
+# restore lands while the music is still ducked instead of racing the duck's
+# 200 ms tail ramp (a restore that lands after the ramp plays a moment of
+# full-level music at the still-bumped device volume).
 AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
 # On top of the lead to the commanded instant: how long to wait for a member's
 # announce_started before treating that member as not announcing. An outdated
@@ -253,11 +257,10 @@ AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS: Final[int] = 5000
 # Pad after the clip's audible end before the pre-announcement volume is
 # restored: covers the jitter between the acked instant and true audibility.
 AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS: Final[int] = 500
-# Delay of the announcement-volume bump past the clip's audible start: a bump
-# that lands early (a receiver playing out later than the reported instant)
-# raises the still-playing music, so it is biased into the clip where the duck
-# ramp masks it - the pre-announce chime covers the first moments anyway.
-AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
+# Where inside the ducked lead-in the announcement volume is raised: past the
+# duck's own ramp, with the rest of the lead left for the command to reach the
+# receiver before the announcement itself becomes audible.
+AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 200
 # The AirPlay volume parameter is linear dB: 0..100 maps onto -30..0 dB on
 # every flow (libraop raopcl_float_volume, reused verbatim by the native AP2
 # SET_PARAMETER path), so one volume point is exactly 0.3 dB of output. This
@@ -265,9 +268,6 @@ AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
 # the duck is deepened by the same amount to keep the music's perceived level
 # at the configured duck depth.
 AIRPLAY_VOLUME_DB_PER_POINT: Final[float] = 0.3
-# Drain margin for a dedicated announcement session: covers the receiver
-# playing out its buffered audio after the clip's last byte was fed.
-AIRPLAY_ANNOUNCE_SESSION_DRAIN_S: Final[float] = 2.0
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
@@ -303,6 +303,11 @@ CONF_PAIR_NOW: Final[str] = "pair_now"
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
+# How long a volume we sent ourselves keeps the device's own volume reports from
+# being acted on. A receiver echoes every level it is given back over DACP, and
+# an echo that arrives after the next level was already sent would otherwise be
+# read as the user turning the knob and written straight back to the device.
+AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
