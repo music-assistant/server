@@ -841,11 +841,12 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
-                    # the push resets a changed track to position zero (a
-                    # same-item refinement carries the current position), so
-                    # the correction below only follows when playback is
-                    # actually elsewhere (mid-track start, tag refinement)
-                    self._last_progress_sent = 0
+                    # every identity push is followed by one explicit progress
+                    # anchor, even at position zero: some receivers (WiiM Amp)
+                    # mute a flushed-and-restarted session mid-track when no
+                    # PROGRESS ever follows the SENDMETA, and un-mute on the
+                    # first one that arrives
+                    self._last_progress_sent = None
                     if artwork_file:
                         # the bundle delivered the artwork: settle it and stand
                         # down the ARTWORK follow-up
