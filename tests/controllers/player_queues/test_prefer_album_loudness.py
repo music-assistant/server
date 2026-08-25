@@ -153,13 +153,16 @@ async def test_different_albums_use_track_loudness() -> None:
 
 
 async def test_first_item_of_the_queue_has_no_previous_item() -> None:
-    """Repeating the queue wraps back to its first item, which nothing plays before."""
+    """Starting at the first item, nothing plays before it, least of all the end of the queue."""
     items = [
         _queue_item("track-1", OTHER_PROVIDER_ALBUM),
         _queue_item("track-2", PROVIDER_ALBUM),
         _queue_item("track-3", OTHER_PROVIDER_ALBUM),
     ]
-    assert not await _prefer_album_loudness(items, current_index=2, repeat_mode=RepeatMode.ALL)
+    controller = _controller(items)
+    await controller._load_item(items[0], next_index=1)
+    get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
+    assert not get_stream_details.call_args.kwargs["prefer_album_loudness"]
 
 
 async def test_track_on_repeat_single_is_not_an_album() -> None:
