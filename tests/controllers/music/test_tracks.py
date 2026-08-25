@@ -1029,6 +1029,78 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     assert result.matches == (match,)
 
 
+async def test_enrich_provider_mappings_prefers_stronger_match_within_same_domain(
+    music: MusicController,
+) -> None:
+    """A weaker match on one account does not stop a stronger one on a sibling account."""
+    source = create_track("spotify_1", "source")
+    loose_track = create_track("qobuz_1", "loose-track")
+    loose_mapping = next(iter(loose_track.provider_mappings))
+    exact_track = create_track("qobuz_2", "exact-track")
+    exact_mapping = next(iter(exact_track.provider_mappings))
+    first_provider = MagicMock(spec=MusicProvider)
+    first_provider.name = "Qobuz first"
+    first_provider.instance_id = "qobuz_1"
+    first_provider.domain = "qobuz"
+    first_provider.available = True
+    first_provider.is_streaming_provider = True
+    second_provider = MagicMock(spec=MusicProvider)
+    second_provider.name = "Qobuz second"
+    second_provider.instance_id = "qobuz_2"
+    second_provider.domain = "qobuz"
+    second_provider.available = True
+    second_provider.is_streaming_provider = True
+    loose_match = TrackProviderMatch(
+        track=loose_track, mapping=loose_mapping, confidence=TrackMatchConfidence.LOOSE
+    )
+    exact_match = TrackProviderMatch(
+        track=exact_track, mapping=exact_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(match=loose_match),
+        "qobuz_2": TrackProviderMatchResult(match=exact_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ) as find_match,
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": first_provider,
+                "qobuz_2": second_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "qobuz_2"},
+        )
+
+    # both accounts must be evaluated - an early LOOSE hit on the first must not
+    # prevent the stronger EXACT hit on the second from being found and preferred
+    assert find_match.await_count == 2
+    assert result.matches == (exact_match,)
+    assert exact_mapping in result.track.provider_mappings
+    assert loose_mapping not in result.track.provider_mappings
+
+
 async def test_enrich_provider_mappings_treats_tied_conflicting_matches_as_ambiguous(
     music: MusicController,
 ) -> None:

@@ -889,13 +889,16 @@ class TracksController(MediaControllerBase[Track]):
                 failed_providers.append(provider.name)
                 continue
             if result.match:
-                # defer accept/reject until every provider has been queried, so a
-                # conflict is resolved by confidence rather than by which provider
-                # happened to be visited first
+                # defer accept/reject until every allowed instance has been queried, so
+                # a conflict (including between two instances of the same domain) is
+                # resolved by confidence rather than by which one was visited first
                 provider_matches.append((provider, result.match))
-                existing_domains.add(provider.domain)
             elif result.ambiguous:
                 ambiguous_providers.append(provider.name)
+        provider_matches, domain_ambiguous_providers = self._select_best_match_per_domain(
+            provider_matches
+        )
+        ambiguous_providers.extend(domain_ambiguous_providers)
         accepted, tier_ambiguous_providers = self._resolve_confident_matches(provider_matches)
         ambiguous_providers.extend(tier_ambiguous_providers)
         for provider, match in accepted:
@@ -1184,6 +1187,34 @@ class TracksController(MediaControllerBase[Track]):
             for index, base_match in enumerate(matches)
             for compare_match in matches[index + 1 :]
         )
+
+    def _select_best_match_per_domain(
+        self, provider_matches: list[tuple[MusicProvider, TrackProviderMatch]]
+    ) -> tuple[list[tuple[MusicProvider, TrackProviderMatch]], list[str]]:
+        """
+        Reduce matches from multiple instances of the same provider domain to one.
+
+        Evaluating every allowed instance can surface more than one acceptable match for
+        the same domain (e.g. two personal accounts on the same service), but only one
+        mapping can be stored per domain. The highest-confidence match is kept; tied
+        top-confidence candidates that disagree with each other are reported as
+        ambiguous instead of picked arbitrarily by instance order.
+        """
+        best: list[tuple[MusicProvider, TrackProviderMatch]] = []
+        ambiguous_providers: list[str] = []
+        for _, domain_iter in groupby(
+            sorted(provider_matches, key=lambda pm: pm[0].domain), key=lambda pm: pm[0].domain
+        ):
+            domain_matches = list(domain_iter)
+            best_confidence = max(match.confidence for _, match in domain_matches)
+            top_tier = [pm for pm in domain_matches if pm[1].confidence == best_confidence]
+            if len(top_tier) > 1 and not self._matches_are_compatible(
+                [match for _, match in top_tier]
+            ):
+                ambiguous_providers.extend(provider.name for provider, _ in top_tier)
+                continue
+            best.append(top_tier[0])
+        return best, ambiguous_providers
 
     def _resolve_confident_matches(
         self, provider_matches: list[tuple[MusicProvider, TrackProviderMatch]]
