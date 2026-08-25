@@ -426,6 +426,41 @@ async def test_ready_timeout_stays_quiet_for_a_released_buffer(
 
 
 @pytest.mark.asyncio
+async def test_ready_timeout_stays_quiet_while_the_source_is_finalizing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A release is not reported as a stall while the source is still cleaning up."""
+    finalized = asyncio.Event()
+
+    async def _slow_to_finalize_source() -> AsyncGenerator[bytes]:
+        try:
+            await asyncio.sleep(10)
+            yield ONE_SECOND_CHUNK
+        finally:
+            await finalized.wait()
+
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    streamdetails.buffer = buf
+    buf.fill(_slow_to_finalize_source(), source_name=streamdetails.uri)
+
+    with caplog.at_level(logging.WARNING):
+        waiter = asyncio.create_task(
+            buf._wait_until_ready(streamdetails, 0.05, "get_buffer[prepare_next]")
+        )
+        await asyncio.sleep(0)
+        assert buf._producer_task is not None
+        buf._producer_task.cancel()
+        # the deadline expires while the source is still inside its cleanup
+        await asyncio.sleep(0.1)
+        finalized.set()
+        with pytest.raises(AudioError, match="Timeout waiting for audio data"):
+            await waiter
+
+    assert "Gave up on" not in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("media_type", [MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE])
 async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: MediaType) -> None:
     """get_buffer skips audio analysis for sound effects and audio sources."""

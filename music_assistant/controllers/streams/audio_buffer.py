@@ -579,9 +579,12 @@ class AudioBuffer:
                 try:
                     await asyncio.wait_for(self.ready.wait(), timeout=ready_timeout)
                 except TimeoutError as err:
-                    # clear() does not wake this wait, so a buffer released elsewhere
-                    # (to free a stream slot) lands here on an abort of our own making
-                    if not self.cancelled:
+                    # clear() does not wake this wait, and only marks the buffer cancelled
+                    # once the producer is gone - so a buffer released elsewhere (to free a
+                    # stream slot) lands here on an abort of our own making
+                    producer = self._producer_task
+                    releasing = self.cancelled or bool(producer and producer.cancelling())
+                    if not releasing:
                         LOGGER.warning(
                             "%s: Gave up on %s (%s) after %.2fs, %ss buffered",
                             log_prefix,
