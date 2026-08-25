@@ -11,7 +11,9 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerType
+from music_assistant_models.audio_processing import ActiveSourceAudioDetails
+from music_assistant_models.enums import ContentType, PlaybackState, PlayerType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -103,6 +105,30 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.refresh_state(signal_event=False)
 
         assert player.state.playback_state == PlaybackState.IDLE
+
+    def test_protocol_player_inherits_parent_source_audio(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+    ) -> None:
+        """A protocol player publishes the live source audio details of its parent."""
+        details = ActiveSourceAudioDetails(
+            input_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            )
+        )
+        parent = MockPlayer(provider, "player_1", "Player")
+        parent._state.active_source_audio = details
+        protocol_player = MockPlayer(provider, "ap_1", "AirPlay", player_type=PlayerType.PROTOCOL)
+        controller._players = {"player_1": parent, "ap_1": protocol_player}
+        protocol_player.set_protocol_parent_id("player_1")
+
+        protocol_player.refresh_state(signal_event=False)
+
+        assert protocol_player.state.active_source_audio == details
 
     def test_no_active_protocol_uses_native_state(
         self,

@@ -396,6 +396,32 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
     assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
+def test_source_processing_defaults_are_reported(tmp_path: Path) -> None:
+    """Spotify reports its default source processing as normalization only."""
+    provider = _provider_with_stored_config({}, tmp_path)
+
+    assert provider.delivers_crossfaded_audio(MagicMock()) is False
+    assert provider.delivers_normalized_audio(MagicMock()) is True
+
+
+def test_source_processing_config_is_reported(tmp_path: Path) -> None:
+    """Spotify reports the source processing configured for its backend."""
+    provider = _provider_with_stored_config({}, tmp_path)
+    provider.config.values[CONF_CROSSFADE_DURATION] = ConfigEntry(
+        key=CONF_CROSSFADE_DURATION,
+        type=ConfigEntryType.INTEGER,
+        value=8,
+    )
+    provider.config.values[CONF_LOUDNESS_NORMALIZATION] = ConfigEntry(
+        key=CONF_LOUDNESS_NORMALIZATION,
+        type=ConfigEntryType.BOOLEAN,
+        value=False,
+    )
+
+    assert provider.delivers_crossfaded_audio(MagicMock()) is True
+    assert provider.delivers_normalized_audio(MagicMock()) is False
+
+
 def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     """The generated config.yml carries crossfade_duration (ms) and normalisation_disabled."""
     backend = object.__new__(GoLibrespotBackend)

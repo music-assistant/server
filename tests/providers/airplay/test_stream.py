@@ -1203,6 +1203,50 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+    """
+    A delivered volume command makes the player ignore the echo of it.
+
+    The receiver reports every level it is handed back over DACP; read at face value
+    that echo is the user reaching for the volume and is written straight back out.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("VOLUME=40") is True
+
+    player.suppress_volume_reports.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_delivered_other_command_leaves_the_echo_grace_alone() -> None:
+    """A command that is not a level cannot come back as one, so it blinds nothing."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("ACTION=STANDBY") is True
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dropped_volume_command_leaves_the_echo_grace_alone() -> None:
+    """A volume command the binary never got is never echoed, so the reports stay live."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
+        assert await stream.send_cli_command("VOLUME=40") is False
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_connect_does_not_write_before_the_binary_can_read() -> None:
     """Connecting lays out the command pipe and starts cliairplay, pushing nothing into it."""
     player = _make_player()
@@ -2456,27 +2500,6 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
         await stream.wait_for_connection()
 
     send_command.assert_awaited_with("VOLUME=0")
-
-
-@pytest.mark.asyncio
-async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
-    """A volume explicitly requested for the session is pushed, even without ownership."""
-    player = _make_player()
-    player.owns_volume = False
-    player.volume_muted = False
-    stream = AirPlayStream(player)
-    stream._connected.set()
-    stream.session = MagicMock(requested_volume=85)
-
-    with (
-        patch.object(stream, "_cli_proc", MagicMock()),
-        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
-        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
-        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
-    ):
-        await stream.wait_for_connection()
-
-    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
 
 
 @pytest.mark.asyncio

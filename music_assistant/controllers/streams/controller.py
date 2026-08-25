@@ -1087,6 +1087,7 @@ class StreamsController(CoreController):
                 player=player,
                 session=session,
                 streamdetails=streamdetails,
+                provider=prov,
             )
             serving = True
             self._active_output_streams += 1
@@ -1772,6 +1773,7 @@ class StreamsController(CoreController):
         player: Player,
         session: AudioSourceSession,
         streamdetails: StreamDetails,
+        provider: PluginProvider,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
         Open the response for a live audio source and build the audio behind it.
@@ -1780,6 +1782,7 @@ class StreamsController(CoreController):
         :param player: The player consuming this stream.
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
+        :param provider: Plugin delivering the live source.
         :return: The prepared response and the encoded audio to write to it.
         """
         pcm_format = await self.audio.select_pcm_format(
@@ -1820,7 +1823,10 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             shared_player_ids=player.state.group_members,
+            queue_id=session.player_id,
+            session_id=session.playback_session_id,
         ).filter_params
+        self._update_audio_source_processing_context(session, provider)
         if (
             output_format.content_type == ContentType.WAV
             and not filter_params
@@ -1895,6 +1901,7 @@ class StreamsController(CoreController):
                     session.source_id, MediaType.AUDIO_SOURCE
                 )
                 session.attach_streamdetails(streamdetails)
+            self._update_audio_source_processing_context(session, prov)
             serving = True
             async for chunk in self.audio.get_audio_source_stream(
                 streamdetails=streamdetails,
@@ -2063,6 +2070,26 @@ class StreamsController(CoreController):
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,
+        )
+
+    def _update_audio_source_processing_context(
+        self,
+        session: AudioSourceSession,
+        provider: PluginProvider,
+    ) -> None:
+        """
+        Publish source-owned processing for a live AudioSource.
+
+        :param session: Active source session to publish.
+        :param provider: Plugin delivering the live source.
+        """
+        if session.streamdetails is None:
+            return
+        self.audio_processing.update_source_context(
+            session.player_id,
+            session.playback_session_id,
+            crossfade_enabled=provider.delivers_crossfaded_audio(session.streamdetails),
+            volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
     def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:

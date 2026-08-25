@@ -1,4 +1,4 @@
-"""Runtime audio processing details for queue streams."""
+"""Runtime audio processing details for queue and live source streams."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from music_assistant_models.audio_processing import (
+    ActiveSourceAudioDetails,
     AudioFidelity,
     AudioNormalizationDetails,
     AudioNormalizationMeasurementSource,
@@ -79,8 +80,20 @@ class _AudioProcessingSession:
     shared_output_templates: dict[str | None, _AudioOutputEntry] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class _AudioSourceProcessingSession:
+    """Runtime processing state for one live AudioSource selection."""
+
+    session_id: str
+    context_ready: bool = False
+    crossfade_mode: CrossfadeMode = CrossfadeMode.UNKNOWN
+    volume_normalization_mode: VolumeNormalizationMode = VolumeNormalizationMode.UNKNOWN
+    outputs: dict[str | None, dict[str, _AudioOutputEntry]] = field(default_factory=dict)
+    shared_output_templates: dict[str | None, _AudioOutputEntry] = field(default_factory=dict)
+
+
 class AudioProcessingManager:
-    """Build and attach effective audio processing chains to stream details."""
+    """Build effective audio processing details for active playback."""
 
     def __init__(self, mass: MusicAssistant) -> None:
         """
@@ -90,6 +103,7 @@ class AudioProcessingManager:
         """
         self.mass = mass
         self._sessions: dict[str, _AudioProcessingSession] = {}
+        self._source_sessions: dict[str, _AudioSourceProcessingSession] = {}
 
     def start_session(self, queue_id: str, session_id: str) -> None:
         """
@@ -186,6 +200,40 @@ class AudioProcessingManager:
         item.alters_audio = item.alters_audio or alters_audio
         self._publish_item(queue_id, queue_item_id, session)
 
+    def update_source_context(
+        self,
+        player_id: str,
+        session_id: str,
+        *,
+        crossfade_enabled: bool | None,
+        volume_normalization_enabled: bool | None,
+    ) -> None:
+        """
+        Store the source-owned processing active for a live AudioSource.
+
+        :param player_id: Player that owns the source selection.
+        :param session_id: Source playback session that owns the update.
+        :param crossfade_enabled: Whether the source applies crossfade, or None if unknown.
+        :param volume_normalization_enabled: Whether the source normalizes, or None if unknown.
+        """
+        session = self._get_source_session(player_id, session_id, create=True)
+        if session is None:
+            return
+        session.context_ready = True
+        if crossfade_enabled is None:
+            session.crossfade_mode = CrossfadeMode.UNKNOWN
+        elif crossfade_enabled:
+            session.crossfade_mode = CrossfadeMode.SOURCE
+        else:
+            session.crossfade_mode = CrossfadeMode.DISABLED
+        if volume_normalization_enabled is None:
+            session.volume_normalization_mode = VolumeNormalizationMode.UNKNOWN
+        elif volume_normalization_enabled:
+            session.volume_normalization_mode = VolumeNormalizationMode.SOURCE
+        else:
+            session.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+        self._publish_source(player_id, session)
+
     def update_output(
         self,
         player_id: str,
@@ -208,12 +256,22 @@ class AudioProcessingManager:
         :param queue_item_id: Queue item for single-item output, or None for flow output.
         :return: Whether the effective output changed.
         """
-        session = self._get_session(queue_id, session_id)
-        if session is None:
-            return False
-        self._prune_played_items(queue_id, session)
-        if queue_item_id is not None and self._is_played_item(queue_id, queue_item_id):
-            return False
+        source_session = (
+            self._get_source_session(queue_id, session_id, create=True)
+            if queue_item_id is None
+            else None
+        )
+        queue_session: _AudioProcessingSession | None = None
+        if source_session is not None:
+            session: _AudioProcessingSession | _AudioSourceProcessingSession = source_session
+        else:
+            queue_session = self._get_session(queue_id, session_id)
+            if queue_session is None:
+                return False
+            self._prune_played_items(queue_id, queue_session)
+            if queue_item_id is not None and self._is_played_item(queue_id, queue_item_id):
+                return False
+            session = queue_session
 
         destination_player_ids = {player_id}
         if shared_player_ids is not None:
@@ -244,7 +302,11 @@ class AudioProcessingManager:
         if not changed_entries:
             return False
         item_outputs.update(changed_entries)
-        current_changed = self._publish_all(queue_id, session)
+        if source_session is not None:
+            self._publish_source(queue_id, source_session)
+            return True
+        assert queue_session is not None
+        current_changed = self._publish_all(queue_id, queue_session)
         queue = self.mass.player_queues.get(queue_id)
         if current_changed or (
             queue
@@ -256,43 +318,64 @@ class AudioProcessingManager:
 
     def retain_outputs(self, queue_id: str, player_ids: set[str]) -> bool:
         """
-        Reconcile outputs with players attached to a queue.
+        Reconcile processing outputs with the current playback destinations.
 
         :param queue_id: Queue identifier.
         :param player_ids: Player identifiers that belong to the output.
         :return: Whether reconciliation published an updated current chain.
         """
-        session = self._sessions.get(queue_id)
-        if session is None:
-            return False
-        changed = False
-        for queue_item_id, outputs in list(session.outputs.items()):
-            retained = {
-                player_id: output
-                for player_id, output in outputs.items()
-                if player_id in player_ids
-            }
-            if template := session.shared_output_templates.get(queue_item_id):
-                added_player_ids = player_ids - retained.keys()
-                if queue_id not in outputs:
-                    added_player_ids.discard(queue_id)
-                for player_id in sorted(added_player_ids):
-                    retained[player_id] = deepcopy(template)
-                    retained[player_id].details.player_ids = [player_id]
-            if retained == outputs:
-                continue
-            changed = True
-            if retained:
-                session.outputs[queue_item_id] = retained
-            else:
-                del session.outputs[queue_item_id]
-                session.shared_output_templates.pop(queue_item_id, None)
-        if not changed:
-            return False
-        current_changed = self._publish_all(queue_id, session)
-        if current_changed:
-            self.mass.player_queues.signal_update(queue_id)
+        queue_session = self._sessions.get(queue_id)
+        queue_changed = queue_session is not None and self._retain_session_outputs(
+            queue_session,
+            queue_id,
+            player_ids,
+        )
+        source_session = self._source_sessions.get(queue_id)
+        source_changed = source_session is not None and self._retain_session_outputs(
+            source_session,
+            queue_id,
+            player_ids,
+        )
+        current_changed = False
+        if queue_changed:
+            assert queue_session is not None
+            current_changed = self._publish_all(queue_id, queue_session)
+            if current_changed:
+                self.mass.player_queues.signal_update(queue_id)
+        if source_changed:
+            assert source_session is not None
+            self._publish_source(queue_id, source_session)
         return current_changed
+
+    def clear_source(
+        self,
+        player_id: str,
+        session_id: str | None = None,
+        *,
+        preserve_details: bool = False,
+    ) -> None:
+        """
+        Clear processing details for a live AudioSource.
+
+        :param player_id: Player that owns the source selection.
+        :param session_id: Only clear when this playback session is still active.
+        :param preserve_details: Keep the last published snapshot until its replacement arrives.
+        """
+        processing = self._source_sessions.get(player_id)
+        if processing is None or (session_id is not None and processing.session_id != session_id):
+            return
+        del self._source_sessions[player_id]
+        if preserve_details:
+            return
+        source_session = self.mass.players.get_audio_source_session(player_id)
+        if (
+            source_session is None
+            or source_session.active_source_audio is None
+            or (session_id is not None and source_session.playback_session_id != session_id)
+        ):
+            return
+        source_session.active_source_audio = None
+        self.mass.players.trigger_player_update(player_id)
 
     def update_player_dsp_preset(self, player_id: str, preset_id: str | None) -> None:
         """
@@ -301,21 +384,14 @@ class AudioProcessingManager:
         :param player_id: Player whose persisted DSP config changed.
         :param preset_id: Selected preset identifier, or None when cleared.
         """
-        for queue_id, session in tuple(self._sessions.items()):
-            changed = False
-            for outputs in session.outputs.values():
-                for entry in outputs.values():
-                    if (
-                        entry.dsp_config_id == player_id
-                        and entry.details.dsp.preset_id != preset_id
-                    ):
-                        entry.details.dsp.preset_id = preset_id
-                        changed = True
-            for entry in session.shared_output_templates.values():
-                if entry.dsp_config_id == player_id:
-                    entry.details.dsp.preset_id = preset_id
-            if changed and self._publish_all(queue_id, session):
+        for queue_id, queue_session in tuple(self._sessions.items()):
+            if self._update_session_dsp_preset(queue_session, player_id, preset_id) and (
+                self._publish_all(queue_id, queue_session)
+            ):
                 self.mass.player_queues.signal_update(queue_id)
+        for source_player_id, source_session in tuple(self._source_sessions.items()):
+            if self._update_session_dsp_preset(source_session, player_id, preset_id):
+                self._publish_source(source_player_id, source_session)
 
     def clear(self, queue_id: str, session_id: str | None = None) -> None:
         """
@@ -350,6 +426,75 @@ class AudioProcessingManager:
             return None
         return session
 
+    def _get_source_session(
+        self,
+        player_id: str,
+        session_id: str,
+        *,
+        create: bool,
+    ) -> _AudioSourceProcessingSession | None:
+        """Return processing state only when the producer owns the source selection."""
+        source_session = self.mass.players.get_audio_source_session(player_id)
+        if source_session is None or source_session.playback_session_id != session_id:
+            return None
+        processing = self._source_sessions.get(player_id)
+        if processing is not None and processing.session_id == session_id:
+            return processing
+        if not create:
+            return None
+        processing = _AudioSourceProcessingSession(session_id=session_id)
+        self._source_sessions[player_id] = processing
+        return processing
+
+    @staticmethod
+    def _retain_session_outputs(
+        session: _AudioProcessingSession | _AudioSourceProcessingSession,
+        owner_id: str,
+        player_ids: set[str],
+    ) -> bool:
+        """Reconcile one processing session with its current destinations."""
+        changed = False
+        for queue_item_id, outputs in list(session.outputs.items()):
+            retained = {
+                player_id: output
+                for player_id, output in outputs.items()
+                if player_id in player_ids
+            }
+            if template := session.shared_output_templates.get(queue_item_id):
+                added_player_ids = player_ids - retained.keys()
+                if owner_id not in outputs:
+                    added_player_ids.discard(owner_id)
+                for player_id in sorted(added_player_ids):
+                    retained[player_id] = deepcopy(template)
+                    retained[player_id].details.player_ids = [player_id]
+            if retained == outputs:
+                continue
+            changed = True
+            if retained:
+                session.outputs[queue_item_id] = retained
+            else:
+                del session.outputs[queue_item_id]
+                session.shared_output_templates.pop(queue_item_id, None)
+        return changed
+
+    @staticmethod
+    def _update_session_dsp_preset(
+        session: _AudioProcessingSession | _AudioSourceProcessingSession,
+        player_id: str,
+        preset_id: str | None,
+    ) -> bool:
+        """Update a player's preset identity in cached output details."""
+        changed = False
+        for outputs in session.outputs.values():
+            for entry in outputs.values():
+                if entry.dsp_config_id == player_id and entry.details.dsp.preset_id != preset_id:
+                    entry.details.dsp.preset_id = preset_id
+                    changed = True
+        for entry in session.shared_output_templates.values():
+            if entry.dsp_config_id == player_id:
+                entry.details.dsp.preset_id = preset_id
+        return changed
+
     def _publish_all(self, queue_id: str, session: _AudioProcessingSession) -> bool:
         """Attach complete chains for every prepared item."""
         queue = self.mass.player_queues.get(queue_id)
@@ -360,6 +505,37 @@ class AudioProcessingManager:
             if self._publish_item(queue_id, queue_item_id, session, signal_update=False):
                 current_changed |= queue_item_id == current_item_id
         return current_changed
+
+    def _publish_source(
+        self,
+        player_id: str,
+        processing: _AudioSourceProcessingSession,
+    ) -> bool:
+        """Attach live source audio details to the active source session."""
+        source_session = self.mass.players.get_audio_source_session(player_id)
+        if (
+            source_session is None
+            or source_session.playback_session_id != processing.session_id
+            or source_session.streamdetails is None
+            or not processing.context_ready
+        ):
+            return False
+        streamdetails = source_session.streamdetails
+        details = ActiveSourceAudioDetails(
+            input_format=deepcopy(streamdetails.audio_format),
+            input_fidelity=AudioFidelity(quality=get_audio_quality(streamdetails.audio_format)),
+            crossfade_mode=processing.crossfade_mode,
+            volume_normalization_mode=processing.volume_normalization_mode,
+            outputs=self._group_outputs(
+                streamdetails,
+                self._get_outputs(processing, None),
+            ),
+        )
+        if source_session.active_source_audio == details:
+            return False
+        source_session.active_source_audio = details
+        self.mass.players.trigger_player_update(player_id)
+        return True
 
     def _publish_item(
         self,
@@ -384,8 +560,8 @@ class AudioProcessingManager:
                 queue_processing=deepcopy(item.queue_processing),
                 outputs=self._group_outputs(
                     queue_item.streamdetails,
-                    item,
                     output_entries,
+                    item=item,
                 ),
             )
         previous = queue_item.streamdetails.audio_processing
@@ -405,15 +581,25 @@ class AudioProcessingManager:
     def _group_outputs(
         self,
         streamdetails: StreamDetails,
-        item: _AudioProcessingItem,
         player_outputs: dict[str, _AudioOutputEntry],
+        *,
+        item: _AudioProcessingItem | None = None,
     ) -> list[AudioOutputDetails]:
         """Group players with identical effective output processing."""
         grouped: list[AudioOutputDetails] = []
         for player_id, entry in sorted(player_outputs.items()):
             output = deepcopy(entry.details)
             output.player_ids = [player_id]
-            output.fidelity = _get_output_fidelity(streamdetails, item, entry)
+            output.fidelity = (
+                _get_output_fidelity(streamdetails, item, entry)
+                if item is not None
+                else AudioFidelity(
+                    quality=_get_effective_quality(
+                        streamdetails.audio_format,
+                        output.output_format,
+                    )
+                )
+            )
             for existing in grouped:
                 if _output_details_equal_ignoring_players(existing, output):
                     existing.player_ids.append(player_id)
@@ -424,7 +610,7 @@ class AudioProcessingManager:
 
     @staticmethod
     def _get_outputs(
-        session: _AudioProcessingSession,
+        session: _AudioProcessingSession | _AudioSourceProcessingSession,
         queue_item_id: str | None,
     ) -> dict[str, _AudioOutputEntry]:
         """Return shared outputs overlaid with queue-item-specific outputs."""
@@ -556,16 +742,25 @@ def _get_output_fidelity(
     output: _AudioOutputEntry,
 ) -> AudioFidelity:
     """Return effective quality and bit-perfect state for an output."""
-    input_quality = get_audio_quality(streamdetails.audio_format)
-    output_quality = get_audio_quality(output.details.output_format)
-    if AudioQuality.UNKNOWN in (input_quality, output_quality):
-        quality = AudioQuality.UNKNOWN
-    else:
-        quality = min((input_quality, output_quality), key=_QUALITY_RANK.__getitem__)
     return AudioFidelity(
-        quality=quality,
+        quality=_get_effective_quality(
+            streamdetails.audio_format,
+            output.details.output_format,
+        ),
         bit_perfect=_is_bit_perfect(streamdetails, item, output),
     )
+
+
+def _get_effective_quality(
+    input_format: AudioFormat,
+    output_format: AudioFormat | None,
+) -> AudioQuality:
+    """Return the effective quality after the known output format."""
+    input_quality = get_audio_quality(input_format)
+    output_quality = get_audio_quality(output_format)
+    if AudioQuality.UNKNOWN in (input_quality, output_quality):
+        return AudioQuality.UNKNOWN
+    return min((input_quality, output_quality), key=_QUALITY_RANK.__getitem__)
 
 
 def _is_bit_perfect(

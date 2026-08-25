@@ -68,6 +68,7 @@ from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
+    from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.config_entries import (
         ConfigActionResult,
         ConfigEntry,
@@ -302,6 +303,11 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "synced_to": state.synced_to,
         "active_sound_mode": state.active_sound_mode,
         "active_source": state.active_source,
+        "active_source_audio": (
+            _freeze(state.active_source_audio.to_dict())
+            if state.active_source_audio is not None
+            else None
+        ),
         "active_group": state.active_group,
         "enabled": state.enabled,
         "hide_in_ui": state.hide_in_ui,
@@ -941,6 +947,18 @@ class Player(ABC):
         raise NotImplementedError(
             "enqueue_next_media needs to be implemented when PlayerFeature.ENQUEUE is set"
         )
+
+    @property
+    def applies_announcement_volume(self) -> bool:
+        """
+        Return True if the player applies the announcement volume itself.
+
+        A player that mixes an announcement into audio it is already playing knows when
+        the clip becomes audible, so it applies and restores the level at that moment -
+        through the volume control that owns its output. The players controller then
+        leaves the volume alone instead of raising it before the announcement starts.
+        """
+        return False
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -2542,6 +2560,7 @@ class Player(ABC):
             can_group_with=self.__final_can_group_with,
             synced_to=self.__final_synced_to,
             active_source=self.__final_active_source,
+            active_source_audio=self.__final_active_source_audio,
             source_list=self.__final_source_list,
             active_group=self.__final_active_group,
             current_media=self.__final_current_media,
@@ -2817,6 +2836,23 @@ class Player(ABC):
                 continue
             if self.player_id in group_player.state.group_members:
                 return group_player.player_id
+        return None
+
+    @cached_property
+    @final
+    def __final_active_source_audio(self) -> ActiveSourceAudioDetails | None:
+        """Return audio details for the FINAL active external source."""
+        if parent_player_id := (self.__final_active_group or self.__final_synced_to):
+            if parent_player_id != self.player_id and (
+                parent_player := self.mass.players.get_player(parent_player_id)
+            ):
+                return parent_player.state.active_source_audio
+            return None
+        if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
+            if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
+                return parent_player.state.active_source_audio
+        if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
+            return session.active_source_audio
         return None
 
     @cached_property
