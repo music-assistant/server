@@ -3037,12 +3037,10 @@ class Player(ABC):
             else None
         )
         image_url = (metadata.image_url if metadata else None) or source_image_url
-        elapsed_time, elapsed_time_last_updated = _resolve_position(
-            metadata.elapsed_time if metadata else None,
-            metadata.elapsed_time_last_updated if metadata else None,
-            self.elapsed_time,
-            self.elapsed_time_last_updated,
-        )
+        # the final playback state already resolves the source's own position against
+        # the clock this player reports (protocol player, or its own) - taking it from
+        # there is what keeps current_media and PlayerState.elapsed_time in agreement
+        _, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         return PlayerMedia(
             uri=session.source_uri or session.source_id,
             media_type=MediaType.AUDIO_SOURCE,
@@ -3057,7 +3055,7 @@ class Player(ABC):
             # carried so this object can be handed back to the player and still
             # resolve, as the announcement restore does
             queue_session_id=session.playback_session_id,
-            elapsed_time=elapsed_time,
+            elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
             elapsed_time_last_updated=elapsed_time_last_updated,
         )
 
