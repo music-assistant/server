@@ -340,7 +340,7 @@ class SnapCastPlayer(Player):
         prev_stream = self.active_snap_ma_stream
         # pin the music stream, else the idle timer stops it before the announcement ends
         if prev_stream:
-            prev_stream.set_pinned(True)
+            prev_stream.pin(self.player_id)
 
         try:
             ma_stream = await self.snap_provider.get_snapcast_media_stream(
@@ -381,7 +381,7 @@ class SnapCastPlayer(Player):
                 )
         finally:
             if prev_stream:
-                prev_stream.set_pinned(False)
+                prev_stream.unpin(self.player_id)
                 self.snap_provider.update_stream_usage()
 
     async def get_config_entries(self) -> list[ConfigEntry]:

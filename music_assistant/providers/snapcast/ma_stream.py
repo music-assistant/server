@@ -107,7 +107,7 @@ class SnapcastMAStream:
         self._streamer_started_evt = asyncio.Event()
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
-        self._pinned = False
+        self._pins: set[str] = set()
         self._filter_settings: list[str | ComplexFilter] | None = None
 
     @property
@@ -275,20 +275,27 @@ class SnapcastMAStream:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif not self._pinned and self._stop_timer_started_at is None and not self._stop_requested:
+        elif not self._pins and self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
             self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
 
-    def set_pinned(self, pinned: bool) -> None:
+    def pin(self, owner: str) -> None:
         """
-        Keep the stream alive while no group is assigned to it, or release that hold.
+        Keep the stream alive on behalf of the given owner while no group is assigned.
 
-        A pinned stream is exempt from the inactivity stop timer. Releasing the pin hands
-        the stream back to the regular in-use bookkeeping.
+        A pinned stream is exempt from the inactivity stop timer. Pins are held per owner,
+        so concurrent announcements across group members do not release each other's hold.
         """
-        self._pinned = pinned
-        if pinned:
-            self.set_in_use(True)
+        self._pins.add(owner)
+        self.set_in_use(True)
+
+    def unpin(self, owner: str) -> None:
+        """
+        Release the given owner's hold on the stream.
+
+        Once the last owner releases, the stream returns to the regular in-use bookkeeping.
+        """
+        self._pins.discard(owner)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
         """

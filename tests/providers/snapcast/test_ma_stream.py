@@ -396,20 +396,44 @@ def test_pinned_stream_survives_being_displaced(fake_provider: MagicMock) -> Non
     unused. Stopping it there leaves nothing to hand the group back to afterwards.
     """
     stream = _displaced_stream(fake_provider)
-    stream.set_pinned(True)
+    stream.pin("player-1")
 
     SnapCastProvider.update_stream_usage(fake_provider)
 
     fake_provider.mass.loop.call_later.assert_not_called()
 
 
+def test_one_member_finishing_does_not_release_another_members_pin(
+    fake_provider: MagicMock,
+) -> None:
+    """
+    Regression: announcements on group members run concurrently and share one stream.
+
+    The member that finishes first must not hand the stream back while the others still
+    have every group displaced from it.
+    """
+    stream = _displaced_stream(fake_provider)
+    stream.pin("player-1")
+    stream.pin("player-2")
+
+    stream.unpin("player-1")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_not_called()
+
+    stream.unpin("player-2")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
+
+
 def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) -> None:
     """A stream that stays unused after its pin is released is stopped as usual."""
     stream = _displaced_stream(fake_provider)
-    stream.set_pinned(True)
+    stream.pin("player-1")
     SnapCastProvider.update_stream_usage(fake_provider)
 
-    stream.set_pinned(False)
+    stream.unpin("player-1")
     SnapCastProvider.update_stream_usage(fake_provider)
 
     fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
