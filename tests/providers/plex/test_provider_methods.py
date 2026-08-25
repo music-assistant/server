@@ -383,6 +383,18 @@ class TestStreamDetailsGuards:
         plex_track.getStreamURL.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_music_stream_without_media_parts_raises_not_found(
+        self, music_provider: Any
+    ) -> None:
+        """Tracks without playable media parts should raise MediaNotFoundError."""
+        plex_track = _make_stream_track()
+        plex_track.media[0].parts = []
+        music_provider._get_data = AsyncMock(return_value=plex_track)
+
+        with pytest.raises(MediaNotFoundError, match="has no playable media parts"):
+            await music_provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+
+    @pytest.mark.asyncio
     async def test_music_stream_transcoded_uses_plex_hls(self) -> None:
         """Configured bitrate should request Plex HLS transcoding for music tracks."""
         provider = _make_provider(stream_quality=STREAM_QUALITY_128)

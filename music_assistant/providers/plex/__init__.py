@@ -989,6 +989,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             raise MediaNotFoundError(ERR_TRACK_NOT_FOUND.format(item_id=item_id))
 
         media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            msg = f"Track {item_id} has no playable media parts"
+            raise MediaNotFoundError(msg)
 
         content_type = (
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
