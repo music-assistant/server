@@ -985,11 +985,14 @@ class AirPlayPlayer(Player):
 
         :param volume: The level the device reported.
         """
+        ignored_until = self._volume_reports_ignored_until
         await self.volume_set(volume)
         # Writing the level back is a volume command like any other and opens the echo
         # window, but this one only hands the device its own level: leaving the window
-        # open would swallow the rest of a volume the user is still turning up.
-        self._volume_reports_ignored_until = 0.0
+        # open would swallow the rest of a volume the user is still turning up. A longer
+        # window opened while this was in flight (an announcement) still stands.
+        if self._volume_reports_ignored_until <= time.time() + AIRPLAY_VOLUME_ECHO_GRACE_S:
+            self._volume_reports_ignored_until = ignored_until
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""

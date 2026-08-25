@@ -1065,6 +1065,34 @@ async def test_adopting_a_device_level_keeps_the_next_report_visible(
 
 
 @pytest.mark.asyncio
+async def test_adopting_a_device_level_keeps_an_announcement_window(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Adopting a device level leaves a longer window opened meanwhile in place.
+
+    An announcement holds the reports off for its whole span; a write-back that lands
+    inside it must clear only the moment its own command opened, not that span.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    stream = MagicMock(running=True)
+    # an announcement arms its own span while the write-back is in flight
+    stream.send_cli_command = AsyncMock(
+        side_effect=lambda _command: airplay_player.suppress_volume_reports(30)
+    )
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(55)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player.ignore_volume_reports is True
+
+
+@pytest.mark.asyncio
 async def test_single_player_play_sends_action_play(airplay_player: AirPlayPlayer) -> None:
     """An unsynced player resumes its paused stream in place with ACTION=PLAY."""
     airplay_player._attr_group_members = []
