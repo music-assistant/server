@@ -271,14 +271,15 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     members = _make_playing_group(stream)
     member = members[0]
     member.volume_level = 30
-    # both delays count down from the moment they are scheduled, so that
-    # moment - not a clock read after the call - is what they are checked
-    # against: the audible-end hold at the end of the call takes seconds
-    scheduled_at_ms: list[float] = []
+    # both delays count down from the moment they are scheduled, which the
+    # clock reads either side of it bracket exactly: the audible-end hold this
+    # call ends on runs for seconds past that moment
+    scheduled_at: list[float] = []
     member.mass.call_later = MagicMock(
-        side_effect=lambda *_args, **_kwargs: scheduled_at_ms.append(time.time() * 1000)
+        side_effect=lambda *_args, **_kwargs: scheduled_at.append(time.time())
     )
 
+    before_s = time.time()
     with patch.object(announce, "_announce_with_session", new_callable=AsyncMock):
         await announce.play_announcement(member, _make_announcement(), 55)
 
@@ -292,8 +293,9 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     # follows the CONTENT length (the acked duration minus the silence tail)
     # plus the (zeroed) pad, so it lands inside the ducked cushion - 1.7s
     # after the bump here
-    remaining_s = max(0.0, (ack_at_unix_ms - scheduled_at_ms[0]) / 1000)
-    assert bump.args[0] == pytest.approx(remaining_s + 0.3, abs=0.01)
+    left_at_least = max(0.0, ack_at_unix_ms / 1000 - scheduled_at[0])
+    left_at_most = max(0.0, ack_at_unix_ms / 1000 - before_s)
+    assert left_at_least + 0.3 <= bump.args[0] <= left_at_most + 0.3
     assert restore.args[0] - bump.args[0] == pytest.approx(1.7)
 
 
@@ -518,8 +520,8 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
         stream.wait_announce_done.assert_awaited_once()
         instants.add(stream.announce.await_args.args[1])
     assert len(instants) == 1
-    # the lead is measured from the clock the fan-out was scheduled against,
-    # not from a freshly read one, so a slow runner cannot eat into it
+    # the instant is computed inside the call, so the clock reads either side
+    # of it bracket the lead however long the fan-out itself takes
     expected_lead = largest_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
     assert before_ms + expected_lead <= next(iter(instants)) <= after_ms + expected_lead
 
