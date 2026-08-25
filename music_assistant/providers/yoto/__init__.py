@@ -178,6 +178,48 @@ class YotoProvider(MusicProvider):
         :param item_id: Item ID.
         :param media_type: Media type of the item.
         """
+        if media_type == MediaType.AUDIOBOOK:
+            card_id = item_id
+            await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
+            card = self.client.library.get(card_id)
+            if not card:
+                raise MediaNotFoundError(f"Card {card_id} not found")
+
+            audiobook = self._parse_audiobook(card)
+
+            track_paths = []
+            total_duration = 0
+            for chapter in card.chapters.values():
+                for track in chapter.tracks.values():
+                    if track.trackUrl:
+                        track_paths.append(
+                            MultiPartPath(path=track.trackUrl, duration=track.duration)
+                        )
+                        if track.duration:
+                            total_duration += track.duration
+
+            if not track_paths:
+                raise MediaNotFoundError(f"No audio URLs found for card {card_id}")
+
+            # Use format from first track
+            first_chapter = next(iter(card.chapters.values()), None)
+            assert first_chapter  # We know there are chapters due to the track enumeration above
+            first_track = next(iter(first_chapter.tracks.values()), None)
+            assert first_track  # We know there are tracks due to the track enumeration above
+            format_str = first_track.format if first_track else None
+            content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
+
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=AudioFormat(content_type=content_type),
+                media_type=media_type,
+                stream_type=StreamType.HTTP,
+                duration=audiobook.duration,
+                path=track_paths,
+                allow_seek=True,
+                can_seek=True,
+            )
         if ":" not in item_id:
             raise InvalidProviderID(f"Invalid item ID format: {item_id}")
         card_id, chapter_key = item_id.split(":", 1)
