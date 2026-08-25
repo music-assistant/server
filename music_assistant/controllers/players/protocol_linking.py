@@ -2081,9 +2081,9 @@ class ProtocolLinkingMixin:
         """
         Get the best player(protocol) to send audio-path commands to.
 
-        Resolves commands that travel with the audio (enqueue, pause, announcements),
-        so the output that renders the audio outranks the native player. Volume and
-        mute are control-plane instead and resolve through
+        Resolves commands that travel with the audio (enqueue, pause), so the output
+        that renders the audio outranks the native player. Volume and mute are
+        control-plane instead and resolve through
         :meth:`Player._get_protocol_player_for_feature`, which orders differently.
 
         :param player: The player the command was issued on.

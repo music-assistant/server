@@ -374,22 +374,22 @@ class AnnouncementsMixin:
 
         :param player: The player the announcement is played on.
         """
+        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+            # The device's own announcement handler is built for exactly this and
+            # overlays the clip on whatever the speaker is playing - including the
+            # stream a linked protocol renders into it (e.g. Sonos audioClip while
+            # the Sonos plays through its AirPlay child), so it always wins.
+            return player
         if announce_player := self._get_control_target(
             player,
             required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
             require_active=True,
         ):
-            # The output that is ACTIVELY rendering can announce: the
-            # announcement rides the same audio path as the music (e.g. a
-            # Sonos playing through its AirPlay child gets the clip mixed
-            # into that live stream, in sync with the rest of the group)
-            # instead of a second mechanism firing beside the playback.
+            # No native handler, so the output that is ACTIVELY rendering announces:
+            # the announcement rides the same audio path as the music (mixed into
+            # that live stream, in sync with the rest of the group) instead of a
+            # second mechanism firing beside the playback.
             return announce_player
-        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
-            # Not playing through an announce-capable output: the player's
-            # own native support (e.g. Sonos audioClip, which overlays the
-            # clip on whatever source is playing) is the next-best path.
-            return player
         if player.state.playback_state != PlaybackState.PLAYING:
             # An idle player may announce through any linked protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
