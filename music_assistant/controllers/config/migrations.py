@@ -599,6 +599,15 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_local_audio_attribution_stubs(data):
         changed = True
 
+    # Drop the auto-created local_audio provider config on installs that never attached a
+    # soundcard. The provider was builtin, so every install carries a config for it; now
+    # that it is retired and fails to load, leaving those in place would show a retirement
+    # warning to users who never used the feature. Runs after the stub migration above so
+    # the player configs it looks for are already in their final shape.
+    # TODO: remove after 2.12 release
+    if _migrate_retired_local_audio(data):
+        changed = True
+
     # Drop ghost players that were discovered from this server's own AirPlay Receiver
     # (shairport-sync) advertisements before discovery learned to filter them out.
     # TODO: remove after 2.10 release
@@ -1082,6 +1091,38 @@ def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
             )
         LOGGER.info("Promoted local_audio player %s to a regular player", player_id)
     return changed
+
+
+def _migrate_retired_local_audio(data: dict[str, Any]) -> bool:
+    """
+    Drop the local_audio provider config when the install has no local_audio players.
+
+    The provider is retired and now fails to load with a notice pointing at the Sendspin
+    add-on. That notice is only worth showing to installs that actually played through a
+    local soundcard; on every other install the config is an artefact of the provider
+    having been builtin, so it is removed silently.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    local_audio_instances = [
+        instance_id
+        for instance_id, prov_cfg in all_provider_configs.items()
+        if isinstance(prov_cfg, dict) and prov_cfg.get("domain") == "local_audio"
+    ]
+    if not local_audio_instances:
+        return False
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if isinstance(all_player_configs, dict) and any(
+        isinstance(player_cfg, dict) and player_cfg.get("provider") == "local_audio"
+        for player_cfg in all_player_configs.values()
+    ):
+        # this install used the provider, so it keeps the config and gets the notice
+        return False
+    for instance_id in local_audio_instances:
+        del all_provider_configs[instance_id]
+        LOGGER.info("Removed unused config of the retired local_audio provider %s", instance_id)
+    return True
 
 
 def _absorb_universal_player_config(

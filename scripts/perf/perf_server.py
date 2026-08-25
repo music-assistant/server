@@ -74,7 +74,7 @@ LOGGER = logging.getLogger("perf_server")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Local-only builtin providers that are allowed to load. Everything else with
-# builtin=true in its manifest (sendspin, local_audio, musicbrainz, fanarttv, ...)
+# builtin=true in its manifest (sendspin, musicbrainz, fanarttv, ...)
 # is stripped before builtin load: hermetic-by-default, so a future builtin can
 # never silently punch a hole in the isolation of the benchmark instance.
 ALLOWED_BUILTIN_PROVIDERS = {
