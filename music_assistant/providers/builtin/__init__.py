@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
@@ -23,6 +24,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -84,6 +86,7 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -916,8 +919,9 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)
-        if any(mapping.available for mapping in media_item.provider_mappings):
-            # the original provider is still available - nothing to substitute
+        if await self._original_source_is_playable(item, media_item):
+            # the original source still resolves, or its provider is merely down right
+            # now - either way there is nothing to substitute
             return _ImportTrackMatchResult(label=label, retained=True)
         if not media_item.artists:
             # foreign M3U8 files only carry a combined "Artist - Title" EXTINF string;
@@ -967,6 +971,56 @@ class BuiltinProvider(MusicProvider):
             ambiguous_providers=enrichment.ambiguous_providers,
             failed_providers=enrichment.failed_providers,
         )
+
+    async def _original_source_is_playable(self, item: PlaylistItem, track: Track) -> bool:
+        """
+        Check whether an imported entry's original source is still usable.
+
+        Resolves the exact provider instance and item id authoritatively (no stored
+        fallback) instead of trusting the ``available`` flag on the track's provider
+        mappings, which only reflects whether the provider was loaded when the M3U
+        metadata was last written. Falls back to parsing the raw path itself for plain
+        M3U entries that carry a bare Music Assistant URI without ``#EXTPROV`` metadata.
+        A provider that is merely down right now counts as still usable, so a transient
+        outage does not trigger a permanent substitution.
+        """
+        candidates = [
+            (mapping.provider_instance or mapping.provider_domain, mapping.item_id)
+            for mapping in track.provider_mappings
+        ]
+        if not candidates:
+            with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
+                _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
+                candidates.append((provider_instance_or_domain, raw_item_id))
+        for provider_instance_or_domain, provider_item_id in candidates:
+            provider = self.mass.get_provider(provider_instance_or_domain, return_unavailable=True)
+            if provider is None:
+                continue
+            if not provider.available:
+                return True
+            try:
+                await self.mass.music.tracks.get_provider_item(
+                    provider_item_id,
+                    provider.instance_id,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except MediaNotFoundError, InvalidDataError:
+                # confirmed unusable, e.g. a deleted catalog id or an unreadable stream
+                continue
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ):
+                # could not verify right now (network blip) - assume it is still fine
+                # rather than substitute it
+                return True
+            else:
+                return True
+        return False
 
     def _get_stored_item(
         self, item: PlaylistItem, stored_by_media_type: Mapping[str, Mapping[str, StoredItem]]

@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
@@ -31,13 +32,38 @@ from music_assistant.helpers.playlists import (
 from music_assistant.providers.builtin import BuiltinProvider
 
 
-def _make_provider(loaded_provider_domains: set[str] | None = None) -> BuiltinProvider:
-    """Create a minimal BuiltinProvider with a mocked mass."""
+def _make_provider(
+    loaded_provider_domains: set[str] | None = None,
+    unavailable_provider_domains: set[str] | None = None,
+    get_provider_item: AsyncMock | None = None,
+) -> BuiltinProvider:
+    """
+    Create a minimal BuiltinProvider with a mocked mass.
+
+    :param loaded_provider_domains: Domains/instances that resolve to a loaded, available
+        provider.
+    :param unavailable_provider_domains: Domains/instances that resolve to a provider that
+        is configured but currently unavailable (only returned when ``return_unavailable``
+        is passed).
+    :param get_provider_item: Optional stub for the authoritative
+        ``mass.music.tracks.get_provider_item`` lookup; defaults to one that always
+        succeeds, as if the original track still resolves.
+    """
     mass = MagicMock()
     loaded = loaded_provider_domains or set()
-    mass.get_provider = MagicMock(
-        side_effect=lambda pid, **_kwargs: MagicMock(domain=pid) if pid in loaded else None
-    )
+    unavailable = unavailable_provider_domains or set()
+
+    def _get_provider(
+        pid: str, return_unavailable: bool = False, **_kwargs: Any
+    ) -> MagicMock | None:
+        if pid in loaded:
+            return MagicMock(domain=pid, instance_id=pid, available=True)
+        if return_unavailable and pid in unavailable:
+            return MagicMock(domain=pid, instance_id=pid, available=False)
+        return None
+
+    mass.get_provider = MagicMock(side_effect=_get_provider)
+    mass.music.tracks.get_provider_item = get_provider_item or AsyncMock(return_value=MagicMock())
     prov = object.__new__(BuiltinProvider)
     prov.mass = mass
     prov.logger = MagicMock()
@@ -194,6 +220,141 @@ async def test_available_original_is_retained_without_search() -> None:
     prov_any._write_m3u_file.assert_not_awaited()
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
+
+
+async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
+    """A plain M3U entry with a bare MA URI, but no #EXTPROV metadata, is still retained."""
+    prov = _make_provider(loaded_provider_domains={"spotify"})
+    item = PlaylistItem(path="spotify://track/abc123", title="Test", length="120")
+    assert not item.providers
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
+async def test_configured_but_unavailable_provider_is_retained() -> None:
+    """A provider that is configured but currently down is not treated as gone."""
+    prov = _make_provider(unavailable_provider_domains={"spotify--1"})
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
+async def test_available_provider_with_dead_item_id_is_matched() -> None:
+    """A loaded provider whose item id no longer resolves is substituted, not retained."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_awaited_once()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 0 |" in report_markdown
+    assert "| Exact release | 1 |" in report_markdown
+
+
+async def test_dead_url_is_matched_instead_of_retained() -> None:
+    """A plain stream URL that no longer resolves is substituted, not silently kept."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("404")),
+    )
+    item = _make_playlist_item(
+        path="https://example.com/dead.mp3",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_awaited_once()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 0 |" in report_markdown
+    assert "| Exact release | 1 |" in report_markdown
 
 
 async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:
