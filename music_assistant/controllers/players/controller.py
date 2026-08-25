@@ -736,45 +736,77 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
-    async def cmd_shuffle(self, player_id: str, shuffle_enabled: bool) -> None:
+    async def cmd_shuffle(
+        self, player_id: str, shuffle_enabled: bool, source_id: str | None = None
+    ) -> None:
         """
         Handle SHUFFLE command for given player.
 
         Applies to whatever the player is playing: a live external source orders its
-        own session, and Music Assistant's queue orders its own items.
+        own session, a source the device runs itself orders its own content, and
+        Music Assistant's queue orders its own items.
 
         :param player_id: player_id of the player to handle the command.
         :param shuffle_enabled: Whether to play the current content shuffled.
+        :param source_id: Optional source (id) the command is aimed at, as listed in the
+            player's source_list. Given one, the command is refused when that source is
+            no longer playing, so it can never land on whatever took the player since.
         """
         player = self._get_player_with_redirect(player_id)
+        active_source_id = self._resolve_command_target(player, source_id)
         if await self._forward_to_external_source(player, SourceControl.SHUFFLE, shuffle_enabled):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_shuffle(active_queue.queue_id, shuffle_enabled)
+            return
+        if active_source := next(
+            (x for x in player.state.source_list if x.id == active_source_id), None
+        ):
+            # the source belongs to the player itself (its own Spotify Connect, a device input)
+            if not active_source.can_shuffle:
+                msg = "This action is (currently) unavailable for this source."
+                raise PlayerCommandFailed(msg)
+            await player.set_shuffle(shuffle_enabled)
             return
         msg = f"There is nothing playing on {player.state.name} to shuffle."
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
-    async def cmd_repeat(self, player_id: str, repeat_mode: RepeatMode) -> None:
+    async def cmd_repeat(
+        self, player_id: str, repeat_mode: RepeatMode, source_id: str | None = None
+    ) -> None:
         """
         Handle REPEAT command for given player.
 
         Applies to whatever the player is playing: a live external source repeats
-        within its own session, and Music Assistant's queue repeats its own items.
+        within its own session, a source the device runs itself repeats its own
+        content, and Music Assistant's queue repeats its own items.
 
         :param player_id: player_id of the player to handle the command.
         :param repeat_mode: The repeat mode to apply.
+        :param source_id: Optional source (id) the command is aimed at, as listed in the
+            player's source_list. Given one, the command is refused when that source is
+            no longer playing, so it can never land on whatever took the player since.
         """
         if repeat_mode == RepeatMode.UNKNOWN:
             # not a mode to set: it is what a source reports when it cannot say
             raise InvalidCommand("Cannot set an unknown repeat mode")
         player = self._get_player_with_redirect(player_id)
+        active_source_id = self._resolve_command_target(player, source_id)
         if await self._forward_to_external_source(player, SourceControl.REPEAT, repeat_mode):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_repeat(active_queue.queue_id, repeat_mode)
+            return
+        if active_source := next(
+            (x for x in player.state.source_list if x.id == active_source_id), None
+        ):
+            # the source belongs to the player itself (its own Spotify Connect, a device input)
+            if not active_source.can_repeat:
+                msg = "This action is (currently) unavailable for this source."
+                raise PlayerCommandFailed(msg)
+            await player.set_repeat(repeat_mode)
             return
         msg = f"There is nothing playing on {player.state.name} to repeat."
         raise PlayerCommandFailed(msg)
@@ -4190,6 +4222,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if not isinstance(provider, PluginProvider):
             return
         await provider.on_volume_change(session.source_id, volume_level)
+
+    def _resolve_command_target(self, player: Player, source_id: str | None) -> str:
+        """
+        Return the source (id) a command issued to a player applies to.
+
+        :param player: The player the command was issued to.
+        :param source_id: The source the caller aimed the command at, if it named one.
+        :return: The id of the player's active source, which is the id of Music
+            Assistant's own queue when nothing else is playing on it.
+        :raises PlayerCommandFailed: When the caller named a source that is no longer
+            the one playing.
+        """
+        active_source_id = player.state.active_source or player.player_id
+        if source_id is not None and source_id != active_source_id:
+            msg = f"The source this was meant for is no longer playing on {player.state.name}."
+            raise PlayerCommandFailed(msg)
+        return active_source_id
 
     async def _forward_to_external_source(
         self,
