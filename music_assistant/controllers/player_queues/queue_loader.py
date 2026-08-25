@@ -408,7 +408,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         if other_index is None or other_index < 0:
             return False
-        if (other_item := self.get_item(queue_item.queue_id, other_index)) is None:
+        other_item = self.get_item(queue_item.queue_id, other_index)
+        # repeating a single item, or a one-item queue, wraps right back onto this item
+        if other_item is None or other_item.queue_item_id == queue_item.queue_item_id:
             return False
         album = getattr(queue_item.media_item, "album", None)
         other_album = getattr(other_item.media_item, "album", None)
