@@ -322,12 +322,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_item.available:
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
 
-        # an item is played as part of its album when the item before or after it belongs
-        # to that same album, in which case the album loudness is the one to normalize on
+        # an item is played as part of its album when the item before or after it belongs to
+        # that same album, in which case the album loudness is the one to normalize on. A single
+        # track on repeat never is, no matter which album its queue neighbours belong to.
         current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
         previous_index = current_index - 1 if current_index is not None else None
-        playing_album_tracks = self._is_same_album(queue_item, next_index) or self._is_same_album(
-            queue_item, previous_index
+        playing_album_tracks = queue.repeat_mode != RepeatMode.ONE and (
+            self._is_same_album(queue_item, next_index)
+            or self._is_same_album(queue_item, previous_index)
         )
         if queue_item.media_item and isinstance(queue_item.media_item, Track):
             album = queue_item.media_item.album
@@ -406,9 +408,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         if other_index is None or other_index < 0:
             return False
-        other_item = self.get_item(queue_item.queue_id, other_index)
-        # repeat single points back at the item itself, which is no album to speak of
-        if other_item is None or other_item.queue_item_id == queue_item.queue_item_id:
+        if (other_item := self.get_item(queue_item.queue_id, other_index)) is None:
             return False
         album = getattr(queue_item.media_item, "album", None)
         other_album = getattr(other_item.media_item, "album", None)

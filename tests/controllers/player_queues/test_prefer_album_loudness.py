@@ -166,3 +166,13 @@ async def test_track_on_repeat_single_is_not_an_album() -> None:
     """A track repeating on its own is not played as part of its album."""
     items = [_queue_item("track-1", PROVIDER_ALBUM)]
     assert not await _prefer_album_loudness(items, current_index=0, repeat_mode=RepeatMode.ONE)
+
+
+async def test_repeat_single_ignores_the_album_around_it() -> None:
+    """Repeating one track of an album does not play the rest of that album."""
+    items = [
+        _queue_item("track-1", PROVIDER_ALBUM),
+        _queue_item("track-2", PROVIDER_ALBUM),
+        _queue_item("track-3", PROVIDER_ALBUM),
+    ]
+    assert not await _prefer_album_loudness(items, current_index=1, repeat_mode=RepeatMode.ONE)
