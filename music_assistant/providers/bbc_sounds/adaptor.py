@@ -437,7 +437,7 @@ class PodcastConverter(BaseConverter):
             elif source_obj.container:
                 title = source_obj.container.title
             elif source_obj.titles:
-                title = source_obj.titles["primary"]
+                title = self._get_attr(source_obj, "titles.primary")
             elif episode.metadata and episode.metadata.description:
                 title = episode.metadata.description
 

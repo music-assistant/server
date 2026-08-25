@@ -113,3 +113,25 @@ async def test_radio_clip_description_is_a_synopsis(converter: PodcastConverter)
     result = await converter.convert(clip)
 
     assert result.metadata.description == "Long synopsis"
+
+
+async def test_clip_stream_title_survives_titles_without_a_primary_key(
+    converter: PodcastConverter,
+) -> None:
+    """A clip keys its titles on entity_title, so the primary lookup must not raise."""
+    clip = RadioClip(
+        id="c01",
+        pid="c01",
+        duration={"value": 60},
+        titles={"entity_title": "A clip"},
+        synopses=SYNOPSES,
+        stream="https://example.invalid/c01.m3u8",
+    )
+
+    converter.context.provider.stream_format = _Constants.HLS
+
+    stream_details = await converter.get_stream_details(clip)
+
+    assert stream_details is not None
+    assert stream_details.stream_metadata is not None
+    assert stream_details.stream_metadata.title == ""
