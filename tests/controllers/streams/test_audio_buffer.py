@@ -366,6 +366,25 @@ async def test_empty_stream_is_not_reported_as_ready(caplog: pytest.LogCaptureFi
 
 
 @pytest.mark.asyncio
+async def test_failed_stream_below_threshold_is_not_reported_as_ready(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A source that fails before reaching its threshold never became playable."""
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        msg = "test error"
+        raise RuntimeError(msg)
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL, ready_threshold=8)
+    with caplog.at_level(logging.DEBUG, logger="music_assistant.audio_buffer"):
+        buf.fill(_failing_source(), source_name="test://failing")
+        await buf.ready.wait()
+
+    assert "became ready after" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_ready_timeout_reports_the_wait(caplog: pytest.LogCaptureFixture) -> None:
     """The readiness deadline reports the caller, provider and how much audio arrived."""
     streamdetails = _make_stream_details(MediaType.TRACK, duration=100, allow_seek=True)

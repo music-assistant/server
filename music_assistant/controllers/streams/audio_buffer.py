@@ -673,9 +673,9 @@ class AudioBuffer:
     def _mark_ready(self) -> None:
         """Signal that the buffer holds audio a consumer can start playing."""
         self.ready.set()
-        # a source that ended without delivering anything also lands here,
-        # and never became playable
-        if self._chunks:
+        # a source that failed or ended empty also lands here, without the
+        # buffer ever having become playable
+        if self._chunks and not self.has_error:
             LOGGER.debug(
                 "AudioBuffer: %s became ready after %.2fs",
                 self._source_name,
