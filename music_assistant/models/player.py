@@ -897,7 +897,7 @@ class Player(ABC):
         """
         Handle SET SHUFFLE command on the player.
 
-        Will only be called if the player's currently selected source declares
+        Will only be called if the player's currently active source declares
         ``can_shuffle``.
 
         :param shuffle_enabled: Whether the source should play its content shuffled.
@@ -910,7 +910,7 @@ class Player(ABC):
         """
         Handle SET REPEAT command on the player.
 
-        Will only be called if the player's currently selected source declares
+        Will only be called if the player's currently active source declares
         ``can_repeat``.
 
         :param repeat_mode: The repeat mode the source should apply.

@@ -385,3 +385,41 @@ async def test_a_command_aimed_at_the_source_still_playing_is_delivered() -> Non
     await controller.cmd_repeat(PLAYER_ID, RepeatMode.ALL, source_id=NATIVE_SOURCE_ID)
 
     assert player.repeat_calls == [RepeatMode.ALL]
+
+
+async def test_a_command_aimed_at_a_live_source_reaches_its_session() -> None:
+    """
+    Naming a live source does not stand in the way of reaching its session.
+
+    The target is checked before anything is dispatched, so what a client reads as
+    the player's active source has to be the same string the session publishes.
+    """
+    source = _source()
+    controller, provider = _controller(source)
+    player = controller.get_player(PLAYER_ID)
+    player.state.active_source = source.uri
+    controller._get_player_with_redirect = MagicMock(return_value=player)
+
+    await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=source.uri)
+
+    provider.on_source_control.assert_awaited_once_with("main", SourceControl.SHUFFLE, True)
+
+
+async def test_a_command_aimed_at_a_live_source_that_ended_is_refused() -> None:
+    """A session that is gone gets nothing, and neither does the queue that took over."""
+    controller, provider = _controller(None)
+    player = controller.get_player(PLAYER_ID)
+    player.state.active_source = PLAYER_ID
+    controller._get_player_with_redirect = MagicMock(return_value=player)
+    queue = MagicMock()
+    queue.queue_id = PLAYER_ID
+    controller.get_active_queue = MagicMock(return_value=queue)
+    controller.mass.player_queues.set_shuffle = AsyncMock()
+
+    with pytest.raises(PlayerCommandFailed, match="no longer playing"):
+        await controller.cmd_shuffle(
+            PLAYER_ID, shuffle_enabled=True, source_id="spotify_connect--abc://audio_source/main"
+        )
+
+    provider.on_source_control.assert_not_awaited()
+    controller.mass.player_queues.set_shuffle.assert_not_awaited()
