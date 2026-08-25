@@ -2299,6 +2299,9 @@ async def test_seeking_back_is_not_confirmed_by_the_position_seeked_away_from(
     _client_of(session).seek.side_effect = _engine_seeks
     item = await session.seek_current(TRACK_A, 60_000)
     assert item.started_at_ms == 60_002
+    # and the pre-seek report is not left standing in for progress this item
+    # never made, which at_own_end and the completeness check would believe
+    assert item.last_position_ms == 60_002
 
 
 async def test_audio_in_flight_across_an_in_place_seek_is_dropped(tmp_path: Path) -> None:

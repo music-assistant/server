@@ -2164,27 +2164,17 @@ class _ItemAudio:
         if self._closed:
             # positions reported after the cut describe the next item
             return
+        if self.seek_target_ms is not None and not self.seek_confirmed.is_set():
+            # Until the seek lands, a report says where the engine still is, not
+            # how far this channel has got. Recording it would let the position
+            # being seeked away from stand in for progress this item never made,
+            # which is what at_own_end and the completeness check read.
+            self._anchor_seek(position_ms)
+            return
         # keep the furthest position: the engine's stop/idle snapshot at the end
         # of an item reports position 0 and must not erase the progress the
         # completeness validation relies on (verified live)
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
-        if self.seek_target_ms is None or self.seek_confirmed.is_set():
-            return
-        if not self._seek_anchored:
-            # anchor on the engine dropping back below where it was when the
-            # seek went out: it has restarted the item, so what it reports from
-            # here on describes where the seek is taking it. A backward seek
-            # lands below that mark too, so this only ever gates the first
-            # report - past it, position is judged against the target alone.
-            self._seek_anchored = position_ms < self._seek_floor_ms
-            return
-        # the floor of 1 keeps a report of position 0 from landing inside the
-        # tolerance window of a small seek target
-        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
-            # what the engine reports as the seek lands is where this item's own
-            # audio begins
-            self.started_at_ms = position_ms
-            self.seek_confirmed.set()
 
     async def read(self) -> AsyncGenerator[bytes]:
         """
@@ -2229,6 +2219,26 @@ class _ItemAudio:
             starving_for += _READ_SLICE_S
             if starving_for >= _STALL_TIMEOUT_S:
                 raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
+
+    def _anchor_seek(self, position_ms: int) -> None:
+        """Judge a position report against the seek this channel is waiting on."""
+        assert self.seek_target_ms is not None
+        if not self._seek_anchored:
+            # anchor on the engine dropping back below where it was when the
+            # seek went out: it has restarted the item, so what it reports from
+            # here on describes where the seek is taking it. A backward seek
+            # lands below that mark too, so this only ever gates the first
+            # report - past it, position is judged against the target alone.
+            self._seek_anchored = position_ms < self._seek_floor_ms
+            return
+        # the floor of 1 keeps a report of position 0 from landing inside the
+        # tolerance window of a small seek target
+        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
+            # what the engine reports as the seek lands is both where this
+            # item's own audio begins and the first progress it has made
+            self.started_at_ms = position_ms
+            self.last_position_ms = position_ms
+            self.seek_confirmed.set()
 
     def _drop_undelivered(self) -> None:
         """
