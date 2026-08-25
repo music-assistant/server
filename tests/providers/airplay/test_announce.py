@@ -271,7 +271,15 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     members = _make_playing_group(stream)
     member = members[0]
     member.volume_level = 30
+    # both delays count down from the moment they are scheduled, which the
+    # clock reads either side of it bracket exactly: the audible-end hold this
+    # call ends on runs for seconds past that moment
+    scheduled_at: list[float] = []
+    member.mass.call_later = MagicMock(
+        side_effect=lambda *_args, **_kwargs: scheduled_at.append(time.time())
+    )
 
+    before_s = time.time()
     with patch.object(announce, "_announce_with_session", new_callable=AsyncMock):
         await announce.play_announcement(member, _make_announcement(), 55)
 
@@ -280,11 +288,14 @@ async def test_volume_is_scheduled_on_the_acked_instant() -> None:
     bump, restore = scheduled
     assert bump.args[1:] == (member.volume_set, 55)
     assert restore.args[1:] == (member.volume_set, 30)
-    # the bump derives from the acked instant (~0.2s out) plus the 0.3s
-    # into-the-clip bias; the restore follows the CONTENT length (the acked
-    # duration minus the silence tail) plus the (zeroed) pad, so it lands
-    # inside the ducked cushion - 1.7s after the bump here
-    assert 0.2 < bump.args[0] <= 0.5
+    # the bump lands on what was left of the acked instant when it was
+    # scheduled (0.2s out here), plus the 0.3s into-the-clip bias; the restore
+    # follows the CONTENT length (the acked duration minus the silence tail)
+    # plus the (zeroed) pad, so it lands inside the ducked cushion - 1.7s
+    # after the bump here
+    left_at_least = max(0.0, ack_at_unix_ms / 1000 - scheduled_at[0])
+    left_at_most = max(0.0, ack_at_unix_ms / 1000 - before_s)
+    assert left_at_least + 0.3 <= bump.args[0] <= left_at_most + 0.3
     assert restore.args[0] - bump.args[0] == pytest.approx(1.7)
 
 
@@ -489,16 +500,19 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
         if member is not leader:
             member.synced_to = leader.player_id
         member.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    # the second member reports a far larger span: the shared instant must
-    # clear it for every sibling arm
-    streams[1].latency_lead_ms = 2000
+    # the second member reports a span past the fallback the others assume:
+    # the shared instant must clear the LARGEST one for every sibling arm
+    largest_span_ms = AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + 1000
+    streams[1].latency_lead_ms = largest_span_ms
     announcement = _make_announcement()
 
+    before_ms = int(time.time() * 1000)
     await asyncio.gather(
         announce.play_announcement(leader, announcement, None),
         announce.play_announcement(member_1, announcement, None),
         announce.play_announcement(member_2, announcement, None),
     )
+    after_ms = time.time() * 1000
 
     instants = set()
     for stream in streams:
@@ -506,8 +520,10 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
         stream.wait_announce_done.assert_awaited_once()
         instants.add(stream.announce.await_args.args[1])
     assert len(instants) == 1
-    # the shared instant cleared the largest member span (2s + margin)
-    assert next(iter(instants)) >= int(time.time() * 1000) + 2000
+    # the instant is computed inside the call, so the clock reads either side
+    # of it bracket the lead however long the fan-out itself takes
+    expected_lead = largest_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    assert before_ms + expected_lead <= next(iter(instants)) <= after_ms + expected_lead
 
 
 @pytest.mark.asyncio
@@ -598,14 +614,16 @@ async def test_return_holds_until_the_audible_end() -> None:
     announce_done reports MIX completion at the delivery head - ahead of
     audibility - and the caller re-mutes muted players the moment this returns.
     """
+    # taken WITH the wall clock the ack is built from, so the hold is measured
+    # from that same instant however slow the setup below runs
+    started = time.monotonic()
     now_unix_ms = int(time.time() * 1000)
     stream = _make_stream(ack=(now_unix_ms + 250, 100))
     members = _make_playing_group(stream)
 
     with patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 100):
-        started = time.monotonic()
         await announce.play_announcement(members[0], _make_announcement(), None)
-        elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - started
 
     # audible end = acked instant + clip duration (0.35s out) + the 0.1s pad
     assert elapsed >= 0.4
