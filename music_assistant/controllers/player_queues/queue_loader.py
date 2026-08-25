@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 
@@ -292,7 +293,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
     async def _load_item(
         self,
         queue_item: QueueItem,
-        next_index: int | None,
         is_start: bool = False,
         seek_position: int = 0,
         fade_in: bool = False,
@@ -301,7 +301,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         Try to load the stream details for the given queue item.
 
         :param queue_item: The queue item to load.
-        :param next_index: Index of the item that plays after this one, if any.
         :param is_start: Whether this item starts playback, rather than following another item.
         :param seek_position: Position (in seconds) to start playback from.
         :param fade_in: Whether to fade in the audio.
@@ -322,15 +321,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_item.available:
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
 
-        # an item is played as part of its album when the item before or after it belongs to
-        # that same album, in which case the album loudness is the one to normalize on. A single
-        # track on repeat never is, no matter which album its queue neighbours belong to.
-        current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
-        previous_index = current_index - 1 if current_index is not None else None
-        playing_album_tracks = queue.repeat_mode != RepeatMode.ONE and (
-            self._is_same_album(queue_item, next_index)
-            or self._is_same_album(queue_item, previous_index)
-        )
         if queue_item.media_item and isinstance(queue_item.media_item, Track):
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
@@ -370,6 +360,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         *org_images,
                     ]
                 )
+        # decided once the album above is resolved: a queue item can hold a slim mapping of its
+        # album, which carries none of the provider ids the enqueued album is matched on
+        playing_album_tracks = self._plays_as_album_track(queue_item)
         if is_start:
             # a track skip should hand its source slot to the item the user is starting
             await self._abort_superseded_source_buffers(queue_item)
@@ -399,27 +392,37 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # provider did not report is known before playback starts
             self._apply_probed_duration(queue_item)
 
-    def _is_same_album(self, queue_item: QueueItem, other_index: int | None) -> bool:
+    def _plays_as_album_track(self, queue_item: QueueItem) -> bool:
         """
-        Check whether the queue item at the given index holds a track from the same album.
+        Check whether the given item plays as part of an album the user enqueued.
 
-        :param queue_item: The queue item to compare against.
-        :param other_index: Index of the neighbouring queue item, if there is one.
+        :param queue_item: The queue item to decide the loudness reference for.
         """
-        if other_index is None or other_index < 0:
-            return False
-        other_item = self.get_item(queue_item.queue_id, other_index)
-        # repeating a single item, or a one-item queue, wraps right back onto this item
-        if other_item is None or other_item.queue_item_id == queue_item.queue_item_id:
+        queue_data = self._queue_data[queue_item.queue_id]
+        # a track repeating on its own is its own playback, whatever seeded the queue around it
+        if queue_data.queue.repeat_mode == RepeatMode.ONE:
             return False
         album = getattr(queue_item.media_item, "album", None)
-        other_album = getattr(other_item.media_item, "album", None)
-        if album is None or other_album is None:
+        if album is None:
             return False
-        # an item picks up its library album only once it is loaded, so the neighbour may hold
-        # a different representation of the same album. Matching on the provider mappings
+        # the album the user pressed play on keeps the shape of the listing it was picked from,
+        # while the queue's tracks carry the library album. Matching on the provider mappings
         # recognises both shapes, plain item_id equality does not.
-        return compare_item_ids(album, other_album)
+        return any(
+            isinstance(item, Album) and compare_item_ids(item, album)
+            for item in queue_data.enqueued_media_items
+        )
+
+    def _reset_enqueued_media_items(self, queue_data: PlayerQueueData) -> None:
+        """
+        Forget what was enqueued on a queue that is being replaced by a new one.
+
+        :param queue_data: The queue whose enqueued items are no longer what it plays.
+        """
+        queue_data.enqueued_media_items.clear()
+        # the credits only mark which of those enqueued albums were already counted, so they
+        # are meaningless once the items they refer to are gone
+        queue_data.credited_albums.clear()
 
     def _apply_probed_duration(self, queue_item: QueueItem) -> None:
         """
@@ -728,10 +731,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ]
             radio_mode = False
 
-        # Clear the 'enqueued media item' list when a new queue is requested
-        if option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue_data.enqueued_media_items.clear()
-            queue_data.credited_albums.clear()
+        # Forget the previous queue's enqueued items when a new queue is requested. A caller that
+        # left the option to the config gets this once the first item resolved it, below: it is the
+        # option that says whether this is a new queue or an addition to the current one.
+        if option is not None and option not in (QueueOption.ADD, QueueOption.NEXT):
+            self._reset_enqueued_media_items(queue_data)
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -769,9 +773,29 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         raise InvalidDataError("ItemMapping has no URI")
                     media_item = await self.mass.music.get_item_by_uri(media_item.uri)
 
+                # handle default enqueue option if needed
+                if option is None:
+                    # Radio + AudioSource share a single "live_sources" enqueue default —
+                    # both are live infinite streams where REPLACE is almost always the
+                    # right semantic. Other media types use their per-type config key.
+                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
+                    else:
+                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
+                    config_value = self.get_config_value(config_key, return_type=str)
+                    option = QueueOption(config_value)
+                    if option not in (QueueOption.ADD, QueueOption.NEXT):
+                        self._reset_enqueued_media_items(queue_data)
+                    # settled from the resolved option for the same reason as the reset above
+                    already_dynamic = queue.is_dynamic and option in (
+                        QueueOption.ADD,
+                        QueueOption.NEXT,
+                    )
+
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
-                # their successor from the queue's last item instead).
+                # their successor from the queue's last item instead) and to tell which of its
+                # tracks play as part of an album the user picked.
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(media_item, BrowseFolder) and (
@@ -794,18 +818,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if is_dynamic_source(media_item):
                         # a dynamic playlist/station is always a self-managing dynamic source
                         source_items.append(media_item)
-
-                # handle default enqueue option if needed
-                if option is None:
-                    # Radio + AudioSource share a single "live_sources" enqueue default —
-                    # both are live infinite streams where REPLACE is almost always the
-                    # right semantic. Other media types use their per-type config key.
-                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
-                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
-                    else:
-                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = self.get_config_value(config_key, return_type=str)
-                    option = QueueOption(config_value)
 
                 # The shuffle state has to be settled before the items are resolved below: a
                 # shuffled queue keeps the items preceding a start_item (chosen track pinned
