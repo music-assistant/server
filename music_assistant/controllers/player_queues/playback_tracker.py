@@ -685,7 +685,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 )
             )
             if fully_played and not is_playing:
-                if credit_album := self._enqueued_album_for_track(queue_data, media_item):
+                if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(
                         self._mark_album_played(credit_album, media_item, queue_data)
                     )
@@ -733,26 +733,29 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             ),
         )
 
-    def _enqueued_album_for_track(
+    def _claim_enqueued_album_credit(
         self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> Album | None:
         """
-        Return the album to credit for this played track, or None.
+        Claim the album play this track credits, or None when there is nothing to credit.
 
         Only an album the user explicitly enqueued is eligible, and only the first of its
         tracks to complete since it was enqueued, so a single album play is credited once
-        however its tracks ended up ordered in the queue.
+        however its tracks ended up ordered in the queue. Claiming marks the album as
+        credited on this queue, so a second call for the same enqueue returns None.
         """
         album = getattr(media_item, "album", None)
         if album is None:
             return None
         # the album the user pressed play on keeps the shape of the listing it was picked
         # from, while the queue's tracks carry the library album. Matching on the provider
-        # mappings recognises both shapes as the same album.
+        # mappings recognises both shapes as the same album. The most recent enqueue wins,
+        # because that is the one whose credit was just armed; an earlier entry for the same
+        # album may still be a differently shaped (and therefore separately keyed) object.
         enqueued = next(
             (
                 item
-                for item in queue_data.enqueued_media_items
+                for item in reversed(queue_data.enqueued_media_items)
                 if isinstance(item, Album) and compare_item_ids(item, album)
             ),
             None,

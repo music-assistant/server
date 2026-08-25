@@ -194,14 +194,11 @@ def test_enqueued_album_decision() -> None:
     data = _queue_data(enqueued=[album_x])
 
     # first of the album's tracks to complete -> credit it
-    assert tracker._enqueued_album_for_track(data, t1) is album_x
+    assert tracker._claim_enqueued_album_credit(data, t1) is album_x
     # any further track of the same album -> already credited for this enqueue
-    assert tracker._enqueued_album_for_track(data, t2) is None
+    assert tracker._claim_enqueued_album_credit(data, t2) is None
     # a track whose album was never enqueued -> not credited
-    assert tracker._enqueued_album_for_track(data, t3) is None
-    # enqueueing the album again arms it for another play
-    data.credited_albums.discard(album_x)
-    assert tracker._enqueued_album_for_track(data, t2) is album_x
+    assert tracker._claim_enqueued_album_credit(data, t3) is None
 
 
 def test_enqueued_album_credited_once_however_its_tracks_are_ordered() -> None:
@@ -238,13 +235,48 @@ def test_enqueued_album_credited_once_however_its_tracks_are_ordered() -> None:
     # 'play next' on a track from another album splits the album's run in two
     data = _queue_data(enqueued=[album_x])
     played = [x_tracks[0], x_tracks[1], y_track, x_tracks[2], x_tracks[3]]
-    credited = [tracker._enqueued_album_for_track(data, track) for track in played]
+    credited = [tracker._claim_enqueued_album_credit(data, track) for track in played]
     assert [c for c in credited if c is not None] == [album_x]
 
-    # the album's first track is skipped, so the first one that completes has a same-album
-    # predecessor; the album is still credited
+    # the album's first track is skipped, so it never completes and the claim arrives from a
+    # later track that sits behind a same-album predecessor; the album is still credited once
     data = _queue_data(enqueued=[album_x])
-    assert tracker._enqueued_album_for_track(data, x_tracks[1]) is album_x
+    played = x_tracks[1:]
+    credited = [tracker._claim_enqueued_album_credit(data, track) for track in played]
+    assert [c for c in credited if c is not None] == [album_x]
+
+
+def test_reenqueued_album_in_another_shape_is_credited_again() -> None:
+    """Re-enqueueing an album from a different listing arms its credit again."""
+    mapping = ProviderMapping(
+        item_id="album-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    library_album = Album(
+        item_id="7",
+        provider="library",
+        name="Kind of Blue",
+        provider_mappings={mapping},
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(
+        item_id="t1", provider="library", name="T1", provider_mappings=set(), album=library_album
+    )
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    # played from the provider listing first, then queued again from the library view
+    data = _queue_data(enqueued=[provider_album])
+    assert tracker._claim_enqueued_album_credit(data, track) is library_album
+    data.enqueued_media_items.append(library_album)
+    data.credited_albums.discard(library_album)
+
+    assert tracker._claim_enqueued_album_credit(data, track) is library_album
 
 
 def test_enqueued_provider_album_credits_its_library_tracks() -> None:
@@ -294,11 +326,11 @@ def test_enqueued_provider_album_credits_its_library_tracks() -> None:
 
     # the enqueued album is credited on the first of its tracks to complete, under the
     # library identity so it shares the row an explicit library play writes
-    assert tracker._enqueued_album_for_track(data, t1) is library_album
+    assert tracker._claim_enqueued_album_credit(data, t1) is library_album
     # and only once for that enqueue
-    assert tracker._enqueued_album_for_track(data, t2) is None
+    assert tracker._claim_enqueued_album_credit(data, t2) is None
     # a track from an album the user never enqueued is not credited
-    assert tracker._enqueued_album_for_track(data, t3) is None
+    assert tracker._claim_enqueued_album_credit(data, t3) is None
 
 
 def test_album_outside_the_library_is_credited_as_the_provider_album() -> None:
@@ -323,4 +355,4 @@ def test_album_outside_the_library_is_credited_as_the_provider_album() -> None:
     tracker = PlayerQueuesController.__new__(PlayerQueuesController)
     data = _queue_data(enqueued=[provider_album])
 
-    assert tracker._enqueued_album_for_track(data, track) is provider_album
+    assert tracker._claim_enqueued_album_credit(data, track) is provider_album
