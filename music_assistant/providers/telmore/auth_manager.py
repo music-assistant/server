@@ -7,7 +7,6 @@ import re
 from yarl import URL
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.helpers.util import lock
 from music_assistant.providers.music247e.auth_manager import (
     Music247eAccessToken,
     Music247eAuthManager,
@@ -17,12 +16,8 @@ from music_assistant.providers.music247e.auth_manager import (
 class TelmoreAuthManager(Music247eAuthManager):
     """Telmore Musik authentication manager."""
 
-    @lock
-    async def auth_token(self) -> Music247eAccessToken | None:
-        """Authenticate and return access token."""
-        if self._access_token and not self._access_token.is_expired():
-            return self._access_token
-
+    async def _fetch_token(self) -> Music247eAccessToken | None:
+        """Perform the Telmore login flow and return a fresh access token."""
         # Try refresh token flow first
         if self._refresh_token:
             self.logger.debug("Trying to fetch refresh token")

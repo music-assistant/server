@@ -50,5 +50,11 @@ class Music247eAuthManager:
 
     @lock
     async def auth_token(self) -> Music247eAccessToken | None:
-        """Authenticate and return access token."""
+        """Return a valid access token, authenticating only if the cached one expired."""
+        if self._access_token and not self._access_token.is_expired():
+            return self._access_token
+        return await self._fetch_token()
+
+    async def _fetch_token(self) -> Music247eAccessToken | None:
+        """Perform the provider-specific login flow and return a fresh access token."""
         raise NotImplementedError
