@@ -560,6 +560,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # would also have to claim the Connect device back
                     try:
                         item = await session.seek_current(spotify_uri, seek_position * 1000)
+                    except ProviderStreamLimitError:
+                        # the Spotify app took the session over: a replacement
+                        # would claim the Connect device straight back off it
+                        raise
                     except AudioError as err:
                         # a fresh session starts at the target instead
                         self.logger.debug(
@@ -856,48 +860,67 @@ class _SoloistSession:
         # from. Unlike _discard_until this cannot key on the uri - an in-place
         # seek reports no track change to clear it on.
         self._seeking = True
-        await self._apply_sink_state()
-        # A fresh channel rather than a reset one: the outgoing stream may still
-        # be draining this item, and two readers on one channel would each take
-        # part of the audio. The uri key is what feed_after's ledger goes by, so
-        # replacing the object under it leaves that untouched.
-        item = self._items[spotify_uri] = _ItemAudio(spotify_uri, self)
-        # both describe the track rather than the position within it
-        item.duration_ms = outgoing.duration_ms
-        item.playing_seen = outgoing.playing_seen
-        item.started.set()
-        # claimed here rather than by the caller: _expire_idle only counts
-        # claimed channels, and the outgoing one has left _items
-        item.claim()
-        self._current = item
-        outgoing.close()
-        # seeded from where the engine actually is: a fresh channel has observed
-        # no position of its own, and a backward seek judged against a floor of
-        # zero would take the pre-seek report as its landing
-        item.arm_seek(target_ms, floor_ms=outgoing.last_position_ms or 0)
         try:
+            await self._apply_sink_state()
+            if self._current is not outgoing:
+                # the engine reached this item's own end while the sink was
+                # being held: it is not on the item this seek was asked for
+                raise AudioError(f"Spotify Soloist moved on from {spotify_uri}")
+            # A fresh channel rather than a reset one: the outgoing stream may
+            # still be draining this item, and two readers on one channel would
+            # each take part of the audio. The uri key is what feed_after's
+            # ledger goes by, so replacing the object under it leaves that
+            # untouched.
+            item = self._items[spotify_uri] = _ItemAudio(spotify_uri, self)
+            # both describe the track rather than the position within it
+            item.duration_ms = outgoing.duration_ms
+            item.playing_seen = outgoing.playing_seen
+            item.started.set()
+            # claimed here rather than by the caller: _expire_idle only counts
+            # claimed channels, and the outgoing one has left _items
+            item.claim()
+            self._current = item
+            outgoing.close()
             try:
-                await client.seek(target_ms, await_result=True)
-            except (TimeoutError, OSError, ClientError, SoloistError) as err:
-                raise AudioError(
-                    f"Spotify Soloist would not seek {spotify_uri}: {type(err).__name__} {err}"
-                ) from err
-            # Deliberately no re-send loop, unlike the cold seek: the engine only
-            # drops a seek that arrives while the track is still loading, and a
-            # repeat of one it already took restarts the item - audible here,
-            # where the audio is live rather than held behind a suspended sink.
-            try:
-                async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
-                    await item.seek_confirmed.wait()
-            except TimeoutError:
+                # seeded from where the engine actually is: a fresh channel has
+                # observed no position of its own, and a backward seek judged
+                # against a floor of zero would take the pre-seek report as its
+                # landing
+                item.arm_seek(target_ms, floor_ms=outgoing.last_position_ms or 0)
+                try:
+                    await client.seek(target_ms, await_result=True)
+                except (TimeoutError, OSError, ClientError, SoloistError) as err:
+                    raise AudioError(
+                        f"Spotify Soloist would not seek {spotify_uri}: {type(err).__name__} {err}"
+                    ) from err
+                # Deliberately no re-send loop, unlike the cold seek: the engine
+                # only drops a seek that arrives while the track is still
+                # loading, and a repeat of one it already took restarts the item
+                # - audible here, where the audio is live rather than held
+                # behind a suspended sink.
+                try:
+                    async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
+                        await item.seek_confirmed.wait()
+                except TimeoutError:
+                    raise AudioError(
+                        f"Spotify Soloist did not confirm seeking {spotify_uri} to {target_ms}ms"
+                    ) from None
                 if self._error:
-                    raise self._session_error() from None
-                raise AudioError(
-                    f"Spotify Soloist did not confirm seeking {spotify_uri} to {target_ms}ms"
-                ) from None
-            # measured now the engine has moved: what the sink rendered up to
-            # here is pre-seek audio still on its way to the reader
-            self._stale_budget = self._stale_bytes()
+                    # the session died while the seek was in flight, which also
+                    # releases the wait above
+                    raise self._session_error()
+                # measured now the engine has moved: what the sink rendered up
+                # to here is pre-seek audio still on its way to the reader
+                self._stale_budget = self._stale_bytes()
+            except BaseException:
+                # Past the swap the item the session was playing is closed and
+                # cannot be put back, so a half-seeked session is ended rather
+                # than reasoned about. A cancellation here is the ordinary case
+                # - a second seek supersedes this one's stream - and leaving it
+                # would keep the channel claimed for good, with the session
+                # unable to expire and refusing every later item.
+                self._fail(f"an in-place seek of {spotify_uri} did not complete")
+                raise
         finally:
             self._seeking = False
         await self._apply_sink_state()
@@ -1119,9 +1142,11 @@ class _SoloistSession:
             return
         self._error = message
         for item in self._items.values():
-            # started too, so an item still waiting to be reported as current
-            # fails right away instead of sitting out its startup timeout
+            # started and seek_confirmed too, so an item still waiting to be
+            # reported as current - or for a seek to land - fails right away
+            # instead of sitting out its timeout
             item.started.set()
+            item.seek_confirmed.set()
             item.close()
         self.mass.create_task(self.backend.discard_session, self)
 
@@ -1679,8 +1704,11 @@ class _SoloistSession:
             backpressured = False
             if self._seeking:
                 # keeps pre-seek audio out of the capture entirely, so what the
-                # reader still holds can be sized once the engine has moved
+                # reader still holds can be sized once the engine has moved.
+                # Counted as backpressure: a pause the engine reports while its
+                # sink is held down here is ours, not the user's in the app.
                 want = False
+                backpressured = True
             elif any(item.draining for item in self._items.values()):
                 want = True
             elif not self._engine_playing:
