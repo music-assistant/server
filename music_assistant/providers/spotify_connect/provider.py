@@ -73,8 +73,8 @@ CONF_AUDIO_QUALITY = "audio_quality"
 
 AUDIO_QUALITY_VALUES: Final = {option.value for option in AUDIO_QUALITY_OPTIONS}
 
-# The selectable volume modes (labels resolve from strings.json), shared
-# between the runtime option and the setup flow.
+# The selectable volume modes (labels resolve from strings.json); a runtime
+# option on the provider's settings page, not part of the setup flow.
 VOLUME_MODE_OPTIONS: Final = [
     ConfigValueOption(VOLUME_MODE_PLAYER_ONLY),
     ConfigValueOption(VOLUME_MODE_SYNC_SPOTIFY),

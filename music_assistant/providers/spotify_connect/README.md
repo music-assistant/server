@@ -23,7 +23,7 @@ spotify_connect/
 ├── base.py          SpotifyConnectBackend: the abstract backend contract
 ├── models.py        Normalized models shared across the boundary (BackendEvent, ...)
 ├── setup_flow.py    Multi-step setup: engine choice, Soloist terms/API key, player/name
-├── helpers.py       Small shared utilities (device id, interface lookup)
+├── helpers.py       Small shared utilities (device id, go-librespot binary lookup)
 ├── soloist/         Official Spotify Soloist engine (backend + runtime + README)
 └── go_librespot/    Community go-librespot engine (backend + client + README)
 ```

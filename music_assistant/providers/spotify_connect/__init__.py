@@ -6,7 +6,7 @@ The provider has multi instance support, so multiple players can be linked to
 multiple Spotify Connect daemons.
 
 The MA-facing logic lives in ``provider.py``; everything specific to one
-Spotify Connect implementation (currently go-librespot) lives behind the
+Spotify Connect implementation (Spotify Soloist or go-librespot) lives behind the
 ``SpotifyConnectBackend`` contract in ``base.py`` (one implementation per subdirectory).
 """
 
