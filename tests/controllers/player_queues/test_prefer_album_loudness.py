@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, RepeatMode
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -90,9 +90,12 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     return controller
 
 
-async def _prefer_album_loudness(items: list[QueueItem], current_index: int) -> bool:
+async def _prefer_album_loudness(
+    items: list[QueueItem], current_index: int, repeat_mode: RepeatMode = RepeatMode.OFF
+) -> bool:
     """Load the item after the given index the way a player asks for it, and read the decision."""
     controller = _controller(items)
+    controller._queue_data[QUEUE_ID].queue.repeat_mode = repeat_mode
     await controller.load_next_queue_item(QUEUE_ID, items[current_index].queue_item_id)
     get_stream_details = cast("AsyncMock", controller.mass.streams.audio.get_stream_details)
     return cast("bool", get_stream_details.call_args.kwargs["prefer_album_loudness"])
@@ -147,3 +150,19 @@ async def test_different_albums_use_track_loudness() -> None:
         _queue_item("track-3", PROVIDER_ALBUM),
     ]
     assert not await _prefer_album_loudness(items, current_index=0)
+
+
+async def test_first_item_of_the_queue_has_no_previous_item() -> None:
+    """Repeating the queue wraps back to its first item, which nothing plays before."""
+    items = [
+        _queue_item("track-1", OTHER_PROVIDER_ALBUM),
+        _queue_item("track-2", PROVIDER_ALBUM),
+        _queue_item("track-3", OTHER_PROVIDER_ALBUM),
+    ]
+    assert not await _prefer_album_loudness(items, current_index=2, repeat_mode=RepeatMode.ALL)
+
+
+async def test_track_on_repeat_single_is_not_an_album() -> None:
+    """A track repeating on its own is not played as part of its album."""
+    items = [_queue_item("track-1", PROVIDER_ALBUM)]
+    assert not await _prefer_album_loudness(items, current_index=0, repeat_mode=RepeatMode.ONE)

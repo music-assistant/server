@@ -297,7 +297,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         seek_position: int = 0,
         fade_in: bool = False,
     ) -> None:
-        """Try to load the stream details for the given queue item."""
+        """
+        Try to load the stream details for the given queue item.
+
+        :param queue_item: The queue item to load.
+        :param next_index: Index of the item that plays after this one, if any.
+        :param is_start: Whether this item starts playback, rather than following another item.
+        :param seek_position: Position (in seconds) to start playback from.
+        :param fade_in: Whether to fade in the audio.
+        """
         queue_id = queue_item.queue_id
         queue = self._queue_data[queue_id].queue
 
@@ -398,7 +406,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         if other_index is None or other_index < 0:
             return False
-        if (other_item := self.get_item(queue_item.queue_id, other_index)) is None:
+        other_item = self.get_item(queue_item.queue_id, other_index)
+        # repeat single points back at the item itself, which is no album to speak of
+        if other_item is None or other_item.queue_item_id == queue_item.queue_item_id:
             return False
         album = getattr(queue_item.media_item, "album", None)
         other_album = getattr(other_item.media_item, "album", None)
