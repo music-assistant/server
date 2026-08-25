@@ -94,6 +94,10 @@ AUDIO_SOURCE_ID = "main"
 # the player leaves the playing state; the next 'playing' event re-streams.
 PAUSE_EOF_TIMEOUT_S = 0.5
 
+# A stop after a pause runs while the player's playback lock is held, so a slow one
+# delays whatever the user does next; warn when it takes longer than this.
+SLOW_STOP_WARN_S = 10.0
+
 # Seconds to wait for the backend to report 'playing' after a resume request.
 PLAYBACK_START_TIMEOUT_S = 3.0
 
@@ -710,16 +714,18 @@ class SpotifyConnectProvider(PluginProvider):
         :param player_id: The player currently consuming the live source.
         """
         self.logger.debug("Stopping player %s after pause", player_id)
+        started = self.mass.loop.time()
         try:
-            # bounded: an unresponsive player (e.g. a throttled web client) must
-            # not hold this task - and the player's playback lock - indefinitely
-            async with asyncio.timeout(10):
-                await self.mass.players.cmd_stop(player_id)
-            self.logger.debug("Player %s stopped after pause", player_id)
-        except TimeoutError:
-            self.logger.warning("Player %s did not stop within 10s after pause", player_id)
+            await self.mass.players.cmd_stop(player_id)
         except Exception as err:
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
+            return
+        # a timeout around the stop is not enforceable: the process cleanup it waits on
+        # can swallow the cancellation (see AsyncProcess.close), so a slow stop is reported
+        if (elapsed := self.mass.loop.time() - started) > SLOW_STOP_WARN_S:
+            self.logger.warning("Stopping player %s took %.1f seconds", player_id, elapsed)
+        else:
+            self.logger.debug("Player %s stopped after pause", player_id)
 
     def _schedule_play_media(self) -> None:
         """Schedule playback when Spotify is active and no player owns the source."""
@@ -888,8 +894,6 @@ class SpotifyConnectProvider(PluginProvider):
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
-                # bounded like the pause path: a slow player must not hold the
-                # stop (and its playback lock) indefinitely
                 self._schedule_pause_stop(prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:

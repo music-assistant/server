@@ -286,7 +286,13 @@ class AsyncProcess:
         return (stdout, stderr)
 
     async def close(self) -> None:
-        """Close/terminate the process and wait for exit."""
+        """
+        Close/terminate the process and wait for exit.
+
+        An enclosing timeout is not a reliable bound on this call: the cleanup may
+        swallow the cancellation and run to completion, and a cancellation that does
+        land leaves the process unreaped.
+        """
         if self._close_called and self.returncode is not None:
             # Already closed and reaped, so there is nothing left to signal or
             # drain. The stream locks below are still held by that first call
