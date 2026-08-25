@@ -6,11 +6,17 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import (
     LoginFailed,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
 )
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import json_dumps
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.providers.music247e.constants import MAX_PAGES_PAGINATED, PAGE_SIZE
 
 if TYPE_CHECKING:
@@ -22,11 +28,11 @@ if TYPE_CHECKING:
 JsonLike = dict[str, Any]
 
 
-class Music247eGraphQLError(Exception):
+class InvalidDataError(Exception):
     """24-7 (247e) GraphQL error."""
 
     def __init__(self, data: JsonLike) -> None:
-        """Initialize Music247eGraphQLError."""
+        """Initialize InvalidDataError."""
         super().__init__(json_dumps(data))
 
 
@@ -67,12 +73,19 @@ class Music247eAPIClient:
                 # Invalidate token
                 self.auth.invalidate()
                 raise LoginFailed(f"Authentication with {self.SERVICE_NAME} failed")
+            # handle rate limiter
+            if resp.status == 429:
+                backoff_time = parse_retry_after(resp.headers.get("Retry-After"))
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
+            # handle temporary server error
+            if resp.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
 
             resp.raise_for_status()
 
             result = await resp.json()
             if len(result.get("errors", [])) > 0:
-                raise Music247eGraphQLError(result)
+                raise InvalidDataError(result)
 
             return dict(result)
 
