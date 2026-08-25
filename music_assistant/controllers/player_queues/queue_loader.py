@@ -64,6 +64,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.models.music_provider import MusicProvider
 
@@ -296,7 +297,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         seek_position: int = 0,
         fade_in: bool = False,
     ) -> None:
-        """Try to load the stream details for the given queue item."""
+        """
+        Try to load the stream details for the given queue item.
+
+        :param queue_item: The queue item to load.
+        :param next_index: Index of the item that plays after this one, if any.
+        :param is_start: Whether this item starts playback, rather than following another item.
+        :param seek_position: Position (in seconds) to start playback from.
+        :param fade_in: Whether to fade in the audio.
+        """
         queue_id = queue_item.queue_id
         queue = self._queue_data[queue_id].queue
 
@@ -313,38 +322,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_item.available:
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
 
-        # work out if we are playing an album and if we should prefer album
-        # loudness
-        next_track_from_same_album = (
-            next_index is not None
-            and (next_item := self.get_item(queue_id, next_index))
-            and (
-                queue_item.media_item
-                and hasattr(queue_item.media_item, "album")
-                and queue_item.media_item.album
-                and next_item.media_item
-                and hasattr(next_item.media_item, "album")
-                and next_item.media_item.album
-                and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
-            )
-        )
+        # an item is played as part of its album when the item before or after it belongs to
+        # that same album, in which case the album loudness is the one to normalize on. A single
+        # track on repeat never is, no matter which album its queue neighbours belong to.
         current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
-        if current_index is None:
-            previous_track_from_same_album = False
-        else:
-            previous_index = max(current_index - 1, 0)
-            previous_track_from_same_album = (
-                previous_index > 0
-                and (previous_item := self.get_item(queue_id, previous_index)) is not None
-                and previous_item.media_item is not None
-                and hasattr(previous_item.media_item, "album")
-                and previous_item.media_item.album is not None
-                and queue_item.media_item is not None
-                and hasattr(queue_item.media_item, "album")
-                and queue_item.media_item.album is not None
-                and queue_item.media_item.album.item_id == previous_item.media_item.album.item_id
-            )
-        playing_album_tracks = next_track_from_same_album or previous_track_from_same_album
+        previous_index = current_index - 1 if current_index is not None else None
+        playing_album_tracks = queue.repeat_mode != RepeatMode.ONE and (
+            self._is_same_album(queue_item, next_index)
+            or self._is_same_album(queue_item, previous_index)
+        )
         if queue_item.media_item and isinstance(queue_item.media_item, Track):
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
@@ -393,7 +379,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            prefer_album_loudness=bool(playing_album_tracks),
+            prefer_album_loudness=playing_album_tracks,
         )
         # update queue_item.duration from streamdetails if we got a better value
         self._apply_probed_duration(queue_item)
@@ -412,6 +398,28 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # the first chunk is in, so the source has been probed and a duration the
             # provider did not report is known before playback starts
             self._apply_probed_duration(queue_item)
+
+    def _is_same_album(self, queue_item: QueueItem, other_index: int | None) -> bool:
+        """
+        Check whether the queue item at the given index holds a track from the same album.
+
+        :param queue_item: The queue item to compare against.
+        :param other_index: Index of the neighbouring queue item, if there is one.
+        """
+        if other_index is None or other_index < 0:
+            return False
+        other_item = self.get_item(queue_item.queue_id, other_index)
+        # repeating a single item, or a one-item queue, wraps right back onto this item
+        if other_item is None or other_item.queue_item_id == queue_item.queue_item_id:
+            return False
+        album = getattr(queue_item.media_item, "album", None)
+        other_album = getattr(other_item.media_item, "album", None)
+        if album is None or other_album is None:
+            return False
+        # an item picks up its library album only once it is loaded, so the neighbour may hold
+        # a different representation of the same album. Matching on the provider mappings
+        # recognises both shapes, plain item_id equality does not.
+        return compare_item_ids(album, other_album)
 
     def _apply_probed_duration(self, queue_item: QueueItem) -> None:
         """
