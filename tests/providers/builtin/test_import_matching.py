@@ -36,6 +36,7 @@ def _make_provider(
     loaded_provider_domains: set[str] | None = None,
     unavailable_provider_domains: set[str] | None = None,
     get_provider_item: AsyncMock | None = None,
+    provider_entries: list[tuple[str, str, bool]] | None = None,
 ) -> BuiltinProvider:
     """
     Create a minimal BuiltinProvider with a mocked mass.
@@ -48,21 +49,43 @@ def _make_provider(
     :param get_provider_item: Optional stub for the authoritative
         ``mass.music.tracks.get_provider_item`` lookup; defaults to one that always
         succeeds, as if the original track still resolves.
+    :param provider_entries: Optional explicit (domain, instance_id, available) entries, for
+        scenarios with several distinct instances of the same domain.
     """
     mass = MagicMock()
     loaded = loaded_provider_domains or set()
     unavailable = unavailable_provider_domains or set()
+    # a single shared registry so mass.get_provider, mass.providers and
+    # mass.get_provider_instances all agree on what is actually loaded
+    registry = (
+        [MagicMock(domain=pid, instance_id=pid, available=True) for pid in loaded]
+        + [MagicMock(domain=pid, instance_id=pid, available=False) for pid in unavailable]
+        + [
+            MagicMock(domain=domain, instance_id=instance_id, available=available)
+            for domain, instance_id, available in (provider_entries or [])
+        ]
+    )
 
     def _get_provider(
         pid: str, return_unavailable: bool = False, **_kwargs: Any
     ) -> MagicMock | None:
-        if pid in loaded:
-            return MagicMock(domain=pid, instance_id=pid, available=True)
-        if return_unavailable and pid in unavailable:
-            return MagicMock(domain=pid, instance_id=pid, available=False)
+        for provider in registry:
+            if provider.instance_id == pid and (return_unavailable or provider.available):
+                return provider
         return None
 
+    def _get_provider_instances(
+        domain: str, return_unavailable: bool = False, **_kwargs: Any
+    ) -> list[MagicMock]:
+        return [
+            provider
+            for provider in registry
+            if provider.domain == domain and (return_unavailable or provider.available)
+        ]
+
+    mass.providers = registry
     mass.get_provider = MagicMock(side_effect=_get_provider)
+    mass.get_provider_instances = MagicMock(side_effect=_get_provider_instances)
     mass.music.tracks.get_provider_item = get_provider_item or AsyncMock(return_value=MagicMock())
     prov = object.__new__(BuiltinProvider)
     prov.mass = mass
@@ -404,6 +427,125 @@ async def test_original_source_outside_allowed_instances_is_not_trusted() -> Non
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 0 |" in report_markdown
     assert "| Exact release | 1 |" in report_markdown
+
+
+async def test_domain_only_reference_tries_every_allowed_instance() -> None:
+    """A domain-only #EXTPROV entry is probed on every allowed instance of that domain."""
+    prov = _make_provider(
+        provider_entries=[
+            ("spotify", "spotify--1", True),
+            ("spotify", "spotify--2", True),
+        ],
+        # the first instance probed does not have the item, the second one does
+        get_provider_item=AsyncMock(
+            side_effect=[MediaNotFoundError("gone"), MagicMock()],
+        ),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="", item_id="abc123"),
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "spotify--2")
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    assert prov_any.mass.music.tracks.get_provider_item.await_count == 2
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
+async def test_exact_instance_reference_never_widens_to_sibling_instance() -> None:
+    """An exact #EXTPROV instance reference is never retried against a sibling instance."""
+    prov = _make_provider(
+        provider_entries=[
+            ("spotify", "spotify--1", True),
+            ("spotify", "spotify--2", True),
+        ],
+        # spotify--2 (a different account) does have the item, but must never be tried:
+        # the entry names spotify--1 exactly, so only that instance may be probed
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="spotify--1", item_id="abc123"),
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    await prov.match_imported_playlist_tracks(
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "spotify--2")
+    )
+
+    prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
+    called_instance = prov_any.mass.music.tracks.get_provider_item.await_args.args[1]
+    assert called_instance == "spotify--1"
+
+
+async def test_duplicate_original_entries_are_resolved_only_once() -> None:
+    """A track that repeats in the playlist is probed and searched only once."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    to_match = _make_playlist_item(
+        path="spotify:track:dup",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="spotify--1", item_id="abc123"),
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [to_match, to_match, to_match]))
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    enrich_mock = AsyncMock(return_value=enrichment)
+    prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1", "spotify--1")
+        )
+
+    enrich_mock.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 3
+    assert all(entry.providers[0].domain == "qobuz" for entry in written_items)
+    report_markdown = set_report.call_args.args[0]
+    assert "| Exact release | 3 |" in report_markdown
 
 
 async def test_unmatched_stale_mapping_does_not_crash_or_get_reused() -> None:

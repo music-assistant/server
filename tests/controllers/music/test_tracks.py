@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
@@ -631,6 +632,81 @@ async def test_find_provider_match_keeps_fallback_after_later_hydration_failure(
     assert result.match is not None
     assert result.match.track.item_id == candidate.item_id
     assert get_provider_item.await_count == 2
+
+
+async def test_find_provider_match_skips_invalid_data_search_candidate(
+    music: MusicController,
+) -> None:
+    """An unusable hydrated search result is skipped, not fatal to the whole search."""
+    base = create_track("spotify_1", "base")
+    unusable_candidate = create_track("qobuz_1", "unreadable")
+    good_candidate = create_track("qobuz_1", "candidate")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    async def get_provider_item(item_id: str, *_args: object, **_kwargs: object) -> Track:
+        if item_id == "unreadable":
+            raise InvalidDataError("Corrupt provider response")
+        return good_candidate
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[unusable_candidate, good_candidate])),
+        ),
+        patch.object(music.tracks, "get_provider_item", AsyncMock(side_effect=get_provider_item)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+        )
+
+    assert result.match is not None
+    assert result.match.track.item_id == good_candidate.item_id
+
+
+async def test_find_provider_match_falls_through_search_after_invalid_mapped_candidate(
+    music: MusicController,
+) -> None:
+    """A stale/unreadable mapped candidate falls through to search, instead of aborting."""
+    source = create_track("qobuz_1", "source")
+    search_candidate = create_track("qobuz_1", "found")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    async def get_provider_item(item_id: str, *_args: object, **_kwargs: object) -> Track:
+        if item_id == "source":
+            # resolving the trusted mapping directly - simulate a stale, unreadable
+            # catalog entry rather than a confirmed removal
+            raise InvalidDataError("Unreadable catalog entry")
+        return search_candidate
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[search_candidate])),
+        ),
+        patch.object(music.tracks, "get_provider_item", AsyncMock(side_effect=get_provider_item)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+            trust_base_mapping=False,
+        )
+
+    assert result.match is not None
 
 
 async def test_find_provider_match_reports_ambiguous_loose_candidates(

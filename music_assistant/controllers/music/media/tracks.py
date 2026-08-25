@@ -715,7 +715,9 @@ class TracksController(MediaControllerBase[Track]):
                     allow_fallback=False,
                     strict_provider_instance=True,
                 )
-            except MediaNotFoundError:
+            except MediaNotFoundError, InvalidDataError:
+                # a stale mapping (deleted catalog id, unreadable stream) is not fatal -
+                # fall through to a fresh search below instead of aborting the provider
                 mapped_candidate = None
             if mapped_candidate:
                 confidence, resolved_base_album = await self._get_match_confidence(
@@ -1039,7 +1041,9 @@ class TracksController(MediaControllerBase[Track]):
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
-                except MediaNotFoundError:
+                except MediaNotFoundError, InvalidDataError:
+                    # this hydrated search result is unusable - skip it, other
+                    # candidates from this same search are still worth trying
                     continue
                 except (
                     ResourceTemporarilyUnavailable,

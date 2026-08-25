@@ -663,49 +663,31 @@ class BuiltinProvider(MusicProvider):
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
+        # results are cached by the entry's original path so a track that is duplicated
+        # in the playlist is only probed and searched once, however many times it repeats
+        resolved_by_path: dict[str, _ImportTrackMatchResult] = {}
 
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
                 index, total, f"Matching track {index + 1}/{total}"
             )
-            result = await self._resolve_import_track(
+            result = resolved_by_path.get(item.path)
+            if result is None:
+                result = await self._resolve_import_track(
+                    item,
+                    minimum_confidence,
+                    allowed_provider_instance_set,
+                    failed_provider_instances,
+                )
+                resolved_by_path[item.path] = result
+            self._tally_import_track_result(
                 item,
-                minimum_confidence,
-                allowed_provider_instance_set,
-                failed_provider_instances,
-            )
-            for provider_name in result.failed_providers:
-                issue = f"Matching failed on {provider_name}"
-                report_current_task_failure(f"{result.label}: {issue.lower()}")
-                provider_issues.append((result.label, issue))
-            for provider_name in result.ambiguous_providers:
-                issue = f"Ambiguous match on {provider_name}"
-                report_current_task_failure(f"{result.label}: {issue.lower()}")
-                provider_issues.append((result.label, issue))
-            if result.retained:
-                counts["retained"] += 1
-                continue
-            if result.error:
-                report_current_task_failure(f"{result.label}: {result.error}")
-                provider_issues.append((result.label, result.error))
-                counts["unmatched"] += 1
-                unmatched_items.append((result.label, result.error))
-                continue
-            if result.entry is None:
-                if result.ambiguous_providers:
-                    counts["ambiguous"] += 1
-                    reason = "Ambiguous match"
-                else:
-                    counts["unmatched"] += 1
-                    reason = "No acceptable match"
-                    report_current_task_failure(f"{result.label}: {reason.lower()}")
-                unmatched_items.append((result.label, reason))
-                continue
-            pending_substitutions.append((item, result.entry))
-            tier = _CONFIDENCE_COUNT_KEY[result.confidence]
-            counts[tier] += 1
-            substitutions.append(
-                (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
+                result,
+                counts,
+                substitutions,
+                unmatched_items,
+                provider_issues,
+                pending_substitutions,
             )
 
         if pending_substitutions:
@@ -908,6 +890,61 @@ class BuiltinProvider(MusicProvider):
                 self._get_playlist_image_url(playlist),
             )
 
+    def _tally_import_track_result(
+        self,
+        item: PlaylistItem,
+        result: _ImportTrackMatchResult,
+        counts: dict[str, int],
+        substitutions: list[tuple[str, str, str]],
+        unmatched_items: list[tuple[str, str]],
+        provider_issues: list[tuple[str, str]],
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+    ) -> None:
+        """
+        Record a resolved track match result into the running import report state.
+
+        :param item: The playlist entry this result applies to.
+        :param result: The resolution outcome, possibly reused from an earlier duplicate.
+        :param counts: Per-outcome totals, updated in place.
+        :param substitutions: Accepted substitution rows, appended in place.
+        :param unmatched_items: Ambiguous/unmatched rows, appended in place.
+        :param provider_issues: Provider-level issue rows, appended in place.
+        :param pending_substitutions: Accepted (original, replacement) pairs, appended in place.
+        """
+        for provider_name in result.failed_providers:
+            issue = f"Matching failed on {provider_name}"
+            report_current_task_failure(f"{result.label}: {issue.lower()}")
+            provider_issues.append((result.label, issue))
+        for provider_name in result.ambiguous_providers:
+            issue = f"Ambiguous match on {provider_name}"
+            report_current_task_failure(f"{result.label}: {issue.lower()}")
+            provider_issues.append((result.label, issue))
+        if result.retained:
+            counts["retained"] += 1
+            return
+        if result.error:
+            report_current_task_failure(f"{result.label}: {result.error}")
+            provider_issues.append((result.label, result.error))
+            counts["unmatched"] += 1
+            unmatched_items.append((result.label, result.error))
+            return
+        if result.entry is None:
+            if result.ambiguous_providers:
+                counts["ambiguous"] += 1
+                reason = "Ambiguous match"
+            else:
+                counts["unmatched"] += 1
+                reason = "No acceptable match"
+                report_current_task_failure(f"{result.label}: {reason.lower()}")
+            unmatched_items.append((result.label, reason))
+            return
+        pending_substitutions.append((item, result.entry))
+        tier = _CONFIDENCE_COUNT_KEY[result.confidence]
+        counts[tier] += 1
+        substitutions.append(
+            (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
+        )
+
     async def _resolve_import_track(
         self,
         item: PlaylistItem,
@@ -920,7 +957,7 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)
-        if await self._original_source_is_playable(item, media_item, allowed_provider_instances):
+        if await self._original_source_is_playable(item, allowed_provider_instances):
             # the original source still resolves, or its provider is merely down right
             # now - either way there is nothing to substitute
             return _ImportTrackMatchResult(label=label, retained=True)
@@ -987,32 +1024,44 @@ class BuiltinProvider(MusicProvider):
         )
 
     async def _original_source_is_playable(
-        self, item: PlaylistItem, track: Track, allowed_provider_instances: set[str]
+        self, item: PlaylistItem, allowed_provider_instances: set[str]
     ) -> bool:
         """
         Check whether an imported entry's original source is still usable.
 
         Resolves the exact provider instance and item id authoritatively (no stored
-        fallback) instead of trusting the ``available`` flag on the track's provider
-        mappings, which only reflects whether the provider was loaded when the M3U
-        metadata was last written. Falls back to parsing the raw path itself for plain
-        M3U entries that carry a bare Music Assistant URI without ``#EXTPROV`` metadata.
-        A provider that is merely down right now counts as still usable, so a transient
-        outage does not trigger a permanent substitution. Candidates are only resolved
-        within the initiating user's own provider instances, so a domain or an
-        unavailable instance can never be probed against an inaccessible account.
+        fallback) instead of trusting the ``available`` flag on a resolved track's
+        provider mappings, which only reflects whether the provider was loaded when
+        the M3U metadata was last written. Candidates are built directly from the
+        entry's own ``#EXTPROV`` references (falling back to parsing the raw path for
+        a plain M3U entry that carries a bare Music Assistant URI without one) instead
+        of through the shared library's mapping resolution, which silently substitutes
+        an arbitrary same-domain instance for a domain-only reference. A provider that
+        is merely down right now counts as still usable, so a transient outage does not
+        trigger a permanent substitution. Candidates are only ever expanded within the
+        initiating user's own provider instances, so a domain-only reference can never
+        reach an inaccessible account.
         """
-        candidates = [
-            (mapping.provider_instance or mapping.provider_domain, mapping.item_id)
-            for mapping in track.provider_mappings
-        ]
+        candidates: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for prov_info in item.providers:
+            for instance_id in self._allowed_instances_for(
+                prov_info.instance_id or prov_info.domain, allowed_provider_instances
+            ):
+                key = (instance_id, prov_info.item_id)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(key)
         if not candidates:
             with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
                 _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
-                candidates.append((provider_instance_or_domain, raw_item_id))
-        for provider_instance_or_domain, provider_item_id in candidates:
-            provider = self.mass.get_provider(provider_instance_or_domain, return_unavailable=True)
-            if provider is None or provider.instance_id not in allowed_provider_instances:
+                for instance_id in self._allowed_instances_for(
+                    provider_instance_or_domain, allowed_provider_instances
+                ):
+                    candidates.append((instance_id, raw_item_id))
+        for provider_instance, provider_item_id in candidates:
+            provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+            if provider is None:
                 continue
             if not provider.available:
                 return True
@@ -1039,6 +1088,31 @@ class BuiltinProvider(MusicProvider):
             else:
                 return True
         return False
+
+    def _allowed_instances_for(
+        self, provider_instance_or_domain: str, allowed_provider_instances: set[str]
+    ) -> list[str]:
+        """
+        Expand an entry's provider reference to allowed instance ids.
+
+        An exact instance id is kept as-is, and only if it is in the caller's own
+        snapshot; a bare domain is expanded to every one of the caller's allowed
+        instances of that domain instead of the single, arbitrary instance the
+        shared library would otherwise resolve it to.
+        """
+        if any(
+            provider.instance_id == provider_instance_or_domain for provider in self.mass.providers
+        ):
+            if provider_instance_or_domain in allowed_provider_instances:
+                return [provider_instance_or_domain]
+            return []
+        return [
+            provider.instance_id
+            for provider in self.mass.get_provider_instances(
+                provider_instance_or_domain, return_unavailable=True
+            )
+            if provider.instance_id in allowed_provider_instances
+        ]
 
     def _get_stored_item(
         self, item: PlaylistItem, stored_by_media_type: Mapping[str, Mapping[str, StoredItem]]
