@@ -8,7 +8,18 @@ from statistics import median
 from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.audio_processing import (
+    ActiveSourceAudioDetails,
+    AudioFidelity,
+    AudioQuality,
+)
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlaybackState,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.media_items import AudioFormat, AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
@@ -547,6 +558,101 @@ class TestLiveSourcePosition:
         assert media.source_id == "player_1"
         # no queue item: this is not playing out of a queue
         assert media.queue_item_id is None
+
+
+class TestLiveSourceAudioDetails:
+    """Audio details published for a live external source."""
+
+    @staticmethod
+    def _details(quality: AudioQuality = AudioQuality.LOSSLESS) -> ActiveSourceAudioDetails:
+        """Return source audio details with a known lossless input."""
+        return ActiveSourceAudioDetails(
+            input_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
+            input_fidelity=AudioFidelity(quality=quality),
+            crossfade_mode=CrossfadeMode.SOURCE,
+            volume_normalization_mode=VolumeNormalizationMode.SOURCE,
+        )
+
+    def test_source_audio_details_reach_player_state(self, mock_mass: MagicMock) -> None:
+        """The source session's audio snapshot is part of the published player state."""
+        details = self._details()
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=details,
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+
+        player.update_state(signal_event=False)
+
+        assert player.state.active_source_audio == details
+
+    def test_replacing_source_audio_details_signals_player_update(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Replacing the snapshot is detected even when no player-owned input changed."""
+        first = self._details()
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=first,
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+        player.update_state(signal_event=False)
+        mock_mass.players.signal_player_state_update.reset_mock()
+        session.active_source_audio = self._details(AudioQuality.STANDARD)
+
+        player.mark_state_dirty()
+        player.update_state()
+
+        assert player.state.active_source_audio is not None
+        assert player.state.active_source_audio.input_fidelity.quality is AudioQuality.STANDARD
+        mock_mass.players.signal_player_state_update.assert_called_once()
+
+    def test_ending_source_session_clears_player_audio_details(self, mock_mass: MagicMock) -> None:
+        """A player no longer owning the source publishes no source audio snapshot."""
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=self._details(),
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+        player.update_state(signal_event=False)
+        mock_mass.players.get_audio_source_session.return_value = None
+
+        player.mark_state_dirty()
+        player.update_state(signal_event=False)
+
+        assert player.state.active_source_audio is None
 
 
 class TestMediaUpdatedCallback:
