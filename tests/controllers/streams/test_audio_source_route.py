@@ -367,12 +367,14 @@ async def test_direct_pcm_stream_stops_when_the_session_is_reselected() -> None:
         yield b"stale"
 
     ctrl.audio.get_audio_source_stream = MagicMock(return_value=chunks())
-    stream = ctrl._get_audio_source_session_stream(session, AudioFormat(), CONSUMER_ID)
+    pcm_format = AudioFormat()
+    stream = ctrl._get_audio_source_session_stream(session, pcm_format, CONSUMER_ID)
 
     assert await anext(stream) == b"first"
     ctrl.audio_processing.update_source_context.assert_called_once_with(
         OWNER_ID,
         session.playback_session_id,
+        pcm_format=pcm_format,
         crossfade_enabled=provider.delivers_crossfaded_audio.return_value,
         volume_normalization_enabled=provider.delivers_normalized_audio.return_value,
     )
