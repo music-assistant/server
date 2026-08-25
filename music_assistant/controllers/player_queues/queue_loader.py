@@ -786,6 +786,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     option = QueueOption(config_value)
                     if option not in (QueueOption.ADD, QueueOption.NEXT):
                         self._reset_enqueued_media_items(queue_data)
+                    # settled from the resolved option for the same reason as the reset above
+                    already_dynamic = queue.is_dynamic and option in (
+                        QueueOption.ADD,
+                        QueueOption.NEXT,
+                    )
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve

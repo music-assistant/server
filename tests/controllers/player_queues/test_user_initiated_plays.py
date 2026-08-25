@@ -305,3 +305,44 @@ async def test_configured_replace_default_clears_the_previously_enqueued_items()
     assert ctrl._queue_data["q1"].enqueued_media_items == [track]
     # the credits only mark which enqueued albums were counted, so they go with them
     assert ctrl._queue_data["q1"].credited_albums == set()
+
+
+async def test_configured_add_default_feeds_a_dynamic_queue() -> None:
+    """An add onto a managed pool keeps the item as a source, config default or not."""
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    dynamic_playlist = Playlist(
+        item_id="p1",
+        provider="spotify--abc",
+        name="Mix",
+        provider_mappings={
+            ProviderMapping(
+                item_id="p1", provider_domain="spotify", provider_instance="spotify--abc"
+            )
+        },
+        is_dynamic=True,
+    )
+    ctrl = _play_media_controller(track, QueueOption.ADD.value)
+    ctrl._enter_dynamic_mode = AsyncMock()  # type: ignore[method-assign]
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.source_items = [dynamic_playlist]
+    queue_data.queue.is_dynamic = True
+    ctrl.store_sources = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _queue, items: setattr(queue_data, "source_items", list(items))
+    )
+
+    await ctrl._handle_play_media("q1", track)
+
+    # expanding it into the queue would only have the pool rebuild discard those tracks again
+    cast("AsyncMock", ctrl._media_resolver._resolve_media_items).assert_not_called()
+    assert track in queue_data.source_items
