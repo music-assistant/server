@@ -1027,6 +1027,80 @@ async def test_enrich_provider_mappings_rejects_incompatible_cross_provider_matc
     assert deezer_mapping in result.track.provider_mappings
 
 
+async def test_enrich_provider_mappings_prefers_higher_confidence_over_visitation_order(
+    music: MusicController,
+) -> None:
+    """A later provider's stronger match wins over an earlier, weaker, conflicting one."""
+    source = create_track("spotify_1", "source")
+    # "aaa" is visited first (alphabetically) but only ties at LOOSE, while the
+    # conflicting "zzz" match is visited later yet is a much stronger EXACT hit
+    loose_track = create_track("aaa_1", "loose-track", isrc="LOOSE")
+    loose_track.metadata.explicit = True
+    loose_mapping = next(iter(loose_track.provider_mappings))
+    exact_track = create_track("zzz_1", "exact-track", isrc="EXACT")
+    exact_track.metadata.explicit = False
+    exact_mapping = next(iter(exact_track.provider_mappings))
+    loose_provider = MagicMock(spec=MusicProvider)
+    loose_provider.name = "Aaa"
+    loose_provider.instance_id = "aaa_1"
+    loose_provider.domain = "aaa"
+    loose_provider.available = True
+    loose_provider.is_streaming_provider = True
+    exact_provider = MagicMock(spec=MusicProvider)
+    exact_provider.name = "Zzz"
+    exact_provider.instance_id = "zzz_1"
+    exact_provider.domain = "zzz"
+    exact_provider.available = True
+    exact_provider.is_streaming_provider = True
+    loose_match = TrackProviderMatch(
+        track=loose_track, mapping=loose_mapping, confidence=TrackMatchConfidence.LOOSE
+    )
+    exact_match = TrackProviderMatch(
+        track=exact_track, mapping=exact_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    results = {
+        "aaa_1": TrackProviderMatchResult(match=loose_match),
+        "zzz_1": TrackProviderMatchResult(match=exact_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "aaa_1": loose_provider,
+                "zzz_1": exact_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"aaa_1", "zzz_1"},
+        )
+
+    assert result.matches == (exact_match,)
+    assert "Aaa" in result.ambiguous_providers
+    assert loose_mapping not in result.track.provider_mappings
+    assert exact_mapping in result.track.provider_mappings
+
+
 async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(
     music: MusicController,
 ) -> None:

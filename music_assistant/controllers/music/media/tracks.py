@@ -810,6 +810,7 @@ class TracksController(MediaControllerBase[Track]):
         base_album: Album | ItemMapping | None = None
         base_album_loaded = False
         matches: list[TrackProviderMatch] = []
+        provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
         failed_providers: list[str] = []
         providers = (
@@ -882,24 +883,31 @@ class TracksController(MediaControllerBase[Track]):
                 failed_providers.append(provider.name)
                 continue
             if result.match:
-                if matches and not self._matches_are_compatible([*matches, result.match]):
-                    # this provider's match is not the same recording as a match
-                    # already accepted from another provider (missing source evidence,
-                    # e.g. no explicitness tag, can let unrelated candidates tie) -
-                    # treat it as ambiguous instead of merging conflicting mappings
-                    ambiguous_providers.append(provider.name)
-                    continue
-                enriched_track.provider_mappings = {
-                    mapping
-                    for mapping in enriched_track.provider_mappings
-                    if mapping.provider_domain != provider.domain
-                    or (trust_track_mappings and mapping.available)
-                }
-                enriched_track.provider_mappings.add(result.match.mapping)
-                matches.append(result.match)
+                # defer accept/reject until every provider has been queried, so a
+                # conflict is resolved by confidence rather than by which provider
+                # happened to be visited first
+                provider_matches.append((provider, result.match))
                 existing_domains.add(provider.domain)
             elif result.ambiguous:
                 ambiguous_providers.append(provider.name)
+        # resolve highest-confidence candidates first, so a stronger match from a
+        # later provider is preferred over a weaker one that was found earlier -
+        # missing source evidence (e.g. no explicitness tag) can otherwise let
+        # unrelated recordings tie and get merged or picked in visitation order
+        for provider, match in sorted(
+            provider_matches, key=lambda pm: pm[1].confidence, reverse=True
+        ):
+            if matches and not self._matches_are_compatible([*matches, match]):
+                ambiguous_providers.append(provider.name)
+                continue
+            enriched_track.provider_mappings = {
+                mapping
+                for mapping in enriched_track.provider_mappings
+                if mapping.provider_domain != provider.domain
+                or (trust_track_mappings and mapping.available)
+            }
+            enriched_track.provider_mappings.add(match.mapping)
+            matches.append(match)
         return TrackProviderEnrichment(
             track=enriched_track,
             matches=tuple(matches),
