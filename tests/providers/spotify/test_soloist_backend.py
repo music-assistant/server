@@ -33,6 +33,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
     _IDLE_TIMEOUT_S,
+    _ITEM_OVERRUN_S,
     _MAX_APP_PAUSE_RESUMES,
     _MAX_LEAD_TRIM_S,
     _READ_CHUNK_SIZE,
@@ -103,21 +104,62 @@ def test_trim_passes_silence_through_once_the_bound_is_exceeded() -> None:
 def test_seek_is_confirmed_only_within_tolerance(tmp_path: Path) -> None:
     """A position report confirms a seek only once it reaches the tolerance window."""
     item = _make_item(tmp_path, TRACK_A)
-    item.seek_target_ms = 60_000
+    item.arm_seek(60_000)
     item.observe_position(50_000)
     assert not item.seek_confirmed.is_set()
     item.observe_position(58_500)
     assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 58_500
 
 
 def test_small_seek_target_is_not_confirmed_by_a_pre_seek_zero_report(tmp_path: Path) -> None:
     """A position-0 report before the seek lands cannot confirm a small target."""
     item = _make_item(tmp_path, TRACK_A)
-    item.seek_target_ms = 1_500
+    item.arm_seek(1_500)
     item.observe_position(0)
     assert not item.seek_confirmed.is_set()
     item.observe_position(1_500)
     assert item.seek_confirmed.is_set()
+
+
+def test_a_small_seek_is_confirmed_without_a_report_of_exactly_zero(tmp_path: Path) -> None:
+    """A target inside the tolerance window has no room below it to be anchored on."""
+    item = _make_item(tmp_path, TRACK_A)
+    # the engine restored this item a second in, so the seek is short enough
+    # that no report can fall below its tolerance window
+    item.observe_position(1_200)
+    item.arm_seek(2_000)
+    item.observe_position(400)
+    item.observe_position(2_000)
+    assert item.seek_confirmed.is_set()
+
+
+def test_the_restored_position_of_the_same_item_cannot_confirm_a_seek(tmp_path: Path) -> None:
+    """The state a fresh session restores does not pass for the seek landing."""
+    item = _make_item(tmp_path, TRACK_A)
+    item.duration_ms = 176_000
+    # the engine restores the account's last state: this very item, sitting at
+    # the position the seek is aiming for
+    item.observe_position(117_000)
+    item.arm_seek(117_000)
+    item.observe_position(117_000)
+    assert not item.seek_confirmed.is_set()
+    # only once the engine has reloaded the track does its seek count
+    item.observe_position(0)
+    item.observe_position(117_000)
+    assert item.seek_confirmed.is_set()
+
+
+def test_a_backward_seek_is_confirmed_below_where_the_engine_was(tmp_path: Path) -> None:
+    """Seeking back into an item confirms on the target, not on where it came from."""
+    item = _make_item(tmp_path, TRACK_A)
+    # the engine restored this item well past the point being seeked back to
+    item.observe_position(117_000)
+    item.arm_seek(30_000)
+    item.observe_position(0)
+    item.observe_position(30_000)
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 30_000
 
 
 def test_position_never_regresses_and_stops_at_the_cut(tmp_path: Path) -> None:
@@ -626,6 +668,98 @@ def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     # and the padding silence after it is refused
     item.write(b"\x00" * 4096)
     assert item.buffered == remainder
+
+
+@pytest.mark.parametrize(
+    ("target_ms", "reports"),
+    [
+        # seeking the restored item to where the engine already was
+        (117_000, (117_000, 0, 117_000)),
+        # seeking back into it, where every report lands below where it was
+        (30_000, (117_000, 0, 30_000)),
+    ],
+)
+async def test_the_seek_retries_until_the_engine_reports_the_target(
+    tmp_path: Path, target_ms: int, reports: tuple[int, ...]
+) -> None:
+    """A seek dropped while the track loads is re-sent until a report confirms it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    client = cast("Any", session._client)
+    # the engine restored this item part-way in, before the seek goes out
+    item.observe_position(117_000)
+
+    async def _report_positions() -> None:
+        for position_ms in reports:
+            await asyncio.sleep(0)
+            item.observe_position(position_ms)
+
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        # bounded so a regression fails fast instead of sitting out the real budget
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 1.0),
+    ):
+        reporter = asyncio.create_task(_report_positions())
+        await session._cold_seek(client, item, target_ms)
+        await reporter
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == target_ms
+    assert client.seek.await_count >= 1
+
+
+async def test_a_seek_that_only_ever_sees_the_restored_position_fails(tmp_path: Path) -> None:
+    """A seek nothing confirms fails loudly rather than streaming from elsewhere."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    # the engine sits at the restored position and never reloads the track
+    item.observe_position(117_000)
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 0.05),
+        pytest.raises(AudioError, match="did not confirm seeking"),
+    ):
+        await session._cold_seek(cast("Any", session._client), item, 117_000)
+
+
+async def test_a_seek_the_engine_ignored_does_not_cut_the_item_short(tmp_path: Path) -> None:
+    """An item the engine plays from its start is bounded by its full duration."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    item.claim()
+    # the engine never made the seek and is playing the item from its start, so
+    # the audio it delivers runs well past what the seeked remainder would allow
+    item.observe_position(80_000)
+    item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
+    item.close()
+    delivered = 0
+    async for chunk in item.read():
+        delivered += len(chunk)
+    assert delivered == 89 * _BYTES_PER_SECOND
+
+
+async def test_a_seek_that_landed_still_bounds_the_item_at_its_remainder(tmp_path: Path) -> None:
+    """An item the engine really seeked into stays bounded by what is left of it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    item.observe_position(0)
+    item.observe_position(117_000)
+    assert item.seek_confirmed.is_set()
+    assert item._overrun_limit() == 59 * _BYTES_PER_SECOND + int(
+        _ITEM_OVERRUN_S * _BYTES_PER_SECOND
+    )
+    # later reports do not move the latch, which would shrink the bound
+    item.observe_position(150_000)
+    assert item.started_at_ms == 117_000
+    # so it still fails once it runs that far past the seek point
+    item.claim()
+    item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
+    with pytest.raises(AudioError, match="never moved on"):
+        async for _ in item.read():
+            pass
 
 
 def test_the_lead_trim_never_exceeds_its_budget() -> None:

@@ -1322,7 +1322,7 @@ class _SoloistSession:
         The sink is still suspended, so no pre-seek audio enters the FIFO; PCM
         demand only starts once a position report confirms the seek landed.
         """
-        item.seek_target_ms = target_ms
+        item.arm_seek(target_ms)
         # the engine silently drops a seek that arrives while the track is still
         # loading (verified via event trace), so re-send it until a position
         # anchor confirms it landed
@@ -1892,6 +1892,7 @@ class _ItemAudio:
         self.seek_target_ms: int | None = None
         self.duration_ms: int | None = None
         self.last_position_ms: int | None = None
+        self.started_at_ms: int | None = None
         self.status: str | None = None
         self.playing_seen = False
         self.claimed = False
@@ -1903,6 +1904,8 @@ class _ItemAudio:
         self._buffered = 0
         self._written = 0
         self._delivered = 0
+        self._seek_anchored = False
+        self._seek_floor_ms = 0
         self._tail_target: int | None = None
         self.draining = False
         self._available = asyncio.Event()
@@ -2016,6 +2019,25 @@ class _ItemAudio:
         self._available.set()
         self._drop_undelivered()
 
+    def arm_seek(self, target_ms: int) -> None:
+        """
+        Arm a seek to the given position, so position reports can confirm it.
+
+        :param target_ms: The position the engine is being seeked to.
+        """
+        self.seek_target_ms = target_ms
+        self.seek_confirmed.clear()
+        self.started_at_ms = None
+        reported_ms = self.last_position_ms or 0
+        # A fresh session restores the account's last playback state, so seeking
+        # the item it was already playing - a resume, or a seek of the current
+        # track - makes that restored position indistinguishable from the seek
+        # landing. Only a position already inside the target's window has to be
+        # disproved that way, by seeing the engine back below where it was;
+        # every other start confirms on the first report that reaches the window.
+        self._seek_floor_ms = reported_ms
+        self._seek_anchored = reported_ms < max(1, target_ms - _SEEK_TOLERANCE_MS)
+
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
         if self._closed:
@@ -2025,11 +2047,22 @@ class _ItemAudio:
         # of an item reports position 0 and must not erase the progress the
         # completeness validation relies on (verified live)
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
-        # the floor of 1 keeps a pre-seek report of position 0 from confirming a
-        # small seek target that falls inside the tolerance window
-        if self.seek_target_ms is not None and position_ms >= max(
-            1, self.seek_target_ms - _SEEK_TOLERANCE_MS
-        ):
+        if self.seek_target_ms is None or self.seek_confirmed.is_set():
+            return
+        if not self._seek_anchored:
+            # anchor on the engine dropping back below where it was when the
+            # seek went out: it has restarted the item, so what it reports from
+            # here on describes where the seek is taking it. A backward seek
+            # lands below that mark too, so this only ever gates the first
+            # report - past it, position is judged against the target alone.
+            self._seek_anchored = position_ms < self._seek_floor_ms
+            return
+        # the floor of 1 keeps a report of position 0 from landing inside the
+        # tolerance window of a small seek target
+        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
+            # what the engine reports as the seek lands is where this item's own
+            # audio begins
+            self.started_at_ms = position_ms
             self.seek_confirmed.set()
 
     async def read(self) -> AsyncGenerator[bytes]:
@@ -2095,17 +2128,25 @@ class _ItemAudio:
 
         A seeked item starts part-way in, so only what is left of it is ever
         delivered — the full duration would be a target nothing can reach.
+        Measured from where the engine reported the seek landing, which is not
+        always the position it was asked for.
         """
-        if self.duration_ms is None:
-            return None
-        remaining_ms = max(0, self.duration_ms - (self.seek_target_ms or 0))
-        return remaining_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+        return self._remaining_bytes(self.started_at_ms or self.seek_target_ms or 0)
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
-        if (own_audio := self._duration_bytes()) is None:
+        # reported rather than requested: an offset the engine never confirmed
+        # would otherwise shrink this bound by audio the item does deliver, and
+        # cut a track that is still playing perfectly well
+        if (own_audio := self._remaining_bytes(self.started_at_ms or 0)) is None:
             return None
         return own_audio + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
+
+    def _remaining_bytes(self, start_ms: int) -> int | None:
+        """Return the bytes of this item's audio left from the given position, when known."""
+        if self.duration_ms is None:
+            return None
+        return max(0, self.duration_ms - start_ms) * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
 
 
 def _decorated_duration_ms(item: object) -> int | None:
