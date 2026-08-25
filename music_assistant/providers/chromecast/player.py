@@ -920,11 +920,15 @@ class ChromecastPlayer(Player):
 
         :param command: Either "next" or "previous".
         """
+        if self.mass.closing:
+            return
         queue_command = (
             self.mass.player_queues.next if command == "next" else self.mass.player_queues.previous
         )
 
         def dispatch() -> None:
+            if self.mass.closing:
+                return
             # A stopped queue still reports active=True, so also reject IDLE or a
             # press on a dashboard-only session would start playback.
             queue = self.mass.players.get_active_queue(self)

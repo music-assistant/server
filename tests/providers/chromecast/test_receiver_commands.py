@@ -70,6 +70,7 @@ def _fake_cast(
     """Build a MagicMock Cast whose call_soon_threadsafe hop runs the callback inline."""
     fake = MagicMock()
     fake.display_name = "Fake Cast"
+    fake.mass.closing = False
     # call_soon_threadsafe runs the callback inline so the dispatch is observable
     fake.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
     if queue_id is None:
@@ -136,6 +137,17 @@ def test_idle_queue_is_ignored() -> None:
     _dispatch(fake, "next")
 
     fake.mass.player_queues.next.assert_not_called()
+    fake.mass.create_task.assert_not_called()
+
+
+def test_commands_are_ignored_during_shutdown() -> None:
+    """A press racing MusicAssistant.stop() must not schedule a new queue task."""
+    fake = _fake_cast()
+    fake.mass.closing = True
+
+    _dispatch(fake, "next")
+
+    fake.mass.loop.call_soon_threadsafe.assert_not_called()
     fake.mass.create_task.assert_not_called()
 
 
