@@ -772,15 +772,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             )
             if prev_album == album:
                 return None
-        return enqueued
+        # credit the album the track carries, which is the library one whenever the album is
+        # in the library, so the play lands on the row an explicit library play writes instead
+        # of a second provider-scoped one.
+        return album if isinstance(album, Album) else enqueued
 
     def _is_user_initiated_play(
         self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> bool:
         """Return whether a played item was explicitly chosen by the user."""
-        # a played item is the library one where the enqueued item may still be the provider
-        # one it was picked from. The media type is compared alongside it because the library
-        # numbers each type from one, so ids collide freely across types.
+        # a played item is reported in its library shape while the enqueued item may still be
+        # the provider one it was picked from. The media type is compared alongside it because
+        # the library numbers each type from one, so ids collide freely across types.
         return any(
             item.media_type == media_item.media_type and compare_item_ids(item, media_item)
             for item in queue_data.enqueued_media_items

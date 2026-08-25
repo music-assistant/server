@@ -13,7 +13,7 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 from music_assistant_models.enums import AlbumType, MediaType
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping, Track
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
@@ -245,9 +245,38 @@ def test_enqueued_provider_album_credits_its_library_tracks() -> None:
     data = PlayerQueueData(queue=queue, items=items, enqueued_media_items=[provider_album])
     tracker._queue_data = {"q1": data}
 
-    # the enqueued album is credited on the first track of its run
-    assert tracker._enqueued_album_for_track(data, items[0], t1) is provider_album
+    # the enqueued album is credited on the first track of its run, under the library
+    # identity so it shares the row an explicit library play writes
+    assert tracker._enqueued_album_for_track(data, items[0], t1) is library_album
     # and only once for that run
     assert tracker._enqueued_album_for_track(data, items[1], t2) is None
     # a track from an album the user never enqueued is not credited
     assert tracker._enqueued_album_for_track(data, items[2], t3) is None
+
+
+def test_album_outside_the_library_is_credited_as_the_provider_album() -> None:
+    """An album that is not in the library is credited under the provider identity."""
+    provider_album = Album(
+        item_id="album-prov-1",
+        provider="spotify--abc",
+        name="Kind of Blue",
+        provider_mappings={
+            ProviderMapping(
+                item_id="album-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(item_id="t1", provider="spotify--abc", name="T1", provider_mappings=set())
+    items = [QueueItem.from_media_item("q1", track)]
+    # with no library album to swap in, the track keeps the provider album as a mapping
+    track.album = ItemMapping.from_item(provider_album)
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    queue = cast("PlayerQueue", Mock(queue_id="q1"))
+    data = PlayerQueueData(queue=queue, items=items, enqueued_media_items=[provider_album])
+    tracker._queue_data = {"q1": data}
+
+    assert tracker._enqueued_album_for_track(data, items[0], track) is provider_album
