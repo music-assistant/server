@@ -12,6 +12,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.chromecast.constants import DASHBOARD_NAMESPACE
 from music_assistant.providers.chromecast.player import ChromecastPlayer
@@ -60,7 +61,12 @@ def test_unhandled_messages_are_ignored(data: dict[str, object]) -> None:
 ### Dispatch into the queue controller
 
 
-def _fake_cast(*, queue_id: str | None = "cast_queue", queue_active: bool = True) -> MagicMock:
+def _fake_cast(
+    *,
+    queue_id: str | None = "cast_queue",
+    queue_active: bool = True,
+    queue_state: PlaybackState = PlaybackState.PLAYING,
+) -> MagicMock:
     """Build a MagicMock Cast whose call_soon_threadsafe hop runs the callback inline."""
     fake = MagicMock()
     fake.display_name = "Fake Cast"
@@ -72,6 +78,7 @@ def _fake_cast(*, queue_id: str | None = "cast_queue", queue_active: bool = True
         queue = MagicMock()
         queue.queue_id = queue_id
         queue.active = queue_active
+        queue.state = queue_state
         fake.mass.players.get_active_queue.return_value = queue
     return fake
 
@@ -120,3 +127,22 @@ def test_inactive_queue_is_ignored() -> None:
 
     fake.mass.player_queues.next.assert_not_called()
     fake.mass.create_task.assert_not_called()
+
+
+def test_idle_queue_is_ignored() -> None:
+    """An idle queue still reports active=True; a press must not start playback."""
+    fake = _fake_cast(queue_state=PlaybackState.IDLE)
+
+    _dispatch(fake, "next")
+
+    fake.mass.player_queues.next.assert_not_called()
+    fake.mass.create_task.assert_not_called()
+
+
+def test_paused_queue_is_dispatched() -> None:
+    """Next while paused is a legitimate command and goes through."""
+    fake = _fake_cast(queue_state=PlaybackState.PAUSED)
+
+    _dispatch(fake, "next")
+
+    fake.mass.player_queues.next.assert_called_once_with("cast_queue")

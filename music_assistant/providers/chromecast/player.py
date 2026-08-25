@@ -925,14 +925,12 @@ class ChromecastPlayer(Player):
         )
 
         def dispatch() -> None:
-            # Resolve the queue on the event loop thread, not the socket thread the
-            # command arrives on. get_active_queue follows sync/group/protocol parents;
-            # a dashboard-only session (no active queue anywhere up the chain) is
-            # dropped instead of raising InvalidCommand on every button press.
+            # A stopped queue still reports active=True, so also reject IDLE or a
+            # press on a dashboard-only session would start playback.
             queue = self.mass.players.get_active_queue(self)
-            if queue is None or not queue.active:
+            if queue is None or not queue.active or queue.state == PlaybackState.IDLE:
                 self.logger.debug(
-                    "Ignoring %s command: no active queue for %s", command, self.display_name
+                    "Ignoring %s command: no playing queue for %s", command, self.display_name
                 )
                 return
             self.mass.create_task(queue_command(queue.queue_id))
