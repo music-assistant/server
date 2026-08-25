@@ -213,6 +213,35 @@ async def test_second_close_returns_without_waiting_out_the_stream_locks() -> No
 
 
 @pytest.mark.asyncio
+async def test_kill_retrieves_the_exception_of_a_finished_stdin_feeder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A stdin feeder that already failed is awaited and its failure logged.
+
+    Awaiting only a still-pending task leaves the exception of one that already
+    ended unretrieved, which asyncio reports as unhandled when it is collected;
+    retrieving it without logging would drop the only trace of the failure.
+    """
+
+    async def _failing_feeder() -> None:
+        raise RuntimeError("feeder blew up")
+
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    feeder = asyncio.create_task(_failing_feeder())
+    await asyncio.wait([feeder])  # let it fail without retrieving the exception
+    proc._stdin_feeder_task = feeder
+
+    await proc.kill()
+
+    # asyncio clears this flag once the exception has been retrieved; while it is
+    # set the task is the one that triggers "Task exception was never retrieved"
+    assert feeder._log_traceback is False
+    assert "feeder blew up" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_close_reaps_a_child_that_never_closes_its_pipes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

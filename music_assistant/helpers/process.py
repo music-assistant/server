@@ -392,17 +392,30 @@ class AsyncProcess:
 
         pid = self.proc.pid
 
-        # Cancel stdin feeder task if any
-        if self._stdin_feeder_task and not self._stdin_feeder_task.done():
-            self._stdin_feeder_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+        # Cancel stdin feeder task if any. A task that already finished is still
+        # awaited, so an exception it ended with is retrieved rather than reported
+        # as unhandled once it is garbage collected - and logged, so retrieving it
+        # does not swallow the only trace of the failure.
+        if self._stdin_feeder_task:
+            if not self._stdin_feeder_task.done():
+                self._stdin_feeder_task.cancel()
+            try:
                 await self._stdin_feeder_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                LOGGER.warning("Process stdin feeder task ended with error: %s", err)
 
         # Cancel stderr reader task if any
-        if self._stderr_reader_task and not self._stderr_reader_task.done():
-            self._stderr_reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+        if self._stderr_reader_task:
+            if not self._stderr_reader_task.done():
+                self._stderr_reader_task.cancel()
+            try:
                 await self._stderr_reader_task
+            except asyncio.CancelledError:
+                pass  # Expected when we cancel the task
+            except Exception as err:
+                LOGGER.warning("Process stderr reader task ended with error: %s", err)
 
         # Close stdin to signal we're done sending data
         # Note: Don't manually call feed_eof() on stdout/stderr - this causes

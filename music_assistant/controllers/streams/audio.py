@@ -3845,8 +3845,9 @@ class StreamsAudio:
         finally:
             # ffmpeg wedged on an input that will never deliver again pays close()'s
             # full drain (5s stdout + 5s stderr + 2s communicate) under a held player
-            # lock before the SIGKILL that was always coming. Once the process is gone
-            # close() is free, and it is the only path that cancels the stdin feeder.
+            # lock before the SIGKILL that was always coming. Once the process has
+            # exited close() is free, and kill() would return before cleaning up the
+            # stdin feeder behind it.
             if finished or ffmpeg_proc.returncode is not None:
                 await ffmpeg_proc.close()
             else:
