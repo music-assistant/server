@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from itertools import groupby
 from typing import TYPE_CHECKING, Any, Never, cast
 
 from aiohttp import ClientError
@@ -722,6 +723,7 @@ class TracksController(MediaControllerBase[Track]):
                     mapped_candidate,
                     resolved_base_album,
                     allow_item_id_match=trust_base_mapping,
+                    allowed_provider_instances=allowed_provider_instances,
                 )
                 if confidence >= minimum_confidence and (
                     candidate_mapping := self._get_provider_mapping(
@@ -844,7 +846,9 @@ class TracksController(MediaControllerBase[Track]):
             ):
                 continue
             if not base_album_loaded:
-                base_album = await self._get_full_track_album(track)
+                base_album = await self._get_full_track_album(
+                    track, allowed_provider_instances=provider_instance_ids
+                )
                 base_album_loaded = True
             try:
                 result = await self.find_provider_match(
@@ -890,16 +894,9 @@ class TracksController(MediaControllerBase[Track]):
                 existing_domains.add(provider.domain)
             elif result.ambiguous:
                 ambiguous_providers.append(provider.name)
-        # resolve highest-confidence candidates first, so a stronger match from a
-        # later provider is preferred over a weaker one that was found earlier -
-        # missing source evidence (e.g. no explicitness tag) can otherwise let
-        # unrelated recordings tie and get merged or picked in visitation order
-        for provider, match in sorted(
-            provider_matches, key=lambda pm: pm[1].confidence, reverse=True
-        ):
-            if matches and not self._matches_are_compatible([*matches, match]):
-                ambiguous_providers.append(provider.name)
-                continue
+        accepted, tier_ambiguous_providers = self._resolve_confident_matches(provider_matches)
+        ambiguous_providers.extend(tier_ambiguous_providers)
+        for provider, match in accepted:
             enriched_track.provider_mappings = {
                 mapping
                 for mapping in enriched_track.provider_mappings
@@ -1059,6 +1056,7 @@ class TracksController(MediaControllerBase[Track]):
                     candidate,
                     base_album,
                     allow_item_id_match=allow_item_id_match,
+                    allowed_provider_instances=allowed_provider_instances,
                 )
                 if confidence < minimum_confidence:
                     continue
@@ -1081,6 +1079,7 @@ class TracksController(MediaControllerBase[Track]):
         base_album: Album | ItemMapping | None,
         *,
         allow_item_id_match: bool = True,
+        allowed_provider_instances: set[str] | None = None,
     ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None]:
         """Return candidate confidence with full album evidence when needed."""
         confidence = compare_track_evidence(
@@ -1092,8 +1091,12 @@ class TracksController(MediaControllerBase[Track]):
         if confidence == TrackMatchConfidence.EXACT:
             return confidence, base_album
         if base_album is None:
-            base_album = await self._get_full_track_album(base_track)
-        candidate_album = await self._get_full_track_album(candidate)
+            base_album = await self._get_full_track_album(
+                base_track, allowed_provider_instances=allowed_provider_instances
+            )
+        candidate_album = await self._get_full_track_album(
+            candidate, allowed_provider_instances=allowed_provider_instances
+        )
         return (
             compare_track_evidence(
                 base_track,
@@ -1124,14 +1127,32 @@ class TracksController(MediaControllerBase[Track]):
             return None
         return replace(domain_mapping, provider_instance=provider.instance_id)
 
-    async def _get_full_track_album(self, track: Track) -> Album | ItemMapping | None:
-        """Return full album details when they are available."""
+    async def _get_full_track_album(
+        self, track: Track, allowed_provider_instances: set[str] | None = None
+    ) -> Album | ItemMapping | None:
+        """
+        Return full album details when they are available.
+
+        :param track: Track whose album should be hydrated.
+        :param allowed_provider_instances: Provider instances available to the
+            initiating user. When set, an album on a domain that resolves outside
+            this set is left as the unhydrated mapping instead of being fetched.
+        """
         if not track.album or isinstance(track.album, Album):
             return track.album
+        provider_instance_id_or_domain = track.album.provider
+        if allowed_provider_instances is not None and provider_instance_id_or_domain != "library":
+            provider = self.mass.get_provider(
+                provider_instance_id_or_domain, return_unavailable=True
+            )
+            if provider is None or provider.instance_id not in allowed_provider_instances:
+                # can't verify this account is one the initiating user has access to
+                return track.album
+            provider_instance_id_or_domain = provider.instance_id
         try:
             return await self.mass.music.albums.get(
                 track.album.item_id,
-                track.album.provider,
+                provider_instance_id_or_domain,
                 allow_update_metadata=False,
             )
         except (
@@ -1159,6 +1180,38 @@ class TracksController(MediaControllerBase[Track]):
             for index, base_match in enumerate(matches)
             for compare_match in matches[index + 1 :]
         )
+
+    def _resolve_confident_matches(
+        self, provider_matches: list[tuple[MusicProvider, TrackProviderMatch]]
+    ) -> tuple[list[tuple[MusicProvider, TrackProviderMatch]], list[str]]:
+        """
+        Accept provider matches confidence tier by confidence tier.
+
+        Resolves the highest-confidence candidates first, so a stronger match is
+        preferred over a weaker one that conflicts with it regardless of which
+        provider was visited first, and rejects a whole confidence tier as
+        ambiguous when its own candidates disagree with each other - missing
+        source evidence (e.g. no explicitness tag) can otherwise let unrelated
+        recordings tie and get merged or picked arbitrarily.
+        """
+        accepted: list[tuple[MusicProvider, TrackProviderMatch]] = []
+        ambiguous_providers: list[str] = []
+        for _, tier_iter in groupby(
+            sorted(provider_matches, key=lambda pm: pm[1].confidence, reverse=True),
+            key=lambda pm: pm[1].confidence,
+        ):
+            tier = list(tier_iter)
+            tier_matches = [match for _, match in tier]
+            if not self._matches_are_compatible(tier_matches) or (
+                accepted
+                and not self._matches_are_compatible(
+                    [*(match for _, match in accepted), *tier_matches]
+                )
+            ):
+                ambiguous_providers.extend(provider.name for provider, _ in tier)
+                continue
+            accepted.extend(tier)
+        return accepted, ambiguous_providers
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

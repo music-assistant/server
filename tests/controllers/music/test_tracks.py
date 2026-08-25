@@ -820,7 +820,7 @@ async def test_enrich_provider_mappings_uses_library_without_mutating_it(
     }
     assert library_track.provider_mappings == original_mappings
     assert result.matches == (qobuz_match, tidal_match)
-    get_full_track_album.assert_awaited_once_with(source)
+    get_full_track_album.assert_awaited_once_with(source, allowed_provider_instances=None)
 
 
 async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
@@ -953,10 +953,10 @@ async def test_enrich_provider_mappings_tries_next_instance_after_miss(
     assert result.matches == (match,)
 
 
-async def test_enrich_provider_mappings_rejects_incompatible_cross_provider_match(
+async def test_enrich_provider_mappings_treats_tied_conflicting_matches_as_ambiguous(
     music: MusicController,
 ) -> None:
-    """A second provider's match that disagrees with an accepted one is ambiguous, not merged."""
+    """Two same-confidence providers that disagree with each other are both ambiguous."""
     source = create_track("spotify_1", "source")
     # missing explicitness evidence on the source lets each candidate independently tie
     # with it, but the two candidates plainly disagree with each other (explicit vs. clean)
@@ -1021,10 +1021,12 @@ async def test_enrich_provider_mappings_rejects_incompatible_cross_provider_matc
             provider_instance_ids={"qobuz_1", "deezer_1"},
         )
 
-    assert result.matches == (deezer_match,)
-    assert "Qobuz" in result.ambiguous_providers
+    # neither can be trusted over the other at the same confidence - a tie-break
+    # would otherwise pick one arbitrarily based on which provider was visited first
+    assert result.matches == ()
+    assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
     assert qobuz_mapping not in result.track.provider_mappings
-    assert deezer_mapping in result.track.provider_mappings
+    assert deezer_mapping not in result.track.provider_mappings
 
 
 async def test_enrich_provider_mappings_prefers_higher_confidence_over_visitation_order(
