@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Never, cast
 
@@ -17,8 +19,10 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -45,9 +49,12 @@ from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
 )
 from music_assistant.helpers.compare import (
+    TrackMatchConfidence,
     compare_artists,
     compare_media_item,
     compare_track,
+    compare_track_evidence,
+    compare_track_title,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
@@ -63,6 +70,34 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.plugin import PluginProvider
+
+
+@dataclass(frozen=True, slots=True)
+class TrackProviderMatch:
+    """Matched provider track with its confidence and target mapping."""
+
+    track: Track
+    mapping: ProviderMapping
+    confidence: TrackMatchConfidence
+
+
+@dataclass(frozen=True, slots=True)
+class TrackProviderMatchResult:
+    """Result of resolving a track on one provider."""
+
+    match: TrackProviderMatch | None = None
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TrackProviderEnrichment:
+    """Track enriched with provider matches without changing the library."""
+
+    track: Track
+    matches: tuple[TrackProviderMatch, ...]
+    ambiguous_providers: tuple[str, ...]
+    failed_providers: tuple[str, ...]
+    used_library_item: bool
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -629,6 +664,242 @@ class TracksController(MediaControllerBase[Track]):
             in_library_only=True,
         )
 
+    async def get_library_match(self, item: Track) -> Track | None:
+        """
+        Return an existing library track matching the provider track.
+
+        :param item: Provider track to resolve.
+        """
+        if library_item_id := await self._get_library_item_by_match(item):
+            return await self.get_library_item(library_item_id)
+        return None
+
+    async def find_provider_match(
+        self,
+        base_track: Track,
+        provider: MusicProvider,
+        minimum_confidence: TrackMatchConfidence = TrackMatchConfidence.LIKELY,
+        base_album: Album | ItemMapping | None = None,
+        mapping_source: Track | None = None,
+        allowed_provider_instances: set[str] | None = None,
+        trust_base_mapping: bool = True,
+    ) -> TrackProviderMatchResult:
+        """
+        Find the best track match on a music provider.
+
+        :param base_track: Reference track to match.
+        :param provider: Target provider.
+        :param minimum_confidence: Lowest confidence that may be returned.
+        :param base_album: Optional full reference album for release evidence.
+        :param mapping_source: Optional library track whose mappings may be reused as candidates.
+        :param allowed_provider_instances: Provider instances available to the initiating user.
+        :param trust_base_mapping: Treat a direct base-track mapping as exact provider identity.
+        """
+        resolved_base_album = base_album
+        mapped_match: TrackProviderMatch | None = None
+        mapping_source = mapping_source or base_track
+        if mapping := self._get_provider_mapping(mapping_source, provider):
+            if mapping_source is base_track and trust_base_mapping:
+                return TrackProviderMatchResult(
+                    match=TrackProviderMatch(
+                        track=base_track,
+                        mapping=mapping,
+                        confidence=TrackMatchConfidence.EXACT,
+                    )
+                )
+            try:
+                mapped_candidate = await self.get_provider_item(
+                    mapping.item_id,
+                    provider.instance_id,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except MediaNotFoundError:
+                mapped_candidate = None
+            if mapped_candidate:
+                confidence, resolved_base_album = await self._get_match_confidence(
+                    base_track,
+                    mapped_candidate,
+                    resolved_base_album,
+                    allow_item_id_match=trust_base_mapping,
+                )
+                if confidence >= minimum_confidence and (
+                    candidate_mapping := self._get_provider_mapping(
+                        mapped_candidate,
+                        provider,
+                    )
+                ):
+                    mapped_match = TrackProviderMatch(
+                        track=mapped_candidate,
+                        mapping=candidate_mapping,
+                        confidence=confidence,
+                    )
+                    if confidence == TrackMatchConfidence.EXACT:
+                        return TrackProviderMatchResult(match=mapped_match)
+        if ProviderFeature.SEARCH not in provider.supported_features:
+            return TrackProviderMatchResult(match=mapped_match)
+        if MediaType.TRACK not in provider.supported_media_types:
+            return TrackProviderMatchResult(match=mapped_match)
+        if not base_track.artists:
+            return TrackProviderMatchResult(match=mapped_match)
+
+        candidates = await self._search_provider_track_matches(
+            base_track,
+            provider,
+            minimum_confidence,
+            resolved_base_album,
+            allowed_provider_instances,
+            trust_base_mapping,
+            mapped_match,
+        )
+
+        if not candidates:
+            return TrackProviderMatchResult()
+        best_confidence = max(match.confidence for _, match in candidates)
+        best_matches = [
+            (rank, match) for rank, match in candidates if match.confidence == best_confidence
+        ]
+        if best_confidence == TrackMatchConfidence.LOOSE and not self._matches_are_compatible(
+            [match for _, match in best_matches]
+        ):
+            return TrackProviderMatchResult(ambiguous=True)
+        _, best_match = max(
+            best_matches,
+            key=lambda ranked_match: (
+                ranked_match[1].mapping.quality,
+                -ranked_match[0],
+            ),
+        )
+        return TrackProviderMatchResult(match=best_match)
+
+    async def enrich_provider_mappings(
+        self,
+        track: Track,
+        minimum_confidence: TrackMatchConfidence = TrackMatchConfidence.LIKELY,
+        provider_instance_ids: set[str] | None = None,
+        trust_track_mappings: bool = True,
+        failed_provider_instances: set[str] | None = None,
+    ) -> TrackProviderEnrichment:
+        """
+        Resolve missing streaming-provider mappings without updating the library.
+
+        :param track: Provider track to enrich.
+        :param minimum_confidence: Lowest confidence that may be accepted.
+        :param provider_instance_ids: Provider instances available to the initiating user.
+        :param trust_track_mappings: Treat mappings attached to the source track as exact.
+        :param failed_provider_instances: Provider instances unavailable for the migration.
+        """
+        library_track = await self.get_library_match(track)
+        enriched_track = deepcopy(track)
+        if provider_instance_ids is not None:
+            enriched_track.provider_mappings = {
+                mapping
+                for mapping in enriched_track.provider_mappings
+                if mapping.provider_instance in provider_instance_ids and mapping.available
+            }
+        existing_domains = (
+            {
+                mapping.provider_domain
+                for mapping in enriched_track.provider_mappings
+                if mapping.available
+            }
+            if trust_track_mappings
+            else set()
+        )
+        base_album: Album | ItemMapping | None = None
+        base_album_loaded = False
+        matches: list[TrackProviderMatch] = []
+        ambiguous_providers: list[str] = []
+        failed_providers: list[str] = []
+        providers = (
+            [
+                provider
+                for provider_instance_id in sorted(provider_instance_ids)
+                if isinstance(
+                    provider := self.mass.get_provider(
+                        provider_instance_id,
+                        return_unavailable=True,
+                    ),
+                    MusicProvider,
+                )
+                and provider.instance_id == provider_instance_id
+                and provider.available
+            ]
+            if provider_instance_ids is not None
+            else self.mass.music.providers
+        )
+        mapping_source = library_track or track
+        for provider in providers:
+            if (
+                failed_provider_instances is not None
+                and provider.instance_id in failed_provider_instances
+            ):
+                continue
+            if provider.domain in existing_domains:
+                continue
+            if not provider.is_streaming_provider and not (
+                self._get_provider_mapping(mapping_source, provider)
+            ):
+                continue
+            if not base_album_loaded:
+                base_album = await self._get_full_track_album(track)
+                base_album_loaded = True
+            try:
+                result = await self.find_provider_match(
+                    track,
+                    provider,
+                    minimum_confidence=minimum_confidence,
+                    base_album=base_album,
+                    mapping_source=mapping_source,
+                    allowed_provider_instances=provider_instance_ids,
+                    trust_base_mapping=trust_track_mappings,
+                )
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ) as err:
+                if failed_provider_instances is not None:
+                    failed_provider_instances.add(provider.instance_id)
+                self.logger.warning(
+                    "Failed to match %s on provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                )
+                failed_providers.append(provider.name)
+                continue
+            except (InvalidDataError, MediaNotFoundError) as err:
+                self.logger.warning(
+                    "Failed to match %s on provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                )
+                failed_providers.append(provider.name)
+                continue
+            if result.match:
+                enriched_track.provider_mappings = {
+                    mapping
+                    for mapping in enriched_track.provider_mappings
+                    if mapping.provider_domain != provider.domain
+                    or (trust_track_mappings and mapping.available)
+                }
+                enriched_track.provider_mappings.add(result.match.mapping)
+                matches.append(result.match)
+                existing_domains.add(provider.domain)
+            elif result.ambiguous:
+                ambiguous_providers.append(provider.name)
+        return TrackProviderEnrichment(
+            track=enriched_track,
+            matches=tuple(matches),
+            ambiguous_providers=tuple(ambiguous_providers),
+            failed_providers=tuple(failed_providers),
+            used_library_item=library_track is not None,
+        )
+
     async def match_provider(
         self,
         base_track: Track,
@@ -701,6 +972,177 @@ class TracksController(MediaControllerBase[Track]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
                 processed_domains.add(provider.domain)
+
+    async def _search_provider_track_matches(
+        self,
+        base_track: Track,
+        provider: MusicProvider,
+        minimum_confidence: TrackMatchConfidence,
+        base_album: Album | ItemMapping | None,
+        allowed_provider_instances: set[str] | None,
+        allow_item_id_match: bool,
+        mapped_match: TrackProviderMatch | None,
+    ) -> list[tuple[int, TrackProviderMatch]]:
+        """Return ranked provider candidates, stopping when an exact match is found."""
+        search_queries = list(
+            dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
+        )
+        candidates: list[tuple[int, TrackProviderMatch]] = (
+            [(0, mapped_match)] if mapped_match else []
+        )
+        seen_candidates: set[tuple[str, str]] = set()
+        for search_query in search_queries:
+            try:
+                search_results = await self.mass.music.search_provider(
+                    search_query,
+                    provider.instance_id,
+                    [MediaType.TRACK],
+                    limit=5,
+                    allowed_provider_instances=allowed_provider_instances,
+                )
+            except ResourceTemporarilyUnavailable:
+                if candidates:
+                    break
+                raise
+            for search_result in search_results.tracks:
+                if not isinstance(search_result, Track):
+                    continue
+                candidate_key = (search_result.provider, search_result.item_id)
+                if candidate_key in seen_candidates or not search_result.available:
+                    continue
+                seen_candidates.add(candidate_key)
+                if not compare_track_title(base_track.name, search_result.name):
+                    continue
+                if not compare_artists(
+                    base_track.artists,
+                    search_result.artists,
+                    any_match=True,
+                ):
+                    continue
+                try:
+                    candidate = await self.get_provider_item(
+                        search_result.item_id,
+                        provider.instance_id,
+                        allow_fallback=False,
+                        strict_provider_instance=True,
+                    )
+                except MediaNotFoundError:
+                    continue
+                except (
+                    ResourceTemporarilyUnavailable,
+                    ProviderUnavailableError,
+                    ClientError,
+                    OSError,
+                    TimeoutError,
+                ):
+                    if candidates:
+                        return candidates
+                    raise
+                confidence, base_album = await self._get_match_confidence(
+                    base_track,
+                    candidate,
+                    base_album,
+                    allow_item_id_match=allow_item_id_match,
+                )
+                if confidence < minimum_confidence:
+                    continue
+                if not (mapping := self._get_provider_mapping(candidate, provider)):
+                    continue
+                candidate_match = TrackProviderMatch(
+                    track=candidate,
+                    mapping=mapping,
+                    confidence=confidence,
+                )
+                candidates.append((len(candidates), candidate_match))
+                if confidence == TrackMatchConfidence.EXACT:
+                    return candidates
+        return candidates
+
+    async def _get_match_confidence(
+        self,
+        base_track: Track,
+        candidate: Track,
+        base_album: Album | ItemMapping | None,
+        *,
+        allow_item_id_match: bool = True,
+    ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None]:
+        """Return candidate confidence with full album evidence when needed."""
+        confidence = compare_track_evidence(
+            base_track,
+            candidate,
+            base_album=base_album,
+            allow_item_id_match=allow_item_id_match,
+        )
+        if confidence == TrackMatchConfidence.EXACT:
+            return confidence, base_album
+        if base_album is None:
+            base_album = await self._get_full_track_album(base_track)
+        candidate_album = await self._get_full_track_album(candidate)
+        return (
+            compare_track_evidence(
+                base_track,
+                candidate,
+                base_album=base_album,
+                compare_album_item=candidate_album,
+                allow_item_id_match=allow_item_id_match,
+            ),
+            base_album,
+        )
+
+    @staticmethod
+    def _get_provider_mapping(track: Track, provider: MusicProvider) -> ProviderMapping | None:
+        """Return an available mapping suitable for the provider instance."""
+        domain_mapping: ProviderMapping | None = None
+        for mapping in sorted(track.provider_mappings, key=lambda item: item.quality, reverse=True):
+            if not mapping.available:
+                continue
+            if mapping.provider_instance == provider.instance_id:
+                return mapping
+            if (
+                mapping.provider_domain == provider.domain
+                and not mapping.is_unique
+                and domain_mapping is None
+            ):
+                domain_mapping = mapping
+        if domain_mapping is None:
+            return None
+        return replace(domain_mapping, provider_instance=provider.instance_id)
+
+    async def _get_full_track_album(self, track: Track) -> Album | ItemMapping | None:
+        """Return full album details when they are available."""
+        if not track.album or isinstance(track.album, Album):
+            return track.album
+        try:
+            return await self.mass.music.albums.get(
+                track.album.item_id,
+                track.album.provider,
+                allow_update_metadata=False,
+            )
+        except (
+            InvalidDataError,
+            MediaNotFoundError,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            ClientError,
+            OSError,
+            TimeoutError,
+        ) as err:
+            self.logger.debug(
+                "Could not load album details for track %s: %s",
+                track.name,
+                err,
+            )
+            return track.album
+
+    @staticmethod
+    def _matches_are_compatible(matches: list[TrackProviderMatch]) -> bool:
+        """Return whether tied loose matches identify the same recording."""
+        return all(
+            compare_track_evidence(base_match.track, compare_match.track)
+            >= TrackMatchConfidence.LIKELY
+            for index, base_match in enumerate(matches)
+            for compare_match in matches[index + 1 :]
+        )
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

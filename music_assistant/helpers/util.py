@@ -580,6 +580,23 @@ WITH_TITLE_WORDS = (
     "you",
     "no",
 )
+_TITLE_FEATURED_CREDIT_PATTERN = re.compile(
+    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
+    r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_BRACKETED_WITH_CREDIT_PATTERN = re.compile(
+    r"(?:\(|\[)with\s+(?P<credit>.+?)(?:\)|\])",
+    re.IGNORECASE,
+)
+_TITLE_HYPHEN_WITH_CREDIT_PATTERN = re.compile(
+    r"\s+-\s+with\s+(?P<credit>.+?)(?=\s*(?:\(|\[| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_WITH_CREDIT_PATTERNS = (
+    _TITLE_BRACKETED_WITH_CREDIT_PATTERN,
+    _TITLE_HYPHEN_WITH_CREDIT_PATTERN,
+)
 
 # Keywords for aggressive search cleaning (includes featuring).
 _VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
@@ -683,6 +700,30 @@ def normalize_unicode(value: str | None) -> str | None:
 
 
 @functools.lru_cache(maxsize=2048)
+def extract_title_artist_credits(title: str) -> tuple[str, ...]:
+    """Return artist credits embedded in a track title."""
+    matched_credits = [
+        *(
+            (match.start(), match.group(1).strip())
+            for match in _TITLE_FEATURED_CREDIT_PATTERN.finditer(title)
+        ),
+        *(
+            (match.start(), match.group("credit").strip())
+            for pattern in _TITLE_WITH_CREDIT_PATTERNS
+            for match in pattern.finditer(title)
+            if _is_with_artist_credit(match.group("credit"))
+        ),
+    ]
+    return tuple(credit for _, credit in sorted(matched_credits))
+
+
+def _is_with_artist_credit(value: str) -> bool:
+    """Return whether a with-suffix identifies an artist rather than title words."""
+    first_word = value.split(maxsplit=1)[0].casefold().strip(".,:;!?") if value else ""
+    return bool(first_word) and first_word not in WITH_TITLE_WORDS
+
+
+@functools.lru_cache(maxsize=2048)
 def parse_title_and_version(
     title: str,
     track_version: str | None = None,
@@ -702,6 +743,12 @@ def parse_title_and_version(
 
     # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
     if strip_for_search:
+        with_credit_matches = [
+            match for pattern in _TITLE_WITH_CREDIT_PATTERNS for match in pattern.finditer(title)
+        ]
+        for match in sorted(with_credit_matches, key=lambda item: item.start(), reverse=True):
+            if _is_with_artist_credit(match.group("credit")):
+                title = f"{title[: match.start()]}{title[match.end() :]}"
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
         # Strip bare featuring credits (not in parentheses)
@@ -742,13 +789,7 @@ def parse_title_and_version(
                 if clean_part.startswith(ignore_str):
                     # Special handling for "with " - check if followed by title words
                     if ignore_str == "with ":
-                        # Extract the word after "with "
-                        after_with = (
-                            clean_part[len("with ") :].split()[0]
-                            if len(clean_part) > len("with ")
-                            else ""
-                        )
-                        if after_with in WITH_TITLE_WORDS:
+                        if not _is_with_artist_credit(clean_part[len("with ") :]):
                             # This is part of the title (e.g., "with you"), don't ignore
                             break
                     # Remove this part from the title

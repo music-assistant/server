@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
+from aiohttp import ClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
-    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -25,6 +26,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -52,15 +54,20 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.media.playlists import (
+    PlaylistMatchPolicy,
+    match_policy_minimum_confidence,
+)
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.external_ids import normalize_external_id
+from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.playlists import (
+    ArtistInfo,
     ImageInfo,
     IsHLSPlaylist,
     PlaylistItem,
@@ -77,7 +84,6 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
-from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -115,6 +121,20 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
+# maximum number of detail rows rendered per table in the import matching report
+_IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
+# report count bucket for each accepted track-match confidence
+_CONFIDENCE_COUNT_KEY: Final[dict[TrackMatchConfidence, str]] = {
+    TrackMatchConfidence.EXACT: "exact",
+    TrackMatchConfidence.LIKELY: "same_recording",
+    TrackMatchConfidence.LOOSE: "best_effort",
+}
+_CONFIDENCE_TIER_LABELS: Final[dict[str, str]] = {
+    "exact": "Exact release",
+    "same_recording": "Same recording",
+    "best_effort": "Best effort",
+}
+
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_TRACKS,
@@ -137,6 +157,19 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return BuiltinProvider(mass, manifest, config, SUPPORTED_FEATURES)
+
+
+@dataclass(slots=True)
+class _ImportTrackMatchResult:
+    """Resolved outcome for one playlist entry during import matching."""
+
+    label: str
+    retained: bool = False
+    entry: PlaylistItem | None = None
+    confidence: TrackMatchConfidence = TrackMatchConfidence.NO_MATCH
+    ambiguous_providers: tuple[str, ...] = ()
+    failed_providers: tuple[str, ...] = ()
+    error: str | None = None
 
 
 class BuiltinProvider(MusicProvider):
@@ -592,66 +625,86 @@ class BuiltinProvider(MusicProvider):
     async def match_imported_playlist_tracks(
         self,
         prov_playlist_id: str,
-        match_providers: list[str] | None = None,
+        match_policy: PlaylistMatchPolicy,
+        allowed_provider_instances: tuple[str, ...],
     ) -> None:
         """
         Match imported playlist tracks against available providers.
 
-        Iterates through playlist items whose provider is unavailable,
-        searching other providers for matches using metadata stored in
-        the M3U file. Matched tracks are replaced in-place.
+        Entries whose original provider is still available are left untouched. For the
+        remaining entries, other providers are searched for a substitute meeting
+        ``match_policy``'s minimum confidence; matched entries are replaced in-place so the
+        playlist keeps its original order and duplicates.
 
-        :param prov_playlist_id: The provider-side playlist ID.
-        :param match_providers: Optional list of provider instance IDs or
-            domains to search. When None, all providers are searched.
+        :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
+        :param match_policy: Lowest track-match confidence accepted for a substitute.
+        :param allowed_provider_instances: Provider instances to search, snapshotted from the
+            user that requested the import.
         """
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         parsed_items = parse_m3u(m3u_data)
         if not parsed_items:
             return
+        playlist = await self.get_playlist(prov_playlist_id)
 
+        minimum_confidence = match_policy_minimum_confidence(match_policy)
+        allowed_provider_instance_set = set(allowed_provider_instances)
+        failed_provider_instances: set[str] = set()
         total = len(parsed_items)
-        matched_count = 0
-        unmatched_count = 0
+        counts = dict.fromkeys(
+            ("retained", "exact", "same_recording", "best_effort", "ambiguous", "unmatched"), 0
+        )
+        substitutions: list[tuple[str, str, str]] = []
+        unmatched_items: list[tuple[str, str]] = []
+        provider_issues: list[tuple[str, str]] = []
         changed = False
 
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
                 index, total, f"Matching track {index + 1}/{total}"
             )
-            if not item.title:
+            result = await self._resolve_import_track(
+                item,
+                minimum_confidence,
+                allowed_provider_instance_set,
+                failed_provider_instances,
+            )
+            for provider_name in result.failed_providers:
+                issue = f"Matching failed on {provider_name}"
+                report_current_task_failure(f"{result.label}: {issue.lower()}")
+                provider_issues.append((result.label, issue))
+            for provider_name in result.ambiguous_providers:
+                issue = f"Ambiguous match on {provider_name}"
+                report_current_task_failure(f"{result.label}: {issue.lower()}")
+                provider_issues.append((result.label, issue))
+            if result.retained:
+                counts["retained"] += 1
                 continue
-            # check if the URI's provider is available
-            needs_matching = False
-            media_type = MediaType.TRACK
-            try:
-                media_type, prov_instance, _item_id = await parse_uri(item.path)
-                if media_type == MediaType.RADIO:
-                    continue
-                if not self.mass.get_provider(prov_instance):
-                    needs_matching = True
-            except Exception:
-                needs_matching = True
-
-            if not needs_matching:
+            if result.error:
+                report_current_task_failure(f"{result.label}: {result.error}")
+                provider_issues.append((result.label, result.error))
+                counts["unmatched"] += 1
+                unmatched_items.append((result.label, result.error))
                 continue
-
-            matched_uri = await self._match_track_by_metadata(item, match_providers=match_providers)
-            if matched_uri:
-                # enrich the entry with full metadata (#EXTPROV etc.) so it resolves to a
-                # playable item - just storing the URI leaves it without provider mappings
-                try:
-                    parsed_items[index] = await self._build_m3u_entry_from_uri(matched_uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
-                    item.path = matched_uri
-                changed = True
-                matched_count += 1
-            else:
-                report_current_task_failure(f"No match found for: {item.title}")
-                unmatched_count += 1
+            if result.entry is None:
+                if result.ambiguous_providers:
+                    counts["ambiguous"] += 1
+                    reason = "Ambiguous match"
+                else:
+                    counts["unmatched"] += 1
+                    reason = "No acceptable match"
+                    report_current_task_failure(f"{result.label}: {reason.lower()}")
+                unmatched_items.append((result.label, reason))
+                continue
+            parsed_items[index] = result.entry
+            changed = True
+            tier = _CONFIDENCE_COUNT_KEY[result.confidence]
+            counts[tier] += 1
+            substitutions.append(
+                (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
+            )
 
         if changed:
-            playlist = await self.get_playlist(prov_playlist_id)
             await self._write_m3u_file(
                 prov_playlist_id,
                 playlist.name,
@@ -659,11 +712,10 @@ class BuiltinProvider(MusicProvider):
                 self._get_playlist_image_url(playlist),
             )
 
-        self.logger.info(
-            "Import matching: %d matched, %d unmatched out of %d items",
-            matched_count,
-            unmatched_count,
-            total,
+        set_current_task_report(
+            _build_import_report(
+                playlist.name, total, counts, substitutions, unmatched_items, provider_issues
+            )
         )
         update_current_task_progress_from_index(total, total, "Matching complete")
 
@@ -816,196 +868,69 @@ class BuiltinProvider(MusicProvider):
         except OSError as err:
             self.logger.warning("Failed to update playlist metadata: %s", err)
 
-    async def _match_track_by_metadata(
+    async def _resolve_import_track(
         self,
         item: PlaylistItem,
-        match_providers: list[str] | None = None,
-    ) -> str | None:
-        """
-        Search providers for a track matching the given PlaylistItem metadata.
-
-        Uses ISRC/MusicBrainz ID for exact matching first, then falls back
-        to fuzzy title/artist/duration matching.
-
-        :param item: The PlaylistItem with metadata from the M3U file.
-        :param match_providers: Optional list of provider instance IDs or
-            domains to limit the search.
-        """
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return None
-
-        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
-
-        all_providers = self.mass.music.get_unique_providers()
-        if match_providers:
-            provider_domains: dict[str, str] = {}
-            for pid in all_providers:
-                prov = self.mass.get_provider(pid)
-                if prov:
-                    provider_domains[pid] = prov.domain
-            all_providers = [
-                pid
-                for pid in all_providers
-                if pid in match_providers or provider_domains.get(pid) in match_providers
-            ]
-
-        best_match: tuple[int, str] | None = None
-
-        for provider_id in all_providers:
-            try:
-                results = await self.mass.music.tracks.search(search_query, provider_id, limit=5)
-            except Exception:
-                self.logger.debug(
-                    "Search failed on provider %s for '%s'", provider_id, search_query
-                )
-                continue
-
-            for result in results:
-                if not result.uri:
-                    continue
-                score = self._score_track_match(result, item)
-                if score >= 10:
-                    self.logger.debug("Exact ID match for '%s' -> %s", search_query, result.uri)
-                    return result.uri
-                if score > 0 and (best_match is None or score > best_match[0]):
-                    best_match = (score, result.uri)
-
-        if best_match:
-            self.logger.debug(
-                "Matched '%s' -> %s (score=%d)",
-                search_query,
-                best_match[1],
-                best_match[0],
+        minimum_confidence: TrackMatchConfidence,
+        allowed_provider_instances: set[str],
+        failed_provider_instances: set[str],
+    ) -> _ImportTrackMatchResult:
+        """Resolve one imported playlist entry against the allowed providers."""
+        media_item = construct_media_item_from_playlist_item(item, self.mass)
+        if not isinstance(media_item, Track):
+            return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
+        label = _entry_label(media_item)
+        if any(mapping.available for mapping in media_item.provider_mappings):
+            # the original provider is still available - nothing to substitute
+            return _ImportTrackMatchResult(label=label, retained=True)
+        if not media_item.artists:
+            # foreign M3U8 files only carry a combined "Artist - Title" EXTINF string;
+            # the shared matcher needs a structured artist to search and compare with
+            split_item = _split_artist_from_title(item)
+            if split_item is not item:
+                rebuilt = construct_media_item_from_playlist_item(split_item, self.mass)
+                if isinstance(rebuilt, Track):
+                    media_item = rebuilt
+                    label = _entry_label(media_item)
+        if not media_item.artists:
+            return _ImportTrackMatchResult(
+                label=label, error="No artist metadata available to search with"
             )
-            return best_match[1]
-
-        self.logger.info("No match found for '%s'", search_query)
-        return None
-
-    def _score_track_match(
-        self,
-        candidate: Track,
-        item: PlaylistItem,
-    ) -> int:
-        """
-        Score how well a candidate track matches the PlaylistItem metadata.
-
-        Returns 0 for no match, higher scores for better matches.
-        ISRC or MusicBrainz Recording ID match returns 10 (maximum).
-
-        :param candidate: The track from search results.
-        :param item: The PlaylistItem with metadata from the M3U file.
-        """
-        metadata = item.metadata or {}
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return 0
-
-        isrc = metadata.get("isrc")
-        mbid = metadata.get("mbid")
-
-        # exact ID matches (cross-provider definitive match)
-        if isrc:
-            candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
-            if candidate_isrc and normalize_external_id(
-                ExternalID.ISRC, candidate_isrc
-            ) == normalize_external_id(ExternalID.ISRC, isrc):
-                return 10
-        if mbid:
-            candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
-            if candidate_mbid and normalize_external_id(
-                ExternalID.MB_RECORDING, candidate_mbid
-            ) == normalize_external_id(ExternalID.MB_RECORDING, mbid):
-                return 10
-
-        # media type gate
-        if metadata.get("media_type"):
-            candidate_type = getattr(candidate, "media_type", None)
-            if candidate_type and candidate_type.value != metadata["media_type"]:
-                return 0
-
-        return self._score_fuzzy_metadata(candidate, artist_name, track_name, metadata, item)
-
-    def _score_fuzzy_metadata(
-        self,
-        candidate: Track,
-        artist_name: str | None,
-        track_name: str,
-        metadata: dict[str, str],
-        item: PlaylistItem,
-    ) -> int:
-        """
-        Score fuzzy metadata fields (title, artist, album, duration, version).
-
-        :param candidate: The track from search results.
-        :param artist_name: Parsed artist name from EXTINF, or None.
-        :param track_name: Parsed track title from EXTINF.
-        :param metadata: The #EXTMA metadata dict.
-        :param item: The PlaylistItem (for duration from item.length).
-        """
-        if not compare_strings(candidate.name, track_name, strict=False):
-            return 0
-        score = 1
-
-        if artist_name:
-            candidate_artists = [a.name for a in candidate.artists] if candidate.artists else []
-            if not any(compare_strings(a, artist_name, strict=False) for a in candidate_artists):
-                return 0
-            score += 2
-
-        score += self._score_bonus_fields(candidate, metadata)
-        score += self._score_duration(candidate, item)
-        return score
-
-    @staticmethod
-    def _score_bonus_fields(candidate: Track, metadata: dict[str, str]) -> int:
-        """Score bonus metadata fields: podcast, authors, album, version."""
-        score = 0
-        if metadata.get("podcast"):
-            candidate_podcast = getattr(candidate, "podcast", None)
-            if candidate_podcast and hasattr(candidate_podcast, "name"):
-                if compare_strings(candidate_podcast.name, metadata["podcast"], strict=False):
-                    score += 2
-
-        if metadata.get("authors"):
-            candidate_authors = getattr(candidate, "authors", None)
-            if candidate_authors:
-                if compare_strings("; ".join(candidate_authors), metadata["authors"], strict=False):
-                    score += 2
-
-        if metadata.get("album"):
-            candidate_album = getattr(candidate, "album", None)
-            if candidate_album and hasattr(candidate_album, "name"):
-                if compare_strings(candidate_album.name, metadata["album"], strict=False):
-                    score += 1
-
-        if metadata.get("version"):
-            candidate_version = getattr(candidate, "version", None) or ""
-            if candidate_version and compare_strings(
-                candidate_version, metadata["version"], strict=False
-            ):
-                score += 1
-            elif candidate_version:
-                score -= 1
-
-        return score
-
-    @staticmethod
-    def _score_duration(candidate: Track, item: PlaylistItem) -> int:
-        """Score duration proximity between candidate and playlist item."""
         try:
-            duration = int(item.length) if item.length else None
-        except ValueError:
-            return 0
-        if duration is None or duration <= 0 or candidate.duration <= 0:
-            return 0
-        diff = abs(candidate.duration - duration)
-        if diff <= 2:
-            return 2
-        if diff <= 5:
-            return 1
-        return 0
+            enrichment = await self.mass.music.tracks.enrich_provider_mappings(
+                media_item,
+                minimum_confidence=minimum_confidence,
+                provider_instance_ids=allowed_provider_instances,
+                # imported metadata comes from outside Music Assistant and is unverified,
+                # so a provider mapping it already carries is not treated as authoritative
+                trust_track_mappings=False,
+                failed_provider_instances=failed_provider_instances,
+            )
+        except (
+            ResourceTemporarilyUnavailable,
+            ProviderUnavailableError,
+            ClientError,
+            OSError,
+            TimeoutError,
+            InvalidDataError,
+            MediaNotFoundError,
+        ) as err:
+            message = str(err).strip() or f"Matching failed ({type(err).__name__})"
+            return _ImportTrackMatchResult(label=label, error=message)
+        if not enrichment.track.provider_mappings:
+            return _ImportTrackMatchResult(
+                label=label,
+                ambiguous_providers=enrichment.ambiguous_providers,
+                failed_providers=enrichment.failed_providers,
+            )
+        best_confidence = max(match.confidence for match in enrichment.matches)
+        return _ImportTrackMatchResult(
+            label=label,
+            entry=media_item_to_playlist_item(enrichment.track),
+            confidence=best_confidence,
+            ambiguous_providers=enrichment.ambiguous_providers,
+            failed_providers=enrichment.failed_providers,
+        )
 
     def _get_stored_item(
         self, item: PlaylistItem, stored_by_media_type: Mapping[str, Mapping[str, StoredItem]]
@@ -1642,3 +1567,104 @@ def _has_music_tags(media_info: AudioTags) -> bool:
     return any(
         media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
     )
+
+
+def _split_artist_from_title(item: PlaylistItem) -> PlaylistItem:
+    """
+    Return a copy of item with a structured artist parsed from its combined EXTINF title.
+
+    Playlists imported from outside Music Assistant only carry a combined "Artist - Title"
+    string; the shared track matcher needs a structured artist to search and compare
+    candidates against.
+
+    :param item: Parsed PlaylistItem to derive a structured artist for.
+    """
+    if item.artists or not item.title:
+        return item
+    artist_name, track_name = parse_extinf_title(item.title)
+    if not artist_name or not track_name:
+        return item
+    return replace(
+        item,
+        title=track_name,
+        artists=[
+            ArtistInfo(name=artist_name, provider_domain="", item_id="", provider_instance="")
+        ],
+    )
+
+
+def _entry_label(item: Track | PlaylistItem) -> str:
+    """Return a readable "artist - title" label for a report."""
+    if isinstance(item, Track):
+        return f"{item.artist_str} - {item.name}" if item.artist_str else item.name
+    artist_name, track_name = parse_extinf_title(item.title)
+    if artist_name and track_name:
+        return f"{artist_name} - {track_name}"
+    return track_name or item.title or item.path
+
+
+def _build_import_report(
+    playlist_name: str,
+    total: int,
+    counts: Mapping[str, int],
+    substitutions: Sequence[tuple[str, str, str]],
+    unmatched_items: Sequence[tuple[str, str]],
+    provider_issues: Sequence[tuple[str, str]],
+) -> str:
+    """Build the human-readable Markdown report for an import matching task."""
+    name = _escape_markdown(playlist_name)
+    matched = counts["exact"] + counts["same_recording"] + counts["best_effort"]
+    lines = [
+        "## Playlist import matching complete",
+        "",
+        f"Retained **{counts['retained']}** original entries and matched **{matched}** of the "
+        f"remaining **{total - counts['retained']}** items in **{name}**.",
+        "",
+        "| Result | Items |",
+        "| --- | ---: |",
+        f"| Retained | {counts['retained']} |",
+        f"| Exact release | {counts['exact']} |",
+        f"| Same recording | {counts['same_recording']} |",
+        f"| Best effort | {counts['best_effort']} |",
+        f"| Ambiguous | {counts['ambiguous']} |",
+        f"| Unmatched | {counts['unmatched']} |",
+    ]
+    _add_report_table(lines, "Substitutions", ("Original", "Substitute", "Match"), substitutions)
+    _add_report_table(lines, "Unmatched items", ("Item", "Reason"), unmatched_items)
+    _add_report_table(lines, "Provider lookup issues", ("Track", "Issue"), provider_issues)
+    return "\n".join(lines)
+
+
+def _add_report_table(
+    lines: list[str],
+    title: str,
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[str, ...]],
+) -> None:
+    """Append a Markdown report table when it has rows."""
+    if not rows:
+        return
+    visible_rows = rows[:_IMPORT_REPORT_DETAIL_LIMIT]
+    lines.extend(
+        (
+            "",
+            f"### {title}",
+            "",
+            f"| {' | '.join(headers)} |",
+            f"| {' | '.join('---' for _ in headers)} |",
+        )
+    )
+    lines.extend(
+        f"| {' | '.join(_escape_markdown(value, table=True) for value in row)} |"
+        for row in visible_rows
+    )
+    if omitted_count := len(rows) - len(visible_rows):
+        lines.extend(("", f"_{omitted_count} additional rows omitted._"))
+
+
+def _escape_markdown(value: str, table: bool = False) -> str:
+    """Escape provider text before adding it to a Markdown report."""
+    value = value.replace("\\", "\\\\").replace("\n", " ")
+    for character in ("`", "*", "_", "[", "]", "<", ">"):
+        value = value.replace(character, f"\\{character}")
+    return value.replace("|", "\\|") if table else value

@@ -210,6 +210,30 @@ def test_with_handling_in_titles() -> None:
     assert version == "Remix"
 
 
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Great Song (with John Smith)", ("John Smith",)),
+        ("Great Song [with Jane Doe]", ("Jane Doe",)),
+        ("Great Song - with John Smith (Duet)", ("John Smith",)),
+        ("Rockin' Around (With You)", ()),
+        ("The Catastrophe (Good Luck with That Man)", ()),
+        ("Great Song (feat:Alice)", ("Alice",)),
+    ],
+)
+def test_extract_title_artist_credits(title: str, expected: tuple[str, ...]) -> None:
+    """Embedded artist credits use the same title-word exceptions as title parsing."""
+    assert util.extract_title_artist_credits(title) == expected
+
+
+def test_with_artist_credit_preserves_trailing_title_content() -> None:
+    """Search normalization removes the credit without consuming later title content."""
+    assert util.parse_title_and_version(
+        "Great Song - with John Smith (Duet)",
+        strip_for_search=True,
+    ) == ("Great Song (Duet)", "")
+
+
 async def test_uri_parsing() -> None:
     """Test parsing of URI."""
     # test regular uri

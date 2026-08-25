@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
@@ -23,6 +24,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.playlists import (
@@ -62,6 +64,33 @@ def _update_stage_progress(
         return
     progress = start + int((current * (end - start)) / total)
     update_current_task_progress(min(progress, end), text)
+
+
+class PlaylistMatchPolicy(StrEnum):
+    """
+    Allowed fallback depth when matching a playlist track on another provider.
+
+    Shared between playlist import and (future) playlist migration: both only fall back to a
+    provider search once a track's own reference (its original URI, or its library mapping)
+    is no longer available.
+    """
+
+    EXACT = "exact"
+    SAME_RECORDING = "same_recording"
+    BEST_EFFORT = "best_effort"
+
+
+# minimum TrackMatchConfidence accepted for each policy tier
+_MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConfidence]] = {
+    PlaylistMatchPolicy.EXACT: TrackMatchConfidence.EXACT,
+    PlaylistMatchPolicy.SAME_RECORDING: TrackMatchConfidence.LIKELY,
+    PlaylistMatchPolicy.BEST_EFFORT: TrackMatchConfidence.LOOSE,
+}
+
+
+def match_policy_minimum_confidence(match_policy: PlaylistMatchPolicy) -> TrackMatchConfidence:
+    """Return the minimum track-match confidence accepted by a match policy."""
+    return _MATCH_POLICY_MINIMUM_CONFIDENCE[match_policy]
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -324,20 +353,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def import_playlist(
         self,
         m3u_data: str,
-        library_matching: bool = False,
+        match_policy: PlaylistMatchPolicy | None = None,
         match_providers: list[str] | None = None,
     ) -> Playlist:
         """
         Import a playlist from M3U8 format.
 
-        Creates a new builtin playlist from the provided M3U data.
+        Creates a new builtin playlist from the provided M3U data. Entries whose original
+        provider is still available are kept as-is; a background task then searches other
+        providers for a substitute for the remaining entries, when requested.
 
         :param m3u_data: The M3U8 playlist data as a string.
-        :param library_matching: When True, attempt to find tracks by searching
-            providers using metadata when the original URI's provider is not
-            available. Defaults to False.
-        :param match_providers: Optional list of provider instance IDs or domains
-            to search when library_matching is enabled.
+        :param match_policy: Lowest track-match confidence accepted for a substitute when
+            an entry's original provider is unavailable. Omit to skip matching entirely and
+            leave those entries unresolved.
+        :param match_providers: Optional list of provider instance IDs or domains to search
+            when match_policy is set. Defaults to all providers available to the current user.
         """
         provider = self.mass.get_provider("builtin")
         if not provider or not isinstance(provider, MusicProvider):
@@ -347,13 +378,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for prov_mapping in playlist.provider_mappings:
             prov_mapping.in_library = True
         db_playlist = await self.add_item_to_library(playlist, False)
-        if library_matching:
+        if match_policy is not None:
             prov_playlist_id = playlist.item_id
             user = get_current_user()
+            # snapshot the current user's allowed provider instances now: the matching
+            # itself runs later in an unattended background task, without the request's
+            # user context, so provider-instance isolation must be captured up front
+            allowed_provider_instances = {item.instance_id for item in self.mass.music.providers}
+            if match_providers:
+                allowed_provider_instances &= {
+                    item.instance_id
+                    for item in self.mass.music.providers
+                    if item.instance_id in match_providers or item.domain in match_providers
+                }
             self.mass.tasks.run_background_task(
                 name=f"Import playlist {db_playlist.name}",
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
-                    prov_playlist_id, match_providers
+                    prov_playlist_id,
+                    match_policy,
+                    tuple(sorted(allowed_provider_instances)),
                 ),
                 translation_key="import_playlist_matching",
                 translation_owner=self.translation_owner,
@@ -363,6 +406,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "task_domain": "playlist_import_matching",
                     "playlist_id": str(db_playlist.item_id),
                     "playlist_name": db_playlist.name,
+                    "match_policy": match_policy.value,
                 },
                 allow_retry=True,
                 allow_cancel=True,

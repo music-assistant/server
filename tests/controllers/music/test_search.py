@@ -8,8 +8,12 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     Genre,
@@ -27,8 +31,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    import pytest
 
 
 def _make_track(item_id: str, provider: str, name: str) -> Track:
@@ -69,6 +71,7 @@ def _make_search_provider(instance_id: str, domain: str | None = None) -> Mock:
     prov.instance_id = instance_id
     prov.domain = domain or instance_id
     prov.name = instance_id
+    prov.available = True
     prov.supported_features = {ProviderFeature.SEARCH}
     prov.is_streaming_provider = True
     prov.search = AsyncMock(return_value=SearchResults())
@@ -131,6 +134,124 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 1.0) -> None
     async with asyncio.timeout(timeout):
         while not condition():
             await asyncio.sleep(0.01)
+
+
+async def test_search_provider_uses_centralized_provider_search() -> None:
+    """A single-provider lookup uses the cached and timeout-bounded search path."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    expected = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    controller._apply_user_provider_filter = Mock(return_value=[])  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+        allowed_provider_instances={"prov_a"},
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        provider.instance_id,
+        [MediaType.TRACK],
+        limit=5,
+        strict_provider_instance=True,
+    )
+
+
+async def test_search_provider_resolves_domain_within_explicit_scope() -> None:
+    """A domain lookup selects an allowed instance rather than a filtered global instance."""
+    filtered_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    allowed_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([filtered_provider, allowed_provider])
+    expected = SearchResults(tracks=[_make_track("track1", "qobuz_2", "My Song")])
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider(
+        "My Song",
+        "qobuz",
+        [MediaType.TRACK],
+        limit=5,
+        allowed_provider_instances={"qobuz_2"},
+    )
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        "qobuz_2",
+        [MediaType.TRACK],
+        limit=5,
+        strict_provider_instance=True,
+    )
+
+
+async def test_search_provider_does_not_substitute_unavailable_scoped_instance() -> None:
+    """An unavailable scoped account can not fall back to another account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+    controller._search_provider = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="qobuz_1"):
+        await controller.search_provider(
+            "My Song",
+            "qobuz_1",
+            [MediaType.TRACK],
+            allowed_provider_instances={"qobuz_1"},
+        )
+
+    controller._search_provider.assert_not_awaited()
+    controller.mass.get_provider.assert_called_once_with(
+        "qobuz_1",
+        return_unavailable=True,
+    )
+
+
+async def test_internal_search_rejects_strict_instance_fallback() -> None:
+    """The cached provider search keeps an exact captured account."""
+    unavailable_provider = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_provider.available = False
+    outside_scope_provider = _make_search_provider("qobuz_2", domain="qobuz")
+    controller = _make_controller([unavailable_provider, outside_scope_provider])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, return_unavailable=False, **_kwargs: (
+            unavailable_provider if return_unavailable else outside_scope_provider
+        )
+    )
+
+    result = await controller._search_provider(
+        "My Song",
+        "qobuz_1",
+        [MediaType.TRACK],
+        strict_provider_instance=True,
+    )
+
+    assert result is None
+    outside_scope_provider.search.assert_not_awaited()
+
+
+async def test_search_provider_reports_timeout_as_failure() -> None:
+    """A provider timeout remains distinguishable from a genuine empty result."""
+    provider = _make_search_provider("prov_a")
+    controller = _make_controller([provider])
+    controller._search_provider = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="prov_a"):
+        await controller.search_provider(
+            "My Song",
+            provider.instance_id,
+            [MediaType.TRACK],
+            allowed_provider_instances={provider.instance_id},
+        )
 
 
 async def test_search_provider_returns_none_on_provider_error() -> None:

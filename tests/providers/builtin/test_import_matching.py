@@ -1,14 +1,12 @@
-"""Tests for playlist import track matching and scoring logic."""
+"""Tests for playlist import track matching against the shared resolver."""
 
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import ExternalID, ImageType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.enums import ImageType, MediaType
 from music_assistant_models.media_items import (
-    Artist,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -18,7 +16,14 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.media.playlists import PlaylistMatchPolicy
+from music_assistant.controllers.music.media.tracks import (
+    TrackProviderEnrichment,
+    TrackProviderMatch,
+)
+from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.playlists import (
+    ArtistInfo,
     PlaylistItem,
     ProviderMappingInfo,
     generate_m3u,
@@ -26,9 +31,13 @@ from music_assistant.helpers.playlists import (
 from music_assistant.providers.builtin import BuiltinProvider
 
 
-def _make_provider() -> BuiltinProvider:
-    """Create a minimal BuiltinProvider with mocked mass."""
+def _make_provider(loaded_provider_domains: set[str] | None = None) -> BuiltinProvider:
+    """Create a minimal BuiltinProvider with a mocked mass."""
     mass = MagicMock()
+    loaded = loaded_provider_domains or set()
+    mass.get_provider = MagicMock(
+        side_effect=lambda pid, **_kwargs: MagicMock(domain=pid) if pid in loaded else None
+    )
     prov = object.__new__(BuiltinProvider)
     prov.mass = mass
     prov.logger = MagicMock()
@@ -38,63 +47,39 @@ def _make_provider() -> BuiltinProvider:
 def _make_track(
     name: str,
     artists: list[str] | None = None,
-    duration: int = 0,
-    album_name: str | None = None,
-    version: str = "",
-    isrc: str | None = None,
-    mbid: str | None = None,
-    media_type: MediaType = MediaType.TRACK,
+    provider_mappings: set[ProviderMapping] | None = None,
 ) -> Track:
-    """Build a Track for matching tests."""
-    artist_list: UniqueList[Artist | ItemMapping] = UniqueList()
+    """Build a Track for enrichment stubbing."""
+    artist_list: UniqueList[Any] = UniqueList()
     for a in artists or []:
         artist_list.append(
             ItemMapping(item_id=a, provider="test", name=a, media_type=MediaType.ARTIST)
         )
-    external_ids: set[tuple[ExternalID, str]] = set()
-    if isrc:
-        external_ids.add((ExternalID.ISRC, isrc))
-    if mbid:
-        external_ids.add((ExternalID.MB_RECORDING, mbid))
-    album_mapping = None
-    if album_name:
-        album_mapping = ItemMapping(
-            item_id=album_name, provider="test", name=album_name, media_type=MediaType.ALBUM
-        )
-    track = Track(
-        item_id="test123",
-        provider="test",
+    return Track(
+        item_id="matched123",
+        provider="opensubsonic--abc123",
         name=name,
-        version=version,
-        duration=duration,
         artists=artist_list,
-        album=album_mapping,
-        external_ids=external_ids,
-        provider_mappings={
-            ProviderMapping(
-                item_id="test123",
-                provider_domain="test",
-                provider_instance="test",
-            )
-        },
+        provider_mappings=provider_mappings or set(),
     )
-    track.media_type = media_type
-    return track
 
 
 def _make_playlist_item(
-    title: str | None = None,
-    length: str | None = None,
+    path: str = "spotify:track:original",
+    title: str | None = "Artist - Song",
+    length: str | None = "294",
     metadata: dict[str, str] | None = None,
     providers: list[ProviderMappingInfo] | None = None,
+    artists: list[ArtistInfo] | None = None,
 ) -> PlaylistItem:
-    """Build a PlaylistItem for matching tests."""
+    """Build a PlaylistItem representing one parsed M3U entry."""
     return PlaylistItem(
-        path="spotify://track/original",
+        path=path,
         title=title,
         length=length,
         metadata=metadata,
         providers=providers or [],
+        artists=artists or [],
     )
 
 
@@ -119,165 +104,19 @@ def _make_playlist(name: str, image_url: str | None = None) -> Playlist:
         metadata=metadata,
         provider_mappings={
             ProviderMapping(
-                item_id="playlist_1",
-                provider_domain="builtin",
-                provider_instance="builtin",
+                item_id="playlist_1", provider_domain="builtin", provider_instance="builtin"
             )
         },
     )
 
 
-# --------------------------------------------------------------------------- #
-#  _score_track_match                                                          #
-# --------------------------------------------------------------------------- #
-
-
-class TestScoreTrackMatch:
-    """Tests for the _score_track_match scoring method."""
-
-    def setup_method(self) -> None:
-        """Set up test fixtures."""
-        self.prov = _make_provider()
-
-    def test_isrc_match_returns_max_score(self) -> None:
-        """ISRC match should return 10 (maximum score)."""
-        candidate = _make_track("Song", artists=["Artist"], isrc="USRC17607839")
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"isrc": "USRC17607839"},
-        )
-        assert self.prov._score_track_match(candidate, item) == 10
-
-    def test_isrc_match_case_insensitive(self) -> None:
-        """ISRC matching should be case-insensitive."""
-        candidate = _make_track("Song", artists=["Artist"], isrc="usrc17607839")
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"isrc": "USRC17607839"},
-        )
-        assert self.prov._score_track_match(candidate, item) == 10
-
-    def test_mbid_match_returns_max_score(self) -> None:
-        """MusicBrainz recording ID match should return 10."""
-        candidate = _make_track(
-            "Song", artists=["Artist"], mbid="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        )
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"mbid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"},
-        )
-        assert self.prov._score_track_match(candidate, item) == 10
-
-    def test_title_match_only(self) -> None:
-        """Title-only match (no artist) should score 1."""
-        candidate = _make_track("Song Title")
-        item = _make_playlist_item(title="Song Title")
-        assert self.prov._score_track_match(candidate, item) == 1
-
-    def test_title_mismatch_returns_zero(self) -> None:
-        """Non-matching title should return 0."""
-        candidate = _make_track("Completely Different")
-        item = _make_playlist_item(title="Song Title")
-        assert self.prov._score_track_match(candidate, item) == 0
-
-    def test_title_and_artist_match(self) -> None:
-        """Title + artist match should score 3 (1 title + 2 artist)."""
-        candidate = _make_track("Song", artists=["Radiohead"])
-        item = _make_playlist_item(title="Radiohead - Song")
-        assert self.prov._score_track_match(candidate, item) == 3
-
-    def test_artist_mismatch_returns_zero(self) -> None:
-        """When artist is provided but doesn't match, return 0."""
-        candidate = _make_track("Song", artists=["Coldplay"])
-        item = _make_playlist_item(title="Radiohead - Song")
-        assert self.prov._score_track_match(candidate, item) == 0
-
-    def test_album_bonus(self) -> None:
-        """Matching album adds 1 to the score."""
-        candidate = _make_track("Song", artists=["Artist"], album_name="OK Computer")
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"album": "OK Computer"},
-        )
-        # 1 (title) + 2 (artist) + 1 (album) = 4
-        assert self.prov._score_track_match(candidate, item) == 4
-
-    def test_duration_near_exact_bonus(self) -> None:
-        """Duration within 2 seconds adds 2 to the score."""
-        candidate = _make_track("Song", artists=["Artist"], duration=241)
-        item = _make_playlist_item(title="Artist - Song", length="240")
-        # 1 (title) + 2 (artist) + 2 (duration) = 5
-        assert self.prov._score_track_match(candidate, item) == 5
-
-    def test_duration_close_bonus(self) -> None:
-        """Duration within 5 seconds adds 1 to the score."""
-        candidate = _make_track("Song", artists=["Artist"], duration=245)
-        item = _make_playlist_item(title="Artist - Song", length="240")
-        # 1 (title) + 2 (artist) + 1 (duration close) = 4
-        assert self.prov._score_track_match(candidate, item) == 4
-
-    def test_duration_too_far_no_bonus(self) -> None:
-        """Duration beyond 5 seconds gets no bonus."""
-        candidate = _make_track("Song", artists=["Artist"], duration=260)
-        item = _make_playlist_item(title="Artist - Song", length="240")
-        # 1 (title) + 2 (artist) = 3
-        assert self.prov._score_track_match(candidate, item) == 3
-
-    def test_version_match_bonus(self) -> None:
-        """Matching version adds 1."""
-        candidate = _make_track("Song", artists=["Artist"], version="Remastered")
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"version": "Remastered"},
-        )
-        # 1 (title) + 2 (artist) + 1 (version) = 4
-        assert self.prov._score_track_match(candidate, item) == 4
-
-    def test_version_mismatch_penalty(self) -> None:
-        """Mismatched version subtracts 1."""
-        candidate = _make_track("Song", artists=["Artist"], version="Live")
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"version": "Remastered"},
-        )
-        # 1 (title) + 2 (artist) - 1 (version mismatch) = 2
-        assert self.prov._score_track_match(candidate, item) == 2
-
-    def test_media_type_gate(self) -> None:
-        """Mismatched media type should return 0."""
-        candidate = _make_track("Song", artists=["Artist"])
-        item = _make_playlist_item(
-            title="Artist - Song",
-            metadata={"media_type": "podcast_episode"},
-        )
-        assert self.prov._score_track_match(candidate, item) == 0
-
-    def test_none_title_returns_zero(self) -> None:
-        """PlaylistItem with no title should score 0."""
-        candidate = _make_track("Song")
-        item = _make_playlist_item(title=None)
-        assert self.prov._score_track_match(candidate, item) == 0
-
-    def test_full_metadata_high_score(self) -> None:
-        """Track with all metadata matching should get a high score."""
-        candidate = _make_track(
-            "Everything In Its Right Place",
-            artists=["Radiohead"],
-            duration=240,
-            album_name="Kid A",
-            version="Remastered",
-        )
-        item = _make_playlist_item(
-            title="Radiohead - Everything In Its Right Place",
-            length="240",
-            metadata={
-                "media_type": "track",
-                "album": "Kid A",
-                "version": "Remastered",
-            },
-        )
-        # 1 (title) + 2 (artist) + 1 (album) + 1 (version) + 2 (duration exact) = 7
-        assert self.prov._score_track_match(candidate, item) == 7
+def _prepare(prov: BuiltinProvider, m3u_data: str, playlist_name: str = "Imported") -> Any:
+    """Wire up the read/write/get_playlist mocks shared by every test."""
+    prov_any = cast("Any", prov)
+    prov_any._read_m3u_file = AsyncMock(return_value=m3u_data)
+    prov_any.get_playlist = AsyncMock(return_value=_make_playlist(playlist_name))
+    prov_any._write_m3u_file = AsyncMock()
+    return prov_any
 
 
 async def test_import_playlist_preserves_playlist_image() -> None:
@@ -305,66 +144,6 @@ async def test_import_playlist_preserves_playlist_image() -> None:
     assert args[3] == "https://img.example.com/cover.jpg"
     assert result.image is not None
     assert result.image.path == "https://img.example.com/cover.jpg"
-
-
-async def test_match_imported_tracks_enriches_matched_entries() -> None:
-    """Test that a matched entry is enriched with provider metadata, not just its URI."""
-    prov = _make_provider()
-    prov_any = cast("Any", prov)
-    prov_any._read_m3u_file = AsyncMock(
-        return_value=(
-            "#EXTM3U\n"
-            "#PLAYLIST:Imported\n"
-            "#EXTMA:media_type=track||name=Song||mbid=a1b2c3d4-e5f6-7890-abcd-ef1234567890\n"
-            "#EXTINF:294,Artist - Song\n"
-            "track-1\n"
-        )
-    )
-    matched_uri = "opensubsonic--abc123://track/xyz789"
-    enriched_entry = PlaylistItem(
-        path=matched_uri,
-        title="Artist - Song",
-        length="294",
-        metadata={"media_type": "track", "name": "Song"},
-        providers=[
-            ProviderMappingInfo(
-                domain="opensubsonic", item_id="xyz789", instance_id="opensubsonic--abc123"
-            )
-        ],
-    )
-    prov_any._match_track_by_metadata = AsyncMock(return_value=matched_uri)
-    prov_any._build_m3u_entry_from_uri = AsyncMock(return_value=enriched_entry)
-    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Imported"))
-    prov_any._write_m3u_file = AsyncMock()
-
-    await prov.match_imported_playlist_tracks("playlist_1")
-
-    prov_any._build_m3u_entry_from_uri.assert_awaited_once_with(matched_uri)
-    assert prov_any._write_m3u_file.await_args is not None
-    written_items = prov_any._write_m3u_file.await_args.args[2]
-    assert written_items == [enriched_entry]
-    assert written_items[0].providers
-
-
-async def test_match_imported_tracks_falls_back_to_uri_when_enrich_fails() -> None:
-    """Test that the matched URI is still stored when enrichment fails."""
-    prov = _make_provider()
-    prov_any = cast("Any", prov)
-    prov_any._read_m3u_file = AsyncMock(
-        return_value="#EXTM3U\n#PLAYLIST:Imported\n#EXTINF:294,Artist - Song\ntrack-1\n"
-    )
-    matched_uri = "opensubsonic--abc123://track/xyz789"
-    prov_any._match_track_by_metadata = AsyncMock(return_value=matched_uri)
-    prov_any._build_m3u_entry_from_uri = AsyncMock(side_effect=MediaNotFoundError("gone"))
-    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Imported"))
-    prov_any._write_m3u_file = AsyncMock()
-
-    await prov.match_imported_playlist_tracks("playlist_1")
-
-    assert prov_any._write_m3u_file.await_args is not None
-    written_items = prov_any._write_m3u_file.await_args.args[2]
-    assert written_items[0].path == matched_uri
-    assert not written_items[0].providers
 
 
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
@@ -395,3 +174,262 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     assert args[1] == "My Playlist"
     assert len(args[2]) == 1
     assert args[3] == "https://img.example.com/cover.jpg"
+
+
+async def test_available_original_is_retained_without_search() -> None:
+    """An entry whose original provider is still loaded is left untouched."""
+    prov = _make_provider(loaded_provider_domains={"builtin"})
+    m3u_data = generate_m3u(
+        "Imported",
+        [PlaylistItem(path="https://example.com/stream.mp3", title="Live Stream", length=None)],
+    )
+    prov_any = _prepare(prov, m3u_data)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
+async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:
+    """A structured-artist entry matched at EXACT confidence is substituted and reported."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        path="spotify:track:original",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    m3u_data = generate_m3u("Imported", [item])
+    prov_any = _prepare(prov, m3u_data)
+
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(
+                item_id="xyz789",
+                provider_domain="opensubsonic",
+                provider_instance="opensubsonic--abc123",
+            )
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("opensubsonic--abc123",)
+        )
+
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 1
+    assert written_items[0].providers
+    assert written_items[0].providers[0].domain == "opensubsonic"
+    report_markdown = set_report.call_args.args[0]
+    assert "| Exact release | 1 |" in report_markdown
+    assert "Substitutions" in report_markdown
+
+
+async def test_ambiguous_match_is_reported_and_not_substituted() -> None:
+    """An ambiguous provider match leaves the entry unmatched and notes the ambiguity."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")]
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=("Qobuz",),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Ambiguous | 1 |" in report_markdown
+    assert "| Unmatched | 0 |" in report_markdown
+    assert "Ambiguous match on Qobuz" in report_markdown
+
+
+async def test_no_acceptable_match_is_reported_as_unmatched() -> None:
+    """A search that yields nothing above the policy threshold is reported as unmatched."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")]
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.EXACT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Unmatched | 1 |" in report_markdown
+    assert "No acceptable match" in report_markdown
+
+
+async def test_provider_error_is_reported_as_unmatched_with_issue() -> None:
+    """A transient provider failure during matching is surfaced as a provider issue."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")]
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(
+        side_effect=TimeoutError("provider timed out")
+    )
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    report_markdown = set_report.call_args.args[0]
+    assert "| Unmatched | 1 |" in report_markdown
+    assert "Provider lookup issues" in report_markdown
+    assert "provider timed out" in report_markdown
+
+
+async def test_extinf_title_without_structured_artist_is_split_for_matching() -> None:
+    """A foreign M3U8 entry with only a combined EXTINF title still gets matched."""
+    prov = _make_provider()
+    # no #EXTARTIST tag: only a combined "Artist - Title" EXTINF string is available
+    item = _make_playlist_item(
+        path="/music/song.mp3", title="Radiohead - Everything In Its Right Place"
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    matched_track = _make_track(
+        "Everything In Its Right Place",
+        artists=["Radiohead"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.LIKELY,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    enrich_mock = AsyncMock(return_value=enrichment)
+    prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
+
+    await prov.match_imported_playlist_tracks(
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+    )
+
+    enrich_mock.assert_awaited_once()
+    assert enrich_mock.await_args is not None
+    resolved_track = enrich_mock.await_args.args[0]
+    assert resolved_track.artists
+    assert resolved_track.artists[0].name == "Radiohead"
+    assert resolved_track.name == "Everything In Its Right Place"
+    prov_any._write_m3u_file.assert_awaited_once()
+
+
+async def test_missing_artist_metadata_is_unmatched_without_search() -> None:
+    """An entry with no title at all cannot be searched and is reported as unmatched."""
+    prov = _make_provider()
+    item = _make_playlist_item(path="/music/track01.flac", title=None, length=None)
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrich_mock = AsyncMock()
+    prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        )
+
+    enrich_mock.assert_not_awaited()
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Unmatched | 1 |" in report_markdown
+    assert "No artist metadata" in report_markdown
+
+
+async def test_order_and_duplicates_preserved_across_mixed_results() -> None:
+    """Retained, matched and unmatched entries keep their original position and duplicates."""
+    prov = _make_provider(loaded_provider_domains={"builtin"})
+    retained = PlaylistItem(path="https://example.com/a.mp3", title="Retained", length=None)
+    to_match = _make_playlist_item(
+        path="spotify:track:dup",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    unmatched = _make_playlist_item(path="/music/none.flac", title=None, length=None)
+    items = [retained, to_match, to_match, unmatched]
+    prov_any = _prepare(prov, generate_m3u("Imported", items))
+
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.LOOSE,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    await prov.match_imported_playlist_tracks(
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+    )
+
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 4
+    assert written_items[0].path == "https://example.com/a.mp3"
+    assert written_items[1].providers[0].domain == "qobuz"
+    assert written_items[2].providers[0].domain == "qobuz"
+    assert written_items[3].path == "/music/none.flac"
