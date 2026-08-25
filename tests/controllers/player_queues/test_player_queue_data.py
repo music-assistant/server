@@ -76,18 +76,19 @@ def _queue(**kwargs: object) -> PlayerQueue:
 def _data_with_dynamic_source() -> PlayerQueueData:
     """Build a PlayerQueueData for a queue playing a dynamic radio playlist plus one queued track."""
     playlist = _dynamic_playlist()
+    album = _album("a1")
     queue = _queue(is_dynamic=True, sources=[ItemMapping.from_item(playlist)])
     return PlayerQueueData(
         queue=queue,
         items=[QueueItem.from_media_item("q1", _track("t1"))],
         source_items=[playlist],
-        enqueued_media_items=[playlist],
+        enqueued_media_items=[playlist, album],
+        credited_albums={album},
         userid="user-1",
         # runtime-only fields set to non-defaults to prove they do not survive the round-trip
         transitioning=True,
         play_action_refcount=3,
         last_counted_play="t1",
-        credited_albums={_album("a1")},
         flow_buffer_completed="sess-1",
     )
 
@@ -109,13 +110,16 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+    # a credited album survives, so a restart does not re-credit the same enqueue
+    assert {item.uri for item in restored.credited_albums} == {
+        item.uri for item in data.credited_albums
+    }
     # is_dynamic is recomputed from the restored source items (a dynamic playlist is present)
     assert restored.queue.is_dynamic is True
     # runtime-only fields are reset to their defaults, never persisted
     assert restored.transitioning is False
     assert restored.play_action_refcount == 0
     assert restored.last_counted_play is None
-    assert restored.credited_albums == set()
     assert restored.flow_buffer_completed is None
 
 
