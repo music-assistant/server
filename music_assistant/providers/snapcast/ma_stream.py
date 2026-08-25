@@ -107,6 +107,7 @@ class SnapcastMAStream:
         self._streamer_started_evt = asyncio.Event()
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
+        self._pinned = False
         self._filter_settings: list[str | ComplexFilter] | None = None
 
     @property
@@ -268,15 +269,26 @@ class SnapcastMAStream:
         Mark the stream as in-use or idle.
 
         When marked idle, a delayed stop is scheduled. When marked in-use, any pending
-        delayed stop is canceled.
+        delayed stop is canceled. A pinned stream is never scheduled for a delayed stop.
         """
         if in_use:
             self._stop_timer_started_at = None
             if self._stop_timer:
                 self._stop_timer.cancel()
-        elif self._stop_timer_started_at is None and not self._stop_requested:
+        elif not self._pinned and self._stop_timer_started_at is None and not self._stop_requested:
             self._stop_timer_started_at = self._mass.loop.time()
             self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
+
+    def set_pinned(self, pinned: bool) -> None:
+        """
+        Keep the stream alive while no group is assigned to it, or release that hold.
+
+        A pinned stream is exempt from the inactivity stop timer. Releasing the pin hands
+        the stream back to the regular in-use bookkeeping.
+        """
+        self._pinned = pinned
+        if pinned:
+            self.set_in_use(True)
 
     async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
         """
