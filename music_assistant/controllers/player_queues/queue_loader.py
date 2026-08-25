@@ -731,6 +731,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue_data.enqueued_media_items.clear()
+            queue_data.credited_albums.clear()
         # An ADD/NEXT onto a queue that is already a managed pool (has a dynamic source): a finite
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
@@ -780,7 +781,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 ):
                     queue_data.enqueued_media_items.append(media_item)
                     if len(queue_data.enqueued_media_items) > 10:
-                        queue_data.enqueued_media_items.pop(0)
+                        evicted = queue_data.enqueued_media_items.pop(0)
+                        # an album that dropped off the list can no longer be matched, so its
+                        # credit is dead weight unless another entry still stands for it
+                        if isinstance(evicted, Album) and evicted not in (
+                            queue_data.enqueued_media_items
+                        ):
+                            queue_data.credited_albums.discard(evicted)
+                    # enqueueing an album again is a new play of it, so let it be credited again
+                    if isinstance(media_item, Album):
+                        queue_data.credited_albums.discard(media_item)
                     if is_dynamic_source(media_item):
                         # a dynamic playlist/station is always a self-managing dynamic source
                         source_items.append(media_item)

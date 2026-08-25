@@ -1186,6 +1186,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._queue_data[target_queue_id].enqueued_media_items = list(
             self._queue_data[source_queue_id].enqueued_media_items
         )
+        self._queue_data[target_queue_id].credited_albums = set(
+            self._queue_data[source_queue_id].credited_albums
+        )
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
         if source_current_item:
