@@ -74,6 +74,7 @@ if TYPE_CHECKING:
         ConfigEntry,
         PlayerConfig,
     )
+    from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -891,6 +892,32 @@ class Player(ABC):
         :param position: The position to seek to, in seconds.
         """
         raise NotImplementedError("seek needs to be implemented when PlayerFeature.SEEK is set")
+
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """
+        Handle SET SHUFFLE command on the player.
+
+        Will only be called if the player's currently selected source declares
+        ``can_shuffle``.
+
+        :param shuffle_enabled: Whether the source should play its content shuffled.
+        """
+        raise NotImplementedError(
+            "set_shuffle needs to be implemented when a source declares can_shuffle"
+        )
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """
+        Handle SET REPEAT command on the player.
+
+        Will only be called if the player's currently selected source declares
+        ``can_repeat``.
+
+        :param repeat_mode: The repeat mode the source should apply.
+        """
+        raise NotImplementedError(
+            "set_repeat needs to be implemented when a source declares can_repeat"
+        )
 
     async def play_media(
         self,

@@ -11,17 +11,26 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ProviderFeature, RepeatMode, SourceControl
+from music_assistant_models.enums import (
+    PlaybackState,
+    ProviderFeature,
+    RepeatMode,
+    SourceControl,
+)
 from music_assistant_models.errors import InvalidCommand, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
 from music_assistant.models.plugin import PluginProvider
+from tests.common import MockPlayer, MockProvider
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
+# a source the player's own device runs, so Music Assistant has no session for it
+NATIVE_SOURCE_ID = "spotify"
 
 
 def _source(
@@ -254,3 +263,125 @@ async def test_an_unknown_repeat_mode_is_refused_before_it_reaches_a_source() ->
         await controller.cmd_repeat(PLAYER_ID, RepeatMode.UNKNOWN)
 
     provider.on_source_control.assert_not_awaited()
+
+
+class _NativeSourcePlayer(MockPlayer):
+    """A player whose device runs a source of its own and orders that source itself."""
+
+    def __init__(self, provider: MockProvider, player_id: str, name: str) -> None:
+        super().__init__(provider, player_id, name)
+        self.shuffle_calls: list[bool] = []
+        self.repeat_calls: list[RepeatMode] = []
+
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        self.shuffle_calls.append(shuffle_enabled)
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        self.repeat_calls.append(repeat_mode)
+
+
+def _native_source_controller(
+    *,
+    can_shuffle: bool = False,
+    can_repeat: bool = False,
+    active_source: str = NATIVE_SOURCE_ID,
+    queue: MagicMock | None = None,
+) -> tuple[PlayerController, _NativeSourcePlayer]:
+    """Build a controller whose player is playing a source its own device runs."""
+    mass = MagicMock()
+    mass.closing = False
+    mass.config.get_raw_core_config_value.return_value = "GLOBAL"
+    mass.config.get = MagicMock(return_value=[])
+    mass.signal_event = MagicMock()
+    controller = PlayerController(mass)
+    mass.players = controller
+    mass.player_queues = MagicMock()
+    mass.player_queues.get = MagicMock(return_value=queue)
+    provider = MockProvider("test_provider", instance_id="test", mass=mass)
+    player = _NativeSourcePlayer(provider, PLAYER_ID, "Player 1")
+    player._attr_source_list = [
+        PlayerSource(
+            id=NATIVE_SOURCE_ID,
+            name="Spotify",
+            can_shuffle=can_shuffle,
+            can_repeat=can_repeat,
+        )
+    ]
+    player._attr_active_source = active_source
+    # a device only counts as playing its own source while it is not idle
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._cache.clear()
+    controller._players[PLAYER_ID] = player
+    player.update_state(signal_event=False)
+    return controller, player
+
+
+async def test_a_device_native_source_orders_its_own_content() -> None:
+    """A source the device runs itself has no session, so the player is asked directly."""
+    controller, player = _native_source_controller(can_shuffle=True, can_repeat=True)
+
+    await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True)
+    await controller.cmd_repeat(PLAYER_ID, RepeatMode.ONE)
+
+    assert player.shuffle_calls == [True]
+    assert player.repeat_calls == [RepeatMode.ONE]
+
+
+@pytest.mark.parametrize(
+    ("command", "kwargs"),
+    [("cmd_shuffle", {"shuffle_enabled": True}), ("cmd_repeat", {"repeat_mode": RepeatMode.ALL})],
+)
+async def test_a_device_native_source_without_the_capability_is_refused(
+    command: str, kwargs: dict[str, Any]
+) -> None:
+    """A source that does not claim to order its own content is told no, not left waiting."""
+    controller, player = _native_source_controller()
+
+    with pytest.raises(PlayerCommandFailed, match="unavailable for this source"):
+        await getattr(controller, command)(PLAYER_ID, **kwargs)
+
+    assert not player.shuffle_calls
+    assert not player.repeat_calls
+
+
+async def test_a_command_aimed_at_a_source_that_stopped_is_refused() -> None:
+    """
+    Naming the source keeps a command off whatever took the player since.
+
+    A client builds its shuffle control against the source it is showing. If that
+    source ends before the click, Music Assistant's queue takes the player back -
+    and the setting would surprise the user whenever that queue next resumes.
+    """
+    queue = MagicMock()
+    queue.queue_id = PLAYER_ID
+    controller, player = _native_source_controller(
+        can_shuffle=True, active_source=PLAYER_ID, queue=queue
+    )
+    controller.mass.player_queues.set_shuffle = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(PlayerCommandFailed, match="no longer playing"):
+        await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=NATIVE_SOURCE_ID)
+
+    controller.mass.player_queues.set_shuffle.assert_not_awaited()
+    assert not player.shuffle_calls
+
+
+async def test_a_command_aimed_at_the_queue_still_reaches_it() -> None:
+    """Naming the source it is showing does not stand in a client's way."""
+    queue = MagicMock()
+    queue.queue_id = PLAYER_ID
+    controller, _player = _native_source_controller(active_source=PLAYER_ID, queue=queue)
+    controller.mass.player_queues.set_shuffle = AsyncMock()  # type: ignore[method-assign]
+
+    await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=PLAYER_ID)
+
+    controller.mass.player_queues.set_shuffle.assert_awaited_once_with(PLAYER_ID, True)
+
+
+async def test_a_command_aimed_at_the_source_still_playing_is_delivered() -> None:
+    """The source named is the one playing, so the command goes through as usual."""
+    controller, player = _native_source_controller(can_repeat=True)
+
+    await controller.cmd_repeat(PLAYER_ID, RepeatMode.ALL, source_id=NATIVE_SOURCE_ID)
+
+    assert player.repeat_calls == [RepeatMode.ALL]
