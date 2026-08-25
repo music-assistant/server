@@ -1770,10 +1770,16 @@ def test_session_present_detection(tmp_path: Path) -> None:
     (data_dir / WS_ADDR_FILE).write_text("127.0.0.1", encoding="utf-8")
     (data_dir / WS_PORT_FILE).write_text("1234", encoding="utf-8")
     assert soloist_session_present(data_dir) is False
-    # everything a spawn leaves behind outlives the pairing it ran on
+    # everything a spawn leaves behind outlives the pairing it ran on: the engine
+    # keeps its identity, lock, cache and crash handler in the data dir even
+    # though it is given a cache dir of its own, and Music Assistant writes the
+    # prefs there before every spawn
     (data_dir / "settings").mkdir()
     (data_dir / "settings" / "prefs").write_text("audio.normalize_v2=false\n", encoding="utf-8")
-    (data_dir / "soloist.pid").write_text("42", encoding="utf-8")
+    (data_dir / ".device_id").write_text("6b6c2a07", encoding="utf-8")
+    (data_dir / ".lock").write_bytes(b"")
+    (data_dir / "cache" / "Users" / "spotify-user-user").mkdir(parents=True)
+    (data_dir / "crashpad").mkdir()
     assert soloist_session_present(data_dir) is False
     (data_dir / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
     assert soloist_session_present(data_dir) is True
