@@ -66,13 +66,16 @@ def _fake_cast(
     protocol_parent_id: str | None = None,
     active_cast_group: str | None = None,
 ) -> MagicMock:
-    """Build a MagicMock Cast that records the coroutine passed to the event loop."""
+    """Build a MagicMock Cast whose call_soon_threadsafe hop runs the callback inline."""
     fake = MagicMock()
     fake.player_id = player_id
     fake.protocol_parent_id = protocol_parent_id
     fake.active_cast_group = active_cast_group
-    # call_soon_threadsafe runs the callback inline so the call is observable
+    # call_soon_threadsafe runs the callback inline so the dispatch is observable
     fake.mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda func, *args: func(*args))
+    # deliberately active: the resolved queue must exist and be active for a
+    # command to reach player_queues.next/previous, see test_inactive_queue_is_ignored
+    fake.mass.player_queues.get.return_value.active = True
     return fake
 
 
@@ -86,6 +89,7 @@ def test_next_command_targets_the_queue_owner() -> None:
 
     _dispatch(fake, "next")
 
+    fake.mass.loop.call_soon_threadsafe.assert_called_once()
     fake.mass.create_task.assert_called_once()
     fake.mass.player_queues.next.assert_called_once_with("up_universal")
 
@@ -96,6 +100,7 @@ def test_previous_command_targets_the_queue_owner() -> None:
 
     _dispatch(fake, "previous")
 
+    fake.mass.loop.call_soon_threadsafe.assert_called_once()
     fake.mass.player_queues.previous.assert_called_once_with("cast_id")
 
 
@@ -105,4 +110,16 @@ def test_command_prefers_the_active_cast_group() -> None:
 
     _dispatch(fake, "next")
 
+    fake.mass.loop.call_soon_threadsafe.assert_called_once()
     fake.mass.player_queues.next.assert_called_once_with("cast_group")
+
+
+def test_inactive_queue_is_ignored() -> None:
+    """A command on a dashboard-only session (no active MA queue) is dropped, not dispatched."""
+    fake = _fake_cast()
+    fake.mass.player_queues.get.return_value.active = False
+
+    _dispatch(fake, "next")
+
+    fake.mass.player_queues.next.assert_not_called()
+    fake.mass.create_task.assert_not_called()

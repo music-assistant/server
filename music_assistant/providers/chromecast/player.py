@@ -927,4 +927,15 @@ class ChromecastPlayer(Player):
         queue_command = (
             self.mass.player_queues.next if command == "next" else self.mass.player_queues.previous
         )
-        self.mass.loop.call_soon_threadsafe(lambda: self.mass.create_task(queue_command(queue_id)))
+
+        def dispatch() -> None:
+            # Read queue state on the event loop thread, not the socket thread the
+            # command arrives on: a dashboard-only session (no active MA queue) would
+            # otherwise raise InvalidCommand and spam the log on every button press.
+            queue = self.mass.player_queues.get(queue_id)
+            if queue is None or not queue.active:
+                self.logger.debug("Ignoring %s command: queue %s is not active", command, queue_id)
+                return
+            self.mass.create_task(queue_command(queue_id))
+
+        self.mass.loop.call_soon_threadsafe(dispatch)
