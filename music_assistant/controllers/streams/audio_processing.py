@@ -740,10 +740,10 @@ def _source_processing_item(
 
     :param processing: Runtime processing state of the live source selection.
     """
-    # Music Assistant mixes nothing into a live source: it neither crossfades,
-    # normalizes, changes speed nor overlays one. Only a step the source reported
-    # applying is carried over, and one it did not report counts as none: either
-    # way it reaches us already mixed and leaves our own path untouched.
+    # Music Assistant mixes nothing into a live source: whatever the source
+    # reported applying reaches us already mixed, and a step it did not report
+    # counts as none. Both are recorded as what they are rather than flattened,
+    # so the shared check stays the one deciding what a source-applied step costs.
     return _AudioProcessingItem(
         queue_processing=AudioQueueProcessing(
             pcm_format=processing.pcm_format,

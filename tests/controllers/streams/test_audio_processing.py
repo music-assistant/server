@@ -421,6 +421,36 @@ def test_unreported_source_processing_does_not_cost_the_bit_perfect_badge() -> N
     assert details.outputs[0].fidelity.bit_perfect is True
 
 
+def test_a_player_that_cannot_take_the_source_rate_is_not_bit_perfect() -> None:
+    """A source rate the player cannot take is snapped down, which loses samples."""
+    manager, _mass, source_session, lossless_plan, _pcm_format = _source_manager_context()
+    # the source arrives at 96 kHz but the player tops out at 48 kHz
+    snapped = _format(ContentType.PCM_S24LE, 48000, 24)
+    lossless_plan.input_format = snapped
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 48000, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        pcm_format=snapped,
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.outputs[0].fidelity.bit_perfect is False
+
+
 def test_a_live_source_output_narrower_than_the_source_is_not_bit_perfect() -> None:
     """Dropping a 24-bit source to a 16-bit output loses bits for a live source too."""
     manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
