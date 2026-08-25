@@ -135,6 +135,7 @@ async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> S
     )
     prov._beat_this_model = Mock()
     prov._beat_this_post_processor = Mock()
+    prov._skey_chromanet = Mock()
     prov._firered_model = Mock()
     prov._firered_cmvn_means = np.zeros(FIRERED_MEL_BINS, dtype=np.float64)
     prov._firered_cmvn_inverse_std = np.ones(FIRERED_MEL_BINS, dtype=np.float64)
@@ -160,12 +161,10 @@ def deterministic_provider(
         patch.object(
             feature_provider,
             "_infer_beat_timings",
-            new=AsyncMock(
-                return_value=(
-                    np.asarray(EXPECTED_BEATS, dtype=np.float32),
-                    np.asarray(EXPECTED_DOWNBEATS, dtype=np.float32),
-                    4,
-                )
+            return_value=(
+                np.asarray(EXPECTED_BEATS, dtype=np.float32),
+                np.asarray(EXPECTED_DOWNBEATS, dtype=np.float32),
+                4,
             ),
         ),
         patch.object(
@@ -407,7 +406,7 @@ async def test_finalize_raises_when_not_enough_beats(
         patch.object(
             feature_provider,
             "_infer_beat_timings",
-            new=AsyncMock(return_value=(np.array([0.5]), np.array([]), 4)),
+            return_value=(np.array([0.5]), np.array([]), 4),
         ),
         pytest.raises(AudioAnalysisError, match="beat"),
     ):

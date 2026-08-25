@@ -66,8 +66,7 @@ BEAT_WINDOW_FRAMES = 1500
 BEAT_WINDOW_BORDER_FRAMES = 6
 BEAT_WINDOW_OVERLAP_MODE = "keep_first"
 # While a player streams, wait this many times a window's own compute time before starting the
-# next one, so beat inference never occupies a core continuously and never holds the shared
-# analysis slot for more than one window at a time.
+# next one, so beat inference does not occupy a core continuously.
 BEAT_WINDOW_PACE_RATIO = 1.0
 
 
@@ -536,10 +535,13 @@ class SmartFadesProvider(AudioAnalysisProvider):
         key_features: torch.Tensor | None,
     ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
         """Run beat inference followed by musical key inference."""
+        # Resolved before the beat stage: an idle unload may clear the field while it runs.
+        chromanet = self._skey_chromanet
+        assert chromanet is not None
         beats, downbeats, beats_per_bar = await self._infer_beat_timings(beat_features)
         if len(beats) < 2:
             raise AudioAnalysisError("no rhythmic beat detected")
-        key, mode = await self._run_offloaded(self._infer_musical_key, key_features)
+        key, mode = await self._run_offloaded(self._infer_musical_key, chromanet, key_features)
         return beats, downbeats, beats_per_bar, key, mode
 
     async def _infer_vocal_activity(
@@ -597,14 +599,19 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.append(cropped.cpu())
 
     def _infer_musical_key(
-        self, vqt_features: torch.Tensor | None
+        self, chromanet: torch.nn.Module, vqt_features: torch.Tensor | None
     ) -> tuple[str | None, str | None]:
-        """Run S-KEY ChromaNet inference to detect musical key."""
+        """
+        Run S-KEY ChromaNet inference to detect musical key.
+
+        :param chromanet: The ChromaNet module to run.
+        :param vqt_features: Accumulated VQT features, or None when the track had too few.
+        """
         if vqt_features is None or vqt_features.shape[-1] < 128:
             return None, None
         start = time.perf_counter()
         with torch.no_grad():
-            logits = self._skey_chromanet(vqt_features.to(self._device))
+            logits = chromanet(vqt_features.to(self._device))
             key_idx = int(logits.argmax(dim=-1).item())
             key_name = SKEY_KEY_MAP[key_idx]  # e.g. "C# Major"
             parts = key_name.split()
@@ -664,7 +671,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def _pace_beat_windows(self, window_seconds: float) -> None:
         """
-        Idle between beat inference windows for as long as the last one computed.
+        Idle for as long as the beat inference window that just finished took to compute.
+
+        Only while a player streams; idle and background analysis run at full speed.
 
         :param window_seconds: Compute time of the window that just finished.
         """
@@ -672,9 +681,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
             return
         await asyncio.sleep(window_seconds * BEAT_WINDOW_PACE_RATIO)
 
-    def _infer_beat_window(
-        self, model: torch.nn.Module, window: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
+    @staticmethod
+    def _infer_beat_window(model: torch.nn.Module, window: torch.Tensor) -> dict[str, torch.Tensor]:
         """
         Run one Beat This window and return its beat and downbeat logits.
 
@@ -701,15 +709,16 @@ class SmartFadesProvider(AudioAnalysisProvider):
         :param starts: Frame offset of each window, as returned by split_piece.
         :param total_frames: Frame count of the whole track.
         """
-        beat_logits, downbeat_logits = aggregate_prediction(
-            predictions,
-            starts,
-            total_frames,
-            BEAT_WINDOW_FRAMES,
-            BEAT_WINDOW_BORDER_FRAMES,
-            BEAT_WINDOW_OVERLAP_MODE,
-            self._device,
-        )
+        with torch.inference_mode():
+            beat_logits, downbeat_logits = aggregate_prediction(
+                predictions,
+                starts,
+                total_frames,
+                BEAT_WINDOW_FRAMES,
+                BEAT_WINDOW_BORDER_FRAMES,
+                BEAT_WINDOW_OVERLAP_MODE,
+                self._device,
+            )
         dbn_out, beats_per_bar = post_processor(
             self._beat_activations(beat_logits.float(), downbeat_logits.float())
         )
