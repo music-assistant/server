@@ -524,19 +524,64 @@ async def test_a_busy_data_directory_is_reported_as_such(tmp_path: Path) -> None
 async def test_the_busy_marker_is_picked_up_from_the_daemon_output(tmp_path: Path) -> None:
     """The marker is read off the daemon's stdout, with the API key still redacted."""
     session = _make_session(tmp_path)
-    proc = MagicMock()
-    lines = [
-        'Error: another session is running for data directory "/data/x/soloist-data".',
-        "Stop the running session before starting soloist again.",
-    ]
-
-    async def _iter_stdout() -> AsyncGenerator[str]:
-        for line in lines:
-            yield line
-
-    proc.iter_stdout = _iter_stdout
-    await session._log_output(proc)
+    await session._log_output(
+        _stdout_of(
+            'Error: another session is running for data directory "/data/x/soloist-data".',
+            "Stop the running session before starting soloist again.",
+        )
+    )
     assert session._data_dir_busy is True
+
+
+async def test_a_lost_pairing_is_caught_the_moment_the_daemon_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon advertising for pairing fails the session at once, not on a timeout."""
+    session = _make_session(tmp_path)
+    session._logged_in = None
+    unload_with_error = MagicMock()
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", unload_with_error)
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    assert session._unpaired is True
+    # the buffer gives up on the audio long before the startup budget runs out, so
+    # the session has to fail while an item is still waiting on it
+    assert session._error is not None
+    with pytest.raises(LoginFailed) as err:
+        session._raise_startup_error("did not connect and log in", TRACK_A)
+    assert err.value.translation_key == "soloist_pairing_required"
+    unload_with_error.assert_called_once()
+
+
+async def test_a_lost_pairing_fails_the_item_without_waiting_for_the_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The item fails on the lost pairing, not on the endpoint that is no longer coming."""
+    session = _make_session(tmp_path)
+    session._logged_in = None
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", MagicMock())
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    # the endpoint never appears, so the wait for it must not swallow the failure:
+    # sitting it out would outlast the queue's own patience for the audio
+    with pytest.raises(LoginFailed) as err:
+        async with asyncio.timeout(5):
+            await session._play(TRACK_A, 0, asyncio.Event())
+    assert err.value.translation_key == "soloist_pairing_required"
+
+
+async def test_a_daemon_still_restoring_its_session_is_left_alone(tmp_path: Path) -> None:
+    """The engine advertises for pairing while restoring too; the stored session decides."""
+    session = _make_session(tmp_path)
+    data_dir = session.backend._data_dir
+    (data_dir / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    assert session._unpaired is False
+    assert session._error is None
 
 
 async def test_a_pairing_that_never_logs_in_routes_through_setup(
@@ -1718,14 +1763,25 @@ async def test_streaming_without_setup_is_refused(tmp_path: Path) -> None:
 
 
 def test_session_present_detection(tmp_path: Path) -> None:
-    """Only a dir holding something besides the WS endpoint files counts as paired."""
+    """Only the engine's per-account state counts as paired."""
     data_dir = tmp_path / "soloist-data"
     assert soloist_session_present(data_dir) is False
     data_dir.mkdir()
     (data_dir / WS_ADDR_FILE).write_text("127.0.0.1", encoding="utf-8")
     (data_dir / WS_PORT_FILE).write_text("1234", encoding="utf-8")
     assert soloist_session_present(data_dir) is False
-    (data_dir / "session.bin").write_bytes(b"x")
+    # everything a spawn leaves behind outlives the pairing it ran on: the engine
+    # keeps its identity, lock, cache and crash handler in the data dir even
+    # though it is given a cache dir of its own, and Music Assistant writes the
+    # prefs there before every spawn
+    (data_dir / "settings").mkdir()
+    (data_dir / "settings" / "prefs").write_text("audio.normalize_v2=false\n", encoding="utf-8")
+    (data_dir / ".device_id").write_text("6b6c2a07", encoding="utf-8")
+    (data_dir / ".lock").write_bytes(b"")
+    (data_dir / "cache" / "Users" / "spotify-user-user").mkdir(parents=True)
+    (data_dir / "crashpad").mkdir()
+    assert soloist_session_present(data_dir) is False
+    (data_dir / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
     assert soloist_session_present(data_dir) is True
 
 
@@ -1873,6 +1929,18 @@ def _capture_holding(
         session._reader = None
         os.close(read_fd)
         os.close(write_fd)
+
+
+def _stdout_of(*lines: str) -> MagicMock:
+    """Return a process mock whose stdout yields the given daemon log lines."""
+
+    async def _iter_stdout() -> AsyncGenerator[str]:
+        for line in lines:
+            yield line
+
+    proc = MagicMock()
+    proc.iter_stdout = _iter_stdout
+    return proc
 
 
 def _make_provider(tmp_path: Path, setup_data: dict[str, Any] | None = None) -> SpotifyProvider:
