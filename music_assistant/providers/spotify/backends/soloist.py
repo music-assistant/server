@@ -3,13 +3,14 @@ Spotify Soloist playback backend for the Spotify music provider.
 
 Runs one continuous session of ``soloist``, Spotify's official headless client,
 and feeds it one track ahead so the engine plays consecutive tracks without a
-break — with Spotify's own crossfade at the boundaries. The session renders into
-a private PulseAudio capture sink whose FIFO is read back slightly above
-realtime pace, and that one continuous audio stream is handed to Music Assistant
-as ordinary per-item streams: an item's stream ends where the session moves on to
-the next track, and the next item's stream begins there. Played back to back the
-items reproduce the session's audio sample for sample, so the cut position does
-not matter and a crossfade simply lives inside the bytes.
+break. The session renders into a private PulseAudio capture sink whose FIFO is
+read back slightly above realtime pace, and that one continuous audio stream is
+handed to Music Assistant as ordinary per-item streams: an item's stream ends
+where the session moves on to the next track, and the next item's stream begins
+there. Played back to back the items reproduce the session's audio sample for
+sample. The engine itself never crossfades — Music Assistant mixes the queue's
+crossfade, so every item's audio starts at its first sample and stays aligned
+with its analysis.
 
 SECURITY NOTE: the daemon takes the user's personal API key on its command
 line; nothing in this module may ever log the process argv.
@@ -40,8 +41,6 @@ from music_assistant_models.errors import AudioError, LoginFailed, MusicAssistan
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
-    CONF_CROSSFADE_DURATION,
-    CONF_PLAYER_QUEUES,
     CONF_VALUE_DISABLED,
     CONF_VALUE_ENABLED,
     CONF_VOLUME_NORMALIZATION,
@@ -155,9 +154,9 @@ _DRAIN_TIMEOUT_S: Final[float] = 2.0
 # and showing as a playing device in the Spotify app - while the gap it exists to
 # cover is the handover between two items, which is milliseconds.
 _IDLE_TIMEOUT_S: Final[float] = 5.0
-# an item's stream may run past its nominal duration (it carries the head of the
-# crossfade into the next track), but never unboundedly: without the session
-# reporting a track change by then, something is wrong and the item fails
+# an item's stream may run past its nominal duration (reported durations are
+# approximate), but never unboundedly: without the session reporting a track
+# change by then, something is wrong and the item fails
 _ITEM_OVERRUN_S: Final[float] = 30.0
 # how far ahead of the playing item to look for the one being streamed: a flow
 # stream runs ahead of the player, a per-item stream is the playing item or its
@@ -178,6 +177,8 @@ _MAX_RETAINED_S: Final[float] = 20.0
 _RESUME_RETAINED_S: Final[float] = 10.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
+# how often an unsettled boundary re-asks the queue for the follower to feed
+_FEED_RETRY_INTERVAL_S: Final[float] = 2.0
 # the engine's "no repeat" value for its playback options
 _REPEAT_OFF: Final[str] = "off"
 # The engine allows one daemon per data directory and refuses to start otherwise,
@@ -344,27 +345,17 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Soloist delivers at playback pace (~1.1x ceiling): no read-ahead."""
         return True
 
-    @property
-    def session_normalizes(self) -> bool | None:
+    def session_normalizes(self, streamdetails: StreamDetails) -> bool | None:
         """
-        Return whether the running session's engine is normalizing, if there is one.
+        Return whether the session serving this item's queue is normalizing.
 
-        None when nothing is playing yet, in which case the configuration is the
-        only thing to go on.
-        """
-        session = self._session
-        return session.engine_normalizes if session is not None and session.usable else None
+        None when no session serves that queue, in which case the configuration is
+        the only thing to go on.
 
-    @property
-    def session_crossfades(self) -> bool | None:
+        :param streamdetails: Stream details of the item being asked about.
         """
-        Return whether the running session's engine is crossfading, if there is one.
-
-        None when nothing is playing yet, in which case the configuration is the
-        only thing to go on.
-        """
-        session = self._session
-        return session.crossfade_ms > 0 if session is not None and session.usable else None
+        session = self._session_for(streamdetails)
+        return session.engine_normalizes if session is not None else None
 
     async def setup(self) -> None:
         """
@@ -429,11 +420,21 @@ class SoloistBackend(SpotifyPlaybackBackend):
         queue_id = streamdetails.queue_id if streamdetails is not None else None
         session, item = await self._acquire(spotify_uri, seek_position, queue_id)
         try:
-            # feed before the first byte is handed over: the item's own stream
-            # must not be able to reach its end before the next one is queued
-            if streamdetails is not None:
-                await session.feed_after(streamdetails, spotify_uri)
+            # Feed before the first byte is handed over: the item's own stream
+            # must not be able to reach its end before the next one is queued.
+            # A follower that is not knowable yet (the queue's index still
+            # settling on a fresh start, or the next item still being resolved)
+            # is asked for again while the item streams.
+            boundary_settled = streamdetails is None or await session.feed_after(
+                streamdetails, spotify_uri
+            )
+            next_feed_attempt = 0.0
             async for chunk in item.read():
+                if not boundary_settled and streamdetails is not None:
+                    now = time.monotonic()
+                    if now >= next_feed_attempt:
+                        next_feed_attempt = now + _FEED_RETRY_INTERVAL_S
+                        boundary_settled = await session.feed_after(streamdetails, spotify_uri)
                 yield chunk
         finally:
             item.release()
@@ -507,6 +508,20 @@ class SoloistBackend(SpotifyPlaybackBackend):
             ch if ch.isalnum() or ch in "_.-" else "_" for ch in self.provider.instance_id
         )
 
+    def _session_for(self, streamdetails: StreamDetails) -> _SoloistSession | None:
+        """
+        Return the session serving this item's queue, if one can still serve it.
+
+        A session serves one queue: another queue's session says nothing about
+        this item, however much it knows about its own.
+
+        :param streamdetails: Stream details of the item being asked about.
+        """
+        session = self._session
+        if session is None or not session.usable or session.queue_id != streamdetails.queue_id:
+            return None
+        return session
+
     async def _acquire(
         self, spotify_uri: str, seek_position: int, queue_id: str | None
     ) -> tuple[_SoloistSession, _ItemAudio]:
@@ -526,8 +541,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     return session, item
                 if not seek_position and (pending := session.pending_item(spotify_uri)) is not None:
                     # skipped to the item that was fed next: the engine can jump
-                    # there itself, which keeps the session and its crossfade
-                    # instead of paying a whole respawn
+                    # there itself, which keeps the session instead of paying a
+                    # whole respawn
                     # claimed only once the engine is there: a refused skip
                     # would otherwise leave the channel claimed for good, and
                     # the session busy and unable to expire
@@ -625,11 +640,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """Return whether the data dir holds a stored (paired) session (blocking)."""
         return soloist_session_present(self._data_dir)
 
-    def _prepare_data_dir(self, crossfade_ms: int, *, normalize: bool) -> None:
+    def _prepare_data_dir(self, *, normalize: bool) -> None:
         """
         Prepare the data dir for a fresh session spawn (blocking).
 
-        :param crossfade_ms: Crossfade duration to configure the engine with.
         :param normalize: Whether the engine should normalize loudness itself.
         """
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -642,10 +656,13 @@ class SoloistBackend(SpotifyPlaybackBackend):
         # doing it the provider declares the audio pre-normalized, which takes
         # MA's own normalization out of the path (see
         # SpotifyProvider.delivers_normalized_audio).
+        # crossfade 0: Music Assistant mixes the queue's crossfade itself, so the
+        # engine plays every track clean from its first sample and an item's
+        # delivered audio lines up with its analysis (waveform, beat grid, light sync)
         if not write_audio_prefs(
             self._data_dir,
             self.logger,
-            crossfade_ms=crossfade_ms,
+            crossfade_ms=0,
             loudness_normalization=normalize,
             audio_quality=self._audio_quality,
         ):
@@ -707,7 +724,6 @@ class _SoloistSession:
         self.queue_id = queue_id
         self.mass = backend.mass
         self.logger: logging.Logger = backend.logger
-        self.crossfade_ms = 0
         # what the engine was actually told at spawn, which is what the streams
         # core has to agree with - the setting may be toggled while this plays
         self.engine_normalizes = False
@@ -757,8 +773,8 @@ class _SoloistSession:
         """
         Return the channel of an item that was fed but has not started yet.
 
-        The engine can be told to jump to it, which keeps the session (and its
-        crossfade) instead of paying a fresh spawn.
+        The engine can be told to jump to it, which keeps the session instead of
+        paying a fresh spawn.
 
         :param spotify_uri: The canonical Spotify URI to check.
         """
@@ -845,10 +861,9 @@ class _SoloistSession:
         server = backend._server
         assert server is not None
         assert backend._binary is not None
-        self.crossfade_ms = self._queue_crossfade_ms()
         self.engine_normalizes = self._engine_normalization_enabled()
         await asyncio.to_thread(
-            partial(backend._prepare_data_dir, self.crossfade_ms, normalize=self.engine_normalizes)
+            partial(backend._prepare_data_dir, normalize=self.engine_normalizes)
         )
         self._sink = sink = await PipeSink.create(server, backend._sink_prefix)
         # unity gain so the FIFO carries the engine's PCM unaltered; the sink
@@ -888,51 +903,21 @@ class _SoloistSession:
         await self._apply_sink_state(engine_playing=item.status == "playing")
         return item
 
-    async def feed_after(self, streamdetails: StreamDetails, spotify_uri: str) -> None:
+    async def feed_after(self, streamdetails: StreamDetails, spotify_uri: str) -> bool:
         """
         Hand the engine the item that follows the one being streamed, if any.
 
         Only consecutive tracks are stitched: the engine's queue command takes
-        track URIs, and a podcast episode or audiobook chapter gains nothing
-        from a crossfade anyway.
+        track URIs, and a podcast episode or audiobook chapter would not gain
+        anything from being fed ahead.
 
         :param streamdetails: The StreamDetails of the item being streamed, used
             to locate it in the queue.
         :param spotify_uri: The URI being streamed (only tracks are fed ahead).
+        :return: Whether the boundary is settled; False means the follower was
+            not knowable yet and asking again later may still feed it.
         """
-        client = self._client
-        if client is None or not spotify_uri.startswith("spotify:track:"):
-            return
-        follower = self._follower(streamdetails)
-        if follower is None:
-            return
-        next_uri = self._track_uri(follower)
-        if next_uri is None or next_uri in self._items:
-            return
-        if (
-            follower_details := follower.streamdetails
-        ) is not None and follower_details.provider != self.backend.provider.instance_id:
-            # the queue has already resolved this item to another provider, so
-            # feeding it here would have the engine play audio nobody reads -
-            # and cut the current item short when it starts
-            return
-        # Registered before the command goes out: the engine can reach the item
-        # while it is still in flight, and the events task has to find its
-        # channel rather than mistake it for something nobody asked for.
-        item = self._items[next_uri] = _ItemAudio(next_uri, self)
-        self._pending.append(next_uri)
-        try:
-            await client.add_to_queue(next_uri)
-        except (TimeoutError, OSError, ClientError, SoloistError) as err:
-            # a failed feed only costs the crossfade at that boundary: the next
-            # item still plays, on a fresh session
-            self.logger.debug("Unable to feed %s to the soloist session: %s", next_uri, err)
-            if self._current is not item:
-                del self._items[next_uri]
-                with suppress(ValueError):
-                    self._pending.remove(next_uri)
-            return
-        self.logger.debug("Fed %s to the soloist session", next_uri)
+        return await self._feed_follower(streamdetails, spotify_uri)
 
     async def validate_item(self, item: _ItemAudio) -> None:
         """
@@ -951,12 +936,7 @@ class _SoloistSession:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
         if item.duration_ms is None:
             return
-        # with crossfade the engine starts the next track before this one ends,
-        # so the last position reported for it falls a crossfade short by design
-        tolerance_ms = min(
-            max(_INCOMPLETE_TOLERANCE_MS, self.crossfade_ms + _INCOMPLETE_TOLERANCE_MS),
-            item.duration_ms // 2,
-        )
+        tolerance_ms = min(_INCOMPLETE_TOLERANCE_MS, item.duration_ms // 2)
         if item.last_position_ms is None or item.last_position_ms + tolerance_ms < item.duration_ms:
             raise AudioError(
                 f"Spotify Soloist delivered incomplete audio for {item.uri} "
@@ -1052,23 +1032,6 @@ class _SoloistSession:
             item.close()
         self.mass.create_task(self.backend.discard_session, self)
 
-    def _queue_crossfade_ms(self) -> int:
-        """
-        Return the crossfade the engine should apply, from the queue's own preference.
-
-        Music Assistant cannot crossfade audio it is not mixing, so its queue
-        setting is handed to the engine instead. The pref is in milliseconds and
-        sub-second values silently disable crossfade, which the seconds-based
-        queue setting can never produce.
-        """
-        queue = self.mass.player_queues.get(self.queue_id) if self.queue_id else None
-        if queue is None or not queue.crossfade_enabled:
-            return 0
-        seconds = self.mass.config.get_raw_core_config_value(
-            CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
-        )
-        return int(seconds) * 1000
-
     def _engine_normalization_enabled(self) -> bool:
         """
         Return whether the engine should normalize the loudness it delivers.
@@ -1088,6 +1051,95 @@ class _SoloistSession:
             != CONF_VALUE_DISABLED
         )
 
+    async def _feed_follower(self, streamdetails: StreamDetails, spotify_uri: str) -> bool:
+        """
+        Feed the engine the track after this one, and report whether it will play on into it.
+
+        :param streamdetails: The StreamDetails of the item being streamed.
+        :param spotify_uri: The URI being streamed (only tracks are fed ahead).
+        """
+        client = self._client
+        if client is None or not spotify_uri.startswith("spotify:track:"):
+            return False
+        next_uri = self._feedable_follower_uri(streamdetails)
+        if next_uri is None:
+            return False
+        existing = self._items.get(next_uri)
+        if existing is not None and (
+            existing.claimed or existing is self._current or not existing.spent
+        ):
+            # nothing left to send, so whether the engine plays on rests entirely on
+            # the channel this session already holds for it
+            return self._engine_plays_on_into(next_uri, spotify_uri)
+        if existing is not None:
+            # a channel left from an earlier play of the same track: its audio was
+            # handed over already, so this occurrence needs its own feed and channel
+            del self._items[next_uri]
+            with suppress(ValueError):
+                self._pending.remove(next_uri)
+        # Registered before the command goes out: the engine can reach the item
+        # while it is still in flight, and the events task has to find its
+        # channel rather than mistake it for something nobody asked for.
+        item = self._items[next_uri] = _ItemAudio(next_uri, self)
+        self._pending.append(next_uri)
+        try:
+            await client.add_to_queue(next_uri)
+        except (TimeoutError, OSError, ClientError, SoloistError) as err:
+            # a failed feed only costs the crossfade at that boundary: the next
+            # item still plays, on a fresh session
+            self.logger.debug("Unable to feed %s to the soloist session: %s", next_uri, err)
+            if self._current is item:
+                # the engine acted on the command before the failure got back to
+                # us, so it does play on into this item after all
+                return True
+            if isinstance(err, TimeoutError):
+                # the command may have landed engine-side regardless; keeping the
+                # channel makes the retry settle on it instead of queueing the
+                # same track a second time
+                return False
+            del self._items[next_uri]
+            with suppress(ValueError):
+                self._pending.remove(next_uri)
+            return False
+        self.logger.debug("Fed %s to the soloist session", next_uri)
+        return True
+
+    def _engine_plays_on_into(self, next_uri: str, streamed_uri: str) -> bool:
+        """
+        Return whether the engine plays on into a follower this session already holds.
+
+        Only a channel that can still be served across the boundary is played on into:
+        a drained one cannot be replayed, and neither can the item being streamed
+        itself, so both start a fresh session instead.
+
+        :param next_uri: URI of the follower.
+        :param streamed_uri: URI of the item being streamed.
+        """
+        if next_uri == streamed_uri:
+            return False
+        return self.pending_item(next_uri) is not None or self.item_for(next_uri) is not None
+
+    def _feedable_follower_uri(self, streamdetails: StreamDetails) -> str | None:
+        """
+        Return the URI of the track after this one, when the engine can be fed it.
+
+        :param streamdetails: The StreamDetails of the item being streamed.
+        """
+        follower = self._follower(streamdetails)
+        if follower is None:
+            return None
+        next_uri = self._track_uri(follower)
+        if next_uri is None:
+            return None
+        if (
+            follower_details := follower.streamdetails
+        ) is not None and follower_details.provider != self.backend.provider.instance_id:
+            # the queue has already resolved this item to another provider, so
+            # feeding it here would have the engine play audio nobody reads -
+            # and cut the current item short when it starts
+            return None
+        return next_uri
+
     def _follower(self, streamdetails: StreamDetails) -> QueueItem | None:
         """Return the queue item that follows the one these StreamDetails belong to."""
         queue_id = self.queue_id
@@ -1104,6 +1156,14 @@ class _SoloistSession:
                 break
             if item.streamdetails is streamdetails:
                 return controller.get_next_item(queue_id, item.queue_item_id)
+        # commonly a queue index that has not settled yet (fresh play start);
+        # the caller keeps asking while the item streams
+        self.logger.debug(
+            "No follower for %s: item not within %s of queue index %s",
+            streamdetails.uri,
+            _FOLLOWER_SEARCH_DEPTH,
+            queue.current_index,
+        )
         return None
 
     def _track_uri(self, queue_item: QueueItem) -> str | None:
@@ -1609,9 +1669,9 @@ class _SoloistSession:
         Follow the engine to the item it reports as current, cutting the previous one.
 
         The cut lands wherever the engine says it moved on: an item's stream
-        carries whatever was read up to that point (including the head of a
-        crossfade) and the next item's stream continues from there, so the two
-        together still reproduce the session's audio exactly.
+        carries whatever was read up to that point and the next item's stream
+        continues from there, so the two together still reproduce the session's
+        audio exactly.
         """
         current = self._current
         if current is not None and current.uri == uri:
@@ -1838,9 +1898,9 @@ class _ItemAudio:
         Return whether the engine reported this item played (nearly) to its end.
 
         Tells a run that genuinely finished apart from someone pausing in the
-        Spotify app part-way through the last track. No crossfade allowance:
-        this judges the run's *last* item, which crossfades into nothing (see
-        ``mid_play``, which judges a boundary and therefore needs one).
+        Spotify app part-way through the last track. Where ``mid_play`` judges a
+        boundary the engine drove, this judges the run's *last* item, which no
+        boundary follows.
         """
         if self.duration_ms is None or self.last_position_ms is None:
             # nothing to judge by: treat a stop as the end rather than hanging
@@ -1853,10 +1913,10 @@ class _ItemAudio:
         Return whether the engine is part-way through this item.
 
         Distinguishes the engine being pulled off an item from it moving on at
-        the item's own end, which is an ordinary boundary — and with crossfade
-        that boundary falls a crossfade short of the duration. Answers False
-        whenever there is nothing to judge by, so an unknown position is never
-        read as an interruption.
+        the item's own end, which is an ordinary boundary — one the engine reaches
+        within the usual tolerance of the item's duration. Answers False whenever
+        there is nothing to judge by, so an unknown position is never read as an
+        interruption.
         """
         if not self.started.is_set() or self._closed or self.draining:
             return False
@@ -1864,10 +1924,9 @@ class _ItemAudio:
             return False
         # Uncapped on purpose, unlike validate_item's half-duration clamp: on an
         # item shorter than the allowance this answers False throughout, so a
-        # takeover there is missed rather than every crossfade boundary on it
+        # takeover there is missed rather than every ordinary boundary on it
         # being called one.
-        end_of_item_ms = self.session.crossfade_ms + _INCOMPLETE_TOLERANCE_MS
-        return self.last_position_ms + end_of_item_ms < self.duration_ms
+        return self.last_position_ms + _INCOMPLETE_TOLERANCE_MS < self.duration_ms
 
     @property
     def tail_complete(self) -> bool:
@@ -2020,9 +2079,7 @@ class _ItemAudio:
         """Return the byte count past which this item is considered stuck."""
         if (own_audio := self._duration_bytes()) is None:
             return None
-        return own_audio + int(
-            (self.session.crossfade_ms / 1000 + _ITEM_OVERRUN_S) * _BYTES_PER_SECOND
-        )
+        return own_audio + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
 
 
 def _decorated_duration_ms(item: object) -> int | None:

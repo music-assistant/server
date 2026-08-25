@@ -16,6 +16,7 @@ import asyncio
 import re
 from asyncio import FIRST_COMPLETED
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -34,6 +35,7 @@ from music_assistant.helpers.pulse_capture import (
 from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_LOSSLESS,
     SpotifyConnectBackend,
+    spotify_source_audio_format,
 )
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
@@ -102,6 +104,9 @@ BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
 # invalidates the capture sink), so the sink is replaced proactively instead
 # of on the (side-effect-free) stream request.
 GENERATION_WATCH_INTERVAL_S: Final = 5
+
+# item uri prefixes Spotify never serves losslessly, whatever the tier is set to.
+_SPOKEN_URI_PREFIXES: Final = ("spotify:episode:", "spotify:chapter:")
 
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
@@ -212,14 +217,9 @@ class SoloistBackend(SpotifyConnectBackend):
         self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
-        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
-        # capture format) — that is what actually arrives on the named pipe.
-        # Soloist decodes internally and never exposes the source codec or
-        # quality, so this capture format doubles as the display format: MA's
-        # input really is 32-bit PCM (24-bit lossless fits losslessly), while
-        # Spotify's upstream quality stays unknowable either way. The advertised
-        # format also decides the internal PCM depth and the ffmpeg-free
-        # passthrough for an AudioSource, so it has to stay what arrives.
+        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM — that is what
+        # actually arrives on the named pipe, and every decision about the bytes
+        # follows it because it is reported as the decoded format
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
@@ -227,17 +227,33 @@ class SoloistBackend(SpotifyConnectBackend):
             bit_depth=32,
             channels=CAPTURE_CHANNELS,
         )
-        self._audio_format = self._capture_format
+        self._tier_format = spotify_source_audio_format(
+            audio_quality, lossless=audio_quality == AUDIO_QUALITY_LOSSLESS
+        )
+        # spoken content is Ogg Vorbis whatever the tier says; on the lossy tiers
+        # that is the tier format itself
+        self._spoken_format = (
+            spotify_source_audio_format(audio_quality, lossless=False)
+            if audio_quality == AUDIO_QUALITY_LOSSLESS
+            else self._tier_format
+        )
 
     @property
     def audio_format(self) -> AudioFormat:
         """Return the source audio format (advertised to clients for display)."""
-        return self._audio_format
+        # a Connect session plays whatever the Spotify app picked, so the uri of the
+        # item playing when the stream starts is the only media-type signal there is;
+        # an unknown item is treated as music, the dominant case for a ceiling claim
+        if self._last_track_uri and self._last_track_uri.startswith(_SPOKEN_URI_PREFIXES):
+            return self._spoken_format
+        return self._tier_format
 
     @property
     def decoded_audio_format(self) -> AudioFormat:
         """Return the PCM format the capture sink's named pipe delivers."""
-        return self._capture_format
+        # a copy per stream: the core mirrors what ffmpeg probes onto this object,
+        # which must not land on the one format every stream shares
+        return replace(self._capture_format)
 
     @property
     def stream_ends_on_pause(self) -> bool:

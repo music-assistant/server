@@ -101,6 +101,7 @@ class _SourceSession:
     player_id: str
     owner_player_id: str
     stream_session_id: str
+    playback_session_id: str | None = None
     # Retires the prior generator when the same player reclaims the session.
     generation: int = 0
     bridge: SourceBridge | None = None
@@ -264,7 +265,12 @@ class SendspinSourceProvider(PluginProvider):
                             # deselect rather than stopping the queue: the source plays on
                             # the player, so stopping the queue would leave the source
                             # published on it while resetting the queue we are preserving
-                            await self.mass.players.deselect_source(autostart_queue_id)
+                            await self.mass.players.deselect_source(
+                                autostart_queue_id,
+                                provider_instance_id=self.instance_id,
+                                source_id=source_id,
+                                playback_session_id=autostart_session_id,
+                            )
                         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
                             self.logger.debug(
                                 "Failed to release autostart player %s: %s",
@@ -277,6 +283,7 @@ class SendspinSourceProvider(PluginProvider):
                     live.owner_player_id,
                 ) == (player_id, owner_player_id):
                     live.stream_session_id = stream_session_id
+                    live.playback_session_id = queue_session_id
                     live.generation += 1
                     return
                 await self._teardown_session(source_id, superseded_by_player_id=player_id)
@@ -292,6 +299,7 @@ class SendspinSourceProvider(PluginProvider):
                     player_id=player_id,
                     owner_player_id=owner_player_id,
                     stream_session_id=stream_session_id,
+                    playback_session_id=queue_session_id,
                 )
                 role.request_start()
         finally:
@@ -536,7 +544,12 @@ class SendspinSourceProvider(PluginProvider):
         self.logger.info("Line-in signal gone on %s, stopping playback", client_id)
         try:
             # Queue stop also cancels pending preload and enqueue timers.
-            await self.mass.players.deselect_source(session.owner_player_id)
+            await self.mass.players.deselect_source(
+                session.owner_player_id,
+                provider_instance_id=self.instance_id,
+                source_id=client_id,
+                playback_session_id=session.playback_session_id,
+            )
         except (KeyError, PlayerCommandFailed, PlayerUnavailableError) as err:
             self.logger.debug("Failed to stop player %s: %s", session.owner_player_id, err)
 

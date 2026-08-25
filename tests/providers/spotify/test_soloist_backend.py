@@ -21,8 +21,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError, LoginFailed
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.models.music_provider import ProviderStreamLimitError
@@ -1039,19 +1041,6 @@ async def test_the_engine_moving_on_at_a_track_end_is_not_a_takeover(tmp_path: P
     assert session.item_for("spotify:track:autoplay") is None
 
 
-async def test_a_long_crossfade_boundary_is_not_a_takeover(tmp_path: Path) -> None:
-    """With crossfade the engine moves on a crossfade short of the duration."""
-    session = _make_session(tmp_path)
-    session.crossfade_ms = 15_000
-    item = session._items[TRACK_A] = _ItemAudio(TRACK_A, session)
-    await session._observe_current(TRACK_A, 200_000)
-    # the last position reported before the engine crossfades into the next track
-    item.observe_position(200_000 - session.crossfade_ms)
-
-    await session._observe_current("spotify:track:autoplay", 180_000)
-    assert session.usable is True
-
-
 async def test_an_ended_item_says_what_the_app_did(tmp_path: Path) -> None:
     """The item's stream fails with the takeover, not a generic session error."""
     session = _make_session(tmp_path)
@@ -1437,40 +1426,23 @@ def test_a_running_session_answers_for_what_the_engine_is_doing(tmp_path: Path) 
     """
     backend = _make_backend(tmp_path)
     provider = backend.provider
+    streamdetails = _streamdetails_for(queue_id="player1")
     # nothing playing yet: the configuration is all there is to go on
-    before_any_session = backend.session_normalizes
+    before_any_session = backend.session_normalizes(streamdetails)
     session = _SoloistSession(backend, "player1")
     session.engine_normalizes = True
     backend._session = session
-    while_playing = backend.session_normalizes
+    while_playing = backend.session_normalizes(streamdetails)
     # ... and a session that has been torn down no longer speaks for the engine
     session._stopped = True
-    after_teardown = backend.session_normalizes
+    after_teardown = backend.session_normalizes(streamdetails)
     assert before_any_session is None
     assert while_playing is True
     assert after_teardown is None
-    assert provider.delivers_normalized_audio is provider.spotify_normalization_configured
-
-
-def test_crossfade_comes_from_the_queue_preference(tmp_path: Path) -> None:
-    """The queue's crossfade setting is handed to the engine, in milliseconds."""
-    session = _make_session(tmp_path, queue_id="player1")
-    _queues_of(session).get.return_value = MagicMock(queue_id="player1", crossfade_enabled=True)
-    cast("MagicMock", session.mass.config).get_raw_core_config_value = MagicMock(return_value=6)
-    assert session._queue_crossfade_ms() == 6000
-
-
-def test_crossfade_off_is_zero(tmp_path: Path) -> None:
-    """A queue with crossfade disabled gets an explicit zero (which clears the pref)."""
-    session = _make_session(tmp_path, queue_id="player1")
-    _queues_of(session).get.return_value = MagicMock(crossfade_enabled=False)
-    assert session._queue_crossfade_ms() == 0
-
-
-def test_no_queue_means_no_crossfade(tmp_path: Path) -> None:
-    """Without a queue to read the preference from, the engine gets no crossfade."""
-    session = _make_session(tmp_path, queue_id=None)
-    assert session._queue_crossfade_ms() == 0
+    assert (
+        provider.delivers_normalized_audio(streamdetails)
+        is provider.spotify_normalization_configured
+    )
 
 
 async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
@@ -1482,18 +1454,6 @@ async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
     item.last_position_ms = 100_000
     with pytest.raises(AudioError, match="incomplete"):
         await session.validate_item(item)
-
-
-async def test_a_crossfade_shortfall_is_tolerated(tmp_path: Path) -> None:
-    """With crossfade the engine reports the item short by design; that is not a failure."""
-    session = _make_session(tmp_path)
-    session.crossfade_ms = 12_000
-    item = _ItemAudio(TRACK_A, session)
-    item.playing_seen = True
-    item.duration_ms = 200_000
-    # 12s of crossfade plus the ordinary tolerance
-    item.last_position_ms = 200_000 - 21_000
-    await session.validate_item(item)
 
 
 async def test_missing_position_is_rejected_as_incomplete(tmp_path: Path) -> None:
@@ -1706,12 +1666,12 @@ def test_the_engine_is_told_not_to_normalize(tmp_path: Path) -> None:
     prefs = backend._data_dir / "settings" / "Users" / "alice-user" / "prefs"
     prefs.parent.mkdir(parents=True)
     prefs.write_text("some.engine.key=1\n", encoding="utf-8")
-    backend._prepare_data_dir(8000, normalize=False)
+    backend._prepare_data_dir(normalize=False)
     content = prefs.read_text(encoding="utf-8").splitlines()
     assert "some.engine.key=1" in content
     assert "audio.normalize_v2=false" in content
-    assert "audio.crossfade_v2=true" in content
-    assert "audio.crossfade.time_v2=8000" in content
+    # MA mixes the queue's crossfade itself, so the engine's own is always off
+    assert "audio.crossfade_v2=false" in content
     # the ceiling is stated rather than left to the engine's own default
     assert "audio.play_bitrate_enumeration=5" in content
     assert "audio.play_bitrate_non_metered_enumeration=5" in content
@@ -1724,7 +1684,7 @@ def test_disabling_crossfade_writes_the_boolean(tmp_path: Path) -> None:
     prefs = backend._data_dir / "settings" / "prefs"
     prefs.parent.mkdir(parents=True)
     prefs.write_text("audio.crossfade_v2=true\naudio.crossfade.time_v2=8000\n", encoding="utf-8")
-    backend._prepare_data_dir(0, normalize=False)
+    backend._prepare_data_dir(normalize=False)
     content = prefs.read_text(encoding="utf-8").splitlines()
     assert "audio.crossfade_v2=false" in content
     assert not any(line.startswith("audio.crossfade.time_v2") for line in content)
@@ -1953,6 +1913,22 @@ def _make_session(tmp_path: Path, queue_id: str | None = "player1") -> _SoloistS
     session._logged_in = True
     session._was_active = True
     return session
+
+
+def _streamdetails_for(
+    *,
+    queue_id: str | None = "player1",
+    uri: str = TRACK_A,
+    media_type: MediaType = MediaType.TRACK,
+) -> StreamDetails:
+    """Return stream details for a Spotify item served by the test instance."""
+    return StreamDetails(
+        provider="spotify--test",
+        item_id=uri.rsplit(":", 1)[1],
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        media_type=media_type,
+        queue_id=queue_id,
+    )
 
 
 def _make_item(tmp_path: Path, uri: str) -> _ItemAudio:

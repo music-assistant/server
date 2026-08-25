@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.config_entries import create_player_selector
 from music_assistant.models.setup_flow import SetupFlowError
 
@@ -52,7 +51,7 @@ async def run_setup(session: SetupSession) -> None:
     stored_backend = str(
         setup_data.get(CONF_BACKEND) or session.context.values.get(CONF_BACKEND) or ""
     )
-    selected = stored_backend or BACKEND_GO_LIBRESPOT
+    selected = stored_backend or BACKEND_SOLOIST
     choice_errors: dict[str, str] | None = None
     while True:
         selected = await _choose_backend(session, selected, choice_errors)
@@ -89,17 +88,17 @@ async def _choose_backend(
     while True:
         values = await session.form(
             [
-                CONF_ENTRY_WARN_PREVIEW,
                 ConfigEntry(
                     key=CONF_BACKEND,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=BACKEND_GO_LIBRESPOT,
+                    default_value=BACKEND_SOLOIST,
                     value=preselect,
                     options=[
                         ConfigValueOption(BACKEND_SOLOIST),
                         ConfigValueOption(BACKEND_GO_LIBRESPOT),
                     ],
+                    expanded_options=True,
                 ),
             ],
             step_id="backend",

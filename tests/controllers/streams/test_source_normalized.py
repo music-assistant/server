@@ -38,8 +38,7 @@ from music_assistant.models.music_provider import MusicProvider
 class _NormalizingProvider(MusicProvider):
     """A music provider that hands over audio it already levelled."""
 
-    @property
-    def delivers_normalized_audio(self) -> bool:
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
         """Declare the source normalization."""
         return True
 
@@ -107,7 +106,7 @@ def test_the_queue_setting_still_wins() -> None:
 
 def test_a_music_provider_declares_nothing_by_default() -> None:
     """The declaration is opt-in: nothing downstream verifies it."""
-    assert object.__new__(MusicProvider).delivers_normalized_audio is False
+    assert object.__new__(MusicProvider).delivers_normalized_audio(_streamdetails()) is False
 
 
 @pytest.mark.parametrize("mode", [VolumeNormalizationMode.DISABLED, VolumeNormalizationMode.SOURCE])

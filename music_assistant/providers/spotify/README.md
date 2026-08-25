@@ -58,12 +58,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   — and that one continuous audio stream is split into ordinary per-item streams: an
   item's stream ends where the session reports moving on, and the next item's stream
   begins there. Played back to back the items reproduce the session's audio sample for
-  sample, so the cut position does not matter and Spotify's crossfade simply lives
-  inside the bytes. Only consecutive tracks are stitched; a podcast episode or audiobook
-  chapter is played on its own.
+  sample, so the cut position does not matter. Only consecutive tracks are stitched; a
+  podcast episode or audiobook chapter is played on its own.
 - **Use the engine's transport before respawning it.** A next-track lands on the item
-  that was fed one ahead, so the engine is told to skip to it and the session (with its
-  crossfade) survives. Tearing a session down and spawning another costs a login, an
+  that was fed one ahead, so the engine is told to skip to it and the session
+  survives. Tearing a session down and spawning another costs a login, an
   activate and a re-feed, which is seconds — and the daemon never exits on its own, so
   nothing is gained by waiting for it either: it is closed straight away.
 - **A session in use is never cut short**: the engine allows one session, so an item
@@ -90,9 +89,9 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
     a skip in the app lands there, which is also where the queue goes next, so the
     two stay in step. The engine's own autoplay and the item it restores at startup
     both fail the `mid_play` test, which is what keeps them out of it. Note the
-    last `crossfade + 10s` of an item is a blind spot by design: judging a boundary
-    needs that allowance, so a takeover inside it is missed rather than risking a
-    false one on every track.
+    last 10s of an item is a blind spot by design: judging a boundary needs that
+    allowance, so a takeover inside it is missed rather than risking a false one on
+    every track.
   - **Pause**, which is put back a couple of times (an accidental tap) and then
     taken at face value.
 
@@ -107,13 +106,12 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   item's audio does not exist until the session gets there. The session calls
   `prepare_next_audio_buffer()` when it does, identifying the item **by URI** (a queue
   reorder may have moved it).
-- **Crossfade comes from the queue**: Music Assistant cannot crossfade audio it is not
-  mixing, so the queue's own crossfade preference is written into the engine's prefs
-  before every spawn. Its unit is milliseconds and sub-second values silently disable
-  crossfade, which the seconds-based queue setting can never produce. Changing the
-  setting mid-playback takes effect on the next playback, which is also why
-  `delivers_crossfaded_audio` reports the running session's captured value rather
-  than the current setting.
+- **The engine never crossfades**: its own crossfade is written off in the prefs before
+  every spawn, so each track's audio arrives clean from its first sample. Music Assistant
+  mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
+  beat grids and light sync aligned with what is heard — a fade baked into the bytes
+  would shift every track's start against its analysis. It also means smart fades work
+  on Spotify audio.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the session runs
@@ -133,9 +131,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   through one place (`_apply_sink_state`).
 - **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
   WebSocket state delimits the items. An item stream is deliberately **not** capped at
-  the item duration — with crossfade it carries the head of the next track — but it is
-  bounded, and completeness is validated against the furthest playback position the
-  engine reported for it, with the crossfade added to the tolerance. The **last** item
+  the item duration, but it is bounded, and completeness is validated against the
+  furthest playback position the engine reported for it. The **last** item
   of a run gets no track change to cut it on, so a stop/idle/pause snapshot at its own
   end arms a bounded tail drain instead; a pause part-way through is treated as app
   interference, and the engine resuming cancels the drain. A channel is served **once**:
@@ -144,10 +141,12 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   Exit code 10 (expired build) triggers a forced binary refresh.
 - **Normalization**: exactly one of the two normalizes, and a provider option decides
   which. On (the default) the engine's own normalizer is enabled and the provider
-  declares `delivers_normalized_audio`, which makes the streams core skip normalization
-  for these items — Spotify uses values computed over its whole catalogue and will not
-  push a quiet track past its remaining headroom, and MA correcting that again would be
-  normalizing twice, the second time against a measurement of Spotify's own output.
+  declares `delivers_normalized_audio(streamdetails)` for the queue that session serves,
+  which makes the streams core skip normalization for those items — another queue gets
+  the configured answer instead, since the running session says nothing about it.
+  Spotify uses values computed over its whole catalogue and will not push a quiet track
+  past its remaining headroom, and MA correcting that again would be normalizing twice,
+  the second time against a measurement of Spotify's own output.
   Skipping also means the loudness analyzer declines the stream, so no measurement is
   stored: a value measured on one backend's output can never be applied to the other's,
   with no erase step needed. Off, `audio.normalize_v2=false` is written and MA measures

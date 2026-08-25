@@ -26,6 +26,11 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 DEFAULT_CHUNKSIZE = 64000
 
+# Ceiling on draining a pipe while closing. A child wedged in a read syscall never
+# closes its pipes, so an unbounded drain would keep close() from ever reaching the
+# terminate/SIGKILL escalation that actually reaps it.
+PIPE_DRAIN_TIMEOUT = 5
+
 
 def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
@@ -56,6 +61,7 @@ class AsyncProcess:
         stderr: bool | int | None = False,
         name: str | None = None,
         env: dict[str, str] | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         """
         Initialize AsyncProcess.
@@ -66,6 +72,8 @@ class AsyncProcess:
         :param stderr: Stderr configuration (True for PIPE, False for DEVNULL, or custom).
         :param name: Process name for logging.
         :param env: Environment variables for the subprocess (None inherits parent env).
+        :param pass_fds: Extra file descriptors kept open in the child (e.g. an
+            input pipe the command reads as ``pipe:<fd>``); the caller owns them.
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
@@ -77,6 +85,7 @@ class AsyncProcess:
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
         self._env = get_subprocess_env(env)
+        self._pass_fds = pass_fds
         self._stderr_lock = asyncio.Lock()
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -125,6 +134,7 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
             bufsize=0,
+            pass_fds=self._pass_fds,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
@@ -319,7 +329,7 @@ class AsyncProcess:
             await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
             with suppress(Exception):
-                await self.proc.stdout.read(-1)
+                await asyncio.wait_for(self.proc.stdout.read(-1), PIPE_DRAIN_TIMEOUT)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
@@ -329,7 +339,7 @@ class AsyncProcess:
                 await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
             with suppress(Exception):
-                await self.proc.stderr.read(-1)
+                await asyncio.wait_for(self.proc.stderr.read(-1), PIPE_DRAIN_TIMEOUT)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
