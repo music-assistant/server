@@ -485,13 +485,19 @@ class AirPlayReceiverProvider(PluginProvider):
         daemon.stop_called = True
 
         # a pending stop or deferred start must not wake after the teardown and
-        # act on the replaced daemon's session; awaited so a cancellation-delayed
-        # player command cannot land after the daemon is gone
-        for pending_task in (daemon.pending_stop_task, daemon.pending_start_task):
-            if pending_task and not pending_task.done():
-                pending_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await pending_task
+        # act on the replaced daemon's session; cancel BOTH before awaiting either
+        # (awaiting first could let the other progress meanwhile), and await so a
+        # cancellation-delayed player command cannot land after the daemon is gone
+        pending_tasks = [
+            task
+            for task in (daemon.pending_stop_task, daemon.pending_start_task)
+            if task and not task.done()
+        ]
+        for pending_task in pending_tasks:
+            pending_task.cancel()
+        for pending_task in pending_tasks:
+            with suppress(asyncio.CancelledError):
+                await pending_task
         daemon.pending_stop_task = None
         daemon.pending_start_task = None
 
@@ -746,6 +752,11 @@ class AirPlayReceiverProvider(PluginProvider):
         :param metadata: Dictionary containing metadata updates.
         """
         self.logger.log(VERBOSE_LOG_LEVEL, "Received metadata update: %s", metadata)
+
+        # the metadata reader outlives the cancelled tasks for a moment during
+        # teardown; a stopped daemon must not schedule new work from late events
+        if daemon.stop_called:
+            return
 
         # Handle play state changes from sessioncontrol hooks
         if "play_state" in metadata:

@@ -956,6 +956,11 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def _handle_backend_event(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """Dispatch a single normalized event received from a daemon's backend."""
+        if daemon.stop_called:
+            # a deliberately stopped daemon (unload, rename restart, player removal)
+            # must not schedule new work or tear down the whole provider from a
+            # late event of its dying backend
+            return
         if event.type is BackendEventType.CONNECTION_LOST:
             # The backend's Spotify session is gone (e.g. daemon exit). Reset
             # session state so a dead/restarting backend isn't treated as active
@@ -966,10 +971,7 @@ class SpotifyConnectProvider(PluginProvider):
             daemon.last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
-            # a deliberately stopped daemon (unload, rename restart, player
-            # removal) must not tear down the whole provider
-            if not daemon.stop_called:
-                self.unload_with_error(event.error or "Spotify Connect backend failed")
+            self.unload_with_error(event.error or "Spotify Connect backend failed")
             return
         if event.type is BackendEventType.ERROR:
             # non-fatal backend error: surface it in the log only
