@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import FlowStepType
+from music_assistant_models.enums import FlowStepType, PlayerType
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
@@ -29,11 +29,14 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
 
 
-def _player(player_id: str, display_name: str) -> mock.Mock:
+def _player(
+    player_id: str, display_name: str, player_type: PlayerType = PlayerType.PLAYER
+) -> mock.Mock:
     """Return a minimal player for setup-flow option generation."""
     player = mock.Mock()
     player.player_id = player_id
     player.display_name = display_name
+    player.type = player_type
     return player
 
 
@@ -45,9 +48,12 @@ def _make_session(
 ) -> tuple[SetupSession, dict[str, Any]]:
     """Return a real setup session and the values collected by its finish handler."""
     mass = mock.Mock()
+    # The source player must never appear in the player selector: capture-only
+    # clients cannot be a playback target.
     mass.players.all_players.return_value = [
         _player("living-room", "Living Room"),
         _player("kitchen", "Kitchen"),
+        _player("turntable", "Turntable", PlayerType.SOURCE),
     ]
     collected: dict[str, Any] = {}
 

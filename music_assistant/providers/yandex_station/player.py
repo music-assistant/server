@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3, CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from . import protobuf
@@ -221,12 +222,14 @@ class YandexStationPlayer(Player):
         # when the chosen target lacks them.  We also include
         # currently-unavailable players so the user can preselect a
         # target that's offline at setup time, and sort by display name
-        # so the dropdown is easy to scan.
+        # so the dropdown is easy to scan.  Non-audio player types
+        # (capture-only sources, lights, displays) can never render a
+        # track, so those are excluded by type.
         target_options = sorted(
             (
                 ConfigValueOption(p.player_id, p.display_name)
                 for p in self.mass.players.all_players(return_unavailable=True)
-                if p.player_id != self.player_id
+                if p.player_id != self.player_id and p.type in PLAYBACK_TARGET_TYPES
             ),
             key=lambda o: (o.title or "").lower(),
         )

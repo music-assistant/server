@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, PlayerType
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -24,6 +24,13 @@ PUBLISH_NAME_TEMPLATES = (
     PUBLISH_NAME_PLAYER,
     PUBLISH_NAME_MASS_PLAYER,
 )
+# Player types that can render audio, so capture-only, display and lighting
+# clients are never offered as a playback target.
+PLAYBACK_TARGET_TYPES = {
+    PlayerType.PLAYER,
+    PlayerType.STEREO_PAIR,
+    PlayerType.GROUP,
+}
 
 
 def create_player_selector(
@@ -110,11 +117,12 @@ def resolve_publish_name(template: ConfigValueType, player_name: str) -> str:
 
 
 def _player_options(mass: MusicAssistant) -> list[ConfigValueOption]:
-    """Return a picker option for every registered player, sorted by display name."""
+    """Return a picker option for every registered playback-capable player."""
     return [
         ConfigValueOption(player.player_id, title=player.display_name)
         for player in sorted(
             mass.players.all_players(False, False),
             key=lambda player: player.display_name.lower(),
         )
+        if player.type in PLAYBACK_TARGET_TYPES
     ]
