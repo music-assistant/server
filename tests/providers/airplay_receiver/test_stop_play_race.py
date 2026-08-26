@@ -179,6 +179,10 @@ async def test_teardown_cancels_inflight_start_and_ignores_late_events(
     assert start_task is not None
     assert not start_task.done()
 
+    # a duplicate 'playing' while the start is in flight must not spawn a second task
+    _handle(provider, "playing")
+    assert provider.daemon.pending_start_task is start_task
+
     await AirPlayReceiverProvider._stop_receiver(provider, provider.daemon)
 
     # the in-flight start was cancelled and awaited (else the teardown would hang)
