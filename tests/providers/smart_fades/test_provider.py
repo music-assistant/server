@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable, Generator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from music_assistant.providers.smart_fades.dbn_postprocessor import DBNDownBeatT
 from music_assistant.providers.smart_fades.provider import (
     ANALYSIS_SAMPLE_RATE,
     BEAT_WINDOW_PACE_RATIO,
+    LoadedModels,
     SmartFadesProvider,
 )
 from music_assistant.providers.smart_fades.vocal_activity import (
@@ -125,22 +127,28 @@ def config_mock() -> Mock:
     return config
 
 
+def _stub_models() -> LoadedModels:
+    """Return a model set with stand-ins for every component; the centroid is the real one."""
+    return LoadedModels(
+        beat_this=Mock(),
+        beat_this_post_processor=Mock(),
+        skey_vqt=Mock(),
+        skey_chromanet=Mock(),
+        skey_crop=Mock(),
+        spectral_centroid=SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512),
+        firered=Mock(),
+        firered_cmvn_means=np.zeros(FIRERED_MEL_BINS, dtype=np.float64),
+        firered_cmvn_inverse_std=np.ones(FIRERED_MEL_BINS, dtype=np.float64),
+    )
+
+
 @pytest.fixture
 async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> SmartFadesProvider:
     """Return a SmartFadesProvider without loading external model assets."""
     prov = SmartFadesProvider(mass_mock, manifest_mock, config_mock, set())
     with patch.object(prov, "_load_models", new=AsyncMock()):
         await prov.handle_async_init()
-    prov._spectral_centroid = SpectralCentroid(
-        sample_rate=ANALYSIS_SAMPLE_RATE,
-        hop_length=512,
-    )
-    prov._beat_this_model = Mock()
-    prov._beat_this_post_processor = Mock()
-    prov._skey_chromanet = Mock()
-    prov._firered_model = Mock()
-    prov._firered_cmvn_means = np.zeros(FIRERED_MEL_BINS, dtype=np.float64)
-    prov._firered_cmvn_inverse_std = np.ones(FIRERED_MEL_BINS, dtype=np.float64)
+    prov._models = _stub_models()
     return prov
 
 
@@ -455,13 +463,11 @@ def test_initialize_models_uses_expected_components(provider: SmartFadesProvider
     original_beat_module = beat_model.model
     quantized_beat_module = Mock()
     beat_post_processor = Mock()
-    skey_components = (Mock(), Mock(), Mock())
+    skey_vqt, skey_chromanet, skey_crop = Mock(), Mock(), Mock()
     spectral_centroid = Mock()
-    firered_components = (
-        Mock(),
-        np.zeros(FIRERED_MEL_BINS, dtype=np.float64),
-        np.ones(FIRERED_MEL_BINS, dtype=np.float64),
-    )
+    firered_model = Mock()
+    cmvn_means = np.zeros(FIRERED_MEL_BINS, dtype=np.float64)
+    cmvn_inverse_std = np.ones(FIRERED_MEL_BINS, dtype=np.float64)
 
     with (
         patch(
@@ -478,7 +484,7 @@ def test_initialize_models_uses_expected_components(provider: SmartFadesProvider
         ),
         patch(
             "music_assistant.providers.smart_fades.provider.load_skey_components",
-            return_value=skey_components,
+            return_value=(skey_vqt, skey_chromanet, skey_crop),
         ),
         patch(
             "music_assistant.providers.smart_fades.provider.SpectralCentroid",
@@ -486,10 +492,10 @@ def test_initialize_models_uses_expected_components(provider: SmartFadesProvider
         ),
         patch(
             "music_assistant.providers.smart_fades.provider.load_firered_components",
-            return_value=firered_components,
+            return_value=(firered_model, cmvn_means, cmvn_inverse_std),
         ),
     ):
-        components = provider._initialize_models()
+        models = provider._initialize_models()
 
     spect2frames.assert_called_once_with(checkpoint_path="small0", device="cpu")
     quantize_dynamic.assert_called_once_with(
@@ -498,13 +504,24 @@ def test_initialize_models_uses_expected_components(provider: SmartFadesProvider
         dtype=torch.qint8,
     )
     assert beat_model.model is quantized_beat_module
-    assert components == (
-        beat_model,
-        beat_post_processor,
-        *skey_components,
-        spectral_centroid,
-        *firered_components,
-    )
+    assert models.beat_this is beat_model
+    assert models.beat_this_post_processor is beat_post_processor
+    assert models.skey_vqt is skey_vqt
+    assert models.skey_chromanet is skey_chromanet
+    assert models.skey_crop is skey_crop
+    assert models.spectral_centroid is spectral_centroid
+    assert models.firered is firered_model
+    assert models.firered_cmvn_means is cmvn_means
+    assert models.firered_cmvn_inverse_std is cmvn_inverse_std
+
+
+def test_free_models_releases_the_whole_set(provider: SmartFadesProvider) -> None:
+    """Every component goes at once, so an analysis can never run on a half-unloaded set."""
+    assert provider._models is not None
+
+    provider._free_models()
+
+    assert provider._models is None
 
 
 async def test_analysis_version_is_3(provider: SmartFadesProvider) -> None:
@@ -789,11 +806,11 @@ async def test_vocal_inference_failure_is_retryable(provider: SmartFadesProvider
     assert excinfo.value.retry_at > datetime.now(UTC)
 
 
-async def test_vocal_inference_with_unloaded_model_is_retryable(
+async def test_vocal_inference_with_unloaded_models_is_retryable(
     provider: SmartFadesProvider,
 ) -> None:
     """The idle-unload race (models freed mid-finalize) must not poison the track forever."""
-    provider._firered_model = None
+    provider._models = None
 
     with pytest.raises(AudioAnalysisError) as excinfo:
         await provider._infer_vocal_activity(np.zeros((10, 80), dtype=np.float32), 0.1)
@@ -801,24 +818,19 @@ async def test_vocal_inference_with_unloaded_model_is_retryable(
     assert excinfo.value.retry_at is not None
 
 
-@pytest.mark.parametrize(
-    "field",
-    ["_beat_this_model", "_beat_this_post_processor", "_skey_chromanet"],
-)
-async def test_beats_and_key_with_unloaded_model_is_retryable(
+async def test_beats_and_key_with_unloaded_models_is_retryable(
     provider: SmartFadesProvider,
-    field: str,
 ) -> None:
-    """The beat/key branch decides permanent vs retryable, so an unloaded model must retry."""
-    setattr(provider, field, None)
+    """The beat/key branch decides permanent vs retryable, so unloaded models must retry."""
+    provider._models = None
 
-    with pytest.raises(AudioAnalysisError, match="is not loaded") as excinfo:
+    with pytest.raises(AudioAnalysisError, match="not loaded") as excinfo:
         await provider._infer_beats_and_key(np.zeros((10, 128), dtype=np.float32), None)
 
     assert excinfo.value.retry_at is not None
 
 
-async def test_spectral_centroid_with_unloaded_transform_is_retryable(
+async def test_spectral_centroid_with_unloaded_models_is_retryable(
     deterministic_provider: SmartFadesProvider,
 ) -> None:
     """The block path also runs during finalize, so it must not record a permanent failure."""
@@ -844,9 +856,9 @@ async def test_spectral_centroid_with_unloaded_transform_is_retryable(
         session_id, FIXTURE_PCM.read_bytes()[: 44100 * 2 * 4]
     )
     # The models are freed while the (detached) finalize is still running.
-    deterministic_provider._spectral_centroid = None
+    deterministic_provider._models = None
 
-    with pytest.raises(AudioAnalysisError, match="is not loaded") as excinfo:
+    with pytest.raises(AudioAnalysisError, match="not loaded") as excinfo:
         await deterministic_provider._finalize(session_id)
 
     assert excinfo.value.retry_at is not None
@@ -871,14 +883,17 @@ async def test_windowed_inference_matches_whole_track_prediction(
     rng = np.random.default_rng(3)
     feats = rng.normal(size=(4000, 128)).astype(np.float32)
     stub = _StubBeatModel()
-    provider._beat_this_model = Mock(model=stub)
     captured: list[np.ndarray] = []
 
     def post_processor(activations: np.ndarray) -> tuple[np.ndarray, int]:
         captured.append(activations)
         return np.array([[0.0, 1.0], [0.5, 2.0]]), 4
 
-    provider._beat_this_post_processor = cast("DBNDownBeatTracker", post_processor)
+    provider._models = replace(
+        _stub_models(),
+        beat_this=Mock(model=stub),
+        beat_this_post_processor=cast("DBNDownBeatTracker", post_processor),
+    )
 
     async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
         return func(*args), 0.0
