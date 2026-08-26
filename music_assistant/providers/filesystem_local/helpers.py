@@ -10,7 +10,10 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+from xml.parsers.expat import ExpatError
 
+import xmltodict
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
@@ -261,6 +264,32 @@ def is_image_file(item: FileSystemItem) -> bool:
     return item.ext is not None and item.ext.lower() in IMAGE_EXTENSIONS
 
 
+# folder names that denote a disc/volume subfolder underneath an album folder; its own NFO is
+# never trusted as the album's identity, only the parent's is
+_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
+
+
+def is_disc_dir(name: str) -> bool:
+    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
+    return bool(_DISC_DIR_RE.match(name.strip()))
+
+
+def parse_nfo_root(data: bytes, root_tag: str) -> dict[str, Any] | None:
+    """
+    Parse an NFO file's bytes and return its expected root element, or None when malformed.
+
+    :param data: The raw NFO file content.
+    :param root_tag: The expected root element name (``album`` or ``artist``).
+    """
+    try:
+        text = data.decode("utf-8")
+        parsed = xmltodict.parse(text)
+    except UnicodeDecodeError, ExpatError, ValueError:
+        return None
+    root = parsed.get(root_tag)
+    return root if isinstance(root, dict) else None
+
+
 def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
     Return an order-independent digest of the given files' paths, mtimes and sizes.
@@ -276,22 +305,42 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
 def get_artist_dir(
     artist_name: str,
     album_dir: str | None,
+    sort_name: str | None = None,
+    *,
+    exact_only: bool = False,
 ) -> str | None:
-    """Look for (Album)Artist directory in path of a track (or album)."""
+    """
+    Look for (Album)Artist directory in path of a track (or album).
+
+    :param artist_name: The artist name to match against a folder name.
+    :param album_dir: The album directory whose ancestors are searched.
+    :param sort_name: The artist sort name, tried as an alias when the plain name does not
+        match a folder (e.g. a folder named ``Beatles, The`` for the artist ``The Beatles``).
+        Ignored when `exact_only` is set: a sort-name alias is itself a relaxed heuristic.
+    :param exact_only: Only accept an exact (normalized) match of the plain name, skipping
+        the relaxed (fuzzy) fallback built into the default comparison.
+    """
     if not album_dir:
         return None
-    parentdir = os.path.dirname(album_dir)
-    # account for disc or album sublevel by ignoring (max) 2 levels if needed
-    matched_dir: str | None = None
-    for _ in range(3):
-        dirname = Path(parentdir).name
-        if compare_strings(artist_name, dirname, False):
-            # literal match
-            # we keep hunting further down to account for the
-            # edge case where the album name has the same name as the artist
-            matched_dir = parentdir
-        parentdir = os.path.dirname(parentdir)
-    return matched_dir
+    # the plain name's own bounded search completes in full before the sort-name alias is
+    # ever tried, so a farther (grandparent-level) alias match can never outrank a nearer,
+    # exact plain-name match
+    candidate_names = (artist_name,) if exact_only else (n for n in (artist_name, sort_name) if n)
+    for candidate_name in candidate_names:
+        parentdir = os.path.dirname(album_dir)
+        matched_dir: str | None = None
+        # account for disc or album sublevel by ignoring (max) 2 levels if needed
+        for _ in range(3):
+            dirname = Path(parentdir).name
+            if compare_strings(candidate_name, dirname, exact_only):
+                # literal match
+                # we keep hunting further down to account for the
+                # edge case where the album name has the same name as the artist
+                matched_dir = parentdir
+            parentdir = os.path.dirname(parentdir)
+        if matched_dir:
+            return matched_dir
+    return None
 
 
 def tokenize(input_str: str, delimiters: str) -> list[str]:
@@ -337,46 +386,102 @@ def _dir_contains_album_name(id3_album_name: str, directory_name: str) -> bool:
     return False
 
 
-def get_album_dir(track_dir: str, album_name: str) -> str | None:
-    """Return album/parent directory of a track."""
-    parentdir = track_dir
-    # account for disc sublevel by ignoring 1 level if needed
-    for _ in range(2):
-        dirname = Path(parentdir).name
-        if compare_strings(album_name, dirname, False):
-            # literal match
-            return parentdir
-        if compare_strings(album_name, dirname.split(" - ")[-1], False):
-            # account for ArtistName - AlbumName format in the directory name
-            return parentdir
-        if compare_strings(album_name, dirname.split(" - ")[-1].split("(")[0], False):
-            # account for ArtistName - AlbumName (Version) format in the directory name
-            return parentdir
+# a recognized leading release-date/year marker: YYYY-MM-DD, YYYY.MM.DD, a bare/parenthesized/
+# bracketed YYYY - each only when followed by a real separator, so an arbitrary leading number
+# (e.g. a catalogue prefix like "CAT-1234", which does not even start with 4 digits) is untouched
+_DATE_PREFIX_RE = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2}|\d{4}\.\d{2}\.\d{2}|\(\d{4}\)|\[\d{4}\]|\d{4})(?=[\s._-])[\s._-]+"
+)
 
-        if any(sep in dirname for sep in ["-", " ", "_"]) and album_name:
-            album_chunks = album_name.split(" - ", 1)
-            album_name_includes_artist = len(album_chunks) > 1
-            just_album_name = album_chunks[1] if album_name_includes_artist else None
 
-            # attempt matching using tokenized version of path and album name
-            # with _dir_contains_album_name()
-            if just_album_name and _dir_contains_album_name(just_album_name, dirname):
+def _strip_date_prefix(name: str) -> str:
+    """Strip one recognized leading release-date/year marker from a folder name, if present."""
+    return _DATE_PREFIX_RE.sub("", name, count=1)
+
+
+def _dir_matches_album(dirname: str, album_name: str) -> bool:
+    """
+    Return True when a directory name matches an album name, allowing common layout variants.
+
+    :param dirname: The directory name to test.
+    :param album_name: The album name (or an alias such as the album sort name) to match.
+    """
+    if compare_strings(album_name, dirname, False):
+        # literal match
+        return True
+    if (stripped := _strip_date_prefix(dirname)) != dirname and compare_strings(
+        album_name, stripped, True
+    ):
+        # a leading release date/year (e.g. "2025-03-14 Album Name") is common release
+        # folder naming but not part of the album's own title; comparing what remains with
+        # strict normalized equality (not token/fuzzy matching) keeps word order significant
+        return True
+    if compare_strings(album_name, dirname.rsplit(" - ", maxsplit=1)[-1], False):
+        # account for ArtistName - AlbumName format in the directory name
+        return True
+    if compare_strings(
+        album_name, dirname.rsplit(" - ", maxsplit=1)[-1].split("(", maxsplit=1)[0], False
+    ):
+        # account for ArtistName - AlbumName (Version) format in the directory name
+        return True
+    if any(sep in dirname for sep in ["-", " ", "_"]):
+        album_chunks = album_name.split(" - ", 1)
+        just_album_name = album_chunks[1] if len(album_chunks) > 1 else None
+        # attempt matching using tokenized version of path and album name
+        # with _dir_contains_album_name()
+        if just_album_name and _dir_contains_album_name(just_album_name, dirname):
+            return True
+        if _dir_contains_album_name(album_name, dirname):
+            return True
+    if compare_strings(album_name.split("(", maxsplit=1)[0], dirname, False):
+        # account for AlbumName (Version) format in the album name
+        return True
+    if compare_strings(
+        album_name.split("(", maxsplit=1)[0], dirname.rsplit(" - ", maxsplit=1)[-1], False
+    ):
+        # account for ArtistName - AlbumName (Version) format
+        return True
+    # dirname contains album name (could potentially lead to false positives, hence the length check)
+    return len(album_name) > 8 and album_name in dirname
+
+
+def get_album_dir(
+    track_dir: str,
+    album_name: str,
+    album_sort: str | None = None,
+    *,
+    exact_only: bool = False,
+) -> str | None:
+    """
+    Return the album (or parent) directory of a track, or None when no folder matches.
+
+    :param track_dir: The directory the track file lives in.
+    :param album_name: The album name to match against a folder name.
+    :param album_sort: The album sort name, tried as an alias when the plain name does not
+        match a folder (e.g. a folder named ``Wall, The`` for the album ``The Wall``).
+        Ignored when `exact_only` is set: a sort-name alias is itself a relaxed heuristic.
+    :param exact_only: Only accept an exact (normalized) match of the plain name, skipping
+        every relaxed layout/alias/date-prefix heuristic below.
+    """
+    # the plain name's own bounded search (nearer level first) completes in full before the
+    # sort-name alias is ever tried, so an alias match at track_dir can never outrank an exact
+    # plain-name match at its parent
+    candidate_names = (
+        (album_name,) if exact_only else (name for name in (album_name, album_sort) if name)
+    )
+    for candidate_name in candidate_names:
+        parentdir = track_dir
+        # account for disc sublevel by ignoring 1 level if needed
+        for _ in range(2):
+            dirname = Path(parentdir).name
+            matches = (
+                compare_strings(candidate_name, dirname, True)
+                if exact_only
+                else _dir_matches_album(dirname, candidate_name)
+            )
+            if matches:
                 return parentdir
-
-            if _dir_contains_album_name(album_name, dirname):
-                return parentdir
-
-        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname, False):
-            # account for AlbumName (Version) format in the album name
-            return parentdir
-        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname.split(" - ")[-1], False):
-            # account for ArtistName - AlbumName (Version) format
-            return parentdir
-        if len(album_name) > 8 and album_name in dirname:
-            # dirname contains album name
-            # (could potentially lead to false positives, hence the length check)
-            return parentdir
-        parentdir = os.path.dirname(parentdir)
+            parentdir = os.path.dirname(parentdir)
     return None
 
 
