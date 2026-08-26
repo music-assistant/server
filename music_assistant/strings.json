@@ -290,6 +290,10 @@
         "all": "All interfaces"
       }
     },
+    "plugin_enable": {
+      "label": "Enable {0} on this player",
+      "description": "Make this player available in {0}. This is the same setting as the 'Connected players' list in the {0} configuration."
+    },
     "protocol_enable": {
       "label": "Enable this protocol on this player",
       "description": "Enable or disable this output protocol for the player."
@@ -455,6 +459,7 @@
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "protocol_output_settings_via": "Enable {0} support (over {1})",
+    "plugins": "Plugins",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
     "audio": "Audio",

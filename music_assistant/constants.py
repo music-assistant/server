@@ -186,6 +186,7 @@ CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+CONF_PLUGIN_KEY_SPLITTER: Final[str] = "||plugin||"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
 CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 
