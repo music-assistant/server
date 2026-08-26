@@ -412,9 +412,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
 
         :param spotify_uri: Canonical Spotify URI (``spotify:track:<id>`` or
             ``spotify:episode:<id>``).
-        :param seek_position: Position in seconds to start from. Any seek
-            restarts the session at that position (a continuous run cannot be
-            rewound without disrupting it).
+        :param seek_position: Position in seconds to start from. Seeking the
+            item the session is already playing moves the engine where it
+            stands; anything else starts the session at that position.
         :param streamdetails: The StreamDetails this audio is requested for.
             They tell the session which queue it serves and which item of it is
             being streamed, so it can feed the engine the following track.
@@ -533,8 +533,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         Return the session and audio channel to stream this item from.
 
         Continues the running session when it already plays (or has been fed)
-        this item for this queue; anything else — a seek, another queue, a
-        skipped-to item, a session that is gone — starts a fresh session.
+        this item for this queue, seeking it in place when a position is asked
+        for; anything else — another queue, a skipped-to item, a session that is
+        gone — starts a fresh session.
         """
         async with self._session_lock:
             self._raise_if_app_controlled()
@@ -553,6 +554,27 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     await session.skip_to(pending)
                     pending.claim()
                     return session, pending
+                if session.is_playing(spotify_uri):
+                    # The engine is on this item already, so it can be seeked
+                    # where it stands instead of paying a whole respawn - which
+                    # would also have to claim the Connect device back. Not
+                    # gated on a non-zero position: the branches above have
+                    # returned by now, so reaching here means re-opening the
+                    # item being played, and back to its very start is as much
+                    # a seek as any other.
+                    try:
+                        item = await session.seek_current(spotify_uri, seek_position * 1000)
+                    except ProviderStreamLimitError:
+                        # the Spotify app took the session over: a replacement
+                        # would claim the Connect device straight back off it
+                        raise
+                    except AudioError as err:
+                        # a fresh session starts at the target instead
+                        self.logger.debug(
+                            "Seeking the running soloist session failed, restarting it: %s", err
+                        )
+                    else:
+                        return session, item
             if session is not None:
                 if session.in_use and (
                     session.queue_id != queue_id or not session.is_playing(spotify_uri)
@@ -762,11 +784,17 @@ class _SoloistSession:
         self._demand_started = False
         self._engine_playing = False
         self._sink_running = False
+        # set when a cancelled transition left the sink's real state unknown, so
+        # the next application re-issues it instead of trusting _sink_running
+        self._sink_state_unknown = False
         self._backpressured = False
         self._sink_lock = asyncio.Lock()
         self._idle_since: float | None = None
         # while set, captured audio is dropped until the engine reports this item
         self._discard_until: str | None = None
+        # while set, a seek of the current item is in flight and nothing the
+        # engine renders belongs to either side of it
+        self._seeking = False
         # bytes of the item jumped away from still to drop, measured at the jump
         self._stale_budget = 0
 
@@ -815,6 +843,108 @@ class _SoloistSession:
             raise AudioError(f"Spotify Soloist did not reach {item.uri}") from None
         finally:
             self._discard_until = None
+
+    async def seek_current(self, spotify_uri: str, target_ms: int) -> _ItemAudio:
+        """
+        Seek the item the engine is playing, on a fresh audio channel.
+
+        Keeps the session instead of paying a respawn (which also has to reclaim
+        the Connect device). The returned channel is already claimed: it starts
+        at the seek point and carries nothing from before it.
+
+        :param spotify_uri: The item to seek, which the engine must be playing.
+        :param target_ms: The position to seek to.
+        :raises AudioError: When the engine does not confirm the seek.
+        """
+        client = self._client
+        outgoing = self._current
+        if client is None:
+            raise AudioError("Spotify Soloist is not connected")
+        if outgoing is None or outgoing.uri != spotify_uri or outgoing.closed:
+            # A closed channel is the run having ended on this item, which the
+            # uri still matching does not tell apart: the engine has stopped and
+            # would not start again for a seek.
+            raise AudioError(f"Spotify Soloist is not playing {spotify_uri}")
+        # armed before the command: what the sink has already rendered, and
+        # everything still travelling here, belongs to the position seeked away
+        # from. Unlike _discard_until this cannot key on the uri - an in-place
+        # seek reports no track change to clear it on.
+        self._seeking = True
+        try:
+            await self._apply_sink_state()
+            if self._error:
+                # the app took the session over while the sink was being held; a
+                # replacement would claim the Connect device straight back off it
+                raise self._session_error()
+            if self._current is not outgoing:
+                # the engine reached this item's own end while the sink was
+                # being held: it is not on the item this seek was asked for
+                raise AudioError(f"Spotify Soloist moved on from {spotify_uri}")
+            # A fresh channel rather than a reset one: the outgoing stream may
+            # still be draining this item, and two readers on one channel would
+            # each take part of the audio. The uri key is what feed_after's
+            # ledger goes by, so replacing the object under it leaves that
+            # untouched.
+            item = self._items[spotify_uri] = _ItemAudio(spotify_uri, self)
+            # both describe the track rather than the position within it
+            item.duration_ms = outgoing.duration_ms
+            item.playing_seen = outgoing.playing_seen
+            item.started.set()
+            # claimed here rather than by the caller: _expire_idle only counts
+            # claimed channels, and the outgoing one has left _items
+            item.claim()
+            self._current = item
+            outgoing.close()
+            try:
+                # seeded from where the engine actually is: a fresh channel has
+                # observed no position of its own, and a backward seek judged
+                # against a floor of zero would take the pre-seek report as its
+                # landing
+                item.arm_seek(target_ms, floor_ms=outgoing.last_position_ms or 0)
+                try:
+                    await client.seek(target_ms, await_result=True)
+                except (TimeoutError, OSError, ClientError, SoloistError) as err:
+                    raise AudioError(
+                        f"Spotify Soloist would not seek {spotify_uri}: {type(err).__name__} {err}"
+                    ) from err
+                # Deliberately no re-send loop, unlike the cold seek: the engine
+                # only drops a seek that arrives while the track is still
+                # loading, and a repeat of one it already took restarts the item
+                # - audible here, where the audio is live rather than held
+                # behind a suspended sink.
+                try:
+                    async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
+                        await item.seek_confirmed.wait()
+                except TimeoutError:
+                    if self._error:
+                        raise self._session_error() from None
+                    raise AudioError(
+                        f"Spotify Soloist did not confirm seeking {spotify_uri} to {target_ms}ms"
+                    ) from None
+                if self._error:
+                    # the session died while the seek was in flight, which also
+                    # releases the wait above
+                    raise self._session_error()
+                # measured now the engine has moved: what the sink rendered up
+                # to here is pre-seek audio still on its way to the reader
+                self._stale_budget = self._stale_bytes()
+                # cleared before the sink is let go, and inside this block: a
+                # cancellation out here would otherwise leave the channel
+                # claimed with the session still looking usable
+                self._seeking = False
+                await self._apply_sink_state()
+            except BaseException:
+                # Past the swap the item the session was playing is closed and
+                # cannot be put back, so a half-seeked session is ended rather
+                # than reasoned about. A cancellation here is the ordinary case
+                # - a second seek supersedes this one's stream - and leaving it
+                # would keep the channel claimed for good, with the session
+                # unable to expire and refusing every later item.
+                self._fail(f"an in-place seek of {spotify_uri} did not complete")
+                raise
+        finally:
+            self._seeking = False
+        return item
 
     def is_playing(self, spotify_uri: str) -> bool:
         """
@@ -1032,9 +1162,11 @@ class _SoloistSession:
             return
         self._error = message
         for item in self._items.values():
-            # started too, so an item still waiting to be reported as current
-            # fails right away instead of sitting out its startup timeout
+            # started and seek_confirmed too, so an item still waiting to be
+            # reported as current - or for a seek to land - fails right away
+            # instead of sitting out its timeout
             item.started.set()
+            item.seek_confirmed.set()
             item.close()
         self.mass.create_task(self.backend.discard_session, self)
 
@@ -1333,6 +1465,9 @@ class _SoloistSession:
                 async with asyncio.timeout(_SEEK_RETRY_INTERVAL_S):
                     await item.seek_confirmed.wait()
             if item.seek_confirmed.is_set():
+                if self._error:
+                    # the session failed, which releases the wait as well
+                    raise self._session_error()
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms")
@@ -1414,7 +1549,7 @@ class _SoloistSession:
 
         :param chunk: Whole sample frames just read from the capture FIFO.
         """
-        if self._discard_until is not None:
+        if self._discard_until is not None or self._seeking:
             # the marker drops everything, an earlier jump's remainder included
             self._stale_budget = max(0, self._stale_budget - len(chunk))
             return
@@ -1535,10 +1670,12 @@ class _SoloistSession:
         if playing:
             # the engine picked the item back up: it was only rebuffering after all
             self._cancel_tail_drain(item)
-        elif item.finishing and item.at_own_end:
+        elif item.finishing and item.at_own_end and not self._seeking:
             # The run's last item, played out: the engine reports no track change
             # to cut it on, so end it here. This is also the branch a finished run
             # actually arrives on — its snapshot is stopped/idle, not paused.
+            # Never while a seek is in flight: the channel opened for it has no
+            # position of its own yet, which reads as an item with nothing left.
             self._drain_last_item(item)
             return
         await self._apply_sink_state(engine_playing=playing)
@@ -1590,7 +1727,14 @@ class _SoloistSession:
             if engine_playing is not None:
                 self._engine_playing = engine_playing
             backpressured = False
-            if any(item.draining for item in self._items.values()):
+            if self._seeking:
+                # keeps pre-seek audio out of the capture entirely, so what the
+                # reader still holds can be sized once the engine has moved.
+                # Counted as backpressure: a pause the engine reports while its
+                # sink is held down here is ours, not the user's in the app.
+                want = False
+                backpressured = True
+            elif any(item.draining for item in self._items.values()):
                 want = True
             elif not self._engine_playing:
                 want = False
@@ -1599,7 +1743,7 @@ class _SoloistSession:
                 want = self._retained_bytes() < limit * _BYTES_PER_SECOND
                 backpressured = not want
             self._backpressured = backpressured
-            if want == self._sink_running:
+            if want == self._sink_running and not self._sink_state_unknown:
                 return
             try:
                 if want:
@@ -1611,7 +1755,15 @@ class _SoloistSession:
                 # silence into (or withhold audio from) the delivered PCM
                 self._fail(f"capture sink control failed: {err}")
                 return
+            except asyncio.CancelledError:
+                # The transition may have landed or not, and nothing here can
+                # tell. Left unknown rather than guessed: assuming it did not
+                # land would let a sink that actually suspended read as already
+                # running, and nothing would ever resume it.
+                self._sink_state_unknown = True
+                raise
             self._sink_running = want
+            self._sink_state_unknown = False
 
     def _stale_bytes(self) -> int:
         """
@@ -1912,6 +2064,11 @@ class _ItemAudio:
         self._closed = False
 
     @property
+    def closed(self) -> bool:
+        """Return whether this channel has been cut and can deliver no more."""
+        return self._closed
+
+    @property
     def finishing(self) -> bool:
         """Return whether this is the current item and nothing is queued behind it."""
         return self.session.current is self and not self.session.has_pending
@@ -2019,15 +2176,27 @@ class _ItemAudio:
         self._available.set()
         self._drop_undelivered()
 
-    def arm_seek(self, target_ms: int) -> None:
+    def arm_seek(self, target_ms: int, floor_ms: int | None = None) -> None:
         """
         Arm a seek to the given position, so position reports can confirm it.
 
         :param target_ms: The position the engine is being seeked to.
+        :param floor_ms: Where the engine is now, for a channel that has not
+            observed a position itself (one opened for an in-place seek).
         """
         self.seek_target_ms = target_ms
         self.seek_confirmed.clear()
         self.started_at_ms = None
+        if floor_ms is not None:
+            # A live position, not one a fresh session restored, so there is
+            # nothing to disprove. Only a seek BACK has to see the engine come
+            # below the mark first: a report from before the command would
+            # otherwise pass for the landing. A seek forward cannot be confused
+            # that way, and demanding the engine drop below a mark it is never
+            # going back past would leave a short one unable to confirm at all.
+            self._seek_floor_ms = floor_ms
+            self._seek_anchored = target_ms >= floor_ms
+            return
         reported_ms = self.last_position_ms or 0
         # A fresh session restores the account's last playback state, so seeking
         # the item it was already playing - a resume, or a seek of the current
@@ -2043,27 +2212,17 @@ class _ItemAudio:
         if self._closed:
             # positions reported after the cut describe the next item
             return
+        if self.seek_target_ms is not None and not self.seek_confirmed.is_set():
+            # Until the seek lands, a report says where the engine still is, not
+            # how far this channel has got. Recording it would let the position
+            # being seeked away from stand in for progress this item never made,
+            # which is what at_own_end and the completeness check read.
+            self._anchor_seek(position_ms)
+            return
         # keep the furthest position: the engine's stop/idle snapshot at the end
         # of an item reports position 0 and must not erase the progress the
         # completeness validation relies on (verified live)
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
-        if self.seek_target_ms is None or self.seek_confirmed.is_set():
-            return
-        if not self._seek_anchored:
-            # anchor on the engine dropping back below where it was when the
-            # seek went out: it has restarted the item, so what it reports from
-            # here on describes where the seek is taking it. A backward seek
-            # lands below that mark too, so this only ever gates the first
-            # report - past it, position is judged against the target alone.
-            self._seek_anchored = position_ms < self._seek_floor_ms
-            return
-        # the floor of 1 keeps a report of position 0 from landing inside the
-        # tolerance window of a small seek target
-        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
-            # what the engine reports as the seek lands is where this item's own
-            # audio begins
-            self.started_at_ms = position_ms
-            self.seek_confirmed.set()
 
     async def read(self) -> AsyncGenerator[bytes]:
         """
@@ -2108,6 +2267,26 @@ class _ItemAudio:
             starving_for += _READ_SLICE_S
             if starving_for >= _STALL_TIMEOUT_S:
                 raise AudioError(f"Spotify Soloist delivered no audio for {self.uri}")
+
+    def _anchor_seek(self, position_ms: int) -> None:
+        """Judge a position report against the seek this channel is waiting on."""
+        assert self.seek_target_ms is not None
+        if not self._seek_anchored:
+            # anchor on the engine dropping back below where it was when the
+            # seek went out: it has restarted the item, so what it reports from
+            # here on describes where the seek is taking it. A backward seek
+            # lands below that mark too, so this only ever gates the first
+            # report - past it, position is judged against the target alone.
+            self._seek_anchored = position_ms < self._seek_floor_ms
+            return
+        # the floor of 1 keeps a report of position 0 from landing inside the
+        # tolerance window of a small seek target
+        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
+            # what the engine reports as the seek lands is both where this
+            # item's own audio begins and the first progress it has made
+            self.started_at_ms = position_ms
+            self.last_position_ms = position_ms
+            self.seek_confirmed.set()
 
     def _drop_undelivered(self) -> None:
         """
