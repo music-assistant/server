@@ -69,13 +69,13 @@ def test_multiple_buffered_chunks_are_concatenated() -> None:
     p, dispatched = _make_provider()
     session = _make_session([0])
     session.clap_target_buffers[0] = [
-        np.arange(0, 100, dtype=np.float32),
-        np.arange(100, 250, dtype=np.float32),
+        np.arange(0, SR, dtype=np.float32),
+        np.arange(SR, 2 * SR, dtype=np.float32),
     ]
 
     p._flush_incomplete_clap_windows(session, SR)
 
-    np.testing.assert_array_equal(dispatched[0], np.arange(0, 250, dtype=np.float32))
+    np.testing.assert_array_equal(dispatched[0], np.arange(0, 2 * SR, dtype=np.float32))
 
 
 def test_already_complete_window_is_not_redispatched() -> None:

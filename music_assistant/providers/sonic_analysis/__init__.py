@@ -59,6 +59,7 @@ EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
 # CLAP's HTSAT audio encoder takes a fixed 7-second input at 44.1 kHz.
 CLAP_WINDOW_SECONDS: int = 7
 CLAP_SKIP_SECONDS: int = 45
+CLAP_MIN_WINDOW_SECONDS: float = 1.0
 
 CLAP_SAMPLING_FAST: str = "fast"
 CLAP_SAMPLING_BALANCED: str = "balanced"
@@ -140,7 +141,7 @@ def compute_clap_target_starts(
     :returns: Sample-position offsets at source_sr; length is the effective N
         (capped at what the track length supports without near-duplicates).
     """
-    if track_duration_s < 1.0:
+    if track_duration_s < CLAP_MIN_WINDOW_SECONDS:
         return []
     if track_duration_s < CLAP_WINDOW_SECONDS:
         return [0]
@@ -681,9 +682,13 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param session: The analysis session; the buffers of flushed windows are consumed.
         :param source_sr: Sample rate the buffered PCM was captured at.
         """
-        # The vendored wrapper repeat-pads short input, so a partial window still embeds.
+        # The vendored wrapper repeat-pads short input, so anything below the floor would
+        # blow a sliver of audio up into a full window and embed noise.
+        min_samples = int(CLAP_MIN_WINDOW_SECONDS * source_sr)
         for i, buffered in enumerate(session.clap_target_buffers):
-            if session.clap_target_complete[i] or not buffered:
+            if session.clap_target_complete[i]:
+                continue
+            if sum(len(arr) for arr in buffered) < min_samples:
                 continue
             window_audio = np.concatenate(buffered)
             session.clap_target_buffers[i] = []
