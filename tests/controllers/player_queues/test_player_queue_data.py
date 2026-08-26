@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from music_assistant_models.enums import RepeatMode
-from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
+from music_assistant_models.enums import AlbumType, RepeatMode
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -21,6 +27,19 @@ def _track(item_id: str) -> Track:
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
+    )
+
+
+def _album(item_id: str) -> Album:
+    """Build a minimal library Album."""
+    return Album(
+        item_id=item_id,
+        provider="library",
+        name=f"Album {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+        album_type=AlbumType.ALBUM,
     )
 
 
@@ -57,12 +76,14 @@ def _queue(**kwargs: object) -> PlayerQueue:
 def _data_with_dynamic_source() -> PlayerQueueData:
     """Build a PlayerQueueData for a queue playing a dynamic radio playlist plus one queued track."""
     playlist = _dynamic_playlist()
+    album = _album("a1")
     queue = _queue(is_dynamic=True, sources=[ItemMapping.from_item(playlist)])
     return PlayerQueueData(
         queue=queue,
         items=[QueueItem.from_media_item("q1", _track("t1"))],
         source_items=[playlist],
-        enqueued_media_items=[playlist],
+        enqueued_media_items=[playlist, album],
+        credited_albums={album},
         userid="user-1",
         # runtime-only fields set to non-defaults to prove they do not survive the round-trip
         transitioning=True,
@@ -89,6 +110,10 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+    # a credited album survives, so a restart does not re-credit the same enqueue
+    assert {item.uri for item in restored.credited_albums} == {
+        item.uri for item in data.credited_albums
+    }
     # is_dynamic is recomputed from the restored source items (a dynamic playlist is present)
     assert restored.queue.is_dynamic is True
     # runtime-only fields are reset to their defaults, never persisted

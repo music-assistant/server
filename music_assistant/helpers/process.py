@@ -286,7 +286,13 @@ class AsyncProcess:
         return (stdout, stderr)
 
     async def close(self) -> None:
-        """Close/terminate the process and wait for exit."""
+        """
+        Close/terminate the process and wait for exit.
+
+        An enclosing timeout is not a reliable bound on this call: the cleanup may
+        swallow the cancellation and run to completion, and a cancellation that does
+        land is only re-raised after the terminate/SIGKILL escalation has run.
+        """
         if self._close_called and self.returncode is not None:
             # Already closed and reaped, so there is nothing left to signal or
             # drain. The stream locks below are still held by that first call
@@ -310,12 +316,15 @@ class AsyncProcess:
             with suppress(ProcessLookupError, OSError):
                 self.proc.send_signal(SIGINT)
 
+        # Cancellation landing on the drains or the reap below must not walk away from a
+        # child that is still running, so it is held here and re-raised at the very end.
+        cancelled: asyncio.CancelledError | None = None
+
         # ensure we have no more readers active and stdout is drained
         with suppress(TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
-            with suppress(Exception):
-                await asyncio.wait_for(self.proc.stdout.read(-1), PIPE_DRAIN_TIMEOUT)
+            cancelled = await self._drain_pipe(self.proc.stdout, cancelled)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
@@ -324,8 +333,7 @@ class AsyncProcess:
             with suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
-            with suppress(Exception):
-                await asyncio.wait_for(self.proc.stderr.read(-1), PIPE_DRAIN_TIMEOUT)
+            cancelled = await self._drain_pipe(self.proc.stderr, cancelled)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -336,10 +344,12 @@ class AsyncProcess:
             try:
                 # use communicate to flush all pipe buffers
                 await asyncio.wait_for(self.proc.communicate(), 2)
-            except TimeoutError:
+            except (TimeoutError, asyncio.CancelledError) as err:
+                if isinstance(err, asyncio.CancelledError):
+                    cancelled = cancelled or err
                 terminate_attempts += 1
                 self.logger.debug(
-                    "Process %s with PID %s did not stop in time (attempt %d). Sending SIGKILL...",
+                    "Process %s with PID %s is still running (attempt %d). Sending SIGKILL...",
                     self.name,
                     pid,
                     terminate_attempts,
@@ -363,6 +373,8 @@ class AsyncProcess:
             self.proc.pid,
             self.returncode,
         )
+        if cancelled is not None:
+            raise cancelled
 
     async def kill(self) -> None:
         """
@@ -480,6 +492,24 @@ class AsyncProcess:
                 break
             if line := raw.decode("utf-8", errors="ignore").strip():
                 yield line
+
+    async def _drain_pipe(
+        self, stream: asyncio.StreamReader, cancelled: asyncio.CancelledError | None
+    ) -> asyncio.CancelledError | None:
+        """
+        Read whatever is left in one of the process' pipes, bounded by the drain timeout.
+
+        :param stream: The stream to drain.
+        :param cancelled: A cancellation the caller already recorded, if any.
+        :return: The first cancellation seen, so the caller can re-raise it once the
+            process is reaped, or None when none has landed yet.
+        """
+        try:
+            with suppress(Exception):
+                await asyncio.wait_for(stream.read(-1), PIPE_DRAIN_TIMEOUT)
+        except asyncio.CancelledError as err:
+            return cancelled or err
+        return cancelled
 
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """

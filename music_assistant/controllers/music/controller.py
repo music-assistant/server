@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
+from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -1569,6 +1570,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 params["userid"] = user_id
                 await self._upsert_playlog(params)
+            self._signal_playlog_updated(
+                reference,
+                fully_played=fully_played,
+                seconds_played=seconds_played or 0,
+                userid=user.user_id if user else None,
+            )
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1695,6 +1702,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
                 counted_play_removed = counted_play_removed or bool(row["fully_played"])
             await self.database.delete(DB_TABLE_PLAYLOG, params)
+        self._signal_playlog_updated(
+            reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
+        )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -3032,6 +3042,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             entry,
         )
 
+    def _signal_playlog_updated(
+        self,
+        item: MediaItemType | ItemMapping,
+        *,
+        fully_played: bool,
+        seconds_played: int,
+        userid: str | None,
+    ) -> None:
+        """
+        Signal that the playlog entry of the given item changed.
+
+        :param item: The item as it is keyed in the playlog.
+        :param fully_played: The new fully played state of the item.
+        :param seconds_played: The new resume position of the item.
+        :param userid: The user the change applies to, or None for all users.
+        """
+        assert item.uri is not None
+        self.mass.signal_event(
+            EventType.PLAYLOG_UPDATED,
+            object_id=item.uri,
+            data=PlaylogUpdate(
+                uri=item.uri,
+                media_type=item.media_type,
+                fully_played=fully_played,
+                seconds_played=seconds_played,
+                userid=userid,
+            ),
+        )
+
     async def _credit_artist_plays(
         self,
         artists: Iterable[Artist | ItemMapping],
@@ -3071,6 +3110,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self._upsert_playlog(playlog_entry)
+            self._signal_playlog_updated(
+                db_artist,
+                fully_played=True,
+                seconds_played=0,
+                userid=user_ids[0] if len(user_ids) == 1 else None,
+            )
 
     async def _credit_podcast_play(
         self,
@@ -3105,6 +3150,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for user_id in user_ids:
             playlog_entry["userid"] = user_id
             await self._upsert_playlog(playlog_entry)
+        self._signal_playlog_updated(
+            credited_podcast,
+            fully_played=True,
+            seconds_played=0,
+            userid=user_ids[0] if len(user_ids) == 1 else None,
+        )
 
     async def _get_item_by_name(
         self,

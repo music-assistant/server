@@ -251,9 +251,10 @@ class AudioProcessingManager:
         :param output_plan: Effective output processing and private intermediate formats.
         :param shared_player_ids: Additional players receiving this identical output path.
             An empty iterable marks a path that can gain shared destinations later.
-        :param queue_id: Queue identifier that owns the output.
-        :param session_id: Queue session identifier that owns the output.
-        :param queue_item_id: Queue item for single-item output, or None for flow output.
+        :param queue_id: Queue that owns the output, or the player holding a live source.
+        :param session_id: Queue session or source playback session that owns the output.
+        :param queue_item_id: Queue item for single-item output, or None for flow output
+            and for a live source.
         :return: Whether the effective output changed.
         """
         source_session = (
@@ -526,9 +527,14 @@ class AudioProcessingManager:
             input_fidelity=AudioFidelity(quality=get_audio_quality(streamdetails.audio_format)),
             crossfade_mode=processing.crossfade_mode,
             volume_normalization_mode=processing.volume_normalization_mode,
-            outputs=self._group_outputs(
-                streamdetails,
-                self._get_outputs(processing, None),
+            outputs=_group_outputs(
+                _player_output_details(
+                    streamdetails,
+                    _source_processing_item(processing, entry),
+                    consumer_player_id,
+                    entry,
+                )
+                for consumer_player_id, entry in sorted(self._get_outputs(processing, None).items())
             ),
         )
         if source_session.active_source_audio == details:
@@ -558,10 +564,9 @@ class AudioProcessingManager:
                     quality=get_audio_quality(queue_item.streamdetails.audio_format)
                 ),
                 queue_processing=deepcopy(item.queue_processing),
-                outputs=self._group_outputs(
-                    queue_item.streamdetails,
-                    output_entries,
-                    item=item,
+                outputs=_group_outputs(
+                    _player_output_details(queue_item.streamdetails, item, player_id, entry)
+                    for player_id, entry in sorted(output_entries.items())
                 ),
             )
         previous = queue_item.streamdetails.audio_processing
@@ -577,36 +582,6 @@ class AudioProcessingManager:
         ):
             self.mass.player_queues.signal_update(queue_id)
         return True
-
-    def _group_outputs(
-        self,
-        streamdetails: StreamDetails,
-        player_outputs: dict[str, _AudioOutputEntry],
-        *,
-        item: _AudioProcessingItem | None = None,
-    ) -> list[AudioOutputDetails]:
-        """Group players with identical effective output processing."""
-        grouped: list[AudioOutputDetails] = []
-        for player_id, entry in sorted(player_outputs.items()):
-            output = deepcopy(entry.details)
-            output.player_ids = [player_id]
-            output.fidelity = (
-                _get_output_fidelity(streamdetails, item, entry)
-                if item is not None
-                else AudioFidelity(
-                    quality=_get_effective_quality(
-                        streamdetails.audio_format,
-                        output.output_format,
-                    )
-                )
-            )
-            for existing in grouped:
-                if _output_details_equal_ignoring_players(existing, output):
-                    existing.player_ids.append(player_id)
-                    break
-            else:
-                grouped.append(output)
-        return grouped
 
     @staticmethod
     def _get_outputs(
@@ -734,6 +709,76 @@ def get_normalization_details(
         measured_lufs=measured_lufs,
         applied_gain_db=applied_gain_db,
     )
+
+
+def _source_processing_item(
+    processing: _AudioSourceProcessingSession,
+    output: _AudioOutputEntry,
+) -> _AudioProcessingItem:
+    """
+    Describe a live source's audio path to one consumer in the shared processing shape.
+
+    :param processing: Runtime processing state of the live source selection.
+    :param output: Output entry of the consumer being described.
+    """
+    # Music Assistant mixes nothing into a live source: whatever the source
+    # reported applying reaches us already mixed, and a step it did not report
+    # counts as none. Both are recorded as what they are rather than flattened,
+    # so the shared check stays the one deciding what a source-applied step costs.
+    return _AudioProcessingItem(
+        queue_processing=AudioQueueProcessing(
+            # every consumer decodes the live source for itself, so the format
+            # entering its output is the one the source was decoded to for it
+            pcm_format=output.input_format,
+            normalization=(
+                AudioNormalizationDetails(mode=VolumeNormalizationMode.SOURCE)
+                if processing.volume_normalization_mode == VolumeNormalizationMode.SOURCE
+                else None
+            ),
+            crossfade_mode=(
+                CrossfadeMode.SOURCE
+                if processing.crossfade_mode == CrossfadeMode.SOURCE
+                else CrossfadeMode.DISABLED
+            ),
+        ),
+    )
+
+
+def _player_output_details(
+    streamdetails: StreamDetails,
+    item: _AudioProcessingItem,
+    player_id: str,
+    output: _AudioOutputEntry,
+) -> AudioOutputDetails:
+    """
+    Describe the effective output of one player.
+
+    :param streamdetails: Stream details of the audio being played.
+    :param item: Processing shape of the audio entering the player's own output.
+    :param player_id: Player receiving this output.
+    :param output: Prepared output of that player.
+    """
+    details = deepcopy(output.details)
+    details.player_ids = [player_id]
+    details.fidelity = _get_output_fidelity(streamdetails, item, output)
+    return details
+
+
+def _group_outputs(outputs: Iterable[AudioOutputDetails]) -> list[AudioOutputDetails]:
+    """
+    Merge players whose effective output processing is identical.
+
+    :param outputs: Effective output of each single player.
+    """
+    grouped: list[AudioOutputDetails] = []
+    for output in outputs:
+        for existing in grouped:
+            if _output_details_equal_ignoring_players(existing, output):
+                existing.player_ids.extend(output.player_ids)
+                break
+        else:
+            grouped.append(output)
+    return grouped
 
 
 def _get_output_fidelity(

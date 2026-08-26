@@ -19,10 +19,6 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.providers.spotify_connect.soloist import SoloistBinaryManager
-from music_assistant.providers.spotify_connect.soloist.runtime import (
-    WS_ADDR_FILE,
-    WS_PORT_FILE,
-)
 
 from .constants import (
     CHECK_AUTH_TIMEOUT,
@@ -217,21 +213,12 @@ def soloist_session_account(data_dir: Path) -> str | None:
     """
     Return the Spotify username a stored soloist session belongs to (blocking).
 
-    The engine keeps its per-account state under ``settings/Users/<username>-user``,
-    which is where the paired identity is written down. Answers None when it
-    cannot be told apart: no session yet, or state for more than one account.
+    Answers None when it cannot be told apart: no session yet, or state for more
+    than one account.
 
     :param data_dir: The soloist data directory to inspect.
     """
-    users_dir = data_dir / "settings" / "Users"
-    try:
-        accounts = [
-            entry.name.removesuffix(SOLOIST_USER_DIR_SUFFIX)
-            for entry in users_dir.iterdir()
-            if entry.is_dir() and entry.name.endswith(SOLOIST_USER_DIR_SUFFIX)
-        ]
-    except OSError:
-        return None
+    accounts = _soloist_session_accounts(data_dir)
     return accounts[0] if len(accounts) == 1 else None
 
 
@@ -239,14 +226,9 @@ def soloist_session_present(data_dir: Path) -> bool:
     """
     Return whether a soloist data dir holds a stored (paired) session (blocking).
 
-    The session storage format is opaque; any persisted file besides the WebSocket
-    endpoint files counts as a stored session.
-
     :param data_dir: The soloist data directory to inspect.
     """
-    if not data_dir.is_dir():
-        return False
-    return any(entry.name not in (WS_ADDR_FILE, WS_PORT_FILE) for entry in data_dir.iterdir())
+    return bool(_soloist_session_accounts(data_dir))
 
 
 async def await_loopback_authorization(port: int, path: str) -> dict[str, str]:
@@ -371,3 +353,20 @@ def _read_credentials_file(credentials_file: str) -> str:
         msg = "Incomplete librespot credential file"
         raise ValueError(msg)
     return contents
+
+
+def _soloist_session_accounts(data_dir: Path) -> list[str]:
+    """Return the Spotify accounts a soloist data dir holds paired state for (blocking)."""
+    # The per-account state under settings/Users/<username>-user is the only thing
+    # a pairing leaves behind: the prefs stores rewritten before every spawn, the
+    # pid and lock files and the WebSocket endpoint all outlive one, so a data
+    # directory that ever ran a daemon never looks empty again.
+    users_dir = data_dir / "settings" / "Users"
+    try:
+        return [
+            entry.name.removesuffix(SOLOIST_USER_DIR_SUFFIX)
+            for entry in users_dir.iterdir()
+            if entry.is_dir() and entry.name.endswith(SOLOIST_USER_DIR_SUFFIX)
+        ]
+    except OSError:
+        return []
