@@ -40,18 +40,6 @@ def _provider_mapping(provider: str = "test_prov") -> set[ProviderMapping]:
     }
 
 
-def _library_mapping() -> set[ProviderMapping]:
-    """Create a single library provider mapping with a unique item id."""
-    return {
-        ProviderMapping(
-            item_id=uuid4().hex,
-            provider_domain="library",
-            provider_instance="library",
-            in_library=True,
-        )
-    }
-
-
 def _collect_events(mass: MusicAssistant) -> list[MassEvent]:
     """Return a list that collects the playlog updated events as they are signalled."""
     events: list[MassEvent] = []
@@ -88,6 +76,7 @@ async def test_mark_played_signals_playlog_updated(mass: MusicAssistant) -> None
         media_type=MediaType.TRACK,
         fully_played=True,
         seconds_played=0,
+        userid=user.user_id,
     )
 
 
@@ -121,6 +110,7 @@ async def test_progress_report_signals_resume_position(mass: MusicAssistant) -> 
             media_type=MediaType.PODCAST_EPISODE,
             fully_played=False,
             seconds_played=120,
+            userid=user.user_id,
         )
     ]
 
@@ -174,8 +164,27 @@ async def test_mark_unplayed_signals_playlog_updated(mass: MusicAssistant) -> No
             media_type=MediaType.PODCAST_EPISODE,
             fully_played=False,
             seconds_played=0,
+            userid=user.user_id,
         )
     ]
+
+
+async def test_mark_played_without_user_applies_to_all_users(mass: MusicAssistant) -> None:
+    """Without a determinable user the playlog changes for everyone, so userid is None."""
+    track = Track(
+        item_id="track-003",
+        provider="test_prov",
+        name="Shared Track",
+        provider_mappings=_provider_mapping(),
+        duration=200,
+    )
+    events = _collect_events(mass)
+
+    await mass.music.mark_item_played(track, fully_played=True)
+
+    updates = await _updates(events)
+    assert len(updates) == 1
+    assert updates[0].userid is None
 
 
 async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> None:
@@ -183,7 +192,7 @@ async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> 
     user = await mass.webserver.auth.create_user("playlogartist")
     artist = await mass.music.artists.add_item_to_library(
         Artist(
-            item_id="0", provider="library", name="Credited", provider_mappings=_library_mapping()
+            item_id="0", provider="library", name="Credited", provider_mappings=_provider_mapping()
         )
     )
     added = await mass.music.tracks.add_item_to_library(
@@ -191,7 +200,7 @@ async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> 
             item_id="0",
             provider="library",
             name="Credited Track",
-            provider_mappings=_library_mapping(),
+            provider_mappings=_provider_mapping(),
             artists=UniqueList([artist]),
         )
     )
@@ -203,6 +212,7 @@ async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> 
     updates = await _updates(events)
     assert [update.uri for update in updates] == [track.uri, artist.uri]
     assert updates[1].media_type == MediaType.ARTIST
+    assert updates[1].userid == user.user_id
 
 
 async def test_credited_podcast_signals_playlog_updated(mass: MusicAssistant) -> None:
