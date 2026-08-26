@@ -644,7 +644,11 @@ class SpotifyConnectProvider(PluginProvider):
                 if daemon is not None and daemon.publish_name == publish_name:
                     continue
                 if daemon is not None:
-                    # the advertised name follows the player name: restart on rename
+                    # the advertised name follows the player name: restart on rename.
+                    # A live session is released first so the consuming player's queue
+                    # is not left held by a source the replaced daemon cannot stream
+                    # (unload and player removal already release via the controller).
+                    self._clear_active_player(daemon)
                     del self._daemons[player_id]
                     await self._stop_daemon(daemon)
                 await self._start_daemon(player, publish_name)

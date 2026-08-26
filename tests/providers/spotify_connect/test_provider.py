@@ -640,10 +640,14 @@ async def test_reconcile_restarts_daemon_on_advertised_name_drift() -> None:
     mocks.stop_daemon.assert_not_awaited()
     assert mocks.start_daemon.await_count == 1
 
+    # a live session on the old daemon is released before the daemon is replaced
+    old_daemon.active_player_id = "consumer"
     registered["p1"] = "Cellar"
     await prov._reconcile()
     mocks.stop_daemon.assert_awaited_once_with(old_daemon)
     assert prov._daemons["p1"].publish_name == "Cellar | Music Assistant"
+    mocks.mass.players.deselect_source.assert_called_once()
+    assert mocks.mass.players.deselect_source.call_args.args[0] == "consumer"
 
 
 async def test_reconcile_keeps_daemon_for_temporarily_unavailable_player() -> None:
