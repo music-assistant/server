@@ -69,6 +69,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPlaybackOptions,
     SoloistPlaybackState,
     SoloistPosition,
+    SoloistPositionSync,
     SoloistTrackChanged,
     SoloistVolumeChanged,
 )
@@ -1866,6 +1867,66 @@ async def test_a_state_report_does_not_move_a_repeated_track_on(tmp_path: Path) 
     assert session.pending_item(TRACK_A) is second
 
 
+async def test_the_track_change_event_moves_a_repeated_track_on(tmp_path: Path) -> None:
+    """The track_changed event is the one that carries a repeat across its boundary."""
+    session = _make_session(tmp_path)
+    first = _streamed(session)
+    first.duration_ms = 200_000
+    first.observe_position(199_000)
+    second = _feed(session, TRACK_A)
+    await session._handle_event(_current_item_event("track_changed", TRACK_A, 200_000))
+    assert session.current is second
+    assert first.closed is True
+
+
+@pytest.mark.parametrize("event_type", ["playback_state", "playback_changed"])
+async def test_a_state_event_does_not_move_a_repeated_track_on(
+    tmp_path: Path, event_type: str
+) -> None:
+    """A snapshot near the end of the first occurrence describes it, it does not end it."""
+    session = _make_session(tmp_path)
+    first = _streamed(session)
+    first.duration_ms = 200_000
+    first.observe_position(199_000)
+    second = _feed(session, TRACK_A)
+    await session._handle_event(_current_item_event(event_type, TRACK_A, 200_000))
+    assert session.current is first
+    assert first.closed is False
+    assert session.pending_item(TRACK_A) is second
+
+
+@pytest.mark.parametrize("event_type", ["track_changed", "playback_state", "playback_changed"])
+async def test_an_event_naming_another_item_cuts_at_the_boundary(
+    tmp_path: Path, event_type: str
+) -> None:
+    """Whichever event reports the move, the item being left ends and the next one takes over."""
+    session = _make_session(tmp_path)
+    first = _streamed(session)
+    first.duration_ms = 200_000
+    first.observe_position(20_000)
+    second = _feed(session, TRACK_B)
+    await session._handle_event(_current_item_event(event_type, TRACK_B, 180_000))
+    # the engine left the previous item part-way through, but for one it was fed:
+    # the queue moving on, not the Spotify app taking the session over
+    assert session.usable is True
+    assert session.current is second
+    assert second.duration_ms == 180_000
+    assert first.closed is True
+
+
+async def test_a_position_report_tells_the_current_item_where_the_engine_is(
+    tmp_path: Path,
+) -> None:
+    """Where the engine got to is what tells an item played out from one it was pulled off."""
+    session = _make_session(tmp_path)
+    item = _streamed(session)
+    item.duration_ms = 200_000
+    assert item.mid_play is False  # no position reported yet, so nothing to judge by
+    await session._handle_event(_position_event(20_000))
+    assert item.last_position_ms == 20_000
+    assert item.mid_play is True
+
+
 async def test_a_seek_in_flight_is_not_cut_short_by_a_repeat_boundary(tmp_path: Path) -> None:
     """A channel opened for a seek has no position of its own, which is not a played-out one."""
     session = _make_session(tmp_path)
@@ -2624,6 +2685,35 @@ def _playback_event(status: str, position_ms: int = 0) -> SoloistEvent:
             position=SoloistPosition(position_ms=position_ms, timestamp_ms=0),
         ),
         raw={},
+    )
+
+
+def _position_event(position_ms: int) -> SoloistEvent:
+    """Return a position_sync event reporting the given playback position."""
+    return SoloistEvent(
+        type="position_sync",
+        data=SoloistPositionSync(position=SoloistPosition(position_ms=position_ms, timestamp_ms=0)),
+        raw={},
+    )
+
+
+def _current_item_event(event_type: str, uri: str, duration_ms: int | None = None) -> SoloistEvent:
+    """
+    Return an event reporting the given item as the one the engine is on.
+
+    :param event_type: ``track_changed``, ``playback_state`` or ``playback_changed``.
+    :param uri: The Spotify URI the event names.
+    :param duration_ms: The duration to decorate the item with, when it has one.
+    """
+    item = SoloistEntity(
+        uri=uri,
+        entity_type="track",
+        decorations={"playback": {"duration_ms": duration_ms}} if duration_ms else {},
+    )
+    if event_type == "track_changed":
+        return SoloistEvent(type=event_type, data=SoloistTrackChanged(item=item), raw={})
+    return SoloistEvent(
+        type=event_type, data=SoloistPlaybackState(status="playing", item=item), raw={}
     )
 
 
