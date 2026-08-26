@@ -464,7 +464,7 @@ class SnapCastProvider(PlayerProvider):
             try:
                 info = AsyncServiceInfo(
                     zeroconf_type,
-                    name=f"Snapcast.{zeroconf_type}",
+                    name=f"{self.mass.webserver.server_name}.{zeroconf_type}",
                     properties={"is_mass": "true"},
                     addresses=addresses,
                     port=port,
