@@ -132,6 +132,8 @@ class _ReceiverDaemon:
     # after a same-queue reconnect supersedes the previous request.
     active_session_id: str | None = None
     pending_stop_task: asyncio.Task[None] | None = None
+    # the in-flight externally-triggered playback start (awaits the pending stop)
+    pending_start_task: asyncio.Task[None] | None = None
     first_volume_event_received: bool = False  # Track if we've received the first volume event
 
     def cover_art_path(self, img_hash: str) -> str:
@@ -482,6 +484,14 @@ class AirPlayReceiverProvider(PluginProvider):
         """Stop a receiver's shairport-sync daemon and release its resources."""
         daemon.stop_called = True
 
+        # a pending stop or deferred start must not wake after the teardown and
+        # act on the replaced daemon's session
+        for pending_task in (daemon.pending_stop_task, daemon.pending_start_task):
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+        daemon.pending_stop_task = None
+        daemon.pending_start_task = None
+
         # Stop metadata reader
         if daemon.metadata_reader:
             await daemon.metadata_reader.stop()
@@ -778,7 +788,9 @@ class AirPlayReceiverProvider(PluginProvider):
                 target_player_id = daemon.active_player_id or daemon.player_id
                 self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                 daemon.active_player_id = target_player_id
-                self.mass.create_task(self._start_playback(daemon, target_player_id))
+                daemon.pending_start_task = self.mass.create_task(
+                    self._start_playback(daemon, target_player_id)
+                )
         elif play_state == "stopped":
             self.logger.info("AirPlay playback stopped")
             # Reset volume event flag for next session
