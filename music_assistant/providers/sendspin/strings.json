@@ -58,15 +58,13 @@
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
         "static_pin": "Static pairing code",
-        "token": "Pairing token",
-        "unpaired": "Connect without pairing"
+        "token": "Pairing token"
       },
       "option_descriptions": {
         "pin": "Enter the device's pairing code.",
         "dynamic_pin": "Enter the device's dynamically generated pairing code.",
         "static_pin": "Enter the device's fixed pairing code.",
-        "token": "Enter the device's pairing token.",
-        "unpaired": "Encrypted but unauthenticated, so the connection can be intercepted on the local network."
+        "token": "Enter the device's pairing token."
       }
     },
     "pairing_pin": {
@@ -172,11 +170,37 @@
         "off": "Off",
         "this_device": "This device"
       }
+    },
+    "source_input_action": {
+      "label": "Audio input",
+      "options": {
+        "pair": "Pair the device",
+        "dismiss": "Don't use audio input"
+      },
+      "option_descriptions": {
+        "pair": "Pairing is required before the device may send audio to Music Assistant.",
+        "dismiss": "Playback is unaffected. Music Assistant will stop offering this device's audio input."
+      }
+    },
+    "pair_device": {
+      "label": "Pair this device",
+      "description": "Verify the device with a pairing code or pairing token instead of allowing it unpaired."
+    },
+    "source_input_note": {
+      "label": "The device also has an audio input. It stays off unless the device is paired."
     }
   },
   "setup_flow": {
     "select_method": {
       "title": "Pair this device"
+    },
+    "approve_device": {
+      "title": "Allow this new device",
+      "description": "This device is new to Music Assistant. Continuing allows it to play without pairing; the connection is encrypted but not authenticated."
+    },
+    "source_input": {
+      "title": "Audio input available",
+      "description": "This device can send its audio (such as a line-in) to Music Assistant. To use the input, the device must be paired."
     },
     "awaiting_device": {
       "title": "Waiting for the device",
