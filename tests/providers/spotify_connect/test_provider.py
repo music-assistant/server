@@ -582,6 +582,7 @@ def _reconcile_provider(
     """
     prov = SpotifyConnectProvider.__new__(SpotifyConnectProvider)
     prov.logger = MagicMock()
+    prov.config = MagicMock()
     prov.mass = mass = MagicMock()
     prov._daemons = {}
     prov._reconcile_lock = asyncio.Lock()

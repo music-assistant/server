@@ -67,6 +67,7 @@ def _reconcile_provider(
     """
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.logger = MagicMock()
+    prov.config = MagicMock()
     prov.mass = mass = MagicMock()
     prov._daemons = {}
     prov._reconcile_lock = asyncio.Lock()
