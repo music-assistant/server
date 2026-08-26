@@ -262,6 +262,28 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
 
 
+async def test_playing_before_session_active_fires_play_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Playback starts when 'playing' arrives before the session becomes active."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, mass = _make_provider(backend, active_player_id="player1")
+    _player_with_volume(mass, 40)
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    pending_before_active = provider._pending_play_media_task
+    assert pending_before_active is None
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_ACTIVE))
+
+    task = provider._pending_play_media_task
+    assert task is not None
+    await task
+    mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
+
+
 async def test_playing_without_active_session_fires_no_play_media() -> None:
     """A 'playing' from a daemon that is not the active Connect device grabs no player."""
     backend = FakeBackend()

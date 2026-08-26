@@ -1040,7 +1040,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         continue  # guard
                     await self._load_item(
                         queue_item,
-                        self._get_next_index(queue_id, index),
                         is_start=True,
                         seek_position=seek_position if attempt == 0 else 0,
                         fade_in=fade_in if attempt == 0 else False,
@@ -1185,6 +1184,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
         self._queue_data[target_queue_id].enqueued_media_items = list(
             self._queue_data[source_queue_id].enqueued_media_items
+        )
+        self._queue_data[target_queue_id].credited_albums = set(
+            self._queue_data[source_queue_id].credited_albums
         )
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1375,7 +1377,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
             try:
-                await self._load_item(queue_item, next_index)
+                await self._load_item(queue_item)
                 # we're all set, this is our next item
                 next_item = queue_item
                 break

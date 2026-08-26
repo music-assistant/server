@@ -6,18 +6,20 @@ selecting anything else, or deselecting, gives the source back and tells the
 plugin so an upstream session stops pointing at Music Assistant.
 """
 
+import asyncio
 from contextlib import suppress
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
@@ -26,14 +28,14 @@ PROVIDER_INSTANCE = "spotify_connect--abc"
 SOURCE_URI = "spotify_connect--abc://audio_source/main"
 
 
-def _source() -> AudioSource:
+def _source(item_id: str = "main") -> AudioSource:
     return AudioSource(
-        item_id="main",
+        item_id=item_id,
         provider=PROVIDER_INSTANCE,
         name="Spotify Connect",
         provider_mappings={
             ProviderMapping(
-                item_id="main",
+                item_id=item_id,
                 provider_domain="spotify_connect",
                 provider_instance=PROVIDER_INSTANCE,
             )
@@ -116,15 +118,334 @@ async def test_selecting_another_source_releases_the_first() -> None:
 
 
 async def test_deselecting_releases_the_source_and_stops_the_player() -> None:
-    """An explicit deselect gives the source back and stops playback."""
+    """The source owner can give its source back and stop playback."""
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
 
-    await controller.deselect_source(PLAYER_ID)
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=session.playback_session_id,
+    )
 
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
     controller._handle_cmd_stop.assert_awaited_once()
+
+
+async def test_deselecting_from_another_provider_leaves_the_source_playing() -> None:
+    """A provider cannot release or stop a source session it does not own."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id="airplay_receiver--xyz",
+        source_id="main",
+        playback_session_id=session.playback_session_id,
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_deselecting_without_an_owned_session_does_not_stop_the_player() -> None:
+    """A provider cannot stop a player when it owns no source session."""
+    controller, provider, _player = _controller(None)
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id="stale-session",
+    )
+
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_a_provider_release_without_a_playback_session_is_rejected() -> None:
+    """Provider cleanup without a captured playback generation is not authoritative."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_an_unexpected_stop_failure_still_releases_the_source() -> None:
+    """Source cleanup completes before an unexpected stop error propagates."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    controller._handle_cmd_stop.side_effect = OSError("transport failed")
+
+    with pytest.raises(OSError, match="transport failed"):
+        await controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_a_replacement_source_during_release_is_not_stopped() -> None:
+    """A source taking over during release remains active and playing."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    original_session = controller.get_audio_source_session(PLAYER_ID)
+    assert original_session is not None
+    replacement_instance = "airplay_receiver--xyz"
+    replacement = AudioSource(
+        item_id="receiver",
+        provider=replacement_instance,
+        name="AirPlay",
+        provider_mappings={
+            ProviderMapping(
+                item_id="receiver",
+                provider_domain="airplay_receiver",
+                provider_instance=replacement_instance,
+            )
+        },
+    )
+
+    async def start_replacement(_source_id: str, _player_id: str) -> None:
+        controller._start_audio_source_session(PLAYER_ID, replacement, replacement_instance)
+
+    provider.on_source_released.side_effect = start_replacement
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=original_session.playback_session_id,
+    )
+
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    assert session.source is replacement
+    controller._handle_cmd_stop.assert_awaited_once()
+
+
+async def test_deselecting_another_source_from_the_same_provider_is_rejected() -> None:
+    """A provider cannot release a different source session from the one that ended."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    original_session = controller.get_audio_source_session(PLAYER_ID)
+    assert original_session is not None
+    replacement = _source("other")
+    session = controller._start_audio_source_session(PLAYER_ID, replacement, PROVIDER_INSTANCE)
+
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=original_session.playback_session_id,
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
+
+
+async def test_deselecting_finishes_before_new_playback_starts() -> None:
+    """Release and stop complete before any player playback entry point starts."""
+    controller, provider, player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    events: list[str] = []
+
+    async def release_source(_source_id: str, _player_id: str) -> None:
+        release_started.set()
+        await finish_release.wait()
+
+    async def stop_player(_player_id: str) -> None:
+        events.append("stop")
+
+    async def play_media(_player_id: str, _media: PlayerMedia) -> None:
+        events.append("play")
+
+    async def select_source(_player_id: str, _source_id: str | None) -> None:
+        events.append("select")
+
+    async def play(_player_id: str) -> None:
+        events.append("play_command")
+
+    async def resume(
+        _player_id: str,
+        _source_id: str | None,
+        _media: PlayerMedia | None,
+    ) -> None:
+        events.append("resume")
+
+    provider.on_source_released.side_effect = release_source
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_play_media = AsyncMock(side_effect=play_media)
+    controller._handle_select_source = AsyncMock(side_effect=select_source)
+    controller._handle_cmd_play = AsyncMock(side_effect=play)
+    controller._handle_cmd_resume = AsyncMock(side_effect=resume)
+    player.state.playback_state = PlaybackState.IDLE
+    controller.mass.player_queues.get.return_value = None
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+    )
+    await release_started.wait()
+    assert events == ["stop"]
+    play_task = asyncio.create_task(
+        controller.play_media(
+            PLAYER_ID,
+            PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK),
+        )
+    )
+    select_task = asyncio.create_task(controller.select_source(PLAYER_ID, PLAYER_ID))
+    play_command_task = asyncio.create_task(controller.cmd_play(PLAYER_ID))
+    resume_task = asyncio.create_task(controller.cmd_resume(PLAYER_ID))
+    await asyncio.sleep(0)
+    playback_waited = events == ["stop"]
+
+    finish_release.set()
+    await asyncio.gather(
+        release_task,
+        play_task,
+        select_task,
+        play_command_task,
+        resume_task,
+    )
+
+    assert playback_waited
+    assert events[0] == "stop"
+    assert set(events[1:]) == {"play", "play_command", "resume", "select"}
+
+
+async def test_playback_starting_during_release_callback_is_not_stopped() -> None:
+    """Playback bypassing the lock during plugin release sees no later stale stop."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    events: list[str] = []
+
+    async def release_source(_source_id: str, _player_id: str) -> None:
+        release_started.set()
+        await finish_release.wait()
+
+    async def stop_player(_player_id: str) -> None:
+        events.append("stop")
+
+    async def play_media(_player_id: str, _media: PlayerMedia) -> None:
+        events.append("play")
+
+    provider.on_source_released.side_effect = release_source
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_play_media = AsyncMock(side_effect=play_media)
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+    )
+    await release_started.wait()
+    await controller._handle_play_media(
+        PLAYER_ID,
+        PlayerMedia(uri="library://track/1", media_type=MediaType.TRACK),
+    )
+    finish_release.set()
+    await release_task
+
+    assert events == ["stop", "play"]
+
+
+async def test_cmd_play_checks_playing_state_after_cleanup_finishes() -> None:
+    """A play command waiting on cleanup rechecks state after the old stop."""
+    controller, _provider, player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    player.state.playback_state = PlaybackState.PLAYING
+    stop_started = asyncio.Event()
+    finish_stop = asyncio.Event()
+
+    async def stop_player(_player_id: str) -> None:
+        stop_started.set()
+        await finish_stop.wait()
+        player.state.playback_state = PlaybackState.IDLE
+
+    controller._handle_cmd_stop.side_effect = stop_player
+    controller._handle_cmd_play = AsyncMock()
+    controller.mass.player_queues.get.return_value = None
+
+    release_task = asyncio.create_task(
+        controller.deselect_source(
+            PLAYER_ID,
+            provider_instance_id=PROVIDER_INSTANCE,
+            source_id="main",
+            playback_session_id=session.playback_session_id,
+        )
+    )
+    await stop_started.wait()
+    play_task = asyncio.create_task(controller.cmd_play(PLAYER_ID))
+    await asyncio.sleep(0)
+    controller._handle_cmd_play.assert_not_awaited()
+
+    finish_stop.set()
+    await asyncio.gather(release_task, play_task)
+
+    controller._handle_cmd_play.assert_awaited_once_with(PLAYER_ID)
+
+
+async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
+    """A member stop locks its group rather than taking the locks in reverse order."""
+    controller, _provider, player = _controller(None)
+    group_id = "group_1"
+    group = MagicMock()
+    group.player_id = group_id
+    group.available = True
+    group.protocol_parent_id = None
+    group.state.active_group = None
+    group.state.synced_to = None
+    controller._players[group_id] = group
+    players = {PLAYER_ID: player, group_id: group}
+    controller.get_player.side_effect = lambda player_id, *_args, **_kwargs: players.get(player_id)
+    player.state.active_group = group_id
+    controller.mass.player_queues.get.return_value = None
+
+    await controller.cmd_stop(PLAYER_ID)
+
+    controller._handle_cmd_stop.assert_awaited_once_with(group_id)
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{group_id}" in controller._player_command_locks
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{PLAYER_ID}" not in controller._player_command_locks
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:
@@ -297,11 +618,35 @@ async def test_reselecting_the_same_source_does_not_hand_it_back() -> None:
     controller, provider, _player = _controller(_source())
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     first = controller.get_audio_source_session(PLAYER_ID)
+    assert first is not None
+    first_playback_session_id = first.playback_session_id
 
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
 
     provider.on_source_released.assert_not_awaited()
     assert controller.get_audio_source_session(PLAYER_ID) is first
+    assert first.playback_session_id != first_playback_session_id
+
+
+async def test_a_stale_release_cannot_end_a_reselected_source() -> None:
+    """A delayed cleanup cannot release a new selection of the same source."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    stale_playback_session_id = session.playback_session_id
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    await controller.deselect_source(
+        PLAYER_ID,
+        provider_instance_id=PROVIDER_INSTANCE,
+        source_id="main",
+        playback_session_id=stale_playback_session_id,
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+    controller._handle_cmd_stop.assert_not_awaited()
 
 
 async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:
@@ -405,6 +750,8 @@ async def test_the_reported_media_can_be_handed_back_to_the_player() -> None:
     assert session is not None
 
     media = controller._handle_play_media.await_args.args[1]
+    # the reported position is taken from the player's final playback state
+    _player._Player__final_playback_state = (PlaybackState.PLAYING, None, None)
     reported = Player._Player__audio_source_media(_player, session)  # type: ignore[attr-defined]
 
     assert reported.queue_session_id == session.playback_session_id

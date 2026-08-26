@@ -23,6 +23,7 @@ from music_assistant_models.enums import ProviderFeature, RepeatMode
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.media_items import AudioSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -40,17 +41,18 @@ class AudioSourceSession:
     ``streamdetails`` and ``stream_session_id`` are independent of the session's
     own existence: a paused external source keeps the player while its stream is
     torn down, so both fall back to None without the session ending. The
-    ``playback_session_id`` is the one identifier that lasts as long as the
-    session does, which is why the stream URLs are built from it.
+    ``playback_session_id`` identifies the current selection through pauses and
+    stream reconnects, and is refreshed when the source is explicitly reselected.
     """
 
     player_id: str
     source: AudioSource
     provider_instance_id: str
-    # identifies this session in its stream URLs, for the whole time it plays
+    # identifies the current selection in its stream URLs
     playback_session_id: str = field(default_factory=lambda: uuid4().hex)
     started_at: float = field(default_factory=time.time)
     streamdetails: StreamDetails | None = None
+    active_source_audio: ActiveSourceAudioDetails | None = None
     stream_metadata: StreamMetadata | None = None
     stream_metadata_last_updated: float | None = None
     # an adopted placeholder stays replaceable by a later one, a report does not
@@ -291,8 +293,17 @@ class AudioSourceMixin:
             and session.source_id == source.item_id
             and session.provider_instance_id == provider_instance_id
         ):
+            self.mass.streams.audio_processing.clear_source(
+                player_id,
+                session.playback_session_id,
+                preserve_details=True,
+            )
             session.source = source
+            session.playback_session_id = uuid4().hex
+            session.stream_session_id = None
             return session
+        if session is not None:
+            self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
         # a source plays on one player at a time, so it leaves whichever other player
         # was holding it: two players both reporting it would let a command on the one
         # that lost it drive the one that has it
@@ -302,6 +313,7 @@ class AudioSourceMixin:
                 and other.source_id == source.item_id
                 and other.provider_instance_id == provider_instance_id
             ):
+                self.mass.streams.audio_processing.clear_source(other_id, other.playback_session_id)
                 del self._source_sessions[other_id]
                 self.trigger_player_update(other_id)
         session = AudioSourceSession(
@@ -322,4 +334,7 @@ class AudioSourceMixin:
         :param player_id: The player whose session ended.
         :return: The session that was ended, or None if there was none.
         """
+        session = self._source_sessions.get(player_id)
+        if session is not None:
+            self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
         return self._source_sessions.pop(player_id, None)

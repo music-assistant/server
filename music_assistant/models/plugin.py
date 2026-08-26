@@ -109,9 +109,11 @@ class PluginProvider(Provider):
 
         The returned StreamDetails uses the standard fields:
         ``stream_type`` selects between a custom async generator and a path
-        (e.g. NAMED_PIPE); ``audio_format`` describes the PCM format the source
-        emits; ``stream_metadata`` carries the initial live metadata (and can
-        be updated at runtime via ``mass.players.update_source_metadata(player_id, ...)``).
+        (e.g. NAMED_PIPE); ``audio_format`` describes the source for display and
+        ``decoded_audio_format`` the PCM actually delivered, which a plugin that
+        decoded the source itself has to set; ``stream_metadata`` carries the initial
+        live metadata (and can be updated at runtime via
+        ``mass.players.update_source_metadata(player_id, ...)``).
 
         Silence-during-pause contract:
         the player consuming the stream needs a continuous byte flow or it will
@@ -142,8 +144,9 @@ class PluginProvider(Provider):
         Return the (custom) audio stream for an AudioSource.
 
         Will only be called when the StreamDetails returned by get_stream_details
-        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in
-        the PCM format declared by ``streamdetails.audio_format``.
+        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in the PCM
+        format declared by ``streamdetails.decoded_audio_format``, falling back to
+        ``audio_format`` when the plugin delivers its source untouched.
 
         Pausing is fine: when the upstream device is paused the plugin can stop
         yielding bytes. The server wraps this generator with a silence-keepalive
@@ -160,6 +163,22 @@ class PluginProvider(Provider):
         # so an unimplemented provider fails deterministically without emitting
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
+
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin normalizes the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin crossfades the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
 
     async def on_source_control(
         self,

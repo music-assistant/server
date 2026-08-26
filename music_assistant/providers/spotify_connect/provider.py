@@ -94,6 +94,10 @@ AUDIO_SOURCE_ID = "main"
 # the player leaves the playing state; the next 'playing' event re-streams.
 PAUSE_EOF_TIMEOUT_S = 0.5
 
+# A stop after a pause runs while the player's playback lock is held, so a slow one
+# delays whatever the user does next; warn when it takes longer than this.
+SLOW_STOP_WARN_S = 10.0
+
 # Seconds to wait for the backend to report 'playing' after a resume request.
 PLAYBACK_START_TIMEOUT_S = 3.0
 
@@ -158,10 +162,9 @@ class SpotifyConnectProvider(PluginProvider):
         # True while MA is the active Spotify Connect device (set on 'active',
         # cleared on 'inactive'); gates get_stream_details and transport commands.
         self._spotify_session_active: bool = False
-        # holds the single in-flight deferred play_media task scheduled from a
-        # 'playing' event; cancelled when a 'paused' / 'stopped' / 'active' event
-        # arrives during the debounce so we don't act on stale state from a dying
-        # session.
+        # holds the single in-flight deferred play_media task scheduled once the
+        # session is both active and playing; cancelled when a later event makes
+        # that state stale.
         self._pending_play_media_task: asyncio.Task[None] | None = None
         # holds the in-flight stop of a paused player (pipe-fed backends
         # only); the stop dispatches right away, but a 'playing' event cancels
@@ -348,6 +351,22 @@ class SpotifyConnectProvider(PluginProvider):
             if not chunk:
                 return  # audio pipe closed (backend exited / restarting)
             yield chunk
+
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether Spotify applies loudness normalization to this source.
+
+        :param streamdetails: Stream details of the active Spotify Connect source.
+        """
+        return self._resolve_loudness_normalization()
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether Spotify applies crossfade to this source.
+
+        :param streamdetails: Stream details of the active Spotify Connect source.
+        """
+        return self._resolve_crossfade_ms() > 0
 
     async def on_source_selected(
         self,
@@ -695,16 +714,32 @@ class SpotifyConnectProvider(PluginProvider):
         :param player_id: The player currently consuming the live source.
         """
         self.logger.debug("Stopping player %s after pause", player_id)
+        started = self.mass.loop.time()
         try:
-            # bounded: an unresponsive player (e.g. a throttled web client) must
-            # not hold this task - and the player's playback lock - indefinitely
-            async with asyncio.timeout(10):
-                await self.mass.players.cmd_stop(player_id)
-            self.logger.debug("Player %s stopped after pause", player_id)
-        except TimeoutError:
-            self.logger.warning("Player %s did not stop within 10s after pause", player_id)
+            await self.mass.players.cmd_stop(player_id)
         except Exception as err:
             self.logger.debug("Failed to stop player %s on pause: %s", player_id, err)
+            return
+        # a timeout around the stop is not enforceable: the process cleanup it waits on
+        # can swallow the cancellation (see AsyncProcess.close), so a slow stop is reported
+        if (elapsed := self.mass.loop.time() - started) > SLOW_STOP_WARN_S:
+            self.logger.warning("Stopping player %s took %.1f seconds", player_id, elapsed)
+        else:
+            self.logger.debug("Player %s stopped after pause", player_id)
+
+    def _schedule_play_media(self) -> None:
+        """Schedule playback when Spotify is active and no player owns the source."""
+        if (
+            not self._playing
+            or not self._spotify_session_active
+            or self._in_use_by_player
+            or (
+                self._pending_play_media_task is not None
+                and not self._pending_play_media_task.done()
+            )
+        ):
+            return
+        self._pending_play_media_task = self.mass.create_task(self._deferred_play_media_fire())
 
     def _cancel_pending_play_media(self) -> None:
         """Cancel any pending deferred play_media trigger."""
@@ -771,6 +806,9 @@ class SpotifyConnectProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset playback state when a session ends."""
         prev_player_id = self._active_player_id
+        source_session = (
+            self.mass.players.get_audio_source_session(prev_player_id) if prev_player_id else None
+        )
         self._active_player_id = None
         self._in_use_by_player = None
         self._active_session_id = None
@@ -780,7 +818,15 @@ class SpotifyConnectProvider(PluginProvider):
             # the player is not playing us any more, so it should stop saying it is;
             # the stop itself is scheduled separately by the caller
             self.mass.create_task(
-                self.mass.players.deselect_source(prev_player_id, stop_playback=False)
+                self.mass.players.deselect_source(
+                    prev_player_id,
+                    stop_playback=False,
+                    provider_instance_id=self.instance_id,
+                    source_id=AUDIO_SOURCE_ID,
+                    playback_session_id=(
+                        source_session.playback_session_id if source_session else None
+                    ),
+                )
             )
 
     def _save_last_player_id(self, player_id: str) -> None:
@@ -828,9 +874,8 @@ class SpotifyConnectProvider(PluginProvider):
         if event.type is BackendEventType.SESSION_ACTIVE:
             self._spotify_session_active = True
             self._last_session_active_time = time.time()
-            # A (re)activation supersedes any deferred play_media scheduled from a
-            # previous session's stale 'playing'; the fresh 'playing' that follows
-            # schedules a new one.
+            # A (re)activation supersedes any deferred play_media from a previous
+            # session. Reconcile afterwards because 'playing' may arrive first.
             self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
             # A new session starts at the backend's 100% volume default; push the
@@ -840,6 +885,7 @@ class SpotifyConnectProvider(PluginProvider):
             # value — the app slider staying at 100 there is by design.)
             if player_id := self._get_target_player_id():
                 await self._sync_player_volume_to_spotify(player_id)
+            self._schedule_play_media()
         elif event.type is BackendEventType.SESSION_INACTIVE:
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
@@ -848,8 +894,6 @@ class SpotifyConnectProvider(PluginProvider):
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
-                # bounded like the pause path: a slow player must not hold the
-                # stop (and its playback lock) indefinitely
                 self._schedule_pause_stop(prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
@@ -864,23 +908,17 @@ class SpotifyConnectProvider(PluginProvider):
             # Only while the session is active: a daemon playing without being
             # the active Connect device (e.g. right after a deactivate) must
             # not grab MA players in a loop.
-            if (
-                not self._in_use_by_player
-                and self._spotify_session_active
-                and (self._pending_play_media_task is None or self._pending_play_media_task.done())
-            ):
-                self._pending_play_media_task = self.mass.create_task(
-                    self._deferred_play_media_fire()
-                )
+            self._schedule_play_media()
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = self._playing
             self._playing = False
             # A pause/stop is the definitive "don't start": cancel a deferred fire
-            # from a now-stale 'playing'. The active get_audio_stream sees the PCM
-            # stop and ends the stream (clean EOF), so the player leaves the playing
-            # state; the next 'playing' event re-fires play_media to resume.
+            # from a now-stale 'playing'. On a backend whose stream ends on pause the
+            # active get_audio_stream sees the PCM stop and ends the stream (clean
+            # EOF), so the player leaves the playing state and the next 'playing'
+            # event re-fires play_media to resume.
             self._cancel_pending_play_media()
-            # A pipe-fed backend keeps delivering silence on pause (no EOF), so
+            # A backend without a stream end on pause never signals EOF, so
             # the player must be stopped actively; the claim stays so the next
             # 'playing' event resumes playback like the EOF path does. Only the
             # playing→paused transition fires it: the backend reports a pause

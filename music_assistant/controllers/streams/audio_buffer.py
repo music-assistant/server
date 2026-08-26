@@ -106,6 +106,8 @@ class AudioBuffer:
         self._space_available = asyncio.Condition(self._lock)
         self._eof_received = False
         self._producer_task: asyncio.Task[None] | None = None
+        self._fill_started = time.monotonic()
+        self._source_name = "unknown"
         self._last_access_time: float = time.time()
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False
@@ -309,6 +311,8 @@ class AudioBuffer:
         :param audio_source: Async generator yielding 1-second PCM audio chunks.
         :param source_name: Name for logging purposes.
         """
+        self._fill_started = time.monotonic()
+        self._source_name = source_name
 
         async def _fill_task() -> None:
             chunk_count = 0
@@ -465,7 +469,9 @@ class AudioBuffer:
                     existing_buffer._discarded_chunks,
                 )
                 if wait_ready:
-                    await existing_buffer._wait_until_ready(streamdetails, ready_timeout)
+                    await existing_buffer._wait_until_ready(
+                        streamdetails, ready_timeout, log_prefix
+                    )
                 return existing_buffer
 
         # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
@@ -491,9 +497,10 @@ class AudioBuffer:
             # A realtime source fills the buffer at playback pace, so every second of
             # audio asked for here is a second of extra startup delay - on a seek or a
             # track change as much as on a start. The queue's crossfade setting buys
-            # nothing for such a source, because MA's own crossfade is force-disabled
-            # for it (it has no audio to spare for an overlap), so only dynamic
-            # normalization, which genuinely needs lookahead, raises this.
+            # nothing for such a source, because its fade streams in as it arrives and
+            # is sized by the tail the outgoing track banked, not by what is resident
+            # here. Only dynamic normalization, which genuinely needs lookahead, raises
+            # this.
             ready_threshold = 2 if dynamic_normalization else 1
         elif crossfade_enabled:
             ready_threshold = 8
@@ -551,24 +558,41 @@ class AudioBuffer:
         audio_buffer.fill(audio_source, source_name=streamdetails.uri)
 
         if wait_ready:
-            await audio_buffer._wait_until_ready(streamdetails, ready_timeout)
+            await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
 
         return audio_buffer
 
     # -- Private methods --
 
-    async def _wait_until_ready(self, streamdetails: StreamDetails, ready_timeout: float) -> None:
+    async def _wait_until_ready(
+        self, streamdetails: StreamDetails, ready_timeout: float, log_prefix: str
+    ) -> None:
         """
         Wait until this buffer can serve playback or raise its producer failure.
 
         :param streamdetails: Stream details currently referencing this buffer.
         :param ready_timeout: Maximum seconds to wait for enough buffered audio.
+        :param log_prefix: Caller context for logging.
         """
         async with self._ready_wait_lock:
             if not self.ready.is_set():
                 try:
                     await asyncio.wait_for(self.ready.wait(), timeout=ready_timeout)
                 except TimeoutError as err:
+                    # clear() does not wake this wait, and only marks the buffer cancelled
+                    # once the producer is gone - so a buffer released elsewhere (to free a
+                    # stream slot) lands here on an abort of our own making
+                    producer = self._producer_task
+                    releasing = self.cancelled or bool(producer and producer.cancelling())
+                    if not releasing:
+                        LOGGER.warning(
+                            "%s: Gave up on %s (%s) after %.2fs, %ss buffered",
+                            log_prefix,
+                            streamdetails.provider,
+                            streamdetails.uri,
+                            time.monotonic() - self._fill_started,
+                            self.seconds_available,
+                        )
                     producer_error = await self._clear_failed_buffer(streamdetails)
                     if isinstance(producer_error, AudioError):
                         raise producer_error from err
@@ -631,7 +655,7 @@ class AudioBuffer:
                 self._discarded_chunks + len(self._chunks) >= self._ready_at_chunk
                 or len(self._chunks) >= self.max_size_seconds
             ):
-                self.ready.set()
+                self._mark_ready()
 
             self._data_available.notify_all()
 
@@ -645,9 +669,21 @@ class AudioBuffer:
             )
             self._eof_received = True
             if not self.ready.is_set():
-                self.ready.set()
+                self._mark_ready()
             self._data_available.notify_all()
             self._space_available.notify_all()
+
+    def _mark_ready(self) -> None:
+        """Signal that the buffer holds audio a consumer can start playing."""
+        self.ready.set()
+        # a source that failed or ended empty also lands here, without the
+        # buffer ever having become playable
+        if self._chunks and not self.has_error:
+            LOGGER.debug(
+                "AudioBuffer: %s became ready after %.2fs",
+                self._source_name,
+                time.monotonic() - self._fill_started,
+            )
 
     async def _get(self, chunk_number: int = 0) -> bytes:
         """

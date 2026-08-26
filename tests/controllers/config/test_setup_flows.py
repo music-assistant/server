@@ -1462,6 +1462,7 @@ async def test_player_setup_reason_in_state_fingerprint() -> None:
 async def test_has_setup_flow_serialized_for_own_flow() -> None:
     """A player implementing its own flow serializes has_setup_flow (regardless of needs_setup)."""
     provider = MockProvider("sendspin", instance_id="sendspin")
+    provider.mass.players.get_audio_source_session.return_value = None
     plain = MockPlayer(provider, "plain_player", "Plain Player")
     player = _FlowPlayer(provider, "flow_player", "Flow Player")
     assert plain.has_setup_flow is False
@@ -1478,6 +1479,7 @@ async def test_has_setup_flow_serialized_for_own_flow() -> None:
 async def test_has_setup_flow_serialized_for_protocol_child() -> None:
     """A wrapper player inherits has_setup_flow from a linked protocol child with a flow."""
     parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    parent_provider.mass.players.get_audio_source_session.return_value = None
     child_provider = MockProvider("airplay", instance_id="airplay")
     parent = MockPlayer(parent_provider, "up_parent", "Hallway")
     child = _ProtocolChildPlayer(child_provider, "ap_child", "Hallway AirPlay")

@@ -616,7 +616,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -624,12 +624,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        # Redirect to queue controller if it is active (skip if already in queue command context)
-        if active_queue := self.get_active_queue(player):
-            await self.mass.player_queues.stop(active_queue.queue_id)
-            return
-        # Delegate to internal handler for actual implementation
-        await self._handle_cmd_stop(player.player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # Redirect to queue controller if it is active (skip if already in queue command context)
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues.stop(active_queue.queue_id)
+                return
+            # Delegate to internal handler for actual implementation
+            await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -640,20 +641,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
-            self.logger.info(
-                "Ignore PLAY request to player %s: player is already playing", player.state.name
-            )
-            return
-        # player is not paused: check for queue redirect, then delegate to internal handler
-        if player.state.playback_state != PlaybackState.PAUSED:
-            source = player.state.active_source
-            if active_queue := self.mass.player_queues.get(source or player_id):
-                await self.mass.player_queues.resume(active_queue.queue_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            if player.state.playback_state == PlaybackState.PLAYING:
+                self.logger.info(
+                    "Ignore PLAY request to player %s: player is already playing",
+                    player.state.name,
+                )
                 return
-
-        # Delegate to internal handler for actual implementation
-        await self._handle_cmd_play(player.player_id)
+            # player is not paused: check for queue redirect, then delegate to internal handler
+            if player.state.playback_state != PlaybackState.PAUSED:
+                source = player.state.active_source
+                if active_queue := self.mass.player_queues.get(source or player_id):
+                    await self.mass.player_queues.resume(active_queue.queue_id)
+                    return
+            # Delegate to internal handler for actual implementation
+            await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -685,7 +687,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -698,7 +700,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param source: Optional source to resume.
         :param media: Optional media to resume.
         """
-        await self._handle_cmd_resume(player_id, source, media)
+        player = self._get_player_with_redirect(player_id)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_cmd_resume(player.player_id, source, media)
 
     @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -732,45 +736,77 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
-    async def cmd_shuffle(self, player_id: str, shuffle_enabled: bool) -> None:
+    async def cmd_shuffle(
+        self, player_id: str, shuffle_enabled: bool, source_id: str | None = None
+    ) -> None:
         """
         Handle SHUFFLE command for given player.
 
         Applies to whatever the player is playing: a live external source orders its
-        own session, and Music Assistant's queue orders its own items.
+        own session, a source the device runs itself orders its own content, and
+        Music Assistant's queue orders its own items.
 
         :param player_id: player_id of the player to handle the command.
         :param shuffle_enabled: Whether to play the current content shuffled.
+        :param source_id: Optional source (id) the command is aimed at, as listed in the
+            player's source_list. Given one, the command is refused when that source is
+            no longer playing, so it can never land on whatever took the player since.
         """
         player = self._get_player_with_redirect(player_id)
+        active_source_id = self._resolve_command_target(player, source_id)
         if await self._forward_to_external_source(player, SourceControl.SHUFFLE, shuffle_enabled):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_shuffle(active_queue.queue_id, shuffle_enabled)
+            return
+        if active_source := next(
+            (x for x in player.state.source_list if x.id == active_source_id), None
+        ):
+            # the source belongs to the player itself (its own Spotify Connect, a device input)
+            if not active_source.can_shuffle:
+                msg = "This action is (currently) unavailable for this source."
+                raise PlayerCommandFailed(msg)
+            await player.set_shuffle(shuffle_enabled)
             return
         msg = f"There is nothing playing on {player.state.name} to shuffle."
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
-    async def cmd_repeat(self, player_id: str, repeat_mode: RepeatMode) -> None:
+    async def cmd_repeat(
+        self, player_id: str, repeat_mode: RepeatMode, source_id: str | None = None
+    ) -> None:
         """
         Handle REPEAT command for given player.
 
         Applies to whatever the player is playing: a live external source repeats
-        within its own session, and Music Assistant's queue repeats its own items.
+        within its own session, a source the device runs itself repeats its own
+        content, and Music Assistant's queue repeats its own items.
 
         :param player_id: player_id of the player to handle the command.
         :param repeat_mode: The repeat mode to apply.
+        :param source_id: Optional source (id) the command is aimed at, as listed in the
+            player's source_list. Given one, the command is refused when that source is
+            no longer playing, so it can never land on whatever took the player since.
         """
         if repeat_mode == RepeatMode.UNKNOWN:
             # not a mode to set: it is what a source reports when it cannot say
             raise InvalidCommand("Cannot set an unknown repeat mode")
         player = self._get_player_with_redirect(player_id)
+        active_source_id = self._resolve_command_target(player, source_id)
         if await self._forward_to_external_source(player, SourceControl.REPEAT, repeat_mode):
             return
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_repeat(active_queue.queue_id, repeat_mode)
+            return
+        if active_source := next(
+            (x for x in player.state.source_list if x.id == active_source_id), None
+        ):
+            # the source belongs to the player itself (its own Spotify Connect, a device input)
+            if not active_source.can_repeat:
+                msg = "This action is (currently) unavailable for this source."
+                raise PlayerCommandFailed(msg)
+            await player.set_repeat(repeat_mode)
             return
         msg = f"There is nothing playing on {player.state.name} to repeat."
         raise PlayerCommandFailed(msg)
@@ -1158,9 +1194,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         elif player.state.synced_to:
             await self.cmd_ungroup(player_id)
         # Delegate to internal handler for actual implementation
-        await self._handle_select_source(player_id, source)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_select_source(player_id, source)
 
-    async def deselect_source(self, player_id: str, stop_playback: bool = True) -> None:
+    async def deselect_source(
+        self,
+        player_id: str,
+        stop_playback: bool = True,
+        provider_instance_id: str | None = None,
+        source_id: str | None = None,
+        playback_session_id: str | None = None,
+    ) -> None:
         """
         Give up the source a player was playing, and stop it.
 
@@ -1172,15 +1216,57 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to give the source up on.
         :param stop_playback: Whether to stop the player as well. Pass False when the
             caller has already stopped it, or is about to.
+        :param provider_instance_id: Optional provider instance that owns the source session.
+        :param source_id: Optional provider-scoped source id that owns the source session.
+        :param playback_session_id: Optional playback session expected to own the player.
         """
-        player = self.get_player(player_id, raise_unavailable=False)
-        if not player:
-            return
-        await self._release_audio_source(player_id)
-        if not stop_playback:
-            return
-        with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
-            await self._handle_cmd_stop(player_id)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            player = self.get_player(player_id, raise_unavailable=False)
+            if not player:
+                return
+            session = self._source_sessions.get(player_id)
+            active_provider_instance_id = session.provider_instance_id if session else None
+            active_source_id = session.source_id if session else None
+            active_playback_session_id = session.playback_session_id if session else None
+            if provider_instance_id is not None and (
+                active_provider_instance_id != provider_instance_id
+                or (source_id is not None and active_source_id != source_id)
+                or playback_session_id is None
+                or active_playback_session_id != playback_session_id
+            ):
+                self.logger.debug(
+                    "Ignoring source release for provider %s source %s session %s on player %s: "
+                    "active source is provider %s source %s session %s",
+                    provider_instance_id,
+                    source_id,
+                    playback_session_id,
+                    player_id,
+                    active_provider_instance_id,
+                    active_source_id,
+                    active_playback_session_id,
+                )
+                return
+            try:
+                if stop_playback:
+                    with suppress(PlayerCommandFailed, PlayerUnavailableError, RuntimeError):
+                        await self._handle_cmd_stop(player_id)
+            finally:
+                if session is not None:
+                    current_session = self._source_sessions.get(player_id)
+                    if (
+                        current_session is session
+                        and current_session.playback_session_id == active_playback_session_id
+                    ):
+                        await self._release_audio_source(player_id)
+                    else:
+                        self.logger.debug(
+                            "Not releasing provider %s source %s session %s on player %s: "
+                            "the source changed while playback was stopping",
+                            provider_instance_id,
+                            source_id,
+                            playback_session_id,
+                            player_id,
+                        )
 
     async def release_provider_sources(self, provider_instance_id: str) -> None:
         """
@@ -1192,15 +1278,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param provider_instance_id: Instance id of the plugin that is going away.
         """
-        for player_id, session in list(self._source_sessions.items()):
-            if session.provider_instance_id != provider_instance_id:
-                continue
+        sessions = [
+            (player_id, session.source_id, session.playback_session_id)
+            for player_id, session in self._source_sessions.items()
+            if session.provider_instance_id == provider_instance_id
+        ]
+        for player_id, source_id, playback_session_id in sessions:
             self.logger.debug(
                 "Provider %s is unloading, releasing its source on player %s",
                 provider_instance_id,
                 player_id,
             )
-            await self.deselect_source(player_id)
+            await self.deselect_source(
+                player_id,
+                provider_instance_id=provider_instance_id,
+                source_id=source_id,
+                playback_session_id=playback_session_id,
+            )
 
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -4128,6 +4222,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if not isinstance(provider, PluginProvider):
             return
         await provider.on_volume_change(session.source_id, volume_level)
+
+    def _resolve_command_target(self, player: Player, source_id: str | None) -> str:
+        """
+        Return the source (id) a command issued to a player applies to.
+
+        :param player: The player the command was issued to.
+        :param source_id: The source the caller aimed the command at, if it named one.
+        :return: The id of the player's active source, which is the id of Music
+            Assistant's own queue when nothing else is playing on it.
+        :raises PlayerCommandFailed: When the caller named a source that is no longer
+            the one playing.
+        """
+        active_source_id = player.state.active_source or player.player_id
+        if source_id is not None and source_id != active_source_id:
+            msg = f"The source this was meant for is no longer playing on {player.state.name}."
+            raise PlayerCommandFailed(msg)
+        return active_source_id
 
     async def _forward_to_external_source(
         self,

@@ -237,7 +237,8 @@ class StreamsController(CoreController):
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
-        # Number of queue streams (single item or flow) actively serving a player right now.
+        # Number of queue streams (single item or flow) actively serving a player right now,
+        # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
         # queue stream is live. Announcements are a separate path that never runs analysis.
         self._active_output_streams = 0
@@ -370,39 +371,9 @@ class StreamsController(CoreController):
         # plugin providers serve playable items too, and only a music provider
         # declares this (a plugin's live audio is handled by the media type)
         provider = self.mass.get_provider(streamdetails.provider)
-        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio
-
-    def get_source_crossfade_mode(self, queue: PlayerQueue, queue_item: QueueItem) -> CrossfadeMode:
-        """
-        Return the crossfade an item's own source applies, or DISABLED when none does.
-
-        A source that crossfades its own playback is handed the queue's crossfade
-        setting instead of Music Assistant mixing the overlap. This only answers for
-        audio we do not mix ourselves, and the same two limits apply as to a fade of
-        our own: only tracks are faded, and an item needs a boundary the same source
-        owns both sides of.
-
-        :param queue: Queue the item is played from.
-        :param queue_item: Queue item to report the fade for.
-        """
-        if queue_item.media_type != MediaType.TRACK or queue_item.streamdetails is None:
-            return CrossfadeMode.DISABLED
-        if not queue_item.streamdetails.is_realtime:
-            # we mix this item's overlap ourselves, so the source's is not in play
-            return CrossfadeMode.DISABLED
-        provider = self.mass.get_provider(queue_item.streamdetails.provider)
-        if not isinstance(provider, MusicProvider):
-            return CrossfadeMode.DISABLED
-        source_fades = provider.delivers_crossfaded_audio
-        if source_fades is None:
-            # nothing is playing from this source yet, so the setting it would be
-            # handed when it starts is the only thing to go on
-            source_fades = self.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
-        if not source_fades:
-            return CrossfadeMode.DISABLED
-        if not self._source_fades_an_adjacent_item(queue, queue_item):
-            return CrossfadeMode.DISABLED
-        return CrossfadeMode.SOURCE
+        return isinstance(provider, MusicProvider) and provider.delivers_normalized_audio(
+            streamdetails
+        )
 
     def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
         """Return whether the queue's effective crossfade mode is smart crossfade."""
@@ -790,11 +761,9 @@ class StreamsController(CoreController):
             )
             if queue_item.media_type != MediaType.TRACK:
                 crossfade_mode = CrossfadeMode.DISABLED
-            elif queue_item.streamdetails.is_realtime:
-                # a realtime source delivers at playback pace, so it has no audio to
-                # spare for an overlap in either direction
-                crossfade_mode = CrossfadeMode.DISABLED
             else:
+                # a realtime source gets a fade decided from what its boundary
+                # can actually deliver (see _select_buffered_crossfade)
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
@@ -872,9 +841,6 @@ class StreamsController(CoreController):
                     queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                 ),
                 session_id=session_id,
-                # a crossfade the source performs itself is never mixed here, so it
-                # is reported apart from the mode that drives our own mixer
-                source_crossfade_mode=self.get_source_crossfade_mode(queue, queue_item),
             )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
@@ -1056,6 +1022,7 @@ class StreamsController(CoreController):
         """Stream a live AudioSource playing on a player."""
         self._log_request(request)
         session, player, prov = self._resolve_audio_source_request(request)
+        playback_session_id = session.playback_session_id
         # the session's own player, never the url's: the consuming player differs for
         # protocol and group members, and the claim belongs to the owner
         source_player_id = session.player_id
@@ -1083,6 +1050,11 @@ class StreamsController(CoreController):
                     source_player_id,
                     stream_session_id,
                 )
+                if (
+                    self.mass.players.get_audio_source_session(source_player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                ):
+                    raise web.HTTPNotFound(reason="AudioSource session was superseded")
                 session.stream_session_id = stream_session_id
             except RuntimeError as err:
                 # the plugin refuses this player (e.g. it just redirected playback
@@ -1115,13 +1087,19 @@ class StreamsController(CoreController):
                 player=player,
                 session=session,
                 streamdetails=streamdetails,
+                provider=prov,
             )
             serving = True
             self._active_output_streams += 1
             try:
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
-                        if session.stream_session_id != stream_session_id:
+                        if (
+                            self.mass.players.get_audio_source_session(source_player_id)
+                            is not session
+                            or session.playback_session_id != playback_session_id
+                            or session.stream_session_id != stream_session_id
+                        ):
                             self.logger.debug(
                                 "Ending stream for %s: a newer request took the source over",
                                 session.source.name,
@@ -1149,7 +1127,7 @@ class StreamsController(CoreController):
                         exc_info=True,
                     )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream Queue Flow audio to player."""
@@ -1498,8 +1476,10 @@ class StreamsController(CoreController):
                 raise AudioError(
                     f"Unknown (or invalid) audio source session: {media.queue_session_id}"
                 )
-            return self._get_audio_source_session_stream(
-                session, pcm_format, player_id or media.source_id
+            return self._count_as_output_stream(
+                self._get_audio_source_session_stream(
+                    session, pcm_format, player_id or media.source_id
+                )
             )
         if media.source_id and media.queue_item_id:
             # Queue stream request - determine flow_mode based on player capabilities
@@ -1554,7 +1534,7 @@ class StreamsController(CoreController):
                     flow_stream = self.audio.get_overlay_mixed_stream(
                         queue, flow_stream, pcm_format
                     )
-                return flow_stream
+                return self._count_as_output_stream(flow_stream)
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
@@ -1567,7 +1547,6 @@ class StreamsController(CoreController):
                         queue_item.media_type == MediaType.RADIO and overlay_active(queue)
                     ),
                     session_id=queue_session_id,
-                    source_crossfade_mode=self.get_source_crossfade_mode(queue, queue_item),
                 )
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
@@ -1594,12 +1573,12 @@ class StreamsController(CoreController):
                 queue_item.media_item is not None
                 and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
             ):
-                return self._wrap_with_audio_source_lifecycle(
+                inner_stream = self._wrap_with_audio_source_lifecycle(
                     inner=inner_stream,
                     queue_item=queue_item,
                     player_id=player_id or media.source_id,
                 )
-            return inner_stream
+            return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
         # NOTE: this will fail if its an uri not playable by ffmpeg
         return get_ffmpeg_stream(
@@ -1726,7 +1705,9 @@ class StreamsController(CoreController):
             )
         return session, player, prov
 
-    async def _release_unstarted_audio_source(self, session: AudioSourceSession) -> None:
+    async def _release_unstarted_audio_source(
+        self, session: AudioSourceSession, playback_session_id: str
+    ) -> None:
         """
         Take a source that never started off the player holding it.
 
@@ -1735,8 +1716,13 @@ class StreamsController(CoreController):
         source that never played, with its own queue held inactive behind it.
 
         :param session: The session whose stream failed before any audio flowed.
+        :param playback_session_id: Playback session active when stream setup started.
         """
-        if self.mass.players.get_audio_source_session(session.player_id) is not session:
+        current_session = self.mass.players.get_audio_source_session(session.player_id)
+        if (
+            current_session is not session
+            or current_session.playback_session_id != playback_session_id
+        ):
             # already superseded, so it is not ours to release
             return
         self.logger.debug(
@@ -1745,7 +1731,12 @@ class StreamsController(CoreController):
             session.player_id,
         )
         try:
-            await self.mass.players.deselect_source(session.player_id)
+            await self.mass.players.deselect_source(
+                session.player_id,
+                provider_instance_id=session.provider_instance_id,
+                source_id=session.source_id,
+                playback_session_id=playback_session_id,
+            )
         except Exception:
             # deselect_source already absorbs the expected stop failures, so anything
             # arriving here is a defect worth a trail rather than a silent half-cleanup
@@ -1782,6 +1773,7 @@ class StreamsController(CoreController):
         player: Player,
         session: AudioSourceSession,
         streamdetails: StreamDetails,
+        provider: PluginProvider,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
         Open the response for a live audio source and build the audio behind it.
@@ -1790,6 +1782,7 @@ class StreamsController(CoreController):
         :param player: The player consuming this stream.
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
+        :param provider: Plugin delivering the live source.
         :return: The prepared response and the encoded audio to write to it.
         """
         pcm_format = await self.audio.select_pcm_format(
@@ -1830,7 +1823,10 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             shared_player_ids=player.state.group_members,
+            queue_id=session.player_id,
+            session_id=session.playback_session_id,
         ).filter_params
+        self._update_audio_source_processing_context(session, provider)
         if (
             output_format.content_type == ContentType.WAV
             and not filter_params
@@ -1880,6 +1876,7 @@ class StreamsController(CoreController):
             raise AudioError(
                 f"AudioSource provider {session.provider_instance_id} is not available"
             )
+        playback_session_id = session.playback_session_id
         stream_session_id = uuid4().hex
         serving = False
         try:
@@ -1893,12 +1890,18 @@ class StreamsController(CoreController):
             except RuntimeError as err:
                 # the plugin refuses this consumer, e.g. it just redirected playback
                 raise AudioError(str(err)) from err
+            if (
+                self.mass.players.get_audio_source_session(session.player_id) is not session
+                or session.playback_session_id != playback_session_id
+            ):
+                raise AudioError("AudioSource session was superseded")
             session.stream_session_id = stream_session_id
             if (streamdetails := session.streamdetails) is None:
                 streamdetails = await prov.get_stream_details(
                     session.source_id, MediaType.AUDIO_SOURCE
                 )
                 session.attach_streamdetails(streamdetails)
+            self._update_audio_source_processing_context(session, prov)
             serving = True
             async for chunk in self.audio.get_audio_source_stream(
                 streamdetails=streamdetails,
@@ -1906,6 +1909,12 @@ class StreamsController(CoreController):
                 raise_on_error=False,
                 display_name=session.source.name,
             ):
+                if (
+                    self.mass.players.get_audio_source_session(session.player_id) is not session
+                    or session.playback_session_id != playback_session_id
+                    or session.stream_session_id != stream_session_id
+                ):
+                    break
                 yield chunk
         finally:
             try:
@@ -1921,7 +1930,7 @@ class StreamsController(CoreController):
                     exc_info=True,
                 )
             if not serving:
-                await self._release_unstarted_audio_source(session)
+                await self._release_unstarted_audio_source(session, playback_session_id)
 
     async def _wrap_with_audio_source_lifecycle(
         self,
@@ -1975,29 +1984,26 @@ class StreamsController(CoreController):
                     queue_id,
                 )
 
-    def _source_fades_an_adjacent_item(self, queue: PlayerQueue, queue_item: QueueItem) -> bool:
+    async def _count_as_output_stream(self, inner: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
         """
-        Return whether the same source serves an item next to this one.
+        Forward a queue stream while it counts towards the active-output-stream gauge.
 
-        A source can only fade across a boundary it owns both sides of: with anything
-        else next to this item it plays the item out and the cut is a hard one. Both
-        neighbours count, the same way one of our own fades credits both of its sides -
-        the last track of a queue is still the side that was faded into.
+        Direct-PCM consumers (AirPlay, Snapcast, Sendspin, Squeezelite, UGP, ...) call
+        ``get_stream`` instead of going through the HTTP route, so without this they never
+        register as playing and audio analysis keeps its idle CPU budget while they stream.
 
-        :param queue: Queue the item is played from.
-        :param queue_item: Queue item whose neighbours to check.
+        :param inner: The queue (flow or single item) stream to forward.
         """
-        assert queue_item.streamdetails is not None  # guaranteed by the caller
-        controller = self.mass.player_queues
-        queue_id = queue.queue_id
-        neighbours = [controller.get_next_item(queue_id, queue_item.queue_item_id)]
-        index = controller.index_by_id(queue_id, queue_item.queue_item_id)
-        if index is not None and index > 0:
-            neighbours.append(controller.get_item(queue_id, index - 1))
-        return any(
-            self._served_by(neighbour, queue_item.streamdetails.provider)
-            for neighbour in neighbours
-        )
+        self._active_output_streams += 1
+        try:
+            # aclosing guarantees the generator (and thus the ffmpeg process chain behind
+            # it) is torn down when the consumer stops iterating; an async for does not
+            # close its iterator on its own.
+            async with aclosing(inner):
+                async for chunk in inner:
+                    yield chunk
+        finally:
+            self._active_output_streams -= 1
 
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
         """
@@ -2025,7 +2031,6 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         overlay_enabled: bool,
         session_id: str | None = None,
-        source_crossfade_mode: CrossfadeMode = CrossfadeMode.DISABLED,
     ) -> None:
         """
         Store the shared processing context selected for a queue item.
@@ -2040,7 +2045,6 @@ class StreamsController(CoreController):
         :param pcm_format: Shared PCM format leaving queue processing.
         :param overlay_enabled: Whether an overlay is mixed into this stream.
         :param session_id: Queue session that owns processing-detail updates.
-        :param source_crossfade_mode: Crossfade the item's own source applies, if any.
         """
         if queue_item.streamdetails is None:
             return
@@ -2062,10 +2066,30 @@ class StreamsController(CoreController):
                     "float",
                     queue_item.extra_attributes.get("playback_speed", 1.0),
                 ),
-                crossfade_mode=source_crossfade_mode,
+                crossfade_mode=CrossfadeMode.DISABLED,
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,
+        )
+
+    def _update_audio_source_processing_context(
+        self,
+        session: AudioSourceSession,
+        provider: PluginProvider,
+    ) -> None:
+        """
+        Publish source-owned processing for a live AudioSource.
+
+        :param session: Active source session to publish.
+        :param provider: Plugin delivering the live source.
+        """
+        if session.streamdetails is None:
+            return
+        self.audio_processing.update_source_context(
+            session.player_id,
+            session.playback_session_id,
+            crossfade_enabled=provider.delivers_crossfaded_audio(session.streamdetails),
+            volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
     def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:

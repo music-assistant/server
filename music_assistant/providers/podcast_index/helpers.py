@@ -145,21 +145,21 @@ def parse_podcast_from_feed(
 def parse_episode_from_data(
     episode_data: dict[str, Any],
     podcast_id: str,
-    episode_idx: int,
     instance_id: str,
     domain: str,
     podcast_name: str | None = None,
+    position: int = 0,
 ) -> PodcastEpisode | None:
-    """Parse episode from API episode data."""
+    """
+    Parse episode from API episode data.
+
+    :param position: The episode's listing position. Defaults to 0 (unknown).
+    """
     episode_api_id = episode_data.get("id")
     if not episode_api_id:
         return None
 
     episode_id = f"{podcast_id}|{episode_api_id}"
-
-    position = episode_data.get("episode")
-    if position is None:
-        position = episode_idx + 1
 
     if podcast_name is None:
         podcast_name = episode_data.get("feedTitle") or "Unknown Podcast"

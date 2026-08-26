@@ -880,7 +880,9 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+        elif any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            # Only show the token pairing method in case the client doesn't implement any other one.
+            # token pairing should only be used as a last resort due to the worse UX.
             options.append(PAIR_METHOD_TOKEN)
         if offer_unpaired and effective_unpaired_access(info, pairing_config):
             options.append(PAIR_METHOD_UNPAIRED)
