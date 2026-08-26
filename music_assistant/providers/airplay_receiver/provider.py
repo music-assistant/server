@@ -34,7 +34,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.config_entries import (
     CONF_CONNECTED_PLAYERS,
     CONF_PUBLISH_NAME_TEMPLATE,
@@ -192,7 +192,6 @@ class AirPlayReceiverProvider(PluginProvider):
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return runtime options for this provider."""
         return (
-            CONF_ENTRY_WARN_PREVIEW,
             create_connected_players_entry(
                 self.mass, cast("list[str]", self.get_config_value(CONF_CONNECTED_PLAYERS) or [])
             ),
@@ -603,8 +602,10 @@ class AirPlayReceiverProvider(PluginProvider):
 
         template = await asyncio.to_thread(_read_template)
 
-        # Replace placeholders
-        config_content = template.replace("{AIRPLAY_NAME}", daemon.airplay_name)
+        # Replace placeholders. The name lands inside a quoted libconfig string:
+        # escape it so a quote or backslash in a player name cannot break the config.
+        safe_name = daemon.airplay_name.replace("\\", "\\\\").replace('"', '\\"')
+        config_content = template.replace("{AIRPLAY_NAME}", safe_name)
         config_content = config_content.replace("{METADATA_PIPE}", daemon.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", daemon.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(daemon.port))

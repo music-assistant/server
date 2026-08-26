@@ -33,7 +33,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.helpers.config_entries import (
     CONF_CONNECTED_PLAYERS,
     CONF_PUBLISH_NAME_TEMPLATE,
@@ -206,7 +206,6 @@ class SpotifyConnectProvider(PluginProvider):
         # visible runtime option for soloist configs.
         is_soloist = self.get_setup_value(CONF_BACKEND) == BACKEND_SOLOIST
         return (
-            CONF_ENTRY_WARN_PREVIEW,
             create_connected_players_entry(
                 self.mass, cast("list[str]", self.get_config_value(CONF_CONNECTED_PLAYERS) or [])
             ),
