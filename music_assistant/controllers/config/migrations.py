@@ -875,19 +875,23 @@ def _collapse_connected_player_instances(
                 "Could not read the stored setup of %s; its configured player is not carried over",
                 instance_id,
             )
+    # a disabled instance must not decide the surviving config or contribute players:
+    # its enabled flag becomes the whole provider's after the collapse
+    enabled_ids = [iid for iid, cfg in instances.items() if cfg.get("enabled", True)]
+    survivor_pool = enabled_ids or list(instances)
     # the soloist instance carries the API key and ToS consent, so it must be the one
     # that survives the collapse
-    survivor_id = next(iter(instances))
+    survivor_id = survivor_pool[0]
     if domain == "spotify_connect":
         survivor_id = next(
-            (iid for iid, setup in decrypted.items() if setup.get("backend") == "soloist"),
+            (iid for iid in survivor_pool if decrypted.get(iid, {}).get("backend") == "soloist"),
             survivor_id,
         )
     # ordered de-duped carry-over of the explicitly configured players; the removed
     # automatic selection and vanished players contribute nothing
     connected_players: list[str] = []
     soloist_player_ids: dict[str, str] = {}
-    for instance_id in instances:
+    for instance_id in enabled_ids:
         player_id = decrypted.get(instance_id, {}).get("mass_player_id")
         if (
             not isinstance(player_id, str)

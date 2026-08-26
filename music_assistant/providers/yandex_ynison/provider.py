@@ -1424,7 +1424,12 @@ class YandexYnisonProvider(PluginProvider):
         """Return the advertised device name: the connected player's display name."""
         if player := self.mass.players.get_player(self._default_player_id):
             return player.display_name
-        return DEFAULT_DISPLAY_NAME
+        # on a cold boot the player registers after this provider connects, so fall
+        # back to its stored config name (the name sticks for the whole connection)
+        stored_name = self.mass.config.get_raw_player_config_value(
+            self._default_player_id, "name"
+        ) or self.mass.config.get_raw_player_config_value(self._default_player_id, "default_name")
+        return str(stored_name) if stored_name else DEFAULT_DISPLAY_NAME
 
     def _get_target_player_id(self) -> str | None:
         """Determine the target player ID for playback."""

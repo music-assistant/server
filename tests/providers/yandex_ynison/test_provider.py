@@ -1835,10 +1835,22 @@ class TestDisplayName:
         provider.mass.players.get_player.return_value = player
         assert provider._display_name == "Living Room"
 
-    def test_falls_back_to_default_when_player_unregistered(self) -> None:
-        """The default name applies while the connected player is not registered."""
+    def test_falls_back_to_stored_name_when_player_unregistered(self) -> None:
+        """On a cold boot the stored player config name applies until registration."""
         provider = _make_provider()
         provider.mass.players.get_player.return_value = None
+        provider.mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                "Living Room" if key == "name" else default
+            )
+        )
+        assert provider._display_name == "Living Room"
+
+    def test_falls_back_to_default_without_a_stored_name(self) -> None:
+        """The default name applies when neither the player nor a stored name exists."""
+        provider = _make_provider()
+        provider.mass.players.get_player.return_value = None
+        provider.mass.config.get_raw_player_config_value = MagicMock(return_value=None)
         assert provider._display_name == DEFAULT_DISPLAY_NAME
 
 

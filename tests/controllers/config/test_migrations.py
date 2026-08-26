@@ -1059,6 +1059,36 @@ def test_migrate_connected_player_plugins_prefers_soloist_survivor(tmp_path: Pat
     assert data == before
 
 
+def test_migrate_connected_player_plugins_ignores_disabled_instances(tmp_path: Path) -> None:
+    """A disabled instance neither survives the collapse nor contributes its player."""
+    data = _connected_plugins_data()
+    # the soloist instance was disabled by the user: the enabled go-librespot one
+    # must survive and the disabled instance's player must not start advertising
+    data["providers"]["spotify_connect--b"]["enabled"] = False
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    survivor = data["providers"]["spotify_connect"]
+    assert survivor["setup_data"]["backend"] == ENCRYPT_SUFFIX + "go_librespot"
+    assert survivor.get("enabled", True) is True
+    assert survivor["values"]["connected_players"] == ["kitchen"]
+
+
+def test_migrate_connected_player_plugins_all_disabled_stays_disabled(tmp_path: Path) -> None:
+    """When every instance is disabled the collapsed provider stays disabled."""
+    data = _connected_plugins_data()
+    data["providers"]["spotify_connect--a"]["enabled"] = False
+    data["providers"]["spotify_connect--b"]["enabled"] = False
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    survivor = data["providers"]["spotify_connect"]
+    assert survivor["enabled"] is False
+    # soloist preference still applies within the disabled pool
+    assert survivor["setup_data"]["backend"] == ENCRYPT_SUFFIX + "soloist"
+    assert survivor["values"]["connected_players"] == []
+
+
 def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
     tmp_path: Path,
 ) -> None:
