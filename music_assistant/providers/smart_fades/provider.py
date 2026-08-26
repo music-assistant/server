@@ -69,9 +69,8 @@ BEAT_WINDOW_OVERLAP_MODE = "keep_first"
 # While a player streams, wait this many times a window's own compute time before starting the
 # next one, so beat inference does not occupy a core continuously.
 BEAT_WINDOW_PACE_RATIO = 1.0
-# A model failure is often transient: a provider reload or shutdown frees the models while an
-# analysis is still running, or a one-off torch/hardware error. Record those with this retry
-# horizon instead of a permanent row that blocks the track forever.
+# Model failures such as one-off torch/hardware errors are often transient. Record them with
+# this retry horizon instead of a permanent row that blocks the track forever.
 MODEL_FAILURE_RETRY_DELAY = timedelta(hours=24)
 
 
