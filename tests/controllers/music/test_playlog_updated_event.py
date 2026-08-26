@@ -9,10 +9,10 @@ temporary directory.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from music_assistant_models.enums import EventType, MediaType
-from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import (
     Artist,
     Podcast,
@@ -24,6 +24,9 @@ from music_assistant_models.playlog_update import PlaylogUpdate
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.mass import MusicAssistant
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 
 def _provider_mapping(provider: str = "test_prov") -> set[ProviderMapping]:
@@ -72,6 +75,7 @@ async def test_mark_played_signals_playlog_updated(mass: MusicAssistant) -> None
         provider_mappings=_provider_mapping(),
         duration=200,
     )
+    assert track.uri is not None
     events = _collect_events(mass)
 
     await mass.music.mark_item_played(track, fully_played=True, userid=user.user_id)
@@ -103,6 +107,7 @@ async def test_progress_report_signals_resume_position(mass: MusicAssistant) -> 
             provider_mappings=_provider_mapping("test_podcast_prov"),
         ),
     )
+    assert episode.uri is not None
     events = _collect_events(mass)
 
     await mass.music.mark_item_played(
@@ -155,6 +160,7 @@ async def test_mark_unplayed_signals_playlog_updated(mass: MusicAssistant) -> No
             provider_mappings=_provider_mapping("test_podcast_prov"),
         ),
     )
+    assert episode.uri is not None
     await mass.music.mark_item_played(
         episode, fully_played=False, seconds_played=120, userid=user.user_id
     )
