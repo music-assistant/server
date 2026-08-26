@@ -102,8 +102,8 @@ if TYPE_CHECKING:
 
 # The capture sink delivers fixed s32le/44.1kHz/2ch PCM. Soloist decodes
 # internally and never exposes the source codec or bit depth (lossless up to
-# 24-bit fits the 32-bit container losslessly), so the capture format doubles
-# as the display format.
+# 24-bit fits the 32-bit container losslessly), so this is what is handed over
+# whatever the tier; what the user is shown comes from source_audio_format.
 _FRAME_BYTES: Final[int] = 4 * CAPTURE_CHANNELS
 _BYTES_PER_SECOND: Final[int] = CAPTURE_SAMPLE_RATE * _FRAME_BYTES
 
@@ -167,8 +167,10 @@ _ITEM_OVERRUN_S: Final[float] = 30.0
 # stream runs ahead of the player, a per-item stream is the playing item or its
 # successor
 _FOLLOWER_SEARCH_DEPTH: Final[int] = 4
-# audio held for an item whose stream has not been opened (or reopened) yet;
-# beyond this the session is considered abandoned
+# Audio held for an item whose stream has not been opened (or reopened) yet;
+# past this its channel stops growing and what the engine renders is dropped.
+# Deliberately above _MAX_RETAINED_S, which suspends the sink instead and so
+# loses nothing: that cap always applies first, leaving this a backstop.
 _UNCLAIMED_LIMIT_S: Final[float] = 60.0
 # How much captured-but-undelivered audio the session may hold. Reading at
 # _PACE_RATE deliberately makes the engine run ahead of the player, and that
@@ -300,7 +302,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param provider: The owning Spotify provider instance.
         """
         super().__init__(provider)
-        # Guards every read and write of _session AND every session teardown.
+        # Guards every write of _session AND every session teardown.
         # The engine allows one daemon per data directory, so a replacement can
         # only be spawned once the previous one is gone — holding this across
         # the teardown is what sequences that.
@@ -337,17 +339,6 @@ class SoloistBackend(SpotifyPlaybackBackend):
             bit_depth=32,
             channels=CAPTURE_CHANNELS,
         )
-
-    @property
-    def max_concurrent_streams(self) -> int:
-        """
-        Two: a handover holds two item streams against the one Spotify session.
-
-        The account still runs a single Soloist session; the second slot exists
-        because the item that is ending and the item that continues from it are
-        two Music Assistant streams reading the same session in turn.
-        """
-        return 2
 
     @property
     def is_realtime(self) -> bool:
@@ -2289,7 +2280,7 @@ class _ItemAudio:
             # renders from here on is padding silence, not content
             return
         if not self.claimed and self._buffered >= int(_UNCLAIMED_LIMIT_S * _BYTES_PER_SECOND):
-            # nobody is reading this item and nobody is going to: hold the
+            # nothing has opened this item's stream in all this time: hold the
             # session's clock steady but stop growing
             return
         self._chunks.append(chunk)
@@ -2384,8 +2375,8 @@ class _ItemAudio:
         """
         Yield this item's audio until the session moves on to the next one.
 
-        The stream is not capped at the item's duration: with crossfade it
-        legitimately carries the head of the next track, and the next item's
+        The stream is not capped at the item's duration: reported durations are
+        approximate, so the cut is the engine's track change and the next item's
         stream begins exactly where this one stops.
         """
         session = self.session

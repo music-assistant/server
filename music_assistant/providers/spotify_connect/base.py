@@ -37,8 +37,9 @@ AUDIO_QUALITY_OPTIONS: Final = [
 ]
 
 # The bitrate each tier maps onto in kbps, matching the Spotify apps' own
-# vocabulary. Both the engines' own bitrate setting and the format advertised for
-# display come from here, so what we ask for is what we claim. Spoken content is
+# vocabulary. The go-librespot engine's own bitrate setting and the format
+# advertised for display both come from here, so what we ask for is what we claim
+# (Soloist's engine setting lives in soloist/prefs.py). Spoken content is
 # never lossless, and neither is go-librespot, so the lossless tier falls back to
 # the highest lossy rate for both rather than claiming more than they can deliver.
 MAX_LOSSY_BIT_RATE: Final[int] = 320

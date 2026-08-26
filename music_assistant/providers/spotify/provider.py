@@ -268,6 +268,8 @@ class SpotifyProvider(MusicProvider):
         backend the item that is ending and the item that continues from the
         same session are two streams reading it in turn.
         """
+        # not answered per backend: MusicProvider sizes the stream semaphore from
+        # this in __init__, long before the configured backend is created
         return 2
 
     @property
@@ -694,11 +696,9 @@ class SpotifyProvider(MusicProvider):
                 f"({completion_percentage:.1f}%, fully_played: {fully_played})"
             )
 
-            # Note: No API exists to sync playback position back to Spotify for audiobooks
-            # MA handles all internal position tracking automatically
-
-            # The resume position will be automatically updated by MA's internal tracking
-            # and will be retrieved via get_audiobook() which combines MA + Spotify positions
+            # No API exists to sync playback position back to Spotify for audiobooks:
+            # the resume position stays in MA's own tracking, and Spotify's chapter
+            # resume points are read separately via get_resume_position()
 
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -939,7 +939,7 @@ class SpotifyProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Get audio stream from Spotify via librespot."""
+        """Get the audio stream for the given item from the configured playback backend."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_uris = streamdetails.data.get("chapters", [])
             chapters_data = streamdetails.data.get("chapters_data", [])
@@ -964,7 +964,7 @@ class SpotifyProvider(MusicProvider):
                     start_chapter = len(chapter_uris) - 1
                     current_seek_ms = 0
 
-            # Convert back to seconds for librespot
+            # back to seconds: that is the unit the backend's seek_position takes
             current_seek_seconds = int(current_seek_ms // 1000)
 
             # Stream chapters starting from the calculated position

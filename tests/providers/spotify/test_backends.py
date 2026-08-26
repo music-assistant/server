@@ -3,8 +3,8 @@ Tests for the Spotify provider's playback backend selection and wiring.
 
 The playback backend is an explicit per-instance choice stored in setup_data:
 configs predating the choice (key unset) must stay on librespot, "soloist"
-selects the single-track Soloist backend. The per-backend concurrency budget
-and librespot's URI translation are locked down here as well.
+selects the single-track Soloist backend. The concurrency budget (the same on
+either backend) and librespot's URI translation are locked down here as well.
 """
 
 from __future__ import annotations

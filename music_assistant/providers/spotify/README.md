@@ -10,7 +10,7 @@ flow, stored per instance):
   since December 2024 cannot use it.
 - **`backends/soloist.py`** — Spotify Soloist, Spotify's official headless client. One
   continuous session, fed one track ahead, playing into a private PulseAudio capture
-  sink (`helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
+  sink (`music_assistant/helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
   as s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API.
 
 Source capacity is **2** on either backend — for librespot two parallel fetches, for

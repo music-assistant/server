@@ -168,8 +168,6 @@ async def pair_soloist_session(mass: MusicAssistant, api_key: str, data_dir: Pat
             "--cache-dir",
             cache_dir,
         ]
-        # the explicit process name keeps AsyncProcess logging free of the argv
-        # (which carries the API key)
         # the daemon writes all of its logging to stdout and only ever puts
         # argument-parsing complaints on stderr, so the two are merged into one
         # captured stream. Capturing is also what makes the redaction below

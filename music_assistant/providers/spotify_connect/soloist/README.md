@@ -27,7 +27,10 @@ changes — at the cost of a managed binary download and a per-user API key.
   volume modes, event translation.
 - **`runtime.py`** — everything needed to run the daemon: `SoloistBinaryManager` (managed
   binary install), `SoloistClient` (local WebSocket API) and the typed wire models. Also
-  the import surface for other providers (e.g. a future Spotify music provider).
+  the import surface for other providers — the Spotify music provider's own soloist
+  playback backend reuses it rather than shipping a second copy.
+- **`prefs.py`** — `write_audio_prefs`: the classic desktop-client prefs stores the engine
+  reads at startup (crossfade, normalization, quality tier).
 
 ## Binary management (`SoloistBinaryManager`)
 
@@ -49,7 +52,8 @@ Soloist builds **expire 90 days after their build date** (the daemon then exits 
    before the supervisor respawns.
 
 A recently-verified cache (60 s) keeps concurrent instance startups from re-checking; the
-API key is only ever passed on the daemon's argv and redacted from logged stderr.
+API key is only ever passed on the daemon's argv and redacted from its captured
+output (stderr is merged into stdout, which the log reader redacts).
 
 ## Audio capture (PulseAudio pipe-sink)
 
@@ -111,9 +115,10 @@ loudness normalization and crossfade settings are applied: the backend rewrites
 silently disable crossfade) and `audio.normalize_v2` before every daemon spawn, in both
 the global `settings/prefs` and every per-user `settings/Users/*/prefs` (per-user values
 override global ones per key; the engine scrubs foreign keys from the global store when
-it rewrites it, hence the refresh on every spawn). Crossfade applies to playlist/queue
-transitions; consecutive album tracks keep playing gapless and manual skips stay hard
-cuts (engine behavior, matching desktop Spotify).
+it rewrites it, hence the refresh on every spawn). Crossfade only reaches boundaries fed
+through the engine's queue: a real album or playlist context is never crossfaded
+(measured), and that path is not gapless either — the outgoing file's trailing silence
+is left in place.
 
 The streaming quality setting travels the same way, as `audio.play_bitrate_enumeration`,
 `audio.play_bitrate_non_metered_enumeration` and the `audio.play_bitrate_non_metered_migrated`
