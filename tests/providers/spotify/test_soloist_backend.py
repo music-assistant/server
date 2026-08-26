@@ -2408,6 +2408,21 @@ def test_an_abandoned_channel_stops_holding_the_cushion(tmp_path: Path) -> None:
     assert session._retained_bytes() == 0
 
 
+async def test_a_channel_no_stream_ever_took_stops_holding_the_cushion(
+    tmp_path: Path,
+) -> None:
+    """A channel the session cuts with nothing reading it frees its buffer right away."""
+    session = _make_session(tmp_path)
+    item = _feed(session, TRACK_B)
+    await session._observe_current(TRACK_B, 200_000, track_changed=True)
+    session._write_if_wanted(b"\x01" * 4096)
+    assert session._retained_bytes() == 4096
+    # cut while it is still the current channel, which the prune deliberately keeps
+    item.close()
+    assert item in session._channels
+    assert session._retained_bytes() == 0
+
+
 async def test_a_channel_still_being_read_keeps_its_tail(tmp_path: Path) -> None:
     """Closing the playing item at a cut must not discard what its stream is still owed."""
     session = _make_session(tmp_path)

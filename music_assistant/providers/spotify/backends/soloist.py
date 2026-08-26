@@ -2434,11 +2434,11 @@ class _ItemAudio:
         """
         Free audio nothing can read any more, so it stops gating the capture sink.
 
-        A skip leaves its channel closed with its reader gone; without this the
+        A closed channel is never handed to a stream again; without this the
         buffer it had filled would count against ``_MAX_RETAINED_S`` for the rest
         of the session, and enough of them would suspend the sink for good.
         """
-        if self.claimed or not self._closed or not self.spent:
+        if self.claimed or not self._closed:
             return
         self._chunks.clear()
         self._buffered = 0
