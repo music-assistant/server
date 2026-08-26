@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
 _API_KEY = "sk-super-secret-key-123"
-_INSTANCE_ID = "spotify_connect--test1"
+_IDENTITY_KEY = "spotify_connect_player1"
 
 
 class _FakeServer:
@@ -163,7 +163,7 @@ class _FakeProc:
 def _make_backend(
     *,
     volume_mode: str = VOLUME_MODE_PLAYER_ONLY,
-    instance_id: str = _INSTANCE_ID,
+    identity_key: str = _IDENTITY_KEY,
     base_dir: Path | None = None,
     consent: bool = True,
     audio_quality: str = AUDIO_QUALITY_LOSSLESS,
@@ -179,7 +179,7 @@ def _make_backend(
 
     backend = SoloistBackend(
         mass,
-        instance_id=instance_id,
+        identity_key=identity_key,
         publish_name="Test Device",
         name="Spotify Test",
         logger=logging.getLogger("test.soloist_backend"),
@@ -334,9 +334,9 @@ async def test_daemon_argv_and_key_never_logged(
         "--api-key",
         _API_KEY,
         "--data-dir",
-        f"/fake/storage/spotify_connect/{_INSTANCE_ID}/soloist-data",
+        f"/fake/storage/spotify_connect/{_IDENTITY_KEY}/soloist-data",
         "--cache-dir",
-        f"/fake/cache/{_INSTANCE_ID}/soloist-cache",
+        f"/fake/cache/{_IDENTITY_KEY}/soloist-cache",
         "--cache-size",
         str(CACHE_SIZE_MB),
         "--initial-volume",
@@ -1345,8 +1345,8 @@ async def test_playback_state_snapshot_emits_metadata_for_unseen_track() -> None
 
 
 def test_sink_prefix_is_sanitized() -> None:
-    """Characters unsafe for PA sink names are stripped from the instance id."""
-    backend, _events = _make_backend(instance_id="weird id!*")
+    """Characters unsafe for PA sink names are stripped from the identity key."""
+    backend, _events = _make_backend(identity_key="weird id!*")
 
     assert backend._sink_prefix == "weird_id__"
 
