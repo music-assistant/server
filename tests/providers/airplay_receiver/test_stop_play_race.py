@@ -150,3 +150,42 @@ async def test_concurrent_starts_all_wait_for_pending_stop(provider: MagicMock) 
     assert events[0] == "stop_done"
     assert events.count("play") == 2
     assert provider.daemon.pending_stop_task is None
+
+
+async def test_teardown_cancels_inflight_start_and_ignores_late_events(
+    provider: MagicMock,
+) -> None:
+    """_stop_receiver awaits the in-flight start; a late play-state event schedules nothing."""
+    play_started = asyncio.Event()
+    release = asyncio.Event()
+    play_calls: list[str] = []
+
+    async def blocking_play(player_id: str, _media: str) -> None:
+        play_calls.append(player_id)
+        play_started.set()
+        await release.wait()
+
+    provider.mass.players.cmd_stop = AsyncMock()
+    provider.mass.player_queues.play_media = blocking_play
+    provider.daemon.in_use_by_player = None
+    provider.daemon.stop_called = False
+    provider.daemon.pending_start_task = None
+    provider.daemon.metadata_reader = None
+    provider.daemon.runner_task = None
+
+    _handle(provider, "playing")
+    await asyncio.wait_for(play_started.wait(), 1)
+    start_task = provider.daemon.pending_start_task
+    assert start_task is not None
+    assert not start_task.done()
+
+    await AirPlayReceiverProvider._stop_receiver(provider, provider.daemon)
+
+    # the in-flight start was cancelled and awaited (else the teardown would hang)
+    assert start_task.cancelled()
+    # a late play-state event on the stopped daemon schedules no replacement work
+    AirPlayReceiverProvider._on_metadata_update(
+        provider, provider.daemon, {"play_state": "playing"}
+    )
+    assert provider.daemon.pending_start_task is None
+    assert play_calls == ["player1"]
