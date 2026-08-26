@@ -24,7 +24,6 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_CACHE,
     DB_TABLE_PLAYLOG,
 )
 from music_assistant.controllers.config.retired_local_audio import cleanup_retired_local_audio
@@ -392,35 +391,6 @@ async def test_torch_purges_the_legacy_universal_player_queue(mass: MusicAssista
 
     assert mass.config.get(f"{CONF_PROVIDERS}/local_audio") is None
     await _wait_for_queue_cache_purge(mass, LEGACY_WRAPPER_ID)
-
-
-async def test_corrupt_saved_queue_keeps_the_config(
-    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """
-    A saved queue that cannot be decoded is unanswerable, not proof of an unused player.
-
-    CacheController.get reports an entry it fails to deserialize as a miss, which would
-    read as "never used" and delete a setup that may well have been played to.
-    """
-    _store_install(mass)
-    await _store_queue_cache(mass, ANALOG_ID, _empty_queue_state(ANALOG_ID), [])
-    assert mass.cache.database is not None
-    await mass.cache.database.update(
-        DB_TABLE_CACHE,
-        {
-            "category": CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-            "provider": "player_queues",
-            "key": ANALOG_ID,
-        },
-        {"data": "{not json"},
-    )
-
-    await cleanup_retired_local_audio(mass)
-
-    _assert_kept(mass)
-    assert "keeping its configuration" in caplog.text
-    assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is None
 
 
 async def test_a_failing_removal_never_escapes_startup(

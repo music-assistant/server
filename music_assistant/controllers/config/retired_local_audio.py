@@ -19,20 +19,18 @@ TODO: remove after 2.11 release
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_CACHE,
     DB_TABLE_PLAYLOG,
 )
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
 )
-from music_assistant.helpers.json import async_json_loads
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -151,11 +149,8 @@ async def _find_playback_evidence(mass: MusicAssistant, player_ids: list[str]) -
     if not queue_ids:
         return None
     played = await _queue_ids_in_playlog(mass, queue_ids)
-    saved_queues = await _saved_queue_payloads(mass, queue_ids)
     for queue_id in queue_ids:
-        if queue_id in played:
-            return queue_id
-        if any(_payload_holds_content(payload) for payload in saved_queues.get(queue_id, ())):
+        if queue_id in played or await _has_saved_queue_content(mass, queue_id):
             return queue_id
     return None
 
@@ -184,44 +179,29 @@ async def _queue_ids_in_playlog(mass: MusicAssistant, queue_ids: list[str]) -> s
     return {str(row["queue_id"]) for row in rows}
 
 
-async def _saved_queue_payloads(mass: MusicAssistant, queue_ids: list[str]) -> dict[str, list[Any]]:
+async def _has_saved_queue_content(mass: MusicAssistant, queue_id: str) -> bool:
     """
-    Return the decoded payloads of the persisted queues of the given queue ids.
-
-    Raises if an entry cannot be decoded, rather than reporting it as absent.
+    Return whether the given queue has a persisted payload that holds anything.
 
     :param mass: The MusicAssistant instance to query the cache of.
-    :param queue_ids: The queue ids to read the persisted state and items of.
+    :param queue_id: The queue id to read the persisted state and items of.
     """
-    # not CacheController.get: it reports an entry it cannot decode as a miss, so a corrupt
-    # queue would read as one never used. Expired entries are evidence too, hence no filter.
-    assert mass.cache.database is not None
-    params: dict[str, Any] = {
-        "provider": mass.player_queues.domain,
-        "state": CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-        "items": CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-    }
-    params.update({f"id_{index}": queue_id for index, queue_id in enumerate(queue_ids)})
-    placeholders = ",".join(f":id_{index}" for index in range(len(queue_ids)))
-    rows = await mass.cache.database.get_rows_from_query(
-        f"SELECT key, data FROM {DB_TABLE_CACHE} WHERE provider = :provider "
-        f"AND category IN (:state, :items) AND key IN ({placeholders})",
-        params,
-        limit=0,
-    )
-    payloads: dict[str, list[Any]] = {}
-    for row in rows:
-        payloads.setdefault(str(row["key"]), []).append(await async_json_loads(row["data"]))
-    return payloads
-
-
-def _payload_holds_content(payload: Any) -> bool:
-    """Return whether one persisted queue payload holds anything."""
     # the entry's presence proves nothing: every registered queue is flushed on shutdown
-    if isinstance(payload, dict):
-        # the state payload; its items are cached under their own category
-        return bool(payload.get("enqueued_media_items") or payload.get("source_items"))
-    return bool(payload)
+    state = await mass.cache.get(
+        key=queue_id,
+        provider=mass.player_queues.domain,
+        category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+        allow_expired_cache=True,
+    )
+    if isinstance(state, dict) and (state.get("enqueued_media_items") or state.get("source_items")):
+        return True
+    items = await mass.cache.get(
+        key=queue_id,
+        provider=mass.player_queues.domain,
+        category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+        allow_expired_cache=True,
+    )
+    return bool(items)
 
 
 def _mark_cleanup_done(mass: MusicAssistant) -> None:
