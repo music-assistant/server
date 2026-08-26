@@ -390,6 +390,10 @@ class AirPlayReceiverProvider(PluginProvider):
             # advertised device identity stays stable across the outage
             async with self._reconcile_lock:
                 if event.object_id and (daemon := self._daemons.pop(event.object_id, None)):
+                    # the session may be consumed by ANOTHER player (cross-select or
+                    # sync-group owner); release it so that player is not left bound
+                    # to a source that can no longer stream
+                    self._clear_active_player(daemon)
                     await self._stop_receiver(daemon)
             return
         await self._reconcile()
