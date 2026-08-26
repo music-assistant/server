@@ -183,6 +183,16 @@ async def test_loaded_in_mass_subscribes_to_assigned_players_only() -> None:
     assert mocks.mass.subscribe.call_args.kwargs["id_filter"] == ("p1", "p2")
 
 
+async def test_get_player_audio_sources_scopes_to_the_daemon_player() -> None:
+    """Each receiver's source is bound to its own connected player only."""
+    prov, _mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+
+    assert prov.get_player_audio_sources("p1") == [daemon.audio_source]
+    assert prov.get_player_audio_sources("p2") == []
+
+
 async def test_unload_stops_all_daemons() -> None:
     """Unload stops every running daemon and stops watching player events."""
     registered = {"p1": "Kitchen", "p2": "Garage"}

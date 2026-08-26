@@ -236,6 +236,11 @@ class AirPlayReceiverProvider(PluginProvider):
         """Return the AudioSources this plugin currently exposes."""
         return [daemon.audio_source for daemon in self._daemons.values()]
 
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the AudioSource bound to the given connected player, if any."""
+        daemon = self._daemons.get(player_id)
+        return [daemon.audio_source] if daemon else []
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the AirPlay audio to a queue.

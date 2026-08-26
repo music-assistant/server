@@ -216,6 +216,17 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, _PlayerDaemon, AsyncMo
     return provider, daemon, deactivate
 
 
+def test_get_player_audio_sources_scopes_to_the_daemon_player() -> None:
+    """Each daemon's source is bound to its own connected player only."""
+    provider = object.__new__(SpotifyConnectProvider)
+    daemon = _make_daemon()
+    daemon.audio_source = MagicMock()
+    provider._daemons = {_PLAYER_ID: daemon}
+
+    assert provider.get_player_audio_sources(_PLAYER_ID) == [daemon.audio_source]
+    assert provider.get_player_audio_sources("other_player") == []
+
+
 async def test_releasing_a_player_releases_a_paused_spotify_session() -> None:
     """Letting the player go releases the session the paused stream's teardown left behind."""
     provider, _daemon, deactivate = _tethered_provider()

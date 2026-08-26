@@ -136,7 +136,7 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook
+    from music_assistant_models.media_items import Audiobook, AudioSource
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
@@ -685,9 +685,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
-        self, path: str | None = None
+        self, path: str | None = None, *, player_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Music providers."""
+        """
+        Browse Music providers.
+
+        :param path: The path to browse; None or "root" for the root level.
+        :param player_id: Scope audio-source listings to the sources bound to this
+            player (sources of player-unbound plugins are always included).
+        """
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[MediaItemType | BrowseFolder] = []
@@ -714,7 +720,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if not isinstance(prov, PluginProvider):
                     continue
                 initiable = [
-                    source for source in await prov.get_audio_sources() if source.can_initiate
+                    source
+                    for source in await self._get_plugin_audio_sources(prov, player_id)
+                    if source.can_initiate
                 ]
                 if not initiable:
                     continue
@@ -759,7 +767,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source for source in await browse_prov.get_audio_sources() if source.can_initiate
+                source
+                for source in await self._get_plugin_audio_sources(browse_prov, player_id)
+                if source.can_initiate
             ]
             return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
@@ -2397,6 +2407,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param uri: The uri to verify.
         """
         return await self._handle_verify_item_uri(uri)
+
+    async def _get_plugin_audio_sources(
+        self, provider: PluginProvider, player_id: str | None
+    ) -> list[AudioSource]:
+        """
+        Return the AudioSources of a plugin to list, scoped to a player when given.
+
+        Player-bound plugins yield only the sources bound to the given player;
+        without a player scope (and for player-unbound plugins) all sources are yielded.
+        """
+        if player_id is not None:
+            bound_sources = provider.get_player_audio_sources(player_id)
+            if bound_sources is not None:
+                return bound_sources
+        return await provider.get_audio_sources()
 
     def _apply_user_provider_filter(
         self,
