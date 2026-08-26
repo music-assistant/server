@@ -3051,7 +3051,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param fully_played: The new fully played state of the item.
         :param seconds_played: The new resume position of the item.
         """
-        assert item.uri is not None  # auto-generated in __post_init__
+        assert item.uri is not None
         self.mass.signal_event(
             EventType.PLAYLOG_UPDATED,
             object_id=item.uri,
