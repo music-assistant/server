@@ -51,6 +51,7 @@ def test_advertised_name_follows_connected_player() -> None:
     provider = _make_provider()
     player = MagicMock()
     player.display_name = "Living Room"
+    provider.mass.players.get_player.side_effect = None  # type: ignore[attr-defined]
     provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
     assert provider._ariacast_name == "Living Room"
