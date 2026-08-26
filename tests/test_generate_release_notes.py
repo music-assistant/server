@@ -7,6 +7,7 @@ import sys
 import types
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -69,11 +70,22 @@ class FakeComparison:
 class FakePR:
     """Mimics PyGithub PullRequest."""
 
-    def __init__(self, number: int, merged_at: datetime) -> None:
+    def __init__(
+        self,
+        number: int,
+        merged_at: datetime,
+        title: str = "",
+        author: str = "someone",
+        labels: tuple[str, ...] = (),
+    ) -> None:
         """Initialize fake pull request."""
         self.number = number
         self.merged = True
         self.merged_at = merged_at
+        self.title = title
+        self.user = types.SimpleNamespace(login=author)
+        self.labels = [types.SimpleNamespace(name=label) for label in labels]
+        self.html_url = f"https://github.com/music-assistant/server/pull/{number}"
 
 
 class FakeRepo:
@@ -188,3 +200,87 @@ def test_minor_release_with_diverged_previous_tag(
     prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "headsha")
 
     assert [pr.number for pr in prs] == [100, 120]
+
+
+def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
+    """Inlined bumps are always dropped; other bumps keep only the latest one."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    prs = [
+        FakePR(1, merged_at, "⬆️ Update music-assistant-frontend to 2.17.1"),
+        FakePR(2, merged_at, "Fix a bug"),
+        FakePR(3, merged_at, "⬆️ Bump aiohttp from 3.11 to 3.12"),
+        FakePR(4, merged_at, "⬆️ Update music-assistant-models to 1.1.100"),
+        FakePR(5, merged_at, "⬆️ Bump aiohttp from 3.12 to 3.13"),
+        FakePR(6, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
+        FakePR(7, merged_at, "Add a feature"),
+    ]
+
+    filtered = generate_notes.filter_dependency_bumps(prs)
+
+    assert [pr.number for pr in filtered] == [2, 5, 7]
+
+
+def test_filter_dependency_bumps_drop_all(generate_notes: types.ModuleType) -> None:
+    """With drop_all every dependency bump is dropped from the notes."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    prs = [
+        FakePR(1, merged_at, "⬆️ Bump aiohttp from 3.12 to 3.13"),
+        FakePR(2, merged_at, "Fix a bug"),
+        FakePR(3, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
+    ]
+
+    filtered = generate_notes.filter_dependency_bumps(prs, drop_all=True)
+
+    assert [pr.number for pr in filtered] == [2]
+
+
+def test_notes_are_shrunk_to_fit_body_limit(
+    generate_notes: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Oversized notes lose maintenance entries first and gain a full-changelog link."""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "music-assistant/server")
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    config = {
+        "categories": [
+            {"title": "🐛 Bugfixes", "labels": ["bugfix"]},
+            {
+                "title": "🧰 Maintenance",
+                "labels": ["maintenance"],
+                "after-other": True,
+                "collapse-after": 3,
+            },
+        ],
+    }
+    categories = {
+        "🐛 Bugfixes": [
+            FakePR(number, merged_at, f"Fix issue number {number}") for number in range(1, 4)
+        ],
+        "🧰 Maintenance": [
+            FakePR(number, merged_at, f"Maintenance chore number {number}")
+            for number in range(100, 140)
+        ],
+    }
+    uncategorized: list[FakePR] = []
+    maintenance = categories["🧰 Maintenance"]
+
+    def render() -> str:
+        return cast(
+            "str",
+            generate_notes.generate_release_notes(
+                config, categories, uncategorized, [], "2.9.13", None, None
+            ),
+        )
+
+    limit = len(render()) - 500
+    monkeypatch.setattr(generate_notes, "MAX_BODY_CHARS", limit)
+
+    notes = generate_notes.shrink_notes_to_limit(
+        render, config, categories, uncategorized, "2.9.13", "2.10.0"
+    )
+
+    assert len(notes) <= limit
+    # All bugfixes survive; only the maintenance tail was dropped
+    for number in range(1, 4):
+        assert f"#{number})" in notes
+    assert 0 < len(maintenance) < 40
+    assert "compare/2.9.13...2.10.0" in notes
