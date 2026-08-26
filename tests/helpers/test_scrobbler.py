@@ -1,4 +1,4 @@
-"""Tests the event handling for LastFM Plugin Provider."""
+"""Tests for the scrobbler helpers."""
 
 import logging
 from unittest import mock
