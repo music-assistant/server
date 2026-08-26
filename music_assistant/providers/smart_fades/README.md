@@ -33,7 +33,7 @@ PCM chunks (1s, any sample rate)
    Concatenate all feature blocks
         │
         ▼
-   Spect2Frames model inference (quantized, single pass)
+   Beat This model inference (quantized, 30s windows)
         │
         ▼
    DBN postprocessor (pure-numpy Viterbi decoding)
@@ -58,9 +58,11 @@ To fix this, the feature extractor **delays the last 2 frames** (`ceil(512/441) 
 
 The feature extractor aligns the start of each audio segment to a `hop_length` (441 sample) boundary. This ensures that segment-local frame indices map exactly to global frame positions via integer arithmetic, avoiding off-by-one errors that would cause 20ms beat shifts.
 
-#### 4. Single-pass model inference at finalize
+#### 4. Windowed model inference at finalize
 
-Unlike the feature extraction (which runs incrementally per block), model inference runs once on the concatenated features when the track ends. The Beat This! transformer (`Spect2Frames`, `small0` checkpoint, dynamically quantized to qint8) processes the full spectrogram in a single forward pass. The DBN postprocessor — a pure-numpy reimplementation of madmom's `DBNDownBeatTrackingProcessor` using Viterbi decoding over a bar-pointer HMM — converts frame-level logits to beat/downbeat timestamps.
+Unlike the feature extraction (which runs incrementally per block), model inference runs on the concatenated features when the track ends. The Beat This! transformer (`small0` checkpoint, dynamically quantized to qint8) predicts a long track as fixed 30-second windows — the length it was trained on — overlapping by the 6 frames its predictions are unreliable on, which are then stitched back into one sequence. That windowing is Beat This!'s own (`split_piece` / `aggregate_prediction`); running the windows here rather than inside `Spect2Frames` gives identical results while keeping each offload short, so a finalize never holds the shared analysis slot for a whole track's inference. While a player is streaming, the provider also idles between windows for as long as the previous one took, so beat inference does not occupy a core continuously.
+
+The DBN postprocessor — a pure-numpy reimplementation of madmom's `DBNDownBeatTrackingProcessor` using Viterbi decoding over a bar-pointer HMM — then converts the stitched frame-level logits to beat/downbeat timestamps in a single offload; its Viterbi decoding needs the whole sequence and cannot be windowed.
 
 #### 5. Musical key detection (S-KEY)
 
