@@ -485,10 +485,13 @@ class AirPlayReceiverProvider(PluginProvider):
         daemon.stop_called = True
 
         # a pending stop or deferred start must not wake after the teardown and
-        # act on the replaced daemon's session
+        # act on the replaced daemon's session; awaited so a cancellation-delayed
+        # player command cannot land after the daemon is gone
         for pending_task in (daemon.pending_stop_task, daemon.pending_start_task):
             if pending_task and not pending_task.done():
                 pending_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pending_task
         daemon.pending_stop_task = None
         daemon.pending_start_task = None
 
@@ -784,6 +787,10 @@ class AirPlayReceiverProvider(PluginProvider):
             daemon.first_volume_event_received = False
             # Initiate playback via the standard play_media flow on the target player
             if not daemon.in_use_by_player:
+                if daemon.pending_start_task and not daemon.pending_start_task.done():
+                    # a start is already in flight; a second one would double play_media
+                    # and leave the first task untracked for teardown cancellation
+                    return
                 # an explicitly selected player wins, else the receiver's own player
                 target_player_id = daemon.active_player_id or daemon.player_id
                 self.logger.info("Starting AirPlay playback on player %s", target_player_id)

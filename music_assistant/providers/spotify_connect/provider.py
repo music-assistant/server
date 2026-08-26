@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
@@ -687,8 +688,17 @@ class SpotifyConnectProvider(PluginProvider):
     async def _stop_daemon(self, daemon: _PlayerDaemon) -> None:
         """Stop a daemon's backend and cancel its pending tasks."""
         daemon.stop_called = True
+        pending_tasks = [
+            task
+            for task in (daemon.pending_play_media_task, daemon.pending_pause_stop_task)
+            if task is not None and not task.done()
+        ]
         self._cancel_pending_play_media(daemon)
         self._cancel_pending_pause_stop(daemon)
+        # await the cancelled tasks so no late player command outlives the daemon
+        for task in pending_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
         await daemon.backend.stop()
 
     def _create_backend(self, daemon: _PlayerDaemon, player_name: str) -> SpotifyConnectBackend:
@@ -914,9 +924,9 @@ class SpotifyConnectProvider(PluginProvider):
             target_player_id,
         )
         daemon.active_player_id = target_player_id
-        self.mass.create_task(
-            self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
-        )
+        # awaited inline so the tracked deferred task covers the whole start and
+        # a daemon teardown can still cancel an in-flight source selection
+        await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
 
     def _clear_active_player(self, daemon: _PlayerDaemon) -> None:
         """Clear the active player and reset playback state when a session ends."""

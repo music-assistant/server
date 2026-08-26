@@ -191,6 +191,8 @@ def _make_provider(
     """Build a provider with one daemon wired to the fake backend, mirroring the start defaults."""
     mass = MagicMock()
     mass.create_task.side_effect = _create_task
+    # awaited inline by the deferred play_media trigger
+    mass.player_queues.play_media = AsyncMock()
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = mass
     provider.logger = MagicMock()
