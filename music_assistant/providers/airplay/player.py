@@ -1118,12 +1118,18 @@ class AirPlayPlayer(Player):
         protocol = self.protocol
         cred_key = self._get_credentials_key(protocol)
         if pin_pairing:
-            step_id, field_key, field_type = "pair_pin", CONF_PAIRING_PIN, ConfigEntryType.STRING
+            step_id, field_key, field_type, field_format = (
+                "pair_pin",
+                CONF_PAIRING_PIN,
+                ConfigEntryType.PAIRING_CODE,
+                "####",
+            )
         else:
-            step_id, field_key, field_type = (
+            step_id, field_key, field_type, field_format = (
                 "pair_password",
                 CONF_PAIRING_PASSWORD,
                 ConfigEntryType.SECURE_STRING,
+                None,
             )
 
         errors: dict[str, str] | None = None
@@ -1140,6 +1146,7 @@ class AirPlayPlayer(Player):
                             type=field_type,
                             required=True,
                             category="protocol_generic",
+                            format=field_format,
                         )
                     ],
                     step_id=step_id,

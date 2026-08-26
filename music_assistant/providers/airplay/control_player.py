@@ -858,9 +858,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_COMPANION_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format="####",
                         )
                     ],
                     step_id="pair_companion",
@@ -903,9 +904,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_MRP_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format="####",
                         )
                     ],
                     step_id="pair_mrp",
