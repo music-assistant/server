@@ -94,6 +94,21 @@ async def test_selecting_a_source_starts_it_and_names_it_on_the_player() -> None
     assert media.queue_item_id is None
 
 
+async def test_selecting_a_source_on_an_idle_player_is_not_held_up_by_a_stop() -> None:
+    """An idle player has no teardown to settle, so the selection starts straight away."""
+    controller, _provider, player = _controller(_source())
+    player.state.active_source = "some_other_source"
+    player.state.playback_state = PlaybackState.IDLE
+
+    # waiting on a state change that a no-op stop never reports would burn the
+    # full 5s timeout; this bound sits well below that and well above a prompt return
+    async with asyncio.timeout(2):
+        await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    controller._handle_cmd_stop.assert_awaited_once_with(PLAYER_ID)
+    controller._handle_play_media.assert_awaited_once()
+
+
 async def test_selecting_a_source_does_not_touch_the_queue() -> None:
     """The queue is not cleared, replaced or loaded — it just stops being the active source."""
     controller, _provider, _player = _controller(_source())
