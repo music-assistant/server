@@ -33,6 +33,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistQueueChanged,
+    SoloistTrackChanged,
     SoloistVolumeChanged,
     UnsupportedPlatformError,
 )
@@ -722,6 +723,38 @@ async def test_event_dispatch_decodes_documented_payloads(tmp_path: Path) -> Non
     assert queue.upcoming[0].source == "queue"
     assert queue.upcoming[0].item is not None
     assert queue.upcoming[0].item.uri == "spotify:track:upcoming"
+
+
+async def test_the_item_boundary_events_keep_their_own_payload_types(tmp_path: Path) -> None:
+    """The events the playback backend cuts items on must not decode into each other."""
+    _publish_endpoint(tmp_path)
+    ws = _FakeWebSocket()
+    client = _make_client(tmp_path, ws)
+    item = {"uri": "spotify:track:2JRo0gjbX4GrCqBYdRohoo", "entity_type": "track"}
+    for payload in (
+        {"type": "track_changed", "item": item},
+        {"type": "playback_state", "status": "playing", "item": item},
+        {"type": "playback_changed", "status": "playing", "item": item},
+    ):
+        ws.queue.put_nowait(_text_msg(payload))
+    ws.queue.put_nowait(None)
+    events: list[SoloistEvent] = []
+
+    async def on_event(event: SoloistEvent) -> None:
+        events.append(event)
+
+    await client.listen_events(on_event)
+
+    assert [event.type for event in events] == [
+        "track_changed",
+        "playback_state",
+        "playback_changed",
+    ]
+    assert isinstance(events[0].data, SoloistTrackChanged)
+    # the snapshot and the delta share one payload, so the event type is all a
+    # consumer has to tell a full state report from a partial one
+    assert isinstance(events[1].data, SoloistPlaybackState)
+    assert isinstance(events[2].data, SoloistPlaybackState)
 
 
 async def test_event_dispatch_tolerates_malformed_and_unknown(tmp_path: Path) -> None:
