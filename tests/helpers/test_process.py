@@ -288,3 +288,25 @@ async def test_close_reaps_a_child_that_never_closes_its_pipes(
         await proc.close()
 
     assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_mid_drain() -> None:
+    """
+    Cancellation landing while a pipe is draining must not leave the child running.
+
+    Walking away there skips the terminate/SIGKILL escalation, and nothing else
+    ever comes back for the process.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    # well inside PIPE_DRAIN_TIMEOUT, so the cancellation lands on the stdout drain
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
+
+    assert proc.returncode is not None
