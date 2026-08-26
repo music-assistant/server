@@ -916,7 +916,7 @@ class _SoloistSession:
             # claimed channels, and the outgoing one is closed below
             item.claim()
             self._current = item
-            outgoing.close()
+            outgoing.close(discarded=True)
             try:
                 # seeded from where the engine actually is: a fresh channel has
                 # observed no position of its own, and a backward seek judged
@@ -1137,7 +1137,8 @@ class _SoloistSession:
 
         A starved session pads with silence rather than failing, so completeness
         is judged by the furthest playback position the engine reported while
-        the item was current.
+        the item was current. A channel Music Assistant cut itself is not judged
+        that way: it stops short by construction.
 
         :param item: The item whose stream just finished.
         :raises AudioError: When the item was cut short.
@@ -1146,7 +1147,7 @@ class _SoloistSession:
             raise self._session_error()
         if not item.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
-        if item.duration_ms is None:
+        if item.discarded or item.duration_ms is None:
             return
         tolerance_ms = min(_INCOMPLETE_TOLERANCE_MS, item.duration_ms // 2)
         if item.last_position_ms is None or item.last_position_ms + tolerance_ms < item.duration_ms:
@@ -1167,7 +1168,7 @@ class _SoloistSession:
             return
         self._stopped = True
         for item in self._channels:
-            item.close()
+            item.close(discarded=True)
         if self._client is not None and self._proc is not None:
             # commands travel over the events connection, so this has to happen
             # before that task is cancelled; stopping playback lets the engine
@@ -2191,6 +2192,8 @@ class _ItemAudio:
         self.claimed = False
         # served once already: its audio was handed over and cannot be replayed
         self.spent = False
+        # cut before the engine was done with the item, rather than played out
+        self.discarded = False
         self.drain_task: asyncio.Task[None] | None = None
         self._last_write = 0.0
         self._chunks: deque[bytes] = deque()
@@ -2309,8 +2312,17 @@ class _ItemAudio:
         self.draining = False
         self._tail_target = None
 
-    def close(self) -> None:
-        """Close the channel: its stream ends once the buffered audio is drained."""
+    def close(self, *, discarded: bool = False) -> None:
+        """
+        Close the channel: its stream ends once the buffered audio is drained.
+
+        :param discarded: Whether the channel is being cut while the engine is
+            still on the item, so what it delivered is short by construction.
+            Only honoured for a channel that is still open: one that already
+            ended keeps the verdict it ended with.
+        """
+        if discarded and not self._closed:
+            self.discarded = True
         self._closed = True
         # a closed channel no longer holds the capture sink open for its tail
         self.draining = False
