@@ -916,7 +916,7 @@ class _SoloistSession:
             # claimed channels, and the outgoing one is closed below
             item.claim()
             self._current = item
-            outgoing.close(discarded=True)
+            outgoing.close(superseded=True)
             try:
                 # seeded from where the engine actually is: a fresh channel has
                 # observed no position of its own, and a backward seek judged
@@ -1147,7 +1147,7 @@ class _SoloistSession:
             raise self._session_error()
         if not item.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
-        if item.discarded or item.duration_ms is None:
+        if item.superseded or item.duration_ms is None:
             return
         tolerance_ms = min(_INCOMPLETE_TOLERANCE_MS, item.duration_ms // 2)
         if item.last_position_ms is None or item.last_position_ms + tolerance_ms < item.duration_ms:
@@ -1168,7 +1168,7 @@ class _SoloistSession:
             return
         self._stopped = True
         for item in self._channels:
-            item.close(discarded=True)
+            item.close(superseded=True)
         if self._client is not None and self._proc is not None:
             # commands travel over the events connection, so this has to happen
             # before that task is cancelled; stopping playback lets the engine
@@ -2008,7 +2008,9 @@ class _SoloistSession:
             self._pending.remove(item)
         self._current = item
         self._app_pauses = 0
-        if self._discard_until is item:
+        # a jump Music Assistant asked for, rather than a boundary the engine reached
+        commanded = self._discard_until is item
+        if commanded:
             self._discard_until = None
             # The engine confirms a jump over the WebSocket within a few
             # milliseconds, long before the audio it describes reaches the
@@ -2023,7 +2025,7 @@ class _SoloistSession:
             # A channel still waiting to start is not over - the engine simply
             # reported its own state before getting to it - and closing it would
             # end that item's stream before it had delivered anything.
-            current.close()
+            current.close(superseded=commanded)
         if not item.claimed:
             self._signal_ready(uri)
 
@@ -2192,8 +2194,8 @@ class _ItemAudio:
         self.claimed = False
         # served once already: its audio was handed over and cannot be replayed
         self.spent = False
-        # cut before the engine was done with the item, rather than played out
-        self.discarded = False
+        # cut by Music Assistant rather than ended by the engine
+        self.superseded = False
         self.drain_task: asyncio.Task[None] | None = None
         self._last_write = 0.0
         self._chunks: deque[bytes] = deque()
@@ -2312,17 +2314,18 @@ class _ItemAudio:
         self.draining = False
         self._tail_target = None
 
-    def close(self, *, discarded: bool = False) -> None:
+    def close(self, *, superseded: bool = False) -> None:
         """
         Close the channel: its stream ends once the buffered audio is drained.
 
-        :param discarded: Whether the channel is being cut while the engine is
-            still on the item, so what it delivered is short by construction.
-            Only honoured for a channel that is still open: one that already
-            ended keeps the verdict it ended with.
+        :param superseded: Whether Music Assistant is cutting the channel rather
+            than the engine having ended it, so what it delivered is short by
+            construction.
         """
-        if discarded and not self._closed:
-            self.discarded = True
+        # a channel that already ended keeps the verdict it ended with: a
+        # teardown closes every channel, including ones the engine was done with
+        if superseded and not self._closed:
+            self.superseded = True
         self._closed = True
         # a closed channel no longer holds the capture sink open for its tail
         self.draining = False
