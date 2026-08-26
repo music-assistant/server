@@ -45,6 +45,7 @@ def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
     p.mass = mass
     p.manifest = manifest
     p._sessions = {}
+    p._finalize_tasks = set()
     p._clap_model = None
     p._clap_prompt_order = []
     p._clap_text_embeddings = None
