@@ -780,6 +780,9 @@ class _SoloistSession:
         self._demand_started = False
         self._engine_playing = False
         self._sink_running = False
+        # set when a cancelled transition left the sink's real state unknown, so
+        # the next application re-issues it instead of trusting _sink_running
+        self._sink_state_unknown = False
         self._backpressured = False
         self._sink_lock = asyncio.Lock()
         self._idle_since: float | None = None
@@ -862,6 +865,10 @@ class _SoloistSession:
         self._seeking = True
         try:
             await self._apply_sink_state()
+            if self._error:
+                # the app took the session over while the sink was being held; a
+                # replacement would claim the Connect device straight back off it
+                raise self._session_error()
             if self._current is not outgoing:
                 # the engine reached this item's own end while the sink was
                 # being held: it is not on the item this seek was asked for
@@ -902,6 +909,8 @@ class _SoloistSession:
                     async with asyncio.timeout(_SEEK_CONFIRM_TIMEOUT_S):
                         await item.seek_confirmed.wait()
                 except TimeoutError:
+                    if self._error:
+                        raise self._session_error() from None
                     raise AudioError(
                         f"Spotify Soloist did not confirm seeking {spotify_uri} to {target_ms}ms"
                     ) from None
@@ -912,6 +921,11 @@ class _SoloistSession:
                 # measured now the engine has moved: what the sink rendered up
                 # to here is pre-seek audio still on its way to the reader
                 self._stale_budget = self._stale_bytes()
+                # cleared before the sink is let go, and inside this block: a
+                # cancellation out here would otherwise leave the channel
+                # claimed with the session still looking usable
+                self._seeking = False
+                await self._apply_sink_state()
             except BaseException:
                 # Past the swap the item the session was playing is closed and
                 # cannot be put back, so a half-seeked session is ended rather
@@ -923,7 +937,6 @@ class _SoloistSession:
                 raise
         finally:
             self._seeking = False
-        await self._apply_sink_state()
         return item
 
     def is_playing(self, spotify_uri: str) -> bool:
@@ -1445,6 +1458,9 @@ class _SoloistSession:
                 async with asyncio.timeout(_SEEK_RETRY_INTERVAL_S):
                     await item.seek_confirmed.wait()
             if item.seek_confirmed.is_set():
+                if self._error:
+                    # the session failed, which releases the wait as well
+                    raise self._session_error()
                 return
             if asyncio.get_running_loop().time() >= deadline:
                 raise AudioError(f"Spotify Soloist did not confirm seeking to {target_ms}ms")
@@ -1718,7 +1734,7 @@ class _SoloistSession:
                 want = self._retained_bytes() < limit * _BYTES_PER_SECOND
                 backpressured = not want
             self._backpressured = backpressured
-            if want == self._sink_running:
+            if want == self._sink_running and not self._sink_state_unknown:
                 return
             try:
                 if want:
@@ -1730,7 +1746,15 @@ class _SoloistSession:
                 # silence into (or withhold audio from) the delivered PCM
                 self._fail(f"capture sink control failed: {err}")
                 return
+            except asyncio.CancelledError:
+                # The transition may have landed or not, and nothing here can
+                # tell. Left unknown rather than guessed: assuming it did not
+                # land would let a sink that actually suspended read as already
+                # running, and nothing would ever resume it.
+                self._sink_state_unknown = True
+                raise
             self._sink_running = want
+            self._sink_state_unknown = False
 
     def _stale_bytes(self) -> int:
         """

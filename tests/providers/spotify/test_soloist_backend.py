@@ -2529,3 +2529,91 @@ async def test_a_seek_refused_because_the_app_took_over_does_not_respawn(
     with pytest.raises(SoloistAppControlError):
         await backend._acquire(TRACK_A, 120, "player1")
     started.assert_not_awaited()
+
+
+async def test_a_seek_is_abandoned_when_the_app_took_over_during_the_suspend(
+    tmp_path: Path,
+) -> None:
+    """Nothing is seeked on a session the Spotify app has already taken over."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+
+    async def _app_takes_over(**_kwargs: Any) -> None:
+        session._end_on_app_control(SoloistAppControl.TOOK_OVER)
+
+    with (
+        patch.object(session, "_apply_sink_state", _app_takes_over),
+        pytest.raises(SoloistAppControlError),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+    # the engine was never asked to move
+    _client_of(session).seek.assert_not_awaited()
+
+
+async def test_a_cancelled_sink_transition_is_re_issued(tmp_path: Path) -> None:
+    """
+    A suspend that may or may not have landed is never taken as done.
+
+    A sink that did suspend would otherwise still read as running, and the
+    resume that should follow would be skipped as a no-op: silence for good.
+    """
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._sink_running = True
+    session._seeking = True
+
+    async def _cancelled_suspend() -> None:
+        raise asyncio.CancelledError
+
+    _sink_of(session).suspend.side_effect = _cancelled_suspend
+    with suppress(asyncio.CancelledError):
+        await session._apply_sink_state()
+    # the engine plays on and the sink is wanted running again
+    session._seeking = False
+    await session._apply_sink_state()
+    _sink_of(session).resume.assert_awaited_once()
+
+
+async def test_a_seek_cancelled_at_the_final_resume_does_not_leave_the_session_usable(
+    tmp_path: Path,
+) -> None:
+    """The channel is claimed by then, so an abandoned seek must still end the session."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    calls = 0
+    real_apply = session._apply_sink_state
+
+    async def _cancel_on_the_way_out(**kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError
+        await real_apply(**kwargs)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    with (
+        patch.object(session, "_apply_sink_state", _cancel_on_the_way_out),
+        suppress(asyncio.CancelledError),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+    assert not session.usable
+
+
+async def test_a_cold_seek_does_not_read_a_failed_session_as_landed(tmp_path: Path) -> None:
+    """The wake-up a fatal failure gives every channel is not a confirmed seek."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+
+    async def _engine_dies(_position_ms: int, **_kwargs: Any) -> None:
+        session._fail("the session exited")
+
+    _client_of(session).seek.side_effect = _engine_dies
+    with pytest.raises(AudioError, match="the session exited"):
+        await session._cold_seek(_client_of(session), item, 60_000)
