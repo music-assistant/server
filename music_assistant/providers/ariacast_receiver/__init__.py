@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from ipaddress import AddressValueError, IPv4Address
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import ClientTimeout, web
@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
-    PlaybackState,
     ProviderFeature,
     SourceControl,
     StreamType,
@@ -46,9 +45,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
-CONF_ARIACAST_NAME = "ariacast_name"
 DEFAULT_ARIACAST_NAME = "Music Assistant"
-PLAYER_ID_AUTO = "__auto__"
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 AUDIO_SOURCE_ID = "main"
 
@@ -96,11 +93,7 @@ class AriaCastReceiver(PluginProvider):
     ) -> None:
         """Initialize the AriaCast Receiver provider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # Avoid str(None), which would bypass automatic player selection.
-        self._default_player_id = str(self.get_setup_value(CONF_MASS_PLAYER_ID) or PLAYER_ID_AUTO)
-        self._ariacast_name = (
-            cast("str", self.get_setup_value(CONF_ARIACAST_NAME)) or DEFAULT_ARIACAST_NAME
-        )
+        self._default_player_id = str(self.get_setup_value(CONF_MASS_PLAYER_ID) or "")
 
         # Audio pipeline: one asyncio.Queue, drained per stream (VBAN pattern)
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
@@ -170,6 +163,12 @@ class AriaCastReceiver(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Start the AriaCast WebSocket server."""
+        if not self.get_setup_value(CONF_MASS_PLAYER_ID):
+            raise SetupFailedError(
+                "No connected Music Assistant player is configured",
+                translation_key="no_connected_player",
+                translation_owner=self.translation_owner,
+            )
         app = web.Application()
         app.router.add_get("/audio", self._ws_audio)
         app.router.add_get("/control", self._ws_control)
@@ -948,32 +947,19 @@ class AriaCastReceiver(PluginProvider):
     # Player selection helper
     # -----------------------------------------------------------------------
 
+    @property
+    def _ariacast_name(self) -> str:
+        """Return the advertised receiver name: the connected player's display name."""
+        if player := self.mass.players.get_player(self._default_player_id):
+            return player.display_name
+        return DEFAULT_ARIACAST_NAME
+
     def _get_target_player_id(self) -> str | None:
         if self._active_player_id:
             if self.mass.players.get_player(self._active_player_id):
                 return self._active_player_id
             self.logger.debug("Stored player %s no longer available", self._active_player_id)
             self._active_player_id = None
-
-        if self._default_player_id == PLAYER_ID_AUTO:
-            for player in self.mass.players.all_players(False, False):
-                if player.state.playback_state == PlaybackState.PLAYING:
-                    self.logger.debug(
-                        "Auto-selected playing player: %s (%s)",
-                        player.display_name,
-                        player.player_id,
-                    )
-                    return player.player_id
-            players = list(self.mass.players.all_players(False, False))
-            if players:
-                self.logger.debug(
-                    "Auto-selected first player: %s (%s)",
-                    players[0].display_name,
-                    players[0].player_id,
-                )
-                return players[0].player_id
-            self.logger.warning("No MA players available to route AriaCast audio")
-            return None
 
         self.logger.debug("Using configured player: %s", self._default_player_id)
         return self._default_player_id

@@ -375,10 +375,20 @@
       }
     },
     "mass_player_id": {
-      "options": {
-        "__auto__": "Auto (prefer playing player)"
-      },
       "label": "Connected Music Assistant Player"
+    },
+    "connected_players": {
+      "label": "Connected players",
+      "description": "The Music Assistant players this plugin exposes. Every selected player is advertised as its own device on the network and audio streamed to it plays on that player. Leave empty to keep the plugin idle."
+    },
+    "publish_name_template": {
+      "label": "Advertised device name",
+      "description": "How each advertised device is named, based on the connected player's name.",
+      "options": {
+        "player_mass": "Player name | Music Assistant",
+        "player": "Player name only",
+        "mass_player": "Music Assistant | Player name"
+      }
     },
     "auth_device": {
       "label": "Login with device code",

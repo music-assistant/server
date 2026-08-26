@@ -1,15 +1,12 @@
 {
   "config_entries": {
-    "mass_player_id": {
-      "label": "[%key:common::config_entries::mass_player_id::label%]",
-      "description": "The Music Assistant player connected to this Spotify Connect plugin. When you start playback in the Spotify app to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",
-      "options": {
-        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
-      }
+    "connected_players": {
+      "label": "[%key:common::config_entries::connected_players::label%]",
+      "description": "The Music Assistant players to expose via Spotify Connect. Every selected player appears as its own device in the Spotify app; audio streamed to it plays on that player. Leave empty to keep the plugin idle."
     },
-    "publish_name": {
-      "label": "Name to display in the Spotify app",
-      "description": "How should this Spotify Connect device be named in the Spotify app?"
+    "publish_name_template": {
+      "label": "[%key:common::config_entries::publish_name_template::label%]",
+      "description": "How each device shown in the Spotify app is named, based on the connected player's name."
     },
     "backend": {
       "label": "Please pick the playback engine you'd like to use for Spotify Connect.",
@@ -70,10 +67,6 @@
     "soloist_api_key": {
       "title": "Create your Soloist API key",
       "description": "Soloist needs a personal API key, created with a Spotify **Premium** account:\n\n1. Open the [Soloist API key page](https://developer.spotify.com/dashboard/soloist) and sign in with your Spotify account.\n2. Accept Spotify's terms if you are asked to.\n3. Choose **Generate API Key**.\n4. Copy the key and paste it below.\n\nMusic Assistant stores the key encrypted and only shares it with the Soloist app. Your Spotify username and password are never asked for."
-    },
-    "user": {
-      "title": "Configure Spotify Connect",
-      "description": "Choose the player that receives Spotify audio and the device name shown in the Spotify app."
     }
   },
   "errors": {
