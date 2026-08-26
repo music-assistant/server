@@ -830,6 +830,31 @@ async def test_beats_and_key_with_unloaded_models_is_retryable(
     assert excinfo.value.retry_at is not None
 
 
+async def test_beats_and_key_survives_an_unload_during_beat_inference(
+    provider: SmartFadesProvider,
+) -> None:
+    """The models resolve before the beat stage, so an unload during it cannot lose the key."""
+    assert provider._models is not None
+    chromanet = provider._models.skey_chromanet
+
+    async def unload_during_beat_stage(
+        _feats: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        provider._models = None
+        return np.zeros(4, dtype=np.float32), np.zeros(1, dtype=np.float32), 4
+
+    with (
+        patch.object(provider, "_infer_beat_timings", new=unload_during_beat_stage),
+        patch.object(provider, "_infer_musical_key", return_value=("C", "major")) as infer_key,
+    ):
+        *_, key, mode = await provider._infer_beats_and_key(
+            np.zeros((10, 128), dtype=np.float32), None
+        )
+
+    assert (key, mode) == ("C", "major")
+    assert infer_key.call_args.args[0] is chromanet
+
+
 async def test_spectral_centroid_with_unloaded_models_is_retryable(
     deterministic_provider: SmartFadesProvider,
 ) -> None:
