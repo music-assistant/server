@@ -126,8 +126,15 @@ class MilkdropVisualizerProvider(PluginProvider):
         late_pct = round(late_ratio * 100) if isinstance(late_ratio, (int, float)) else 0
         blocked_ratio = render.get("blocked_ratio")
         blocked_pct = round(blocked_ratio * 100) if isinstance(blocked_ratio, (int, float)) else 0
+        gpu = ""
+        if render.get("gpu_warp") is not None:
+            gpu = (
+                f" gpu={render.get('gpu_warp')}/{render.get('gpu_blur')}/{render.get('gpu_comp')}ms"
+            )
+        preset = render.get("preset") or ""
+        preset_part = f' preset="{preset}"' if preset else ""
         self.logger.info(
-            "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% blocked=%s%% render=%sms",
+            "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% blocked=%s%% render=%sms%s%s",
             render.get("note"),
             render.get("level"),
             render.get("pixels"),
@@ -136,6 +143,8 @@ class MilkdropVisualizerProvider(PluginProvider):
             late_pct,
             blocked_pct,
             render.get("render_ms"),
+            gpu,
+            preset_part,
         )
 
     async def unload(self, is_removed: bool = False) -> None:
