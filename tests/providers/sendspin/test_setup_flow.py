@@ -530,7 +530,7 @@ def _attach_mass(player: SendspinBasePlayer, *, dismissed: bool = False) -> mock
     player.mass = mock.MagicMock()
     player.mass.config.get_raw_player_config_value = mock.Mock(return_value=dismissed)
     player.mass.config.save_player_config = mock.AsyncMock()
-    player.update_state = mock.Mock()  # type: ignore[method-assign]
+    player.update_state = mock.Mock()  # type: ignore[method-assign, misc]
     return player.mass
 
 

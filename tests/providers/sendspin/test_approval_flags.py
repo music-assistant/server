@@ -94,9 +94,8 @@ def test_declined_audio_input_clears_the_pending_state() -> None:
     )
     player = _make_player(api, dismissed=True)
     assert player._source_input_pending is False
-    player.mass.config.get_raw_player_config_value.assert_called_once_with(
-        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, False
-    )
+    config_get = cast("mock.Mock", player.mass.config.get_raw_player_config_value)
+    config_get.assert_called_once_with("client-1", CONF_SOURCE_APPROVAL_DISMISSED, False)
 
 
 def test_active_source_role_clears_the_pending_state() -> None:
