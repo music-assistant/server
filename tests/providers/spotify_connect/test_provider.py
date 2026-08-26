@@ -585,6 +585,7 @@ def _reconcile_provider(
     prov.config = MagicMock()
     prov.mass = mass = MagicMock()
     prov._daemons = {}
+    prov._failed_player_ids = set()
     prov._reconcile_lock = asyncio.Lock()
     prov._unload_called = False
     prov._unsubscribe = None
@@ -602,8 +603,13 @@ def _reconcile_provider(
     mass.players.get_player.side_effect = get_player
 
     async def start_daemon(player: MagicMock, publish_name: str) -> None:
+        # stop_called / active_player_id are spelled out: a bare MagicMock attribute is
+        # truthy, which would trip the stopped-daemon guard and the deselect path
         prov._daemons[player.player_id] = MagicMock(
-            player_id=player.player_id, publish_name=publish_name
+            player_id=player.player_id,
+            publish_name=publish_name,
+            stop_called=False,
+            active_player_id=None,
         )
 
     start_mock = AsyncMock(side_effect=start_daemon)
@@ -715,3 +721,88 @@ async def test_unload_stops_all_daemons() -> None:
     unsubscribe.assert_called_once()
     assert mocks.stop_daemon.await_count == 2
     assert not prov._daemons
+
+
+async def test_fatal_backend_error_gives_up_only_the_failed_daemon() -> None:
+    """A permanently failed backend drops its own daemon and leaves the others running."""
+    prov, mocks = _reconcile_provider(("p1", "p2"), {"p1": "Kitchen", "p2": "Garage"})
+    unload_with_error = MagicMock()
+    prov.unload_with_error = unload_with_error  # type: ignore[method-assign]
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.active_player_id = "consumer"
+
+    await prov._handle_backend_event(
+        daemon, BackendEvent(type=BackendEventType.FATAL_ERROR, error="boom")
+    )
+    # the give-up is a deferred task so it does not stop the runner task it is called from
+    assert mocks.mass.create_task.call_args.kwargs == {"eager_start": False}
+    give_up = mocks.mass.create_task.call_args.args[0]
+    await give_up
+
+    assert "p1" not in prov._daemons
+    assert "p2" in prov._daemons
+    mocks.stop_daemon.assert_awaited_once_with(daemon)
+    assert prov._failed_player_ids == {"p1"}
+    mocks.mass.players.trigger_player_update.assert_called_with("p1")
+    mocks.mass.players.deselect_source.assert_called_once()
+    cast("MagicMock", prov.logger).warning.assert_called_once()
+    unload_with_error.assert_not_called()
+
+
+async def test_provider_wide_fatal_error_unloads_the_provider() -> None:
+    """An engine-level failure keeps taking the whole provider down."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    unload_with_error = MagicMock()
+    prov.unload_with_error = unload_with_error  # type: ignore[method-assign]
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+
+    await prov._handle_backend_event(
+        daemon,
+        BackendEvent(
+            type=BackendEventType.FATAL_ERROR, error="api key revoked", provider_wide=True
+        ),
+    )
+
+    unload_with_error.assert_called_once_with("api key revoked")
+    mocks.mass.create_task.assert_not_called()
+    assert "p1" in prov._daemons
+
+
+async def test_reconcile_skips_a_given_up_daemon() -> None:
+    """A daemon that gave up permanently is not relaunched by an ordinary reconcile."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    prov._failed_player_ids = {"p1"}
+
+    await prov._reconcile()
+
+    mocks.start_daemon.assert_not_awaited()
+    assert "p1" not in prov._daemons
+
+
+async def test_player_added_gives_a_failed_daemon_a_fresh_start() -> None:
+    """A player re-registering lifts the block and starts its daemon again."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_ADDED, object_id="p1"))
+
+    assert "p1" not in prov._failed_player_ids
+    mocks.start_daemon.assert_awaited_once()
+    assert "p1" in prov._daemons
+
+
+async def test_give_up_on_a_replaced_daemon_is_a_noop() -> None:
+    """A give-up landing after the daemon was replaced leaves the replacement running."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    await prov._reconcile()
+    old_daemon = prov._daemons["p1"]
+    replacement = MagicMock(player_id="p1", publish_name="Kitchen | Music Assistant")
+    prov._daemons["p1"] = replacement
+
+    await prov._give_up_daemon(old_daemon, "boom")
+
+    mocks.stop_daemon.assert_not_awaited()
+    assert not prov._failed_player_ids
+    assert prov._daemons["p1"] is replacement
