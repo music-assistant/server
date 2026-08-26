@@ -114,6 +114,8 @@ async def _remove_local_audio_config(
     :param instance_ids: Instance ids of the local_audio provider configs to remove.
     :param player_ids: Player ids of the local_audio player configs to remove.
     """
+    if instance_ids:
+        await mass.webserver.auth.remove_from_user_filters(provider_instance_ids=instance_ids)
     for player_id in player_ids:
         # also drops its DSP/queue settings, saved queue and bridged spb_* children
         mass.players.delete_player_config(player_id)
@@ -121,8 +123,6 @@ async def _remove_local_audio_config(
         mass.player_queues.purge_saved_queue(_legacy_universal_player_id(player_id))
     for instance_id in instance_ids:
         mass.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
-    if instance_ids:
-        await mass.webserver.auth.remove_from_user_filters(provider_instance_ids=instance_ids)
     LOGGER.info(
         "Removed the config of the retired %s provider and its %s unused player(s)",
         LOCAL_AUDIO_DOMAIN,
