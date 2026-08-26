@@ -185,6 +185,10 @@ _REPEAT_OFF: Final[str] = "off"
 # exiting with a plain code 1 - its message is the only way to tell that case
 # apart from any other startup failure.
 _DATA_DIR_BUSY_MARKER: Final[str] = "another session is running"
+# A daemon that cannot log in advertises itself for pairing instead of failing,
+# and then sits there until the startup budget runs out. The engine reports no
+# other way that a stored session is gone.
+_UNPAIRED_MARKER: Final[str] = "waiting for login"
 # how long the log reader is given to catch up on a daemon's parting words
 _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 # How many pauses from the Spotify app are put back before the session gives up.
@@ -743,6 +747,8 @@ class _SoloistSession:
         self._teardown_done = False
         # None until the engine reports its login state for the first time
         self._logged_in: bool | None = None
+        # set once the daemon is known to have no stored session to log in with
+        self._unpaired = False
         # set once this daemon is the active Connect device; losing that again is
         # the user moving playback elsewhere from their Spotify app
         self._was_active = False
@@ -1192,10 +1198,15 @@ class _SoloistSession:
         # then restores its session and logs in. A command sent before that last
         # step is dropped and its acknowledgement never arrives, so wait for the
         # login the engine announces rather than for the socket alone.
+        # A failure reported while the endpoint is still awaited - the engine
+        # having no session to log in with - is watched for throughout: waiting
+        # the endpoint out would outlast the queue's own patience for the audio,
+        # and the item would fail with a timeout instead of its real cause.
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT_S):
-                await client_ready.wait()
-                while not self._error and not (client.connected and self._logged_in):
+                while not self._error and not (
+                    client_ready.is_set() and client.connected and self._logged_in
+                ):
                     await asyncio.sleep(_CONNECT_POLL_S)
         except TimeoutError:
             self._raise_startup_error("did not connect and log in", spotify_uri)
@@ -1280,7 +1291,7 @@ class _SoloistSession:
         # a pairing that never logged in is checked first: it also fails the
         # session, and its recovery (back through the setup flow) beats failing
         # every track with a generic error
-        if self._logged_in is False:
+        if self._unpaired or self._logged_in is False:
             # the stored session no longer logs in: route the user through the
             # setup flow instead of failing every item (mirrors librespot's
             # INVALID_CREDENTIALS handling)
@@ -1311,7 +1322,7 @@ class _SoloistSession:
         The sink is still suspended, so no pre-seek audio enters the FIFO; PCM
         demand only starts once a position report confirms the seek landed.
         """
-        item.seek_target_ms = target_ms
+        item.arm_seek(target_ms)
         # the engine silently drops a seek that arrives while the track is still
         # loading (verified via event trace), so re-send it until a position
         # anchor confirms it landed
@@ -1335,6 +1346,8 @@ class _SoloistSession:
             text = line.replace(api_key, "<redacted>") if api_key else line
             if _DATA_DIR_BUSY_MARKER in text:
                 self._data_dir_busy = True
+            if _UNPAIRED_MARKER in text and not self._unpaired:
+                await self._check_pairing_lost()
             self.logger.debug("[soloist] %s", text)
 
     async def _read_capture(self) -> None:
@@ -1736,6 +1749,20 @@ class _SoloistSession:
             return
         self.mass.player_queues.prepare_next_audio_buffer(queue_id)
 
+    async def _check_pairing_lost(self) -> None:
+        """
+        Fail the session when the engine has no stored session left to log in with.
+
+        The engine advertises itself for pairing while it is still restoring a
+        session too, so its report is confirmed against the stored session:
+        acting on it alone would fail every playback on a pairing that is only
+        moments away from logging in.
+        """
+        if await asyncio.to_thread(self.backend._has_stored_session):
+            return
+        self._unpaired = True
+        self._fail("the stored session is gone")
+
     def _observe_auth_state(self, *, logged_in: bool) -> None:
         """
         Follow the engine's login state.
@@ -1744,9 +1771,8 @@ class _SoloistSession:
         its session, so its first snapshot reports logged_in=False even for a
         perfectly good pairing. That is a startup race, not a lost pairing, and
         failing on it would break every playback. Only losing a login that was
-        already established is fatal; a pairing that never logs in surfaces when
-        the item fails to start, where _raise_startup_error routes the user back
-        through the setup flow.
+        already established is fatal; a pairing that is gone altogether is caught
+        by :meth:`_check_pairing_lost`.
 
         :param logged_in: Whether the engine reports an active login.
         """
@@ -1866,6 +1892,7 @@ class _ItemAudio:
         self.seek_target_ms: int | None = None
         self.duration_ms: int | None = None
         self.last_position_ms: int | None = None
+        self.started_at_ms: int | None = None
         self.status: str | None = None
         self.playing_seen = False
         self.claimed = False
@@ -1877,6 +1904,8 @@ class _ItemAudio:
         self._buffered = 0
         self._written = 0
         self._delivered = 0
+        self._seek_anchored = False
+        self._seek_floor_ms = 0
         self._tail_target: int | None = None
         self.draining = False
         self._available = asyncio.Event()
@@ -1990,6 +2019,25 @@ class _ItemAudio:
         self._available.set()
         self._drop_undelivered()
 
+    def arm_seek(self, target_ms: int) -> None:
+        """
+        Arm a seek to the given position, so position reports can confirm it.
+
+        :param target_ms: The position the engine is being seeked to.
+        """
+        self.seek_target_ms = target_ms
+        self.seek_confirmed.clear()
+        self.started_at_ms = None
+        reported_ms = self.last_position_ms or 0
+        # A fresh session restores the account's last playback state, so seeking
+        # the item it was already playing - a resume, or a seek of the current
+        # track - makes that restored position indistinguishable from the seek
+        # landing. Only a position already inside the target's window has to be
+        # disproved that way, by seeing the engine back below where it was;
+        # every other start confirms on the first report that reaches the window.
+        self._seek_floor_ms = reported_ms
+        self._seek_anchored = reported_ms < max(1, target_ms - _SEEK_TOLERANCE_MS)
+
     def observe_position(self, position_ms: int) -> None:
         """Record a reported playback position (and confirm a pending seek)."""
         if self._closed:
@@ -1999,11 +2047,22 @@ class _ItemAudio:
         # of an item reports position 0 and must not erase the progress the
         # completeness validation relies on (verified live)
         self.last_position_ms = max(self.last_position_ms or 0, position_ms)
-        # the floor of 1 keeps a pre-seek report of position 0 from confirming a
-        # small seek target that falls inside the tolerance window
-        if self.seek_target_ms is not None and position_ms >= max(
-            1, self.seek_target_ms - _SEEK_TOLERANCE_MS
-        ):
+        if self.seek_target_ms is None or self.seek_confirmed.is_set():
+            return
+        if not self._seek_anchored:
+            # anchor on the engine dropping back below where it was when the
+            # seek went out: it has restarted the item, so what it reports from
+            # here on describes where the seek is taking it. A backward seek
+            # lands below that mark too, so this only ever gates the first
+            # report - past it, position is judged against the target alone.
+            self._seek_anchored = position_ms < self._seek_floor_ms
+            return
+        # the floor of 1 keeps a report of position 0 from landing inside the
+        # tolerance window of a small seek target
+        if position_ms >= max(1, self.seek_target_ms - _SEEK_TOLERANCE_MS):
+            # what the engine reports as the seek lands is where this item's own
+            # audio begins
+            self.started_at_ms = position_ms
             self.seek_confirmed.set()
 
     async def read(self) -> AsyncGenerator[bytes]:
@@ -2069,17 +2128,25 @@ class _ItemAudio:
 
         A seeked item starts part-way in, so only what is left of it is ever
         delivered — the full duration would be a target nothing can reach.
+        Measured from where the engine reported the seek landing, which is not
+        always the position it was asked for.
         """
-        if self.duration_ms is None:
-            return None
-        remaining_ms = max(0, self.duration_ms - (self.seek_target_ms or 0))
-        return remaining_ms * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
+        return self._remaining_bytes(self.started_at_ms or self.seek_target_ms or 0)
 
     def _overrun_limit(self) -> int | None:
         """Return the byte count past which this item is considered stuck."""
-        if (own_audio := self._duration_bytes()) is None:
+        # reported rather than requested: an offset the engine never confirmed
+        # would otherwise shrink this bound by audio the item does deliver, and
+        # cut a track that is still playing perfectly well
+        if (own_audio := self._remaining_bytes(self.started_at_ms or 0)) is None:
             return None
         return own_audio + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
+
+    def _remaining_bytes(self, start_ms: int) -> int | None:
+        """Return the bytes of this item's audio left from the given position, when known."""
+        if self.duration_ms is None:
+            return None
+        return max(0, self.duration_ms - start_ms) * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
 
 
 def _decorated_duration_ms(item: object) -> int | None:

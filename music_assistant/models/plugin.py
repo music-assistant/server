@@ -164,6 +164,22 @@ class PluginProvider(Provider):
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
 
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin normalizes the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin crossfades the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
     async def on_source_control(
         self,
         source_id: str,

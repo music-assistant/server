@@ -237,7 +237,8 @@ class StreamsController(CoreController):
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
-        # Number of queue streams (single item or flow) actively serving a player right now.
+        # Number of queue streams (single item or flow) actively serving a player right now,
+        # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
         # queue stream is live. Announcements are a separate path that never runs analysis.
         self._active_output_streams = 0
@@ -1086,6 +1087,7 @@ class StreamsController(CoreController):
                 player=player,
                 session=session,
                 streamdetails=streamdetails,
+                provider=prov,
             )
             serving = True
             self._active_output_streams += 1
@@ -1474,8 +1476,10 @@ class StreamsController(CoreController):
                 raise AudioError(
                     f"Unknown (or invalid) audio source session: {media.queue_session_id}"
                 )
-            return self._get_audio_source_session_stream(
-                session, pcm_format, player_id or media.source_id
+            return self._count_as_output_stream(
+                self._get_audio_source_session_stream(
+                    session, pcm_format, player_id or media.source_id
+                )
             )
         if media.source_id and media.queue_item_id:
             # Queue stream request - determine flow_mode based on player capabilities
@@ -1530,7 +1534,7 @@ class StreamsController(CoreController):
                     flow_stream = self.audio.get_overlay_mixed_stream(
                         queue, flow_stream, pcm_format
                     )
-                return flow_stream
+                return self._count_as_output_stream(flow_stream)
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
@@ -1569,12 +1573,12 @@ class StreamsController(CoreController):
                 queue_item.media_item is not None
                 and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
             ):
-                return self._wrap_with_audio_source_lifecycle(
+                inner_stream = self._wrap_with_audio_source_lifecycle(
                     inner=inner_stream,
                     queue_item=queue_item,
                     player_id=player_id or media.source_id,
                 )
-            return inner_stream
+            return self._count_as_output_stream(inner_stream)
         # assume url or some other direct path
         # NOTE: this will fail if its an uri not playable by ffmpeg
         return get_ffmpeg_stream(
@@ -1769,6 +1773,7 @@ class StreamsController(CoreController):
         player: Player,
         session: AudioSourceSession,
         streamdetails: StreamDetails,
+        provider: PluginProvider,
     ) -> tuple[web.StreamResponse, AsyncGenerator[bytes]]:
         """
         Open the response for a live audio source and build the audio behind it.
@@ -1777,6 +1782,7 @@ class StreamsController(CoreController):
         :param player: The player consuming this stream.
         :param session: The session whose source is being streamed.
         :param streamdetails: The stream details resolved for that source.
+        :param provider: Plugin delivering the live source.
         :return: The prepared response and the encoded audio to write to it.
         """
         pcm_format = await self.audio.select_pcm_format(
@@ -1817,7 +1823,10 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             shared_player_ids=player.state.group_members,
+            queue_id=session.player_id,
+            session_id=session.playback_session_id,
         ).filter_params
+        self._update_audio_source_processing_context(session, provider)
         if (
             output_format.content_type == ContentType.WAV
             and not filter_params
@@ -1892,6 +1901,7 @@ class StreamsController(CoreController):
                     session.source_id, MediaType.AUDIO_SOURCE
                 )
                 session.attach_streamdetails(streamdetails)
+            self._update_audio_source_processing_context(session, prov)
             serving = True
             async for chunk in self.audio.get_audio_source_stream(
                 streamdetails=streamdetails,
@@ -1974,6 +1984,27 @@ class StreamsController(CoreController):
                     queue_id,
                 )
 
+    async def _count_as_output_stream(self, inner: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+        """
+        Forward a queue stream while it counts towards the active-output-stream gauge.
+
+        Direct-PCM consumers (AirPlay, Snapcast, Sendspin, Squeezelite, UGP, ...) call
+        ``get_stream`` instead of going through the HTTP route, so without this they never
+        register as playing and audio analysis keeps its idle CPU budget while they stream.
+
+        :param inner: The queue (flow or single item) stream to forward.
+        """
+        self._active_output_streams += 1
+        try:
+            # aclosing guarantees the generator (and thus the ffmpeg process chain behind
+            # it) is torn down when the consumer stops iterating; an async for does not
+            # close its iterator on its own.
+            async with aclosing(inner):
+                async for chunk in inner:
+                    yield chunk
+        finally:
+            self._active_output_streams -= 1
+
     def _served_by(self, queue_item: QueueItem | None, provider_instance: str) -> bool:
         """
         Return whether a queue item is a track the given provider instance serves.
@@ -2039,6 +2070,26 @@ class StreamsController(CoreController):
                 overlay_active=overlay_enabled,
             ),
             alters_audio=queue_item.streamdetails.fade_in,
+        )
+
+    def _update_audio_source_processing_context(
+        self,
+        session: AudioSourceSession,
+        provider: PluginProvider,
+    ) -> None:
+        """
+        Publish source-owned processing for a live AudioSource.
+
+        :param session: Active source session to publish.
+        :param provider: Plugin delivering the live source.
+        """
+        if session.streamdetails is None:
+            return
+        self.audio_processing.update_source_context(
+            session.player_id,
+            session.playback_session_id,
+            crossfade_enabled=provider.delivers_crossfaded_audio(session.streamdetails),
+            volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
     def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:

@@ -1,9 +1,10 @@
 """Tests for the Spotify Connect provider."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -284,6 +285,41 @@ async def test_queue_clear_survives_a_failing_release() -> None:
     deactivate.assert_awaited_once()
 
 
+async def test_a_slow_stop_after_pause_is_reported() -> None:
+    """A stop that takes its time is reported, and still runs to completion."""
+    stopped = asyncio.Event()
+
+    async def _slow_stop(_player_id: str) -> None:
+        await asyncio.sleep(0.05)
+        stopped.set()
+
+    provider, _ = _tethered_provider()
+    mass = cast("Any", provider.mass)
+    mass.loop = asyncio.get_running_loop()
+    mass.players.cmd_stop = AsyncMock(side_effect=_slow_stop)
+    logger = cast("MagicMock", provider.logger)
+
+    with patch("music_assistant.providers.spotify_connect.provider.SLOW_STOP_WARN_S", 0.01):
+        await provider._stop_paused_player("player1")
+
+    assert stopped.is_set()
+    logger.warning.assert_called_once()
+
+
+async def test_a_prompt_stop_after_pause_is_not_reported() -> None:
+    """A stop that finishes promptly is not reported as slow."""
+    provider, _ = _tethered_provider()
+    mass = cast("Any", provider.mass)
+    mass.loop = asyncio.get_running_loop()
+    mass.players.cmd_stop = AsyncMock()
+    logger = cast("MagicMock", provider.logger)
+
+    await provider._stop_paused_player("player1")
+
+    mass.players.cmd_stop.assert_awaited_once_with("player1")
+    logger.warning.assert_not_called()
+
+
 def _provider_with_stored_config(
     setup_data: dict[str, Any], tmp_path: Path
 ) -> SpotifyConnectProvider:
@@ -394,6 +430,32 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
     assert backend._crossfade_ms == 8000
     assert backend._loudness_normalization is False
     assert backend._audio_quality == AUDIO_QUALITY_HIGH
+
+
+def test_source_processing_defaults_are_reported(tmp_path: Path) -> None:
+    """Spotify reports its default source processing as normalization only."""
+    provider = _provider_with_stored_config({}, tmp_path)
+
+    assert provider.delivers_crossfaded_audio(MagicMock()) is False
+    assert provider.delivers_normalized_audio(MagicMock()) is True
+
+
+def test_source_processing_config_is_reported(tmp_path: Path) -> None:
+    """Spotify reports the source processing configured for its backend."""
+    provider = _provider_with_stored_config({}, tmp_path)
+    provider.config.values[CONF_CROSSFADE_DURATION] = ConfigEntry(
+        key=CONF_CROSSFADE_DURATION,
+        type=ConfigEntryType.INTEGER,
+        value=8,
+    )
+    provider.config.values[CONF_LOUDNESS_NORMALIZATION] = ConfigEntry(
+        key=CONF_LOUDNESS_NORMALIZATION,
+        type=ConfigEntryType.BOOLEAN,
+        value=False,
+    )
+
+    assert provider.delivers_crossfaded_audio(MagicMock()) is True
+    assert provider.delivers_normalized_audio(MagicMock()) is False
 
 
 def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
