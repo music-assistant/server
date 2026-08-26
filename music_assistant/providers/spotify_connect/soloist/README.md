@@ -101,9 +101,10 @@ acknowledged FIFO per command type. `play()` claims active device status first
 (`activate`) — a bare play would start local playback without a Connect transfer, leaving
 the Spotify apps unaware.
 
-An `auth_state` reporting `logged_in: false` after a previously seen login raises
-`AUTH_REQUIRED` (→ provider unloads with a login error routing the user through setup);
-a fresh daemon reporting `logged_in: false` while awaiting pairing is normal.
+An `auth_state` reporting `logged_in: false` is always a `SESSION_INACTIVE`, never an
+error: the daemon keeps advertising itself for Connect while logged out, so awaiting a
+first pairing, the user signing out and another account taking the device over all leave
+it usable. MA never signs the daemon in — any Spotify account may claim it from its app.
 
 ## Audio behavior settings
 

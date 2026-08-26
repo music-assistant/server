@@ -81,7 +81,6 @@
     "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose go-librespot (community) instead.",
     "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
     "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose go-librespot (community) instead.",
-    "soloist_auth_required": "The Spotify sign-in for this Spotify Connect device was lost. Run the setup again to reconnect it.",
     "soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",
     "soloist_invalid_archive": "The Spotify Soloist app downloaded from Spotify could not be used. Try again later.",
     "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later."

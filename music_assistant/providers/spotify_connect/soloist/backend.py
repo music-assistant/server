@@ -212,9 +212,6 @@ class SoloistBackend(SpotifyConnectBackend):
         self._spotify_volume: int | None = None
         # guards the player_only 100%-pin so overlapping resets are not issued
         self._pin_in_flight: bool = False
-        # whether an auth_state ever reported a completed login; a fresh daemon
-        # reports logged_in=False while advertising for pairing, which is normal
-        self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
         # the capture sink delivers fixed s32le/44.1kHz/2ch PCM — that is what
@@ -928,15 +925,11 @@ class SoloistBackend(SpotifyConnectBackend):
         """Map a raw soloist event onto the normalized BackendEvent model."""
         data = event.data
         if isinstance(data, SoloistAuthState):
+            # a logged-out daemon keeps advertising itself for Connect, so this is
+            # just a session that ended: awaiting a first pairing, the user signing
+            # out, or another account taking the device over
             if not data.logged_in:
-                if self._was_logged_in:
-                    # an established login was lost mid-session: real auth loss
-                    self._was_logged_in = False
-                    return self._make_event(BackendEventType.AUTH_REQUIRED)
-                # a fresh daemon reports logged_in=False while advertising for
-                # pairing; that is the normal pre-pairing state, not an auth loss
                 return self._make_event(BackendEventType.SESSION_INACTIVE)
-            self._was_logged_in = True
             return self._make_event(
                 BackendEventType.SESSION_ACTIVE
                 if data.is_active

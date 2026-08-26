@@ -39,8 +39,6 @@ class BackendEventType(StrEnum):
     CONNECTION_LOST = "connection_lost"
     # a non-fatal backend error worth surfacing (message in the ``error`` field)
     ERROR = "error"
-    # the backend lost its Spotify authentication and needs the user to log in again
-    AUTH_REQUIRED = "auth_required"
     # the backend failed permanently and the provider must unload with an error
     FATAL_ERROR = "fatal_error"
     # any other backend activity; carries at most refreshed context/track uris

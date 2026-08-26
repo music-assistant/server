@@ -508,25 +508,22 @@ async def test_event_adaptation(data: Any, expected_type: BackendEventType) -> N
     assert [event.type for event in events] == [expected_type]
 
 
-async def test_auth_required_only_after_login_loss() -> None:
-    """AUTH_REQUIRED is only emitted when an established login is lost, not before pairing."""
+async def test_account_takeover_is_a_session_change_not_an_auth_loss() -> None:
+    """Another account claiming the device reports sessions ending and starting, no error."""
     backend, events = _make_backend()
 
-    # a fresh daemon reports logged_in=False while advertising for pairing
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=False, is_active=False))
-    )
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=True, is_active=True))
-    )
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=False, is_active=False))
-    )
+    # a fresh daemon advertising for pairing, then one account, then a takeover
+    # by another: the daemon signs the first one out and the second one in
+    for logged_in, is_active in ((False, False), (True, True), (False, False), (True, True)):
+        await backend._handle_event(
+            _event("auth_state", SoloistAuthState(logged_in=logged_in, is_active=is_active))
+        )
 
     assert [event.type for event in events] == [
         BackendEventType.SESSION_INACTIVE,
         BackendEventType.SESSION_ACTIVE,
-        BackendEventType.AUTH_REQUIRED,
+        BackendEventType.SESSION_INACTIVE,
+        BackendEventType.SESSION_ACTIVE,
     ]
 
 
