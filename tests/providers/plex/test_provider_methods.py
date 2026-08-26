@@ -38,6 +38,7 @@ def _make_provider(
     """Create a minimal PlexProvider instance for testing."""
     mock_mass = MagicMock()
     mock_mass.cache = MagicMock()
+    mock_mass.streams.audio_analysis.set_track_loudness = AsyncMock()
 
     mock_config = MagicMock()
     mock_config.instance_id = "plex_instance_1"
@@ -382,6 +383,41 @@ class TestStreamDetailsGuards:
         assert result.audio_format.sample_rate == 44100
         assert result.audio_format.bit_depth == 16
         plex_track.getStreamURL.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_music_stream_uses_and_persists_plex_loudness(self, music_provider: Any) -> None:
+        """Plex loudness measurements should replace dynamic normalization immediately."""
+        plex_track = _make_stream_track()
+        audio_stream = plex_track.media[0].parts[0].audioStreams.return_value[0]
+        audio_stream.loudness = -4.43
+        audio_stream.albumGain = -13.57
+        music_provider._get_data = AsyncMock(return_value=plex_track)
+        music_provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+
+        result = await music_provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+
+        assert result.loudness == -4.43
+        assert result.loudness_album == -4.43
+        music_provider.mass.streams.audio_analysis.set_track_loudness.assert_awaited_once_with(
+            item_id="/library/metadata/1",
+            provider_instance_id_or_domain="plex_instance_1",
+            loudness=-4.43,
+            loudness_album=-4.43,
+        )
+
+    @pytest.mark.asyncio
+    async def test_music_stream_ignores_invalid_plex_loudness(self, music_provider: Any) -> None:
+        """Invalid Plex measurements must not produce unsafe gain corrections."""
+        plex_track = _make_stream_track()
+        plex_track.media[0].parts[0].audioStreams.return_value[0].loudness = "-inf"
+        music_provider._get_data = AsyncMock(return_value=plex_track)
+        music_provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+
+        result = await music_provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+
+        assert result.loudness is None
+        assert result.loudness_album is None
+        music_provider.mass.streams.audio_analysis.set_track_loudness.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_music_stream_without_media_parts_raises_not_found(

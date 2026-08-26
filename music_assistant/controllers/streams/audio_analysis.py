@@ -640,6 +640,7 @@ class AudioAnalysisController:
         provider_instance_id_or_domain: str,
         loudness: float,
         loudness_album: float | None = None,
+        analysis_version: int = 2,
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
         """
@@ -652,6 +653,7 @@ class AudioAnalysisController:
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param loudness: Integrated track loudness in LUFS.
         :param loudness_album: Optional album-level integrated loudness in LUFS.
+        :param analysis_version: Compatibility version for the builtin loudness analyzer.
         :param media_type: The media type of the item.
         """
         if loudness is None or not isfinite(loudness) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
@@ -671,6 +673,7 @@ class AudioAnalysisController:
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
             analysis=analysis,
+            analysis_version=analysis_version,
             media_type=media_type,
         )
 
