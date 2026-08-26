@@ -205,13 +205,14 @@ def test_minor_release_with_diverged_previous_tag(
 def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
     """Inlined bumps are always dropped; other bumps keep only the latest one."""
     merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    deps = ("dependencies",)
     prs = [
-        FakePR(1, merged_at, "⬆️ Update music-assistant-frontend to 2.17.1"),
+        FakePR(1, merged_at, "⬆️ Update music-assistant-frontend to 2.17.1", labels=deps),
         FakePR(2, merged_at, "Fix a bug"),
-        FakePR(3, merged_at, "Bump aiohttp from 3.11.0 to 3.12.0"),
-        FakePR(4, merged_at, "⬆️ Update music-assistant-models to 1.1.100"),
-        FakePR(5, merged_at, "Bump aiohttp from 3.12.0 to 3.13.0"),
-        FakePR(6, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
+        FakePR(3, merged_at, "Bump aiohttp from 3.11.0 to 3.12.0", labels=deps),
+        FakePR(4, merged_at, "⬆️ Update music-assistant-models to 1.1.100", labels=deps),
+        FakePR(5, merged_at, "Bump aiohttp from 3.12.0 to 3.13.0", labels=deps),
+        FakePR(6, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2", labels=deps),
         FakePR(7, merged_at, "Add a feature"),
     ]
 
@@ -221,19 +222,42 @@ def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
 
 
 def test_filter_dependency_bumps_drop_all(generate_notes: types.ModuleType) -> None:
-    """With drop_all every dependency bump is dropped, but human titles never match."""
+    """With drop_all every labeled dependency bump is dropped, unlabeled PRs never."""
     merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    deps = ("dependencies",)
     prs = [
-        FakePR(1, merged_at, "Bump pytest from 9.0.3 to 9.1.1"),
+        FakePR(1, merged_at, "Bump pytest from 9.0.3 to 9.1.1", labels=deps),
         FakePR(2, merged_at, "Fix a bug"),
-        FakePR(3, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
+        FakePR(3, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2", labels=deps),
         FakePR(4, merged_at, "Bump stages for various providers"),
-        FakePR(5, merged_at, "Bump `aiosendspin` to 9.1.1"),
+        FakePR(5, merged_at, "Bump `aiosendspin` to 9.1.1", labels=deps),
+        FakePR(6, merged_at, "Bump the music-assistant-libs group with 2 updates", labels=deps),
     ]
 
     filtered = generate_notes.filter_dependency_bumps(prs, drop_all=True)
 
-    assert [pr.number for pr in filtered] == [2, 4, 5]
+    assert [pr.number for pr in filtered] == [2, 4]
+
+
+def test_write_outputs_hands_notes_over_via_file(
+    generate_notes: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The notes land in the file; the step output only carries the file path."""
+    notes_file = tmp_path / "release-notes.md"
+    output_file = tmp_path / "github-output"
+    monkeypatch.setenv("RELEASE_NOTES_FILE", str(notes_file))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    notes = "# Notes\n" + ("- a change\n" * 10_000)
+
+    generate_notes.write_outputs(notes, ["alice", "bob"])
+
+    assert notes_file.read_text() == notes
+    output = output_file.read_text()
+    assert f"release-notes-file={notes_file}" in output
+    assert "- a change" not in output
+    assert "contributors<<EOF\nalice,bob\nEOF" in output
 
 
 def test_notes_are_shrunk_to_fit_body_limit(
