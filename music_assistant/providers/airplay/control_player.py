@@ -61,6 +61,7 @@ from .constants import (
     CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
+    PAIRING_PIN_FORMAT,
 )
 from .helpers import (
     get_decoded_property,
@@ -861,7 +862,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
                             type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
-                            format="####",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_companion",
@@ -907,7 +908,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
                             type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
-                            format="####",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_mrp",

@@ -51,6 +51,7 @@ from .constants import (
     CONF_STREAMING_MODE,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
+    PAIRING_PIN_FORMAT,
     PASSWORD_BIT,
     PIN_REQUIRED,
     RAOP_DISCOVERY_TYPE,
@@ -1122,7 +1123,7 @@ class AirPlayPlayer(Player):
                 "pair_pin",
                 CONF_PAIRING_PIN,
                 ConfigEntryType.PAIRING_CODE,
-                "####",
+                PAIRING_PIN_FORMAT,
             )
         else:
             step_id, field_key, field_type, field_format = (

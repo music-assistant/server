@@ -1024,20 +1024,17 @@ class SendspinBasePlayer(Player):
     ) -> list[ConfigEntry]:
         """Return the PIN form fields, hinting how the operator gets the PIN."""
         entries = self._secret_hint_entries(provider, pin_session.method)
-        if pin_session.pin_length is not None:
-            # a negotiated (dynamic) PIN gets boxes matching its exact length
-            entries.append(
-                ConfigEntry(
-                    key=CONF_PAIRING_PIN,
-                    type=ConfigEntryType.PAIRING_CODE,
-                    required=True,
-                    format=pin_code_format(pin_session.pin_length),
-                )
+        # only a dynamic PIN carries a negotiated length; a static PIN is always
+        # exactly 8 digits (enforced by aiosendspin)
+        pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
+        entries.append(
+            ConfigEntry(
+                key=CONF_PAIRING_PIN,
+                type=ConfigEntryType.PAIRING_CODE,
+                required=True,
+                format=pin_code_format(pin_length),
             )
-        else:
-            entries.append(
-                ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)
-            )
+        )
         return entries
 
     def _secret_hint_entries(

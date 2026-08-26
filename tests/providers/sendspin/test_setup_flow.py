@@ -615,13 +615,14 @@ async def test_static_pin_form_hints_where_the_pin_lives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # The unknown location is ignored rather than rendered as a missing translation.
-    # A static PIN has no negotiated length, so nothing names a digit count.
     assert [entry.key for entry in step.entries] == [
         "static_pin_location_device",
         CONF_PAIRING_PIN,
     ]
+    # A static PIN is always exactly 8 digits (enforced by aiosendspin).
     pin_entry = next(entry for entry in step.entries if entry.key == CONF_PAIRING_PIN)
-    assert pin_entry.type is ConfigEntryType.STRING
+    assert pin_entry.type is ConfigEntryType.PAIRING_CODE
+    assert pin_entry.format == "####-####"
     session.handle_submit({CONF_PAIRING_PIN: "12345678"})
     await _wait_for(lambda: session.finished)
     await task
