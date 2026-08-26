@@ -273,10 +273,10 @@ async def test_unreadable_library_keeps_the_config(
     """A question the databases cannot answer keeps everything, so the notice shows."""
     _store_install(mass)
 
-    async def _raise(*_args: Any, **_kwargs: Any) -> int:
+    async def _raise(*_args: Any, **_kwargs: Any) -> list[Any]:
         raise sqlite3.OperationalError("no such column: queue_id")
 
-    monkeypatch.setattr(mass.music.database, "get_count_from_query", _raise)
+    monkeypatch.setattr(mass.music.database, "get_rows_from_query", _raise)
 
     await cleanup_retired_local_audio(mass)
 
@@ -295,12 +295,12 @@ async def test_second_run_is_a_no_op(mass: MusicAssistant, monkeypatch: pytest.M
 
     queried = False
 
-    async def _record(*_args: Any, **_kwargs: Any) -> int:
+    async def _record(*_args: Any, **_kwargs: Any) -> list[Any]:
         nonlocal queried
         queried = True
-        return 0
+        return []
 
-    monkeypatch.setattr(mass.music.database, "get_count_from_query", _record)
+    monkeypatch.setattr(mass.music.database, "get_rows_from_query", _record)
 
     await cleanup_retired_local_audio(mass)
 
@@ -421,3 +421,34 @@ async def test_corrupt_saved_queue_keeps_the_config(
     _assert_kept(mass)
     assert "keeping its configuration" in caplog.text
     assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is None
+
+
+async def test_a_failing_removal_never_escapes_startup(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A removal that fails part-way is logged and retried, not raised into start().
+
+    The user-filter rewrite is the fallible step, and it runs once the configs are already
+    gone; letting it escape would abort the boot on a half-deleted install. The flag stays
+    unset instead, so the next startup finishes what is left - every step is idempotent.
+    """
+    _store_install(mass)
+
+    async def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(mass.webserver.auth, "remove_from_user_filters", _raise)
+
+    await cleanup_retired_local_audio(mass)
+
+    assert "keeping its configuration" in caplog.text
+    assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is None
+
+    # the retry completes the removal once the fallible step works again
+    monkeypatch.undo()
+    await cleanup_retired_local_audio(mass)
+
+    assert mass.config.get(f"{CONF_PROVIDERS}/local_audio") is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{ANALOG_ID}") is None
+    assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is True
