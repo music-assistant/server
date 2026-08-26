@@ -116,8 +116,7 @@ class AudioAnalysisProvider(Provider):
         # Serializes (re)loading of heavy models so concurrent session starts load them once.
         self._models_lock = asyncio.Lock()
         self._models_loaded = False
-        # In-flight finalize() calls, so unload() can cancel them before freeing the models
-        # they are still running inference against.
+        # Tracked so unload() can cancel them before freeing the models they infer against.
         self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     async def start_analysis(
@@ -205,8 +204,7 @@ class AudioAnalysisProvider(Provider):
     async def finalize(self, session_id: str) -> None:
         """Finalize analysis, persist the result, fire post_analysis, then clean up."""
         if self.unloading:
-            # unload() has already snapshotted what to cancel, so a finalize starting now
-            # would run its inference against models that are about to be freed.
+            # Too late to be cancelled by unload(); the models are about to be freed.
             self._sessions.pop(session_id, None)
             return
         task = asyncio.current_task()
@@ -286,9 +284,8 @@ class AudioAnalysisProvider(Provider):
         """Handle unload, cancelling in-flight analysis work and freeing models."""
         for session_id in list(self._sessions):
             await self.cancel(session_id)
-        # Cancel rather than wait out the whole-track inference a finalize is still running:
-        # it can take minutes, and a cancelled finalize records no failure, so the track is
-        # simply analyzed again on its next play.
+        # Cancelled, not awaited: inference runs for minutes and records no failure, so the
+        # track is simply analyzed again on its next play.
         current_task = asyncio.current_task()
         # Reaching unload() from inside a finalize must not cancel that finalize itself.
         finalize_tasks = [task for task in self._finalize_tasks if task is not current_task]

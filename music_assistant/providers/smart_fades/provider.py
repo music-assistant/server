@@ -554,8 +554,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         key_features: torch.Tensor | None,
     ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
         """Run beat inference followed by musical key inference."""
-        # Resolved before the beat stage: a provider reload or shutdown can free the models
-        # while it runs.
+        # Resolved before the beat stage: a reload or shutdown can free the models mid-run.
         models = self._require_models()
         beats, downbeats, beats_per_bar = await self._infer_beat_timings(beat_features)
         if len(beats) < 2:
@@ -650,8 +649,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         :param feats: Log-mel features for the whole track, shaped (frames, mel bins).
         """
-        # Resolved once and passed down: a provider reload or shutdown can free the models
-        # while the windows below are still being dispatched.
+        # Resolved once and passed down: a reload or shutdown can free the models while the
+        # windows below are still being dispatched.
         models = self._require_models()
 
         spect = torch.from_numpy(feats).to(self._device)
