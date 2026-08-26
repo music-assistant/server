@@ -310,3 +310,28 @@ async def test_close_reaps_a_child_when_cancelled_mid_drain() -> None:
             await proc.close()
 
     assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancellation landing while waiting for the process to exit must still reap it.
+
+    That wait is where close() spends most of its time, so it is the likeliest place
+    for a cancellation to land, and giving up there skips the SIGKILL escalation.
+    """
+    # short enough that the drain is over well before the cancellation below
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
+
+    assert proc.returncode is not None
