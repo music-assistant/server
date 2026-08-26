@@ -809,7 +809,7 @@ async def test_vocal_inference_failure_is_retryable(provider: SmartFadesProvider
 async def test_vocal_inference_with_unloaded_models_is_retryable(
     provider: SmartFadesProvider,
 ) -> None:
-    """The idle-unload race (models freed mid-finalize) must not poison the track forever."""
+    """A reload or shutdown freeing the models mid-finalize must not poison the track forever."""
     provider._models = None
 
     with pytest.raises(AudioAnalysisError) as excinfo:
