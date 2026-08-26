@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     PlayerCommandFailed,
     ResourceTemporarilyUnavailable,
+    SetupFailedError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource
@@ -34,13 +35,11 @@ from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
     CONF_TOKEN,
     CONF_X_TOKEN,
     CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
-    PLAYER_ID_AUTO,
     YM_INSTANCE_OWN,
 )
 from music_assistant.providers.yandex_ynison.provider import (
@@ -99,9 +98,8 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
     defaults: dict[str, Any] = {
         CONF_TOKEN: "test-music-token",
         CONF_YM_INSTANCE: YM_INSTANCE_OWN,
-        CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
+        CONF_MASS_PLAYER_ID: "player1",
         CONF_ALLOW_PLAYER_SWITCH: True,
-        CONF_PUBLISH_NAME: DEFAULT_DISPLAY_NAME,
         CONF_DEVICE_ID: "test-device-uuid",
         "log_level": "GLOBAL",
     }
@@ -171,7 +169,7 @@ def _make_mock_manifest() -> MagicMock:
     return manifest
 
 
-def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
+def _make_provider(player_id: str = "player1") -> YandexYnisonProvider:
     """Create a YandexYnisonProvider with mock dependencies."""
     mass = _make_mock_mass()
     config = _make_mock_config({CONF_MASS_PLAYER_ID: player_id})
@@ -237,29 +235,6 @@ class TestProviderInit:
 class TestPlayerSelection:
     """Tests for _get_target_player_id."""
 
-    def test_auto_no_players(self) -> None:
-        """Auto mode returns None when no players available."""
-        provider = _make_provider()
-        assert provider._get_target_player_id() is None
-
-    def test_auto_with_playing_player(self) -> None:
-        """Auto mode selects the currently playing player."""
-        provider = _make_provider()
-
-        player1 = MagicMock()
-        player1.player_id = "player1"
-        player1.display_name = "Player 1"
-        player1.state.playback_state = PlaybackState.IDLE
-
-        player2 = MagicMock()
-        player2.player_id = "player2"
-        player2.display_name = "Player 2"
-        player2.state.playback_state = PlaybackState.PLAYING
-
-        provider.mass.players.all_players.return_value = [player1, player2]  # type: ignore[attr-defined]
-
-        assert provider._get_target_player_id() == "player2"
-
     def test_specific_player_exists(self) -> None:
         """Returns configured player when it exists."""
         provider = _make_provider("my-player")
@@ -275,12 +250,25 @@ class TestPlayerSelection:
         assert provider._get_target_player_id() is None
 
     def test_active_player_takes_priority(self) -> None:
-        """Active player takes priority over auto selection."""
+        """Active player takes priority over the configured player."""
         provider = _make_provider()
         provider._active_player_id = "active-one"
         provider.mass.players.get_player.return_value = MagicMock()  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() == "active-one"
+
+
+class TestMandatoryConnectedPlayer:
+    """The connected player is mandatory at load."""
+
+    async def test_handle_async_init_requires_connected_player(self) -> None:
+        """Loading without a connected player fails with a translated setup error."""
+        provider = _make_provider("")
+
+        with pytest.raises(SetupFailedError) as excinfo:
+            await provider.handle_async_init()
+        assert excinfo.value.translation_key == "no_connected_player"
+        assert excinfo.value.translation_owner == "provider.yandex_ynison"
 
 
 # ------------------------------------------------------------------
@@ -1832,25 +1820,26 @@ class TestYandexProviderMatch:
 
 
 # ------------------------------------------------------------------
-# Instance name postfix
+# Advertised device name
 # ------------------------------------------------------------------
 
 
-class TestInstanceNamePostfix:
-    """Tests for instance_name_postfix property."""
+class TestDisplayName:
+    """Tests for the _display_name property."""
 
-    def test_returns_custom_display_name(self) -> None:
-        """Returns display_name when it differs from the default."""
-        config = _make_mock_config({CONF_PUBLISH_NAME: "Living Room"})
-        mass = _make_mock_mass()
-        manifest = _make_mock_manifest()
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
-        assert provider.instance_name_postfix == "Living Room"
-
-    def test_returns_none_for_default_name(self) -> None:
-        """Returns None when display_name is the default (falls back to index)."""
+    def test_returns_connected_player_name(self) -> None:
+        """The advertised name follows the connected player's display name."""
         provider = _make_provider()
-        assert provider.instance_name_postfix is None
+        player = MagicMock()
+        player.display_name = "Living Room"
+        provider.mass.players.get_player.return_value = player
+        assert provider._display_name == "Living Room"
+
+    def test_falls_back_to_default_when_player_unregistered(self) -> None:
+        """The default name applies while the connected player is not registered."""
+        provider = _make_provider()
+        provider.mass.players.get_player.return_value = None
+        assert provider._display_name == DEFAULT_DISPLAY_NAME
 
 
 # ------------------------------------------------------------------

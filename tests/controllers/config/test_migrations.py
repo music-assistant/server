@@ -28,6 +28,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_player_setup_data,
     _migrate_retired_local_audio,
     _migrate_unrenamed_player_names,
+    migrate_connected_player_plugins,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
@@ -616,35 +617,6 @@ def test_migrate_receiver_and_connect_setup_values() -> None:
     }
 
 
-def test_migrate_default_airplay_receiver_name_once() -> None:
-    """The implicit receiver name is persisted so ghost cleanup cannot rerun later."""
-    data: dict[str, Any] = {
-        "providers": {
-            "airplay_receiver--1": {
-                "domain": "airplay_receiver",
-                "values": {"mass_player_id": "__auto__"},
-            }
-        },
-        "players": {
-            "aplegitimate": {
-                "player_id": "aplegitimate",
-                "provider": "airplay",
-                "default_name": "Music Assistant",
-                "values": {},
-            }
-        },
-    }
-
-    assert migrate_provider_setup_data(data, _fake_encrypt) is True
-    assert data["providers"]["airplay_receiver--1"]["setup_data"] == {
-        "mass_player_id": ENCRYPT_SUFFIX + "__auto__",
-        "airplay_name": ENCRYPT_SUFFIX + "Music Assistant",
-    }
-    assert _migrate_airplay_receiver_ghost_players(data) is False
-    assert "aplegitimate" in data["players"]
-    assert migrate_provider_setup_data(data, _fake_encrypt) is False
-
-
 def test_migrate_provider_setup_data_idempotent_and_preserves_existing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1059,6 +1031,272 @@ def test_migrate_nfs_subfolder_round_trips_through_real_encryption(tmp_path: Pat
     stored = data["providers"]["filesystem_nfs--1"]["setup_data"]["export_path"]
     assert stored.startswith(ENCRYPT_SUFFIX)
     assert controller.decrypt_string(stored) == "/mnt/vault/Music"
+
+
+def _connected_plugins_data() -> dict[str, Any]:
+    """Build a config store with legacy per-instance spotify_connect configurations."""
+    return {
+        "providers": {
+            "spotify_connect--a": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--a",
+                "values": {"log_level": "DEBUG"},
+                "setup_data": {
+                    "backend": ENCRYPT_SUFFIX + "go_librespot",
+                    "mass_player_id": ENCRYPT_SUFFIX + "kitchen",
+                    "publish_name": ENCRYPT_SUFFIX + "Kitchen Spotify",
+                },
+            },
+            "spotify_connect--b": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--b",
+                "values": {},
+                "setup_data": {
+                    "backend": ENCRYPT_SUFFIX + "soloist",
+                    "soloist_api_key": ENCRYPT_SUFFIX + "secret-key",
+                    "soloist_download_consent": True,
+                    "mass_player_id": ENCRYPT_SUFFIX + "living-room",
+                    "publish_name": ENCRYPT_SUFFIX + "Living Room Spotify",
+                },
+            },
+        },
+        "players": {
+            "kitchen": {"player_id": "kitchen"},
+            "living-room": {"player_id": "living-room"},
+        },
+    }
+
+
+def test_migrate_connected_player_plugins_prefers_soloist_survivor(tmp_path: Path) -> None:
+    """The soloist instance survives the collapse under the domain key, secrets intact."""
+    data = _connected_plugins_data()
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    providers = data["providers"]
+    assert set(providers) == {"spotify_connect"}
+    survivor = providers["spotify_connect"]
+    assert survivor["instance_id"] == "spotify_connect"
+    # explicit players carried over in stored order, legacy keys dropped, secrets kept
+    assert survivor["values"]["connected_players"] == ["kitchen", "living-room"]
+    assert survivor["setup_data"] == {
+        "backend": ENCRYPT_SUFFIX + "soloist",
+        "soloist_api_key": ENCRYPT_SUFFIX + "secret-key",
+        "soloist_download_consent": True,
+    }
+    # a second run finds the marker and changes nothing
+    before = deepcopy(data)
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
+    assert data == before
+
+
+def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
+    tmp_path: Path,
+) -> None:
+    """The removed automatic selection and vanished players contribute nothing."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--1",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "__auto__"},
+            },
+            "airplay_receiver--2": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--2",
+                "setup_data": {
+                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "airplay_name": ENCRYPT_SUFFIX + "Garage [AirPlay]",
+                },
+            },
+            "airplay_receiver--3": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--3",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "office"},
+            },
+        },
+        "players": {"office": {"player_id": "office"}},
+    }
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    providers = data["providers"]
+    assert set(providers) == {"airplay_receiver"}
+    survivor = providers["airplay_receiver"]
+    # the first instance survives; only the still-existing explicit player carries over
+    assert survivor["instance_id"] == "airplay_receiver"
+    assert survivor["values"]["connected_players"] == ["office"]
+    assert survivor["setup_data"] == {}
+
+
+def test_migrate_connected_player_plugins_empty_selection_still_marks(tmp_path: Path) -> None:
+    """With nothing to carry over the marker is still stored (empty selection)."""
+    data: dict[str, Any] = {
+        "providers": {
+            "spotify_connect--1": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--1",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "__auto__"},
+            }
+        },
+        "players": {},
+    }
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+    survivor = data["providers"]["spotify_connect"]
+    assert survivor["values"]["connected_players"] == []
+    assert survivor["setup_data"] == {}
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
+
+
+def test_migrate_connected_player_plugins_skips_undecryptable_instance(
+    tmp_path: Path,
+) -> None:
+    """An unreadable instance contributes no player but never fails the migration."""
+
+    def _failing_decrypt(value: str) -> str:
+        if "broken" in value:
+            raise InvalidDataError("Password decryption failed")
+        return value.removeprefix(ENCRYPT_SUFFIX)
+
+    data: dict[str, Any] = {
+        "providers": {
+            "spotify_connect--a": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--a",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "broken"},
+            },
+            "spotify_connect--b": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--b",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "kitchen"},
+            },
+        },
+        "players": {"kitchen": {"player_id": "kitchen"}, "broken": {"player_id": "broken"}},
+    }
+
+    assert migrate_connected_player_plugins(data, _failing_decrypt, str(tmp_path)) is True
+    survivor = data["providers"]["spotify_connect"]
+    assert survivor["values"]["connected_players"] == ["kitchen"]
+
+
+def test_migrate_connected_player_plugins_moves_soloist_data(tmp_path: Path) -> None:
+    """The soloist data dir of an instance whose player survived moves to its new home."""
+    data = _connected_plugins_data()
+    old_dir = tmp_path / "spotify_connect" / "spotify_connect--b" / "soloist-data"
+    old_dir.mkdir(parents=True)
+    (old_dir / "credentials.json").write_text("{}")
+    # the go-librespot instance's dir must stay where it is
+    other_dir = tmp_path / "spotify_connect" / "spotify_connect--a" / "soloist-data"
+    other_dir.mkdir(parents=True)
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    new_dir = tmp_path / "spotify_connect" / "spotify_connect_living-room" / "soloist-data"
+    assert (new_dir / "credentials.json").is_file()
+    assert not old_dir.exists()
+    assert other_dir.is_dir()
+
+
+def test_migrate_connected_player_plugins_sanitizes_player_id_in_data_path(
+    tmp_path: Path,
+) -> None:
+    """Unsafe characters in the player id are sanitized in the soloist data dir name."""
+    data: dict[str, Any] = {
+        "providers": {
+            "spotify_connect--a": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect--a",
+                "setup_data": {
+                    "backend": ENCRYPT_SUFFIX + "soloist",
+                    "mass_player_id": ENCRYPT_SUFFIX + "media_player.living room",
+                },
+            }
+        },
+        "players": {"media_player.living room": {}},
+    }
+    old_dir = tmp_path / "spotify_connect" / "spotify_connect--a" / "soloist-data"
+    old_dir.mkdir(parents=True)
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+    new_dir = (
+        tmp_path / "spotify_connect" / "spotify_connect_media_player.living_room" / "soloist-data"
+    )
+    assert new_dir.is_dir()
+
+
+def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Path) -> None:
+    """AriaCast/Ynison auto or vanished players are cleared, valid ones kept, names dropped."""
+    data: dict[str, Any] = {
+        "providers": {
+            "ariacast_receiver": {
+                "domain": "ariacast_receiver",
+                "instance_id": "ariacast_receiver",
+                "setup_data": {
+                    "mass_player_id": ENCRYPT_SUFFIX + "__auto__",
+                    "ariacast_name": ENCRYPT_SUFFIX + "Garage Cast",
+                },
+            },
+            "yandex_ynison--1": {
+                "domain": "yandex_ynison",
+                "instance_id": "yandex_ynison--1",
+                "setup_data": {
+                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "publish_name": ENCRYPT_SUFFIX + "Office Yandex",
+                    "token": ENCRYPT_SUFFIX + "music-token",
+                },
+            },
+            "yandex_ynison--2": {
+                "domain": "yandex_ynison",
+                "instance_id": "yandex_ynison--2",
+                "setup_data": {"mass_player_id": ENCRYPT_SUFFIX + "office"},
+            },
+        },
+        "players": {"office": {"player_id": "office"}},
+    }
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is True
+
+    providers = data["providers"]
+    assert providers["ariacast_receiver"]["setup_data"] == {}
+    # the vanished player is cleared, the unrelated auth values stay untouched
+    assert providers["yandex_ynison--1"]["setup_data"] == {"token": ENCRYPT_SUFFIX + "music-token"}
+    assert providers["yandex_ynison--2"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "office"
+    }
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
+
+
+def test_migrate_connected_player_plugins_noop(tmp_path: Path) -> None:
+    """Missing or empty provider config store reports no change."""
+    assert migrate_connected_player_plugins({}, _fake_decrypt, str(tmp_path)) is False
+    data: dict[str, Any] = {"providers": {}}
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
+
+
+def test_airplay_ghost_cleanup_skips_collapsed_instance() -> None:
+    """The collapsed receiver instance is never treated as a legacy default-named one."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver",
+                "values": {"connected_players": []},
+                "setup_data": {},
+            }
+        },
+        "players": {
+            "aplegitimate": {
+                "player_id": "aplegitimate",
+                "provider": "airplay",
+                "default_name": "Music Assistant",
+                "values": {},
+            }
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "aplegitimate" in data["players"]
 
 
 def _hass_engine_data(instance_id: str = "hass", **hass_values: Any) -> dict[str, Any]:
