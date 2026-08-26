@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
     RepeatMode,
     SourceControl,
 )
-from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioSource,
     ProviderMapping,
@@ -857,9 +857,6 @@ class SpotifyConnectProvider(PluginProvider):
             # non-fatal backend error: surface it in the log only
             self.logger.warning("Spotify Connect backend error: %s", event.error)
             return
-        if event.type is BackendEventType.AUTH_REQUIRED:
-            self._handle_auth_required()
-            return
 
         self._remember_context_uris(event)
 
@@ -962,23 +959,6 @@ class SpotifyConnectProvider(PluginProvider):
             self._last_context_uri = event.context_uri
         if event.track_uri:
             self._last_track_uri = event.track_uri
-
-    def _handle_auth_required(self) -> None:
-        """Handle a lost Spotify login: reset session state and unload with an auth error."""
-        # the backend lost its Spotify login mid-session: stop treating the
-        # device as active and unload with an auth error so the UI flags
-        # the provider and routes the user through the setup flow
-        self._playing = False
-        self._spotify_session_active = False
-        self._last_playback_options = None
-        self.logger.warning("Spotify Connect backend for %s requires (re)authentication", self.name)
-        self.unload_with_error(
-            LoginFailed(
-                "Spotify authentication required",
-                translation_key="soloist_auth_required",
-                translation_owner=self.translation_owner,
-            )
-        )
 
     def _handle_options_changed(self, event: BackendEvent) -> None:
         """

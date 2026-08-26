@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, LoginFailed
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
@@ -428,6 +428,8 @@ async def test_session_inactive_stops_active_player() -> None:
     assert provider._in_use_by_player is None
     assert provider._active_session_id is None
     mass.players.cmd_stop.assert_called_once_with("player1")
+    # signing out is not a provider failure: it must never schedule an unload
+    mass.call_later.assert_not_called()
 
 
 async def test_stream_teardown_while_playing_releases_spotify() -> None:
@@ -515,21 +517,6 @@ async def test_fatal_error_unloads_provider_with_error() -> None:
     mass.call_later.assert_called_once_with(
         1, mass.unload_provider_with_error, _INSTANCE_ID, "daemon kaput"
     )
-
-
-async def test_auth_required_resets_session_and_unloads_with_auth_error() -> None:
-    """AUTH_REQUIRED resets session state and unloads the provider with an auth error."""
-    backend = FakeBackend()
-    provider, mass = _make_provider(backend, playing=True, session_active=True)
-
-    await provider._handle_backend_event(BackendEvent(BackendEventType.AUTH_REQUIRED))
-
-    assert provider._playing is False
-    assert provider._spotify_session_active is False
-    mass.call_later.assert_called_once()
-    error = mass.call_later.call_args.args[3]
-    assert isinstance(error, LoginFailed)
-    assert error.translation_key == "soloist_auth_required"
 
 
 async def test_source_control_commands_dispatch_to_backend() -> None:
