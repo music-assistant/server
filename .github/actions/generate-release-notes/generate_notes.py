@@ -21,8 +21,13 @@ from github import Github, GithubException
 # under so the release create/update calls can never fail on size.
 MAX_BODY_CHARS = 124_000
 
-# Matches dependency-bump PR titles like "⬆️ Update music-assistant-frontend to 2.17.294"
-BUMP_TITLE_PATTERN = re.compile(r"^⬆️\s*(?:Update|Bump)\s+(\S+)")
+# Matches bot-generated bumps like "⬆️ Update music-assistant-frontend to 2.17.294"
+# and dependabot bumps like "Bump pytest from 9.0.3 to 9.1.1"; the from/to anchor
+# keeps human-written "Bump ..." titles out.
+BUMP_TITLE_PATTERNS = (
+    re.compile(r"^⬆️\s*(?:Update|Bump)\s+(\S+)"),
+    re.compile(r"^Bump\s+(\S+)\s+from\s+\S+\s+to\s+\S+"),
+)
 
 # Bump PRs whose contents already surface elsewhere in the notes: frontend changes
 # are inlined in their own section and models changes ship with the server PRs
@@ -158,6 +163,15 @@ def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     return prs
 
 
+def get_bumped_dependency(title) -> str | None:
+    """Return the dependency name from a bump PR title, or None for other PRs."""
+    for pattern in BUMP_TITLE_PATTERNS:
+        match = pattern.match(title)
+        if match:
+            return match.group(1)
+    return None
+
+
 def filter_dependency_bumps(prs, drop_all=False) -> list[Any]:
     """
     Drop dependency-bump PRs that add no information to the notes.
@@ -168,18 +182,18 @@ def filter_dependency_bumps(prs, drop_all=False) -> list[Any]:
     """
     latest: dict[str, Any] = {}
     for pr in prs:
-        match = BUMP_TITLE_PATTERN.match(pr.title)
-        if match:
+        dependency = get_bumped_dependency(pr.title)
+        if dependency:
             # PRs are ordered oldest to newest, so the last match wins
-            latest[match.group(1)] = pr
+            latest[dependency] = pr
 
     filtered = []
     for pr in prs:
-        match = BUMP_TITLE_PATTERN.match(pr.title)
-        if match:
-            dependency = match.group(1)
-            if drop_all or dependency in INLINED_BUMP_DEPS or latest[dependency] is not pr:
-                continue
+        dependency = get_bumped_dependency(pr.title)
+        if dependency and (
+            drop_all or dependency in INLINED_BUMP_DEPS or latest[dependency] is not pr
+        ):
+            continue
         filtered.append(pr)
 
     if len(filtered) != len(prs):

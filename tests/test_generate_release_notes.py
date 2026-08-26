@@ -208,9 +208,9 @@ def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
     prs = [
         FakePR(1, merged_at, "⬆️ Update music-assistant-frontend to 2.17.1"),
         FakePR(2, merged_at, "Fix a bug"),
-        FakePR(3, merged_at, "⬆️ Bump aiohttp from 3.11 to 3.12"),
+        FakePR(3, merged_at, "Bump aiohttp from 3.11.0 to 3.12.0"),
         FakePR(4, merged_at, "⬆️ Update music-assistant-models to 1.1.100"),
-        FakePR(5, merged_at, "⬆️ Bump aiohttp from 3.12 to 3.13"),
+        FakePR(5, merged_at, "Bump aiohttp from 3.12.0 to 3.13.0"),
         FakePR(6, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
         FakePR(7, merged_at, "Add a feature"),
     ]
@@ -221,17 +221,19 @@ def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
 
 
 def test_filter_dependency_bumps_drop_all(generate_notes: types.ModuleType) -> None:
-    """With drop_all every dependency bump is dropped from the notes."""
+    """With drop_all every dependency bump is dropped, but human titles never match."""
     merged_at = datetime(2026, 6, 1, tzinfo=UTC)
     prs = [
-        FakePR(1, merged_at, "⬆️ Bump aiohttp from 3.12 to 3.13"),
+        FakePR(1, merged_at, "Bump pytest from 9.0.3 to 9.1.1"),
         FakePR(2, merged_at, "Fix a bug"),
         FakePR(3, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2"),
+        FakePR(4, merged_at, "Bump stages for various providers"),
+        FakePR(5, merged_at, "Bump `aiosendspin` to 9.1.1"),
     ]
 
     filtered = generate_notes.filter_dependency_bumps(prs, drop_all=True)
 
-    assert [pr.number for pr in filtered] == [2]
+    assert [pr.number for pr in filtered] == [2, 4, 5]
 
 
 def test_notes_are_shrunk_to_fit_body_limit(
