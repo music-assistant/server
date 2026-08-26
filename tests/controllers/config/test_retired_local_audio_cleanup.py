@@ -12,7 +12,9 @@ something. Anything less and the whole lot is removed; anything more and it all 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 from music_assistant.constants import (
     CONF_PLAYER_DSP,
@@ -28,8 +30,11 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
 )
+from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
+    import pathlib
+
     import pytest
 
     from music_assistant.mass import MusicAssistant
@@ -297,3 +302,48 @@ async def test_second_run_is_a_no_op(mass: MusicAssistant, monkeypatch: pytest.M
 
     assert not queried
     _assert_kept(mass)
+
+
+async def test_cleanup_runs_before_the_tombstone_loads(tmp_path: pathlib.Path) -> None:
+    """
+    A torched install never loads the tombstone, so no banner appears even briefly.
+
+    The end state alone cannot tell whether the cleanup beat the provider load - a
+    cleanup running after it would leave the same settings behind - so this watches
+    the tombstone's own setup(), which is what records the INCOMPATIBLE status.
+    """
+    storage_path = tmp_path / "data"
+    storage_path.mkdir(parents=True)
+    (storage_path / "settings.json").write_text(
+        json.dumps(
+            {
+                CONF_PROVIDERS: {
+                    "local_audio": {
+                        "type": "player",
+                        "domain": "local_audio",
+                        "instance_id": "local_audio",
+                        "enabled": True,
+                        "name": "Local Audio Out",
+                        "values": {},
+                    }
+                },
+                CONF_PLAYERS: {
+                    ANALOG_ID: {
+                        "player_id": ANALOG_ID,
+                        "provider": "local_audio",
+                        "player_type": "player",
+                        "enabled": True,
+                        "values": {},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("music_assistant.providers.local_audio.setup", new=AsyncMock()) as tombstone_setup:
+        async with full_mass_context(tmp_path) as mass:
+            assert tombstone_setup.call_count == 0
+            assert mass.config.get(f"{CONF_PROVIDERS}/local_audio") is None
+            assert mass.config.get(f"{CONF_PLAYERS}/{ANALOG_ID}") is None
+            assert mass.get_provider("local_audio", return_unavailable=True) is None
