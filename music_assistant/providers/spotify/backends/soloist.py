@@ -860,7 +860,10 @@ class _SoloistSession:
         outgoing = self._current
         if client is None:
             raise AudioError("Spotify Soloist is not connected")
-        if outgoing is None or outgoing.uri != spotify_uri:
+        if outgoing is None or outgoing.uri != spotify_uri or outgoing.closed:
+            # A closed channel is the run having ended on this item, which the
+            # uri still matching does not tell apart: the engine has stopped and
+            # would not start again for a seek.
             raise AudioError(f"Spotify Soloist is not playing {spotify_uri}")
         # armed before the command: what the sink has already rendered, and
         # everything still travelling here, belongs to the position seeked away
@@ -1667,10 +1670,12 @@ class _SoloistSession:
         if playing:
             # the engine picked the item back up: it was only rebuffering after all
             self._cancel_tail_drain(item)
-        elif item.finishing and item.at_own_end:
+        elif item.finishing and item.at_own_end and not self._seeking:
             # The run's last item, played out: the engine reports no track change
             # to cut it on, so end it here. This is also the branch a finished run
             # actually arrives on — its snapshot is stopped/idle, not paused.
+            # Never while a seek is in flight: the channel opened for it has no
+            # position of its own yet, which reads as an item with nothing left.
             self._drain_last_item(item)
             return
         await self._apply_sink_state(engine_playing=playing)
@@ -2057,6 +2062,11 @@ class _ItemAudio:
         self.draining = False
         self._available = asyncio.Event()
         self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        """Return whether this channel has been cut and can deliver no more."""
+        return self._closed
 
     @property
     def finishing(self) -> bool:

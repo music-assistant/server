@@ -2679,3 +2679,50 @@ async def test_a_short_forward_seek_still_confirms(tmp_path: Path) -> None:
     item = await session.seek_current(TRACK_A, 50_500)
     assert item.seek_confirmed.is_set()
     assert item.started_at_ms == 50_500
+
+
+async def test_a_seek_does_not_arm_the_last_items_drain(tmp_path: Path) -> None:
+    """
+    The channel opened for a seek has no position yet, which is not an ended item.
+
+    Holding the sink can make the engine report a state that is not playing, and
+    the run's last item would then be drained out from under the seek.
+    """
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    playing.observe_position(30_000)
+    armed: list[bool] = []
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        # nothing to judge the fresh channel by yet, and no follower queued
+        await session._handle_playback_state(
+            SoloistPlaybackState(status="buffering", item=None, position=None)
+        )
+        armed.append(_current_of(session).draining)
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 120_000)
+    assert armed == [False]
+    assert not item.draining
+
+
+async def test_the_item_a_finished_run_stopped_on_is_not_seeked_in_place(
+    tmp_path: Path,
+) -> None:
+    """
+    A matching uri is not proof the engine is still playing it.
+
+    The channel stays current through the idle grace after the run ended, and a
+    seek would wait out its confirmation on an engine that has stopped.
+    """
+    session = _make_session(tmp_path)
+    ended = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    ended.started.set()
+    ended.close()
+    with pytest.raises(AudioError, match="is not playing"):
+        await session.seek_current(TRACK_A, 0)
+    _client_of(session).seek.assert_not_awaited()
