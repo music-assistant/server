@@ -1745,7 +1745,8 @@ class SendspinProvider(PlayerProvider):
                 await asyncio.sleep(delay)
             try:
                 # another teardown won the race; a config it left behind is not ours
-                # to delete, _remove_orphan_virtual_player_configs sweeps it at startup
+                # to delete - it is kept for the owner to reclaim, and swept at
+                # startup once that owner is gone
                 if not self.is_virtual_player(player_id):
                     return
                 # awaited to completion on purpose: a timeout is no reliable bound on

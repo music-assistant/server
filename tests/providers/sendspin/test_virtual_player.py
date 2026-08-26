@@ -305,6 +305,30 @@ async def test_cleanup_failed_creation_skips_an_already_removed_player() -> None
     sendspin.logger.warning.assert_not_called()
 
 
+async def test_cleanup_failed_creation_keeps_a_reclaimable_config() -> None:
+    """Test that cleanup leaves a persisted config it did not create in place."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    sendspin.config = MagicMock(instance_id="sendspin--test")
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}reclaimable"
+    # unloading drops the in-memory entries but keeps the configs on purpose
+    sendspin._virtual_players = {}
+    sendspin.mass.config.get.return_value = {
+        "provider": sendspin.instance_id,
+        "values": {CONF_VIRTUAL_PLAYER_OWNER: "owner--test"},
+    }
+    sendspin.server_api.get_client.return_value = None
+    sendspin.mass.players.unregister = AsyncMock()
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    sendspin.mass.players.delete_player_config.assert_not_called()
+    sendspin.mass.players.unregister.assert_not_awaited()
+    sendspin.logger.warning.assert_not_called()
+
+
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
     """Test that removal is refused for players that are not virtual players."""
     sendspin = _get_sendspin_provider(mass)
