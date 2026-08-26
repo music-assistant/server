@@ -82,17 +82,24 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   item's stream ends where the session reports moving on, and the next item's stream
   begins there. Played back to back the items reproduce the session's audio sample for
   sample, so the cut position does not matter. Only consecutive tracks are stitched; a
-  podcast episode or audiobook chapter is played on its own.
+  podcast episode or audiobook chapter is played on its own. Channels are per
+  occurrence rather than per track, so a queue holding the same track twice in a row
+  stitches through it like any other pair — the engine names both under one URI, and
+  the order they were fed in is what tells them apart.
 - **Use the engine's transport before respawning it.** A next-track lands on the item
   that was fed one ahead, so the engine is told to skip to it and the session
-  survives. Tearing a session down and spawning another costs a login, an
-  activate and a re-feed, which is seconds — and the daemon never exits on its own, so
-  nothing is gained by waiting for it either: it is closed straight away.
+  survives. A next item the session was *not* fed — the queue was reordered after the
+  feed, or the user picked something else — is queued and skipped to in the same way,
+  as long as the engine has nothing else queued behind what it plays: its queue offers
+  no way to remove or replace an entry, only to append one and move past it. Tearing a
+  session down and spawning another costs a login, an activate and a re-feed, which is
+  seconds — and the daemon never exits on its own, so nothing is gained by waiting for
+  it either: it is closed straight away.
 - **A session in use is never cut short**: the engine allows one session, so an item
   the running one cannot serve would otherwise restart it and truncate whatever it is
   still delivering. That happens at boundaries the session does not drive — a podcast
-  episode or audiobook chapter (never stitched), the same track twice in a row, or
-  another player — so those are reported as `ProviderStreamLimitError` instead. A
+  episode or audiobook chapter (never stitched) or another player — so those are
+  reported as `ProviderStreamLimitError` instead. A
   speculative prepare then gives up softly, and the real request, made once the other
   item has been released, gets the session. The cost is a cold start at those
   boundaries rather than a warm buffer.

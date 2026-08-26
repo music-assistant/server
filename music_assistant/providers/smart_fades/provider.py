@@ -98,6 +98,21 @@ class SmartFadesData:
     vocal_feature_blocks: list[np.ndarray] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class LoadedModels:
+    """The model components Smart Fades infers with; loaded and released as one set."""
+
+    beat_this: Spect2Frames
+    beat_this_post_processor: DBNDownBeatTracker
+    skey_vqt: VQT
+    skey_chromanet: ChromaNet
+    skey_crop: CropCQT
+    spectral_centroid: SpectralCentroid
+    firered: torch.nn.Module
+    firered_cmvn_means: npt.NDArray[np.float64]
+    firered_cmvn_inverse_std: npt.NDArray[np.float64]
+
+
 class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
@@ -118,16 +133,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self._data: dict[str, SmartFadesData] = {}
         self._device = "cpu"
         # Populated by _load_models and cleared again by _free_models, so every use goes
-        # through _require_loaded rather than assuming the models are resident.
-        self._beat_this_model: Spect2Frames | None = None
-        self._beat_this_post_processor: DBNDownBeatTracker | None = None
-        self._skey_vqt: VQT | None = None
-        self._skey_chromanet: ChromaNet | None = None
-        self._skey_crop: CropCQT | None = None
-        self._spectral_centroid: SpectralCentroid | None = None
-        self._firered_model: torch.nn.Module | None = None
-        self._firered_cmvn_means: npt.NDArray[np.float64] | None = None
-        self._firered_cmvn_inverse_std: npt.NDArray[np.float64] | None = None
+        # through _require_models rather than assuming the models are resident.
+        self._models: LoadedModels | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for this provider."""
@@ -191,43 +198,13 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def _load_models(self) -> None:
         """Load the Beat This, S-KEY, and FireRed AED models into memory."""
-        (
-            self._beat_this_model,
-            self._beat_this_post_processor,
-            self._skey_vqt,
-            self._skey_chromanet,
-            self._skey_crop,
-            self._spectral_centroid,
-            self._firered_model,
-            self._firered_cmvn_means,
-            self._firered_cmvn_inverse_std,
-        ) = await asyncio.to_thread(self._initialize_models)
+        self._models = await asyncio.to_thread(self._initialize_models)
 
     def _free_models(self) -> None:
         """Release the Beat This, S-KEY, and FireRed AED models."""
-        self._beat_this_model = None
-        self._beat_this_post_processor = None
-        self._skey_vqt = None
-        self._skey_chromanet = None
-        self._skey_crop = None
-        self._spectral_centroid = None
-        self._firered_model = None
-        self._firered_cmvn_means = None
-        self._firered_cmvn_inverse_std = None
+        self._models = None
 
-    def _initialize_models(
-        self,
-    ) -> tuple[
-        Spect2Frames,
-        DBNDownBeatTracker,
-        VQT,
-        ChromaNet,
-        CropCQT,
-        SpectralCentroid,
-        torch.nn.Module,
-        npt.NDArray[np.float64],
-        npt.NDArray[np.float64],
-    ]:
+    def _initialize_models(self) -> LoadedModels:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
@@ -247,34 +224,29 @@ class SmartFadesProvider(AudioAnalysisProvider):
         firered_model, firered_cmvn_means, firered_cmvn_inverse_std = load_firered_components(
             device=self._device
         )
-        return (
-            beat_this_model,
-            beat_this_post_processor,
-            skey_vqt,
-            skey_chromanet,
-            skey_crop,
-            spectral_centroid,
-            firered_model,
-            firered_cmvn_means,
-            firered_cmvn_inverse_std,
+        return LoadedModels(
+            beat_this=beat_this_model,
+            beat_this_post_processor=beat_this_post_processor,
+            skey_vqt=skey_vqt,
+            skey_chromanet=skey_chromanet,
+            skey_crop=skey_crop,
+            spectral_centroid=spectral_centroid,
+            firered=firered_model,
+            firered_cmvn_means=firered_cmvn_means,
+            firered_cmvn_inverse_std=firered_cmvn_inverse_std,
         )
 
-    def _require_loaded[ComponentT](self, component: ComponentT | None, name: str) -> ComponentT:
-        """
-        Return a loaded model component, failing the analysis when it is not resident.
-
-        :param component: The component to resolve; None while the models are unloaded.
-        :param name: Name of the component, used in the failure reason.
-        """
-        if component is None:
+    def _require_models(self) -> LoadedModels:
+        """Return the resident model set, failing the analysis when it has been unloaded."""
+        if self._models is None:
             # The recorder that handles AudioAnalysisError does not log, so warn here or the
             # unload race leaves nothing behind but a row in the failures table.
-            self.logger.warning("%s is not loaded; analysis will be retried later", name)
+            self.logger.warning("Models are not loaded; analysis will be retried later")
             raise AudioAnalysisError(
-                f"{name} is not loaded",
+                "models are not loaded",
                 retry_at=utc() + MODEL_FAILURE_RETRY_DELAY,
             )
-        return component
+        return self._models
 
     async def _start_analysis(
         self,
@@ -287,6 +259,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             # We only want to analyze tracks
             return False
 
+        models = self._require_models()
         block_seconds = 10.0
 
         needs_resample = audio_format.sample_rate != ANALYSIS_SAMPLE_RATE
@@ -317,10 +290,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
             if audio_format.sample_rate != FIRERED_SAMPLE_RATE
             else None,
             vocal_fbank=FireRedFbank(
-                self._require_loaded(self._firered_cmvn_means, "FireRed AED CMVN means"),
-                self._require_loaded(
-                    self._firered_cmvn_inverse_std, "FireRed AED CMVN inverse deviations"
-                ),
+                models.firered_cmvn_means,
+                models.firered_cmvn_inverse_std,
             ),
         )
         self.logger.debug("Started beat tracking session %s", session_id)
@@ -520,9 +491,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
-        spectral_centroid = self._require_loaded(
-            self._spectral_centroid, "SpectralCentroid transform"
-        )
+        spectral_centroid = self._require_models().spectral_centroid
         if len(pcm_22k) >= spectral_centroid.n_fft:
             pcm_tensor = torch.from_numpy(pcm_22k)
             centroid_frames = spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
@@ -585,12 +554,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
         key_features: torch.Tensor | None,
     ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
         """Run beat inference followed by musical key inference."""
-        # Resolved before the beat stage: an idle unload may clear the field while it runs.
-        chromanet = self._require_loaded(self._skey_chromanet, "S-KEY ChromaNet")
+        # Resolved before the beat stage: an idle unload may clear the models while it runs.
+        models = self._require_models()
         beats, downbeats, beats_per_bar = await self._infer_beat_timings(beat_features)
         if len(beats) < 2:
             raise AudioAnalysisError("no rhythmic beat detected")
-        key, mode = await self._run_offloaded(self._infer_musical_key, chromanet, key_features)
+        key, mode = await self._run_offloaded(
+            self._infer_musical_key, models.skey_chromanet, key_features
+        )
         return beats, downbeats, beats_per_bar, key, mode
 
     async def _infer_vocal_activity(
@@ -599,7 +570,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         duration: float,
     ) -> np.ndarray:
         """Run FireRed AED inference and return the 100 ms vocal timeline."""
-        model = self._require_loaded(self._firered_model, "FireRed AED model")
+        model = self._require_models().firered
         try:
             compute_seconds = 0.0
             chunks = []
@@ -636,15 +607,14 @@ class SmartFadesProvider(AudioAnalysisProvider):
         self, pcm_mono: np.ndarray, sample_rate: int, data: SmartFadesData
     ) -> None:
         """Extract VQT features for S-KEY key detection."""
-        vqt = self._require_loaded(self._skey_vqt, "S-KEY VQT")
-        crop = self._require_loaded(self._skey_crop, "S-KEY CropCQT")
+        models = self._require_models()
         if sample_rate != ANALYSIS_SAMPLE_RATE:
             pcm_mono = soxr.resample(pcm_mono, sample_rate, ANALYSIS_SAMPLE_RATE)
         pcm_tensor = torch.from_numpy(pcm_mono)
         with torch.inference_mode():
             vqt_input = pcm_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, samples)
-            vqt_out = vqt(vqt_input)  # (1, 1, n_bins, T)
-            cropped = crop(vqt_out, torch.zeros(1))  # (1, 1, 84, T)
+            vqt_out = models.skey_vqt(vqt_input)  # (1, 1, n_bins, T)
+            cropped = models.skey_crop(vqt_out, torch.zeros(1))  # (1, 1, 84, T)
             data.musical_key_feature_blocks.append(cropped.cpu())
 
     def _infer_musical_key(
@@ -679,12 +649,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         :param feats: Log-mel features for the whole track, shaped (frames, mel bins).
         """
-        # Resolved once and passed down: an idle unload may clear the fields while the
+        # Resolved once and passed down: an idle unload may clear the models while the
         # windows below are still being dispatched.
-        beat_this = self._require_loaded(self._beat_this_model, "Beat This model")
-        post_processor = self._require_loaded(
-            self._beat_this_post_processor, "Beat This post-processor"
-        )
+        models = self._require_models()
 
         spect = torch.from_numpy(feats).to(self._device)
         windows, starts = split_piece(
@@ -697,14 +664,18 @@ class SmartFadesProvider(AudioAnalysisProvider):
         model_seconds = 0.0
         for window in windows:
             prediction, elapsed = await self._run_offloaded_timed(
-                self._infer_beat_window, beat_this.model, window
+                self._infer_beat_window, models.beat_this.model, window
             )
             predictions.append(prediction)
             model_seconds += elapsed
             await self._pace_beat_windows(elapsed)
 
         (beats, downbeats, beats_per_bar), post_seconds = await self._run_offloaded_timed(
-            self._decode_beat_timings, post_processor, predictions, starts, len(spect)
+            self._decode_beat_timings,
+            models.beat_this_post_processor,
+            predictions,
+            starts,
+            len(spect),
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL,
