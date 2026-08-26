@@ -40,9 +40,11 @@ class AudioSourceSession:
 
     ``streamdetails`` and ``stream_session_id`` are independent of the session's
     own existence: a paused external source keeps the player while its stream is
-    torn down, so both fall back to None without the session ending. The
-    ``playback_session_id`` identifies the current selection through pauses and
-    stream reconnects, and is refreshed when the source is explicitly reselected.
+    torn down, so neither is cleared by a stream ending. Both are None until the
+    first stream request, which is what makes ``stream_session_id`` the record of
+    whether this selection was ever streamed. The ``playback_session_id``
+    identifies the current selection through pauses and stream reconnects, and is
+    refreshed when the source is explicitly reselected.
     """
 
     player_id: str
@@ -164,11 +166,12 @@ class AudioSourceMixin:
         """
         Register a stream request as the one serving a live source session.
 
-        The claim is the point of no return for a source moving between players:
-        whichever other player still held the source is evicted here, so a
-        takeover that never produces a stream request leaves it untouched on the
-        player that has it. Returns False when the session is no longer the live
-        one on its player, in which case the caller must not serve it.
+        Called once the owning plugin has accepted the stream request, which is
+        where a source moving between players commits: whichever other player
+        still held it is evicted here, so a takeover that never gets a stream
+        request leaves it untouched on the player that has it. Returns False when
+        the session is no longer the live one on its player, in which case the
+        caller must not serve it.
 
         :param session: The session the stream request resolved.
         :param playback_session_id: The playback session the request set out to serve.

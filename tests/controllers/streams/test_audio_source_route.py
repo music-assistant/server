@@ -310,11 +310,14 @@ async def test_a_session_already_superseded_is_not_released() -> None:
     """A newer session on the player is not this request's to take away."""
     session = _session()
     ctrl, provider, _player, store = _controller(session)
-    provider.on_source_selected = AsyncMock(side_effect=RuntimeError("nope"))
-    # the player moved on to a different session while this request was setting up
-    store._source_sessions[OWNER_ID] = _session()
 
-    with pytest.raises(web.HTTPNotFound):
+    async def supersede_session(*_args: Any) -> None:
+        # another selection landed on the player while this request was setting up
+        store._source_sessions[OWNER_ID] = _session()
+
+    provider.on_source_selected = AsyncMock(side_effect=supersede_session)
+
+    with pytest.raises(web.HTTPNotFound, match="superseded"):
         await ctrl.serve_audio_source_stream(_request(session_id=session.playback_session_id))
 
     ctrl.mass.players.deselect_source.assert_not_awaited()

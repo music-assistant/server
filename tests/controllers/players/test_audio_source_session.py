@@ -380,6 +380,22 @@ def test_claiming_a_session_stamps_the_stream_token() -> None:
     assert session.stream_session_id == "tok-1"
 
 
+def test_a_claimed_token_outlives_the_stream_that_stamped_it() -> None:
+    """
+    The stream token records that a selection was streamed, not that it still is.
+
+    A paused source keeps the player while its stream is torn down, and what
+    separates it from one that was never streamed at all is this token.
+    """
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-1")
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Take Five")))
+
+    assert session.stream_session_id == "tok-1"
+
+
 def test_claiming_a_superseded_session_is_refused() -> None:
     """A stream request set up for a session the player has left behind is turned away."""
     ctrl = _Controller(_plugin_provider())
