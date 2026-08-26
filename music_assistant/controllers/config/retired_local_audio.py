@@ -68,12 +68,11 @@ async def cleanup_retired_local_audio(mass: MusicAssistant) -> None:
         else:
             await _remove_local_audio_config(mass, instance_ids, player_ids)
     except Exception as err:
-        # never torch a possibly-real setup on a degraded install: leaving the config in
-        # place costs the user a banner, removing it wrongly costs them their settings.
-        # Deliberately broad, and around the removal too - this runs inside start(), so
-        # anything escaping would abort the boot and strand a half-deleted install; the
-        # type and traceback are logged so a defect here is not swallowed. The flag stays
-        # unset, so the next startup retries: every step below is idempotent.
+        # never torch a possibly-real setup on a degraded install: keeping the config costs
+        # the user a banner, removing it wrongly costs them their settings. Deliberately
+        # broad and around the removal too, because this runs inside start(): anything
+        # escaping aborts the boot, on a half-deleted install if it escaped the removal.
+        # The flag stays unset so the next startup retries; the removal is idempotent.
         LOGGER.warning(
             "Unable to clean up the retired %s provider, keeping its configuration - %s: %s",
             LOCAL_AUDIO_DOMAIN,
@@ -176,13 +175,12 @@ async def _queue_ids_in_playlog(mass: MusicAssistant, queue_ids: list[str]) -> s
     """
     Return the subset of the given queue ids that something was ever played on.
 
-    One query for all of them: playlog.queue_id carries no index, so every lookup is a
-    full scan - and an install with nothing to find is the one that takes that path for
-    each of its enumerated sound devices.
-
     :param mass: The MusicAssistant instance to query the library of.
     :param queue_ids: The queue ids to look for, which for a player are its player ids.
     """
+    # resolved in one query: playlog.queue_id carries no index, so every lookup is a full
+    # scan - and the unused install this targets is the one that finds nothing, once per
+    # enumerated sound device
     params = {f"id_{index}": queue_id for index, queue_id in enumerate(queue_ids)}
     placeholders = ",".join(f":{name}" for name in params)
     rows = await mass.music.database.get_rows_from_query(
@@ -197,14 +195,15 @@ async def _saved_queue_payloads(mass: MusicAssistant, queue_ids: list[str]) -> d
     """
     Return the decoded payloads of the persisted queues of the given queue ids.
 
-    Reads the rows directly instead of through `CacheController.get`, which reports an entry
-    it cannot deserialize as a miss: that would make a corrupt saved queue look like a queue
-    that was never used. Here the decode raises, so the caller keeps the install instead.
-    Expiration is ignored on purpose - a queue that outlived its 30 days is still evidence.
+    Raises if an entry cannot be decoded, rather than reporting it as absent.
 
     :param mass: The MusicAssistant instance to query the cache of.
     :param queue_ids: The queue ids to read the persisted state and items of.
     """
+    # read straight off the table rather than through CacheController.get, which reports an
+    # entry it fails to deserialize as a miss: a corrupt saved queue would then read as one
+    # that was never used. Expired entries are wanted too - a queue that outlived its 30
+    # days is still evidence that the player was played to.
     assert mass.cache.database is not None
     params: dict[str, Any] = {
         "provider": mass.player_queues.domain,
@@ -226,13 +225,10 @@ async def _saved_queue_payloads(mass: MusicAssistant, queue_ids: list[str]) -> d
 
 
 def _payload_holds_content(payload: Any) -> bool:
-    """
-    Return whether one persisted queue payload holds anything.
-
-    The mere existence of the cache entry proves nothing: the queues controller flushes
-    the state of every registered queue on each clean shutdown, so an install that only
-    ever booted with a sound card attached has one too. Only a non-empty payload counts.
-    """
+    """Return whether one persisted queue payload holds anything."""
+    # only the payload counts, never the presence of the entry: the queues controller
+    # flushes the state of every registered queue on each clean shutdown, so an install
+    # that merely booted once with a sound card attached has an entry too
     if isinstance(payload, dict):
         # the state payload; its items are cached under their own category
         return bool(payload.get("enqueued_media_items") or payload.get("source_items"))
