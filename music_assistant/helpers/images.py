@@ -394,7 +394,7 @@ async def _fetch_and_cache_source_image(
         # remote urls only count as fresh within the TTL (a CDN can serve new
         # content behind a stable url); local files rely on invalidation instead
         try:
-            if not os.path.isfile(filepath):
+            if not Path(filepath).is_file():
                 return None
             if (
                 path_or_url.startswith("http")
@@ -739,7 +739,7 @@ async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
     thumb_dir = os.path.join(cache_path, _THUMB_CACHE_DIR)
 
     def _cleanup() -> int:
-        if not os.path.isdir(thumb_dir):
+        if not Path(thumb_dir).is_dir():
             return 0
         entries = []
         for entry in os.scandir(thumb_dir):
@@ -785,7 +785,7 @@ async def invalidate_cached_image(mass: MusicAssistant, provider: str, path_or_u
 
     def _remove_disk_entries() -> None:
         # covers every size/format/flatten thumb variant plus the `_src` entry
-        if not os.path.isdir(thumb_dir):
+        if not Path(thumb_dir).is_dir():
             return
         for entry in os.scandir(thumb_dir):
             if entry.name.startswith(prefix) and entry.is_file():

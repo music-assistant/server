@@ -17,6 +17,8 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import make_utf8_safe
 from music_assistant.helpers.security import is_safe_path
 
+from .constants import IMAGE_EXTENSIONS, METADATA_IMAGE_STEMS, NFO_FILENAMES
+
 logger = logging.getLogger(__name__)
 
 # number of consecutive unreadable directories that marks the storage itself as gone
@@ -151,6 +153,9 @@ class FileSystemItem:
     - checksum: Checksum for this path (usually last modified time) None for dir.
     - file_size : File size in number of bytes or None if unknown (or not a file).
     - created_at: File creation timestamp (Unix epoch) or None for directories.
+    - metadata_token: A higher-precision change token (e.g. a local nanosecond mtime or a
+      WebDAV ETag), used only to detect a local metadata file (NFO/image) changing; the
+      imported-media ``checksum`` is unaffected and stays whatever it always was.
     """
 
     filename: str
@@ -160,6 +165,7 @@ class FileSystemItem:
     checksum: str | None = None
     file_size: int | None = None
     created_at: int | None = None  # file creation timestamp (Unix epoch)
+    metadata_token: str | None = None
 
     @property
     def ext(self) -> str | None:
@@ -186,6 +192,11 @@ class FileSystemItem:
     def relative_parent_path(self) -> str:
         """Return relative parent path of this item."""
         return os.path.dirname(self.relative_path)
+
+    @property
+    def metadata_change_token(self) -> str | None:
+        """Return the highest-precision token available for local metadata-file tracking."""
+        return self.metadata_token or self.checksum
 
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
@@ -217,7 +228,37 @@ class FileSystemItem:
             checksum=str(int(stat.st_mtime)),
             file_size=stat.st_size,
             created_at=created_at,
+            metadata_token=str(stat.st_mtime_ns),
         )
+
+
+def is_metadata_file(item: FileSystemItem) -> bool:
+    """
+    Return True for a recognized local metadata file (album/artist NFO or a folder image).
+
+    Metadata files are never imported as media: they carry no provider mapping of their own
+    and are only used to detect a change worth reparsing their representative track.
+
+    :param item: The file to check.
+    """
+    if item.is_dir or not item.ext:
+        return False
+    ext = item.ext.lower()
+    if ext == "nfo":
+        return item.filename.lower() in NFO_FILENAMES
+    if ext in IMAGE_EXTENSIONS:
+        return item.name.lower() in METADATA_IMAGE_STEMS
+    return False
+
+
+def is_image_file(item: FileSystemItem) -> bool:
+    """
+    Return True when a recognized metadata file is a folder image rather than an NFO file.
+
+    :param item: The file to check; only meaningful for a file that :func:`is_metadata_file`
+        already accepted.
+    """
+    return item.ext is not None and item.ext.lower() in IMAGE_EXTENSIONS
 
 
 def get_folder_signature(items: list[FileSystemItem]) -> str:
@@ -243,7 +284,7 @@ def get_artist_dir(
     # account for disc or album sublevel by ignoring (max) 2 levels if needed
     matched_dir: str | None = None
     for _ in range(3):
-        dirname = parentdir.rsplit(os.sep)[-1]
+        dirname = Path(parentdir).name
         if compare_strings(artist_name, dirname, False):
             # literal match
             # we keep hunting further down to account for the
@@ -301,7 +342,7 @@ def get_album_dir(track_dir: str, album_name: str) -> str | None:
     parentdir = track_dir
     # account for disc sublevel by ignoring 1 level if needed
     for _ in range(2):
-        dirname = parentdir.rsplit(os.sep)[-1]
+        dirname = Path(parentdir).name
         if compare_strings(album_name, dirname, False):
             # literal match
             return parentdir

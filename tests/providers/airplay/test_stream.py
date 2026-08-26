@@ -1203,6 +1203,50 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delivered_volume_command_arms_the_echo_grace() -> None:
+    """
+    A delivered volume command makes the player ignore the echo of it.
+
+    The receiver reports every level it is handed back over DACP; read at face value
+    that echo is the user reaching for the volume and is written straight back out.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("VOLUME=40") is True
+
+    player.suppress_volume_reports.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_delivered_other_command_leaves_the_echo_grace_alone() -> None:
+    """A command that is not a level cannot come back as one, so it blinds nothing."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)):
+        assert await stream.send_cli_command("ACTION=STANDBY") is True
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dropped_volume_command_leaves_the_echo_grace_alone() -> None:
+    """A volume command the binary never got is never echoed, so the reports stay live."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
+        assert await stream.send_cli_command("VOLUME=40") is False
+
+    player.suppress_volume_reports.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_connect_does_not_write_before_the_binary_can_read() -> None:
     """Connecting lays out the command pipe and starts cliairplay, pushing nothing into it."""
     player = _make_player()
@@ -2313,10 +2357,11 @@ async def test_initial_metadata_skips_artwork() -> None:
     ):
         await stream.send_metadata(0, metadata, send_artwork=False)
 
-    # the metadata push resets the device position to zero, so a push at the
-    # start of a track needs no separate progress correction
-    assert send_command.await_count == 1
+    # the metadata push is followed by an explicit progress anchor, even at
+    # zero (receivers like the WiiM Amp gate their rendering on it)
+    assert send_command.await_count == 2
     assert "TITLE=Track" in send_command.await_args_list[0].args[0]
+    assert send_command.await_args_list[1].args[0].endswith("PROGRESS=0")
     assert stream._last_progress_sent == 0
     send_artwork.assert_not_awaited()
 
@@ -2455,27 +2500,6 @@ async def test_wait_for_connection_sends_volume_when_muted_without_ownership() -
         await stream.wait_for_connection()
 
     send_command.assert_awaited_with("VOLUME=0")
-
-
-@pytest.mark.asyncio
-async def test_wait_for_connection_sends_volume_for_a_requested_session_volume() -> None:
-    """A volume explicitly requested for the session is pushed, even without ownership."""
-    player = _make_player()
-    player.owns_volume = False
-    player.volume_muted = False
-    stream = AirPlayStream(player)
-    stream._connected.set()
-    stream.session = MagicMock(requested_volume=85)
-
-    with (
-        patch.object(stream, "_cli_proc", MagicMock()),
-        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
-        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
-        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
-    ):
-        await stream.wait_for_connection()
-
-    send_command.assert_awaited_with(f"VOLUME={player.volume_level}")
 
 
 @pytest.mark.asyncio
@@ -2857,8 +2881,8 @@ async def test_concurrent_metadata_updates_only_send_latest_artwork() -> None:
     commands = [call.args[0].decode() for call in write_command.await_args_list]
     assert any("TITLE=New track" in command for command in commands)
     assert not any("ARTWORK=old.jpg" in command for command in commands)
-    assert "ARTWORKFILE=new.jpg\n" in commands[-1]
-    assert commands[-1].endswith("ACTION=SENDMETA\n")
+    last_bundle = [command for command in commands if command.endswith("ACTION=SENDMETA\n")][-1]
+    assert "ARTWORKFILE=new.jpg\n" in last_bundle
 
 
 @pytest.mark.asyncio
@@ -3050,8 +3074,8 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     assert "ARTWORK=b-stale.jpg\n" not in commands
     assert "ARTWORK=c.jpg\n" not in commands
     # the final B render completed within the budget, so it rides the bundle
-    assert "ARTWORKFILE=b-final.jpg\n" in commands[-1]
-    assert commands[-1].endswith("ACTION=SENDMETA\n")
+    last_bundle = [command for command in commands if command.endswith("ACTION=SENDMETA\n")][-1]
+    assert "ARTWORKFILE=b-final.jpg\n" in last_bundle
     assert stream._metadata_artwork_checksum == "b-image"
 
 
@@ -3099,13 +3123,14 @@ async def test_track_change_bundles_ready_artwork_into_a_single_push() -> None:
     ):
         await stream.send_metadata(0, metadata)
 
-    assert write_command.await_count == 1
+    assert write_command.await_count == 2
     lines = write_command.await_args_list[0].args[0].decode().splitlines()
     assert "TITLE=Track" in lines
     assert "ITEMID=item-1" in lines
     # the artwork is staged before the SENDMETA applies the whole bundle
     assert lines[-2:] == ["ARTWORKFILE=/cache/art.jpg", "ACTION=SENDMETA"]
-    # the push resets the device position to zero: no PROGRESS correction
+    # the bundle is one write; the explicit progress anchor follows separately
+    assert write_command.await_args_list[1].args[0].decode().endswith("PROGRESS=0\n")
     assert stream._last_progress_sent == 0
     assert stream._metadata_artwork_checksum == "image"
 
@@ -3199,7 +3224,15 @@ async def test_pending_start_interrupts_the_artwork_wait() -> None:
     commands = [args.args[0] for args in write_command.await_args_list]
     assert commands[0].endswith("ACTION=SENDMETA\n")
     assert "ARTWORKFILE" not in commands[0]
-    assert commands[1].startswith(f"START_UNIX_MS={START_UNIX_MS}")
+    # the START may only queue behind the push's quick pipe writes (the
+    # progress anchor), never behind the artwork render itself
+    start_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith(f"START_UNIX_MS={START_UNIX_MS}")
+    )
+    assert start_index <= 2
+    assert not any("late.jpg" in command for command in commands[:start_index])
 
 
 @pytest.mark.asyncio
@@ -3229,6 +3262,40 @@ async def test_track_change_starting_mid_track_sends_a_progress_correction() -> 
     # corrected right after
     assert commands[1].endswith("PROGRESS=120\n")
     assert stream._last_progress_sent == 120
+
+
+@pytest.mark.asyncio
+async def test_track_change_at_position_zero_still_sends_a_progress_anchor() -> None:
+    """
+    A track starting at zero still gets an explicit PROGRESS anchor.
+
+    Some receivers gate their rendering on an explicit timeline anchor: a WiiM
+    Amp mutes a flushed-and-restarted session a couple of minutes in when no
+    PROGRESS ever follows the metadata push, and un-mutes the instant one
+    arrives. Relying on SENDMETA's implicit reset to zero is not enough.
+    """
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock) as write_command,
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value="/cache/art.jpg")),
+    ):
+        await stream.send_metadata(0, metadata)
+
+    commands = [args.args[0].decode() for args in write_command.await_args_list]
+    assert len(commands) == 2
+    assert commands[0].endswith("ACTION=SENDMETA\n")
+    assert commands[1].endswith("PROGRESS=0\n")
+    assert stream._last_progress_sent == 0
 
 
 @pytest.mark.asyncio

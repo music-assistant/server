@@ -1228,3 +1228,43 @@ async def test_provider_sync_suppresses_per_item_events() -> None:
     assert SUPPRESS_MEDIA_ITEM_UPDATES.get() is False
     await ctrl.add_item_to_library(create_mock_album(provider="spotify"))
     assert events == [EventType.MUSIC_SYNC_COMPLETED, EventType.MEDIA_ITEM_ADDED]
+
+
+async def test_concurrent_add_rechecks_match_inside_lock() -> None:
+    """Concurrent adds create one row and update it with the second provider item."""
+    library_item = create_mock_album(provider="library")
+    library_item.uri = "library://album/1"
+    ctrl, _mass = _create_event_capture_controller(library_item, [])
+    both_initial_checks_complete = asyncio.Event()
+    initial_checks = 0
+    library_id: int | None = None
+
+    async def get_match(_item: Mock) -> int | None:
+        nonlocal initial_checks
+        if library_id is not None:
+            return library_id
+        initial_checks += 1
+        if initial_checks <= 2:
+            if initial_checks == 2:
+                both_initial_checks_complete.set()
+            await both_initial_checks_complete.wait()
+            return None
+        return library_id
+
+    async def add_item(_item: Mock) -> int:
+        nonlocal library_id
+        library_id = 1
+        return library_id
+
+    ctrl._get_library_item_by_match.side_effect = get_match
+    ctrl._add_library_item.side_effect = add_item
+
+    results = await asyncio.gather(
+        ctrl.add_item_to_library(create_mock_album(provider="spotify")),
+        ctrl.add_item_to_library(create_mock_album(provider="qobuz")),
+    )
+
+    assert len(results) == 2
+    assert all(result is library_item for result in results)
+    ctrl._add_library_item.assert_awaited_once()
+    ctrl._update_library_item.assert_awaited_once()

@@ -229,7 +229,7 @@ def parse_podcast_episode(
 
     release_date: datetime | None = None
     if episode.published_at is not None:
-        position = -episode.published_at
+        position = episode.published_at
         # abs published_at is ms epoch; leave the date unset if it is out of range
         with suppress(ValueError, OverflowError, OSError):
             release_date = from_utc_timestamp(episode.published_at / 1000)
@@ -253,6 +253,8 @@ def parse_podcast_episode(
     )
 
     mass_episode.metadata.release_date = release_date
+    if episode.description:
+        mass_episode.metadata.description = episode.description
 
     # cover image
     if token is not None and cover_path:

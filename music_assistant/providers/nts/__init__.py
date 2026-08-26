@@ -91,6 +91,11 @@ class NTSProvider(MusicProvider):
     _mixtapes: dict[str, str]
     _unknown_channels: set[str]
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return ()

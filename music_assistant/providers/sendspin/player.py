@@ -116,6 +116,7 @@ from .helpers import (
     error_alert,
     mac_from_bridge_client_id,
     pair_method_descriptor,
+    pin_code_format,
 )
 from .playback import SendspinPlaybackSession
 
@@ -317,7 +318,6 @@ class SendspinBasePlayer(Player):
         self.unsub_event_cb = None
         self.unsub_group_event_cb = None
         self.logger = self.provider.logger.getChild(player_id)
-        self._attr_can_group_with = {provider.instance_id}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
@@ -881,7 +881,9 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+        elif any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            # Only show the token pairing method in case the client doesn't implement any other one.
+            # token pairing should only be used as a last resort due to the worse UX.
             options.append(PAIR_METHOD_TOKEN)
         if offer_unpaired and effective_unpaired_access(info, pairing_config):
             options.append(PAIR_METHOD_UNPAIRED)
@@ -1020,18 +1022,18 @@ class SendspinBasePlayer(Player):
     def _pin_form_entries(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> list[ConfigEntry]:
-        """Return the PIN form fields, hinting how the operator gets the PIN and how long it is."""
+        """Return the PIN form fields, hinting how the operator gets the PIN."""
         entries = self._secret_hint_entries(provider, pin_session.method)
-        if pin_session.pin_length is not None:
-            entries.append(
-                ConfigEntry(
-                    key="dynamic_pin_digits",
-                    type=ConfigEntryType.LABEL,
-                    translation_params=[str(pin_session.pin_length)],
-                )
-            )
+        # only a dynamic PIN carries a negotiated length; a static PIN is always
+        # exactly 8 digits (enforced by aiosendspin)
+        pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
         entries.append(
-            ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)
+            ConfigEntry(
+                key=CONF_PAIRING_PIN,
+                type=ConfigEntryType.PAIRING_CODE,
+                required=True,
+                format=pin_code_format(pin_length),
+            )
         )
         return entries
 
@@ -1119,6 +1121,7 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         hello_payload = initial_hello or self.api.info
         self.playback_session = SendspinPlaybackSession(self)
         self._attr_supported_features = {
@@ -1213,6 +1216,7 @@ class SendspinPlayer(SendspinBasePlayer):
             self._attr_device_info.add_identifier(id_type, id_value)
         self.is_web_player = False
         self._attr_hidden_by_default = False
+        self._attr_private = False
         self._attr_expose_to_ha_by_default = True
         self._attr_type = PlayerType.PROTOCOL
 
@@ -1659,6 +1663,7 @@ class SendspinPlayer(SendspinBasePlayer):
         ).is_virtual_player(self.player_id)
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
+        self._attr_private = is_standalone
         # register web/app player as native player type because it doesn't need to be linked
         # every web/app player is just a standalone player.
         self._attr_type = PlayerType.PLAYER if is_standalone else PlayerType.PROTOCOL
@@ -1706,11 +1711,11 @@ class SendspinPlayer(SendspinBasePlayer):
             case ControllerRepeatEvent(mode=mode) if queue:
                 match mode:
                     case SendspinRepeatMode.OFF:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.OFF)
                     case SendspinRepeatMode.ONE:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ONE)
                     case SendspinRepeatMode.ALL:
-                        self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
+                        await self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
             case ControllerSeekEvent(position_ms=position_ms) if (
@@ -2177,6 +2182,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
         :param initial_hello: Optional hello payload from the client.
         """
         super().__init__(provider, player_id, initial_hello)
+        self._attr_can_group_with = {provider.instance_id}
         self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
 
     async def set_members(
@@ -2206,4 +2212,5 @@ class SendspinSourcePlayer(SendspinBasePlayer):
 
     _attr_type = PlayerType.UNKNOWN
     _attr_hidden_by_default = True
+    _attr_private = True
     _attr_expose_to_ha_by_default = False

@@ -186,6 +186,28 @@ class MusicBrainzRelease(DataClassDictMixin):
 
 
 @dataclass
+class MusicBrainzBarcodeRelease(DataClassDictMixin):
+    """
+    Slim release identity from a barcode search result.
+
+    A barcode search only needs each hit's release and release-group id, so this
+    deliberately ignores the summary fields a search response carries (media without a
+    tracklist, artist credits, ...) that the full release model cannot parse.
+    """
+
+    id: str
+    release_group: MusicBrainzReleaseGroup
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzBarcodeRelease:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzBarcodeRelease.from_dict(alt_data)
+
+
+@dataclass
 class MusicBrainzRecording(DataClassDictMixin):
     """Model for a (basic) Recording object as received from the MusicBrainz API."""
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Coroutine
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -65,7 +65,6 @@ class AirPlayStreamSession:
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
         media: PlayerMedia,
-        requested_volume: int | None = None,
     ) -> None:
         """
         Initialize AirPlayStreamSession.
@@ -74,16 +73,12 @@ class AirPlayStreamSession:
         :param sync_clients: List of AirPlay players to stream to.
         :param pcm_format: PCM format of the input stream.
         :param media: Queue media that owns the stream session.
-        :param requested_volume: Volume level explicitly requested for this session (an
-            announcement volume), already applied to its members. Omit for a regular
-            stream, which only carries a volume when this output owns it.
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.pcm_format = pcm_format
         self.media = media
-        self.requested_volume = requested_volume
         self.sync_clients = sync_clients
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
@@ -245,10 +240,9 @@ class AirPlayStreamSession:
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
-        if (
-            pcm_format.sample_rate != self.pcm_format.sample_rate
-            or pcm_format.bit_depth != self.pcm_format.bit_depth
-        ):
+        # the encoding matters as much as the depth here (a 24-bit session carries
+        # PCM_S32LE): replace() wires the new source into the session's declared format
+        if pcm_format != self.pcm_format:
             return False
         return all(
             p.stream is not None and p.stream.running and p.stream.connected
@@ -867,14 +861,19 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         stream_error: BaseException | None = None
         try:
-            async for chunk in audio_source:
-                if not self.sync_clients:
-                    break
+            # the loop below leaves early once the clients are gone; closing the source
+            # from here releases its decoders instead of waiting on the garbage collector
+            async with aclosing(audio_source):
+                async for chunk in audio_source:
+                    if not self.sync_clients:
+                        break
 
-                has_running_clients = await self._write_chunk_to_all_players(chunk)
-                if not has_running_clients:
-                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
-                    break
+                    has_running_clients = await self._write_chunk_to_all_players(chunk)
+                    if not has_running_clients:
+                        self.prov.logger.debug(
+                            "No running clients remaining, stopping audio streamer"
+                        )
+                        break
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise

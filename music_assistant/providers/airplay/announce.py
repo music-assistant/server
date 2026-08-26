@@ -5,8 +5,13 @@ The cliairplay binary mixes a raw-PCM clip over the outgoing music with the musi
 ducked underneath - no flush, no re-anchor, the group timeline stays untouched. This
 module renders the shared announcement clip once per member stdin format, arms every
 member of the live session at one shared audible instant and tracks the per-member
-outcome. Whenever there is no live playback to mix into (idle or parked player), the
-announcement runs as a dedicated stream session instead, leaving the player idle.
+outcome. Native announcements are only offered while there is live playback to mix
+into; without it the player controller plays the announcement its own way.
+
+The clip is wrapped in ducked silence: the binary holds the music duck for the whole
+file, so the lead-in is a window in which the music is already quiet and nothing is
+being said yet. That is where the announcement volume is raised, and the trailing
+silence is where it is put back - neither change is ever heard on the music itself.
 
 Targeting semantics: a player addressed individually announces alone - over its own
 ducked copy of the group's music, while the other rooms play on untouched - whenever
@@ -32,41 +37,36 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import PlayerCommandFailed
 
 from .constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
     AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS,
     AIRPLAY_ANNOUNCE_DUCK_DB,
+    AIRPLAY_ANNOUNCE_DUCK_LEAD_S,
     AIRPLAY_ANNOUNCE_DUCK_TAIL_S,
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
-    AIRPLAY_ANNOUNCE_SESSION_DRAIN_S,
     AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS,
     AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS,
     AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS,
     AIRPLAY_VOLUME_DB_PER_POINT,
+    AIRPLAY_VOLUME_ECHO_GRACE_S,
 )
-from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterable
+    from collections.abc import Iterable
 
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
     from music_assistant.controllers.players.helpers import AnnounceData
     from music_assistant.controllers.streams.announcements import AnnouncementRender
+    from music_assistant.models.player import Player
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
     from .stream import AirPlayStream
-
-# Scheduled announcement-volume changes of one member: the previous level and
-# the timer task ids that apply/restore the announcement volume around the
-# clip (mass.call_later tracks its timers by task id, and only cancel_timer
-# releases a tracked entry that never fired).
-_VolumeSchedule = tuple["AirPlayPlayer", int, list[str]]
 
 
 async def play_announcement(
@@ -75,11 +75,10 @@ async def play_announcement(
     """
     Play an announcement on the player (and, for an ad-hoc leader, its members).
 
-    A live playing session mixes the clip over the music without interrupting
-    it; an idle player plays the announcement as a dedicated stream session and
-    ends idle. A group-entity announcement is forwarded per member by the
-    controller; the members share one audible instant through the provider's
-    announce-plan registry so every room renders the clip in sync.
+    The clip is mixed over the live playing session without interrupting it. A
+    group-entity announcement is forwarded per member by the controller; the
+    members share one audible instant through the provider's announce-plan
+    registry so every room renders the clip in sync.
 
     :param player: The player the announcement targets.
     :param announcement: The announcement to play.
@@ -93,27 +92,25 @@ async def play_announcement(
     renderer = player.mass.streams.announcement_renderer
     render = renderer.acquire(announce_data)
     try:
-        await _run_announcement(player, announcement, render, volume_level)
+        await _run_announcement(player, render, volume_level)
     finally:
         await renderer.release(render)
 
 
 async def _run_announcement(
     player: AirPlayPlayer,
-    announcement: PlayerMedia,
     render: AnnouncementRender,
     volume_level: int | None,
 ) -> None:
     """
-    Render the clip, then mix it over live playback or play it as its own session.
+    Render the clip and mix it over the live playing session.
 
     :param player: The player the announcement targets.
-    :param announcement: The announcement to play.
     :param render: The announcement render to play.
     :param volume_level: Optional volume level for the announcement.
     """
-    # The whole clip is rendered up front: the live path hands the binary a
-    # complete file, and the exact duration bounds every wait below.
+    # The whole clip is rendered up front: the binary is handed a complete file,
+    # and the exact duration bounds every wait below.
     duration = await render.wait_finished()
     if duration is None:
         duration = render.duration
@@ -122,9 +119,7 @@ async def _run_announcement(
             "Announcement for %s produced no audio; nothing to play", player.display_name
         )
         return
-    if await _announce_over_live_session(player, render, duration, volume_level):
-        return
-    await _announce_with_session(player, announcement, render, duration, volume_level)
+    await _announce_over_live_session(player, render, duration, volume_level)
 
 
 async def _announce_over_live_session(
@@ -132,7 +127,7 @@ async def _announce_over_live_session(
     render: AnnouncementRender,
     duration: float,
     volume_level: int | None,
-) -> bool:
+) -> None:
     """
     Mix the clip over the live playing session.
 
@@ -140,15 +135,11 @@ async def _announce_over_live_session(
     :param render: The (finished) announcement render to play.
     :param duration: Exact clip duration in seconds.
     :param volume_level: Optional volume level for the announcement.
-    :return: True when at least one member played the clip; False when there is
-        no live playback to mix into, so the caller runs the dedicated
-        announcement session instead.
-    :raises PlayerCommandFailed: If there was live playback but no member armed
-        the clip (tearing the playing session down for a fallback would trade
-        the user's music for the announcement).
+    :raises PlayerCommandFailed: If the player stopped playing before the clip
+        could be armed, or if no member armed it.
     """
     clip_files: dict[str, str] = {}
-    volume_schedules: list[_VolumeSchedule] = []
+    bumped: dict[str, int] = {}
     try:
         # The dispatch decision and the arming run under the player lock - the
         # same lock play_media holds to mutate the session - while the
@@ -164,7 +155,12 @@ async def _announce_over_live_session(
         async with player._lock:
             members = _live_members(player)
             if not members:
-                return False
+                # the feature is only advertised while there is live audio to mix into,
+                # so by now that playback ended or moved to a stream we do not own
+                raise PlayerCommandFailed(
+                    f"Cannot announce on {player.display_name}: "
+                    "there is no live playback to mix the announcement into"
+                )
             streams: dict[str, AirPlayStream] = {}
             for member in members:
                 assert member.stream is not None  # guaranteed by _live_members
@@ -213,53 +209,15 @@ async def _announce_over_live_session(
             if ack is not None
         }
         if not started:
-            # Music keeps playing on every member, so falling back to a
-            # dedicated announcement session would stop the user's playback
-            # over a clip that could not be mixed anyway. Silently ignoring
-            # the unknown arm command is exactly what an outdated cliairplay
-            # build does.
+            # Music keeps playing on every member, so failing here leaves the
+            # user's playback untouched. Silently ignoring the unknown arm
+            # command is exactly what an outdated cliairplay build does.
             raise PlayerCommandFailed(
                 f"No member of {player.display_name} armed the announcement; "
                 "the running cliairplay binary may not support announcements yet "
                 "(version mismatch)"
             )
-        if volume_level is not None:
-            for member in members:
-                if (ack := started.get(member.player_id)) is None:
-                    continue
-                ack_at_unix_ms, ack_duration_ms = ack
-                # The binary-reported duration includes the ducked silence
-                # tail appended to the clip file; the restore must land INSIDE
-                # that cushion, so it is timed on the content length alone.
-                content_seconds = (
-                    max(0.0, ack_duration_ms / 1000 - AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
-                    if ack_duration_ms
-                    else duration
-                )
-                if schedule := _schedule_member_volume(
-                    member,
-                    volume_level,
-                    ack_at_unix_ms or at_unix_ms,
-                    content_seconds,
-                ):
-                    volume_schedules.append(schedule)
-        padded_duration = duration + AIRPLAY_ANNOUNCE_DUCK_TAIL_S
-        done_results = await asyncio.gather(
-            *[
-                streams[member_id].wait_announce_done(
-                    max(0.0, (ack_at or at_unix_ms) / 1000 - time.time())
-                    + (ack_duration / 1000 if ack_duration else padded_duration)
-                    + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
-                )
-                for member_id, (ack_at, ack_duration) in started.items()
-            ]
-        )
-        for member_id, done in zip(started, done_results, strict=True):
-            if not done:
-                player.logger.debug(
-                    "Announcement on member %s was cut short or its completion went unreported",
-                    member_id,
-                )
+        armed = [member for member in members if member.player_id in started]
         if failed := [m.display_name for m in members if m.player_id not in started]:
             player.logger.warning(
                 "Announcement was not played on %d member(s) of %s: %s",
@@ -267,148 +225,71 @@ async def _announce_over_live_session(
                 player.display_name,
                 ", ".join(failed),
             )
+        # Every instant below is derived from the acked start of the clip FILE,
+        # which opens with the ducked lead-in: the music is already ducked there
+        # while the announcement itself has not started yet.
+        file_seconds = AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration + AIRPLAY_ANNOUNCE_DUCK_TAIL_S
+        earliest_at_unix_ms = min(ack_at or at_unix_ms for ack_at, _ in started.values())
+        content_end_unix_ms = (
+            max(ack_at or at_unix_ms for ack_at, _ in started.values())
+            + (AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration) * 1000
+        )
+        latest_end_unix_ms = max(
+            (ack_at or at_unix_ms) + (ack_duration or int(file_seconds * 1000))
+            for ack_at, ack_duration in started.values()
+        )
+        # the receiver echoes every level it is given, and those echoes must not be
+        # read as the user reaching for the volume mid-announcement
+        for member in armed:
+            member.suppress_volume_reports(
+                max(0.0, latest_end_unix_ms / 1000 - time.time()) + AIRPLAY_VOLUME_ECHO_GRACE_S
+            )
+        # the done reports arrive while the volume timeline below runs its course
+        done_task = asyncio.gather(
+            *[
+                streams[member_id].wait_announce_done(
+                    max(0.0, (ack_at or at_unix_ms) / 1000 - time.time())
+                    + (ack_duration / 1000 if ack_duration else file_seconds)
+                    + AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS / 1000
+                )
+                for member_id, (ack_at, ack_duration) in started.items()
+            ]
+        )
+        try:
+            if volume_level is not None:
+                await _volume_around_clip(
+                    player,
+                    armed,
+                    volume_level,
+                    earliest_at_unix_ms,
+                    content_end_unix_ms,
+                    bumped,
+                )
+            done_results = await done_task
+        except BaseException:
+            done_task.cancel()
+            raise
+        for member_id, done in zip(started, done_results, strict=True):
+            if not done:
+                player.logger.debug(
+                    "Announcement on member %s was cut short or its completion went unreported",
+                    member_id,
+                )
         # announce_done fires when the clip is fully MIXED at the delivery
         # head - up to a member's span BEFORE it is audible. Returning then
         # would let the caller restore mutes (and arm a follow-up
         # announcement) over the audible tail, so hold the return until the
         # latest audible end across the started members.
-        latest_end_unix_ms = max(
-            (ack_at or at_unix_ms) + (ack_duration or int(padded_duration * 1000))
-            for ack_at, ack_duration in started.values()
-        )
-        await asyncio.sleep(
-            max(0.0, latest_end_unix_ms / 1000 - time.time())
-            + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000
-        )
-        return True
-    except BaseException:
-        # The scheduled volume changes belong to an announcement that is no
-        # longer being tracked: cancel them and restore the previous levels
-        # right away (a restore of an unchanged level is a harmless re-send).
-        # This path leaves the music session running, so the restore still
-        # reaches the receiver from its own task - unlike the dedicated
-        # session, which has to be restored before it is torn down.
-        for member, prev_volume, task_ids in volume_schedules:
-            for task_id in task_ids:
-                member.mass.cancel_timer(task_id)
-            player.mass.create_task(member.volume_set(prev_volume))
-        raise
+        await _hold_until(latest_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
     finally:
+        if bumped:
+            # A failed or cancelled announcement leaves the music playing, so whatever
+            # the timeline above did not put back still has to be restored - from its
+            # own task, since an await here is cancelled along with this one.
+            player.mass.create_task(_restore_announcement_volume(player, bumped))
         for path in clip_files.values():
             with suppress(OSError):
                 Path(path).unlink()
-
-
-async def _announce_with_session(
-    player: AirPlayPlayer,
-    announcement: PlayerMedia,
-    render: AnnouncementRender,
-    duration: float,
-    volume_level: int | None,
-) -> None:
-    """
-    Play the announcement as a dedicated stream session.
-
-    Any existing (parked) session led by this player is stopped first. The
-    player ends idle - the same end state the generic announcement flow leaves
-    a non-playing player in; the queue keeps its resume position server-side.
-
-    Known limitation: a synced member of a group without live playback is
-    refused here - its stream belongs to the leader's shared (parked) session,
-    which must not be torn down for a single-member announcement, so that
-    announcement simply does not play. Announcing over a parked session
-    without stopping it needs binary-side support (announce while in
-    STANDBY), which is the planned proper fix.
-
-    :param player: The player the announcement targets.
-    :param announcement: The announcement media, owning the session's metadata.
-    :param render: The (finished) announcement render to play.
-    :param duration: Exact clip duration in seconds.
-    :param volume_level: Optional volume level for the announcement.
-    :raises PlayerCommandFailed: If the player is a synced group member or is
-        streamed to by its Sendspin bridge - both own no session this path may
-        replace.
-    """
-    provider = cast("AirPlayProvider", player.provider)
-    if player.synced_to:
-        # The controller's group-forward runs the member calls in a
-        # TaskManager, which does not cancel siblings on a failure, so raising
-        # here cannot take the leader's in-flight announcement down with it.
-        raise PlayerCommandFailed(
-            f"Cannot announce on {player.display_name}: a grouped AirPlay player "
-            "without live playback cannot announce natively"
-        )
-    bridge = provider.bridge_manager.get_bridge(player.player_id)
-    if bridge is not None and bridge.owns_airplay_stream:
-        # The bridge is actively streaming to the device; a dedicated
-        # announcement session would seize it from the Sendspin side with
-        # nothing restoring that playback. Only reachable in a race (the live
-        # mix path handles a playing bridge stream). A bridge that is merely
-        # configured but idle is a bystander: the fallback then behaves
-        # exactly as it does for an unbridged player.
-        raise PlayerCommandFailed(
-            f"Cannot announce on {player.display_name}: the player is being streamed "
-            "to by its Sendspin bridge"
-        )
-    prev_volumes: dict[AirPlayPlayer, int] = {}
-    session: AirPlayStreamSession | None = None
-    try:
-        # Session teardown and setup mirror play_media's cold path, under the
-        # same player lock; the clip wait below runs outside it.
-        async with player._lock:
-            if player.stream and player.stream.running and player.stream.session:
-                player._transitioning = True
-                await player.stream.session.stop()
-                player.stream = None
-            sync_clients = player._get_sync_clients()
-            session_pcm_format = await player._get_session_pcm_format(sync_clients, announcement)
-            if volume_level is not None:
-                for member in sync_clients:
-                    prev_volume = member.volume_level
-                    if prev_volume is not None and prev_volume != volume_level:
-                        prev_volumes[member] = prev_volume
-                        await member.volume_set(volume_level)
-            session = AirPlayStreamSession(
-                provider,
-                sync_clients,
-                session_pcm_format,
-                announcement,
-                requested_volume=volume_level,
-            )
-            # The clip is served with its silence tail: the legacy RAOP flow
-            # reports end of stream the moment the last fed sample is audible,
-            # and a volume command is dropped once a stream has ended - so
-            # without the tail the restore below never reaches the speaker.
-            await session.start(_clip_with_tail(render, session_pcm_format))
-            player._transitioning = False
-        # The clip is anchored: wait out the start lead plus the clip, then the
-        # pad that covers the jitter between the anchored and the true audible
-        # end, so the restore below does not land on the announcement's own
-        # tail. Restoring at the end of the drain instead would be a coin flip:
-        # the binary reports its own end of stream on that same margin, and the
-        # server treats that report as the end of the stream.
-        restore_pad = AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000
-        await asyncio.sleep(max(0.0, session.start_time - time.time()) + duration + restore_pad)
-        await _restore_member_volumes(prev_volumes)
-        # Let the receiver play out what it still has buffered before the stop.
-        # The source ends after the clip, so the session usually ends cleanly on
-        # its own and that stop is cleanup only.
-        await asyncio.sleep(max(0.0, AIRPLAY_ANNOUNCE_SESSION_DRAIN_S - restore_pad))
-    finally:
-        player._transitioning = False
-        try:
-            # Whatever the restore above did not reach (a cancelled
-            # announcement) still goes back while the session is up. A session that
-            # failed to START has already stopped itself, so there the restore
-            # only settles our own state and the device is corrected by the
-            # volume the next stream pushes.
-            await _restore_member_volumes(prev_volumes)
-        finally:
-            if session is not None:
-                await session.stop()
-                # like player.stop(): an idle player must not keep showing media
-                player._attr_current_media = None
-                player.update_state()
 
 
 def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
@@ -419,11 +300,10 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
     covers every member of its session. Only a PLAYING session can mix a clip -
     a parked (paused) or idle player has no live timeline to mix into.
     """
-    if player.playback_state != PlaybackState.PLAYING:
+    if not player.has_live_audio:
         return []
     stream = player.stream
-    if stream is None or not stream.running or not stream.connected:
-        return []
+    assert stream is not None  # guaranteed by has_live_audio
     if player.synced_to:
         return [player]
     if stream.session is None:
@@ -533,103 +413,161 @@ def _member_span_ms(stream: AirPlayStream) -> int:
     return AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS
 
 
+def _volume_target(member: AirPlayPlayer) -> Player:
+    """
+    Return the player whose volume control owns this member's output.
+
+    An AirPlay volume writes the receiver's own level, so it may only be set when
+    nothing else owns it; on a device that is also reachable through a native
+    provider the announcement volume belongs on that parent instead.
+    """
+    if (parent_id := member.protocol_parent_id) and (
+        parent := member.mass.players.get_player(parent_id)
+    ):
+        return parent
+    return member
+
+
 def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
     """
     Return the music duck (dB) for one member, compensated for its volume bump.
 
-    The announcement volume is applied as DEVICE volume, which raises the music
-    bed together with the clip. The AirPlay volume scale is linear dB (see
-    AIRPLAY_VOLUME_DB_PER_POINT), so that rise is exactly known and the duck is
-    deepened by the same amount - the music keeps its configured perceived duck
-    depth while the clip plays at the configured announcement loudness. A bump
-    DOWN (a night-mode announcement quieter than the music) symmetrically
-    shallows the duck, and the result never leaves the binary's usable range.
+    The announcement volume raises the music bed together with the clip, so the duck
+    is deepened by that same rise and the music keeps its configured perceived duck
+    depth while the clip plays at the configured announcement loudness. A bump DOWN
+    (a night-mode announcement quieter than the music) symmetrically shallows the
+    duck, and the result never leaves the binary's usable range.
+
+    The rise is read off the AirPlay volume scale, which is linear dB (see
+    AIRPLAY_VOLUME_DB_PER_POINT). A level that lands on another control (the native
+    volume of the device this output renders for) follows that control's own taper,
+    so there the compensation is an approximation - still far closer than leaving the
+    bed to ride up with the clip.
     """
     duck_db = float(AIRPLAY_ANNOUNCE_DUCK_DB)
-    if volume_level is None or member.volume_level is None:
+    if volume_level is None:
         return duck_db
-    bump_db = (volume_level - member.volume_level) * AIRPLAY_VOLUME_DB_PER_POINT
+    target = _volume_target(member)
+    if (prev_volume := target.state.volume_level) is None:
+        return duck_db
+    # the levels are logical, and the volume limits configured on the target decide
+    # what they land on: the device levels are what the rise is actually made of
+    scale = member.mass.players.scale_volume_to_device
+    bump_db = (
+        scale(target.player_id, volume_level) - scale(target.player_id, prev_volume)
+    ) * AIRPLAY_VOLUME_DB_PER_POINT
     return min(0.0, max(-60.0, duck_db - bump_db))
 
 
-def _schedule_member_volume(
-    member: AirPlayPlayer, volume_level: int, at_unix_ms: int, clip_seconds: float
-) -> _VolumeSchedule | None:
+async def _volume_around_clip(
+    player: AirPlayPlayer,
+    armed: list[AirPlayPlayer],
+    volume_level: int,
+    lead_in_unix_ms: float,
+    content_end_unix_ms: float,
+    bumped: dict[str, int],
+) -> None:
     """
-    Schedule the announcement volume around one member's audible clip window.
+    Move the volume to the announcement level and back, inside the ducked silence.
 
-    Both changes are wall-clock timers on the acked instant: the done report
-    arrives when the clip is fully MIXED (at the delivery head), which is ahead
-    of it being heard, so neither change can key off it.
+    Both changes are timed on the acked instant of the clip file: the done report
+    arrives when the clip is fully MIXED (at the delivery head), which is ahead of
+    it being heard, so neither change can key off it.
 
-    :param member: The member whose volume is bumped and restored.
+    :param player: The player the announcement targets.
+    :param armed: The members playing the clip.
     :param volume_level: The announcement volume level.
-    :param at_unix_ms: The acked audible instant of the clip on this member.
-    :param clip_seconds: The clip duration in seconds.
-    :return: The schedule to track (None when there is nothing to change).
+    :param lead_in_unix_ms: Start of the earliest member's ducked lead-in.
+    :param content_end_unix_ms: End of the latest member's announcement audio.
+    :param bumped: Mapping that tracks which players still need restoring.
     """
-    prev_volume = member.volume_level
-    if prev_volume is None or prev_volume == volume_level:
-        return None
-    delay = max(0.0, at_unix_ms / 1000 - time.time())
-    # The bump is biased INTO the clip: a receiver that plays out later than
-    # the reported instant would otherwise get louder while the old music is
-    # still sounding. The duck ramp (and the pre-announce chime) masks the
-    # late bump; short clips cap the bias at their midpoint.
-    bump_delay = delay + min(AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS / 1000, clip_seconds / 2)
-    # Deterministic task ids: cancel_timer is the only way to release a tracked
-    # timer that never fires, and reusing the ids also cancels stale timers of
-    # a replaced announcement on the same member.
-    task_ids = [
-        f"airplay_announce_volume_bump_{member.player_id}",
-        f"airplay_announce_volume_restore_{member.player_id}",
-    ]
-    member.mass.call_later(bump_delay, member.volume_set, volume_level, task_id=task_ids[0])
-    member.mass.call_later(
-        delay + clip_seconds + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS / 1000,
-        member.volume_set,
-        prev_volume,
-        task_id=task_ids[1],
+    await _hold_until(lead_in_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS)
+    await _apply_announcement_volume(armed, volume_level, bumped)
+    await _hold_until(content_end_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS)
+    await _restore_announcement_volume(player, bumped)
+
+
+async def _apply_announcement_volume(
+    members: list[AirPlayPlayer], volume_level: int, bumped: dict[str, int]
+) -> None:
+    """
+    Put every member on the announcement volume.
+
+    :param members: The members playing the clip.
+    :param volume_level: The announcement volume level.
+    :param bumped: Mapping that is filled in-place with the previous level per player
+        id, so the caller restores exactly what was changed even if this call fails.
+    """
+    targets: list[Player] = []
+    for member in members:
+        target = _volume_target(member)
+        prev_volume = target.state.volume_level
+        if prev_volume is None or prev_volume == volume_level or target.player_id in bumped:
+            continue
+        bumped[target.player_id] = prev_volume
+        targets.append(target)
+    # the command travels through the controller so it lands on the control that owns
+    # the output, on that control's own scale
+    results = await asyncio.gather(
+        *[target.mass.players.cmd_volume_set(target.player_id, volume_level) for target in targets],
+        return_exceptions=True,
     )
-    return (member, prev_volume, task_ids)
+    for target, result in zip(targets, results, strict=True):
+        if isinstance(result, BaseException):
+            target.logger.warning(
+                "Could not set the announcement volume on %s: %r", target.display_name, result
+            )
+
+
+async def _restore_announcement_volume(player: AirPlayPlayer, bumped: dict[str, int]) -> None:
+    """
+    Put every bumped player back on the level it had before the announcement.
+
+    An entry is dropped only once its player is restored, so a later call covers
+    exactly what this one did not reach.
+
+    :param player: The player the announcement targets.
+    :param bumped: The level each player carried before the announcement.
+    """
+    for player_id in list(bumped):
+        try:
+            await player.mass.players.cmd_volume_set(player_id, bumped[player_id])
+        except Exception as err:
+            player.logger.warning(
+                "Could not restore the volume of %s after the announcement: %r", player_id, err
+            )
+            continue
+        del bumped[player_id]
+
+
+async def _hold_until(unix_ms: float) -> None:
+    """Wait for the given wall-clock instant (unix ms) to arrive."""
+    await asyncio.sleep(max(0.0, unix_ms / 1000 - time.time()))
 
 
 async def _render_clip_file(render: AnnouncementRender, pcm_format: AudioFormat) -> str:
     """
     Render the announcement clip into a temp file of raw PCM in the given format.
 
-    A ducked-silence tail is appended: the binary holds the music duck for the
-    whole file, so the music stays ducked briefly past the announcement and the
-    volume restore has a safe window to land in.
+    The clip is wrapped in ducked silence: the binary holds the music duck for the
+    whole file, so the music is already ducked before the announcement starts and
+    stays ducked briefly past it - the window in which the announcement volume is
+    raised and put back.
 
     The caller owns the file and removes it once every member is done with it.
 
     :param render: The (finished) announcement render to read.
     :param pcm_format: The raw PCM format the file must carry.
     """
-    clip = bytearray()
+    clip = bytearray(_clip_silence(pcm_format, AIRPLAY_ANNOUNCE_DUCK_LEAD_S))
     async for chunk in render.get_stream(pcm_format):
         clip.extend(chunk)
-    clip.extend(_clip_silence_tail(pcm_format))
+    clip.extend(_clip_silence(pcm_format, AIRPLAY_ANNOUNCE_DUCK_TAIL_S))
     return await asyncio.to_thread(_write_clip_file, clip)
 
 
-async def _clip_with_tail(
-    render: AnnouncementRender, pcm_format: AudioFormat
-) -> AsyncGenerator[bytes]:
-    """
-    Yield the announcement clip followed by the trailing silence.
-
-    :param render: The (finished) announcement render to read.
-    :param pcm_format: The raw PCM format to yield.
-    """
-    async for chunk in render.get_stream(pcm_format):
-        yield chunk
-    yield _clip_silence_tail(pcm_format)
-
-
-def _clip_silence_tail(pcm_format: AudioFormat) -> bytes:
-    """Return the silence tail appended to an announcement clip, in the given PCM format."""
+def _clip_silence(pcm_format: AudioFormat, seconds: float) -> bytes:
+    """Return the silence an announcement clip is wrapped in, in the given PCM format."""
     # Wire sizes come from the content type: at 24-bit the stdin carrier is
     # s32le while bit_depth stays 24, so bit_depth-derived sizes are wrong.
     bytes_per_sample = {
@@ -638,8 +576,8 @@ def _clip_silence_tail(pcm_format: AudioFormat) -> bytes:
         ContentType.PCM_S32LE: 4,
         ContentType.PCM_F32LE: 4,
     }.get(pcm_format.content_type, pcm_format.bit_depth // 8)
-    trail_frames = int(pcm_format.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
-    return bytes(trail_frames * bytes_per_sample * pcm_format.channels)
+    frames = int(pcm_format.sample_rate * seconds)
+    return bytes(frames * bytes_per_sample * pcm_format.channels)
 
 
 def _write_clip_file(data: bytes | bytearray) -> str:
@@ -648,25 +586,6 @@ def _write_clip_file(data: bytes | bytearray) -> str:
     with os.fdopen(fd, "wb") as clip_file:
         clip_file.write(data)
     return path
-
-
-async def _restore_member_volumes(prev_volumes: dict[AirPlayPlayer, int]) -> None:
-    """
-    Put every bumped member back on its pre-announcement volume.
-
-    An AirPlay volume command only reaches the receiver over a running stream,
-    so this has to be called while the announcement session is still up:
-    afterwards it only settles our own state and leaves the speaker sitting at
-    the announcement level.
-
-    An entry is dropped only once its member is restored, so a later call
-    covers exactly what this one did not reach.
-
-    :param prev_volumes: The level each member carried before the announcement.
-    """
-    for member in list(prev_volumes):
-        await member.volume_set(prev_volumes[member])
-        del prev_volumes[member]
 
 
 async def _no_announce_ack() -> tuple[int, int] | None:

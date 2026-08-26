@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "emby",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Emby Media Server Library",
   "description": "Stream music from your self-hosted Emby server.",
   "codeowners": ["@hatharry"],

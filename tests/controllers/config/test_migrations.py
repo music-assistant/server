@@ -16,6 +16,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.config.controller import ConfigController
 from music_assistant.controllers.config.migrations import (
+    PROVIDER_SETUP_FLOW_DEFAULTS,
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
@@ -25,6 +26,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
+    _migrate_retired_local_audio,
     _migrate_unrenamed_player_names,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
@@ -342,6 +344,36 @@ def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
     assert _migrate_airplay_apple_power_control(data) is False
 
 
+def test_migrate_retired_local_audio_drops_unused_config() -> None:
+    """An install that never attached a soundcard loses the auto-created config silently."""
+    data: dict[str, Any] = {
+        "providers": {
+            "local_audio": {"instance_id": "local_audio", "domain": "local_audio"},
+            "spotify": {"instance_id": "spotify", "domain": "spotify"},
+        },
+        "players": {"p1": {"player_id": "p1", "provider": "chromecast"}},
+    }
+    assert _migrate_retired_local_audio(data) is True
+    assert "local_audio" not in data["providers"]
+    assert "spotify" in data["providers"]
+
+
+def test_migrate_retired_local_audio_keeps_config_when_players_exist() -> None:
+    """An install that actually used local audio keeps the config, so it sees the notice."""
+    data: dict[str, Any] = {
+        "providers": {"local_audio": {"instance_id": "local_audio", "domain": "local_audio"}},
+        "players": {"p1": {"player_id": "p1", "provider": "local_audio"}},
+    }
+    assert _migrate_retired_local_audio(data) is False
+    assert "local_audio" in data["providers"]
+
+
+def test_migrate_retired_local_audio_noop_without_config() -> None:
+    """Migration reports no change when the provider was never configured."""
+    data: dict[str, Any] = {"providers": {"spotify": {"domain": "spotify"}}, "players": {}}
+    assert _migrate_retired_local_audio(data) is False
+
+
 def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Owned string keys move to setup_data encrypted; non-strings move raw; options stay."""
     monkeypatch.setitem(PROVIDER_SETUP_FLOW_KEYS, "demo", ("username", "password", "port"))
@@ -366,6 +398,141 @@ def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.Monk
     assert cfg["setup_data"]["username"] == ENCRYPT_SUFFIX + "bob"
     assert cfg["setup_data"]["password"] == ENCRYPT_SUFFIX + "sekret"
     assert cfg["setup_data"]["port"] == 8096
+
+
+def test_setup_flow_defaults_are_owned_keys() -> None:
+    """Every key with a fallback default is also a key the migration owns."""
+    for domain, defaults in PROVIDER_SETUP_FLOW_DEFAULTS.items():
+        owned = PROVIDER_SETUP_FLOW_KEYS[domain]
+        assert set(defaults).issubset(owned), f"{domain}: {set(defaults) - set(owned)}"
+
+
+def test_migrate_provider_setup_data_restores_dropped_defaults() -> None:
+    """
+    A plex instance left on the default port gets that port back.
+
+    Regression: a config value that matches its entry default is not persisted, so an
+    instance on port 32400 had nothing in values to migrate and its server URL became
+    'https://<host>:None'.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "plex--abc": {
+                "domain": "plex",
+                "values": {"local_server_ip": "local.abc.plex.direct", "local_server_ssl": True},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["plex--abc"]["setup_data"]
+    assert setup_data["local_server_port"] == 32400
+    assert setup_data["local_server_verify_cert"] is True
+    # the user's own value is migrated, not replaced by the default
+    assert setup_data["local_server_ssl"] is True
+
+
+def test_migrate_provider_setup_data_restores_defaults_after_earlier_run() -> None:
+    """An install whose values were already moved by an earlier run is still repaired."""
+    data: dict[str, Any] = {
+        "providers": {
+            "plex--abc": {
+                "domain": "plex",
+                "values": {},
+                "setup_data": {
+                    "local_server_ip": ENCRYPT_SUFFIX + "local.abc.plex.direct",
+                    "local_server_ssl": True,
+                },
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["plex--abc"]["setup_data"]["local_server_port"] == 32400
+
+
+def test_migrate_provider_setup_data_keeps_explicit_values() -> None:
+    """A stored choice is never overwritten by a fallback default."""
+    data: dict[str, Any] = {
+        "providers": {
+            "jellyfin": {
+                "domain": "jellyfin",
+                "values": {},
+                "setup_data": {"verify_ssl": False},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False
+    assert data["providers"]["jellyfin"]["setup_data"]["verify_ssl"] is False
+
+
+def test_migrate_provider_setup_data_encrypts_restored_strings() -> None:
+    """A restored string default is encrypted at rest like a migrated one."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_local": {"domain": "filesystem_local", "values": {}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["filesystem_local"]["setup_data"]["path"] == ENCRYPT_SUFFIX + "/media"
+
+
+def test_migrate_provider_setup_data_restores_lastfm_network() -> None:
+    """
+    A Last.fm scrobbler that never stored its network choice gets it back.
+
+    Regression: `_provider` defaulted to 'lastfm' so it was never persisted, and the
+    None read back from setup_data made get_network raise on _NetworkType('None').
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "lastfm_scrobble": {
+                "domain": "lastfm_scrobble",
+                "values": {"_api_session_key": "abc123"},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["lastfm_scrobble"]["setup_data"]
+    assert setup_data["_provider"] == ENCRYPT_SUFFIX + "lastfm"
+    # an explicit librefm choice differed from the default and was persisted, so it
+    # arrives via the move and is never overwritten by the fallback
+    data = {
+        "providers": {
+            "lastfm_scrobble": {
+                "domain": "lastfm_scrobble",
+                "values": {"_provider": "librefm"},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert (
+        data["providers"]["lastfm_scrobble"]["setup_data"]["_provider"]
+        == ENCRYPT_SUFFIX + "librefm"
+    )
+
+
+def test_migrate_provider_setup_data_restores_smb_version() -> None:
+    """
+    An SMB share left on the default protocol version keeps its 3.0 pin.
+
+    Regression: the dropped default made both mount paths read '' and skip the
+    vers=3.0 mount option, silently changing protocol negotiation.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_smb": {"domain": "filesystem_smb", "values": {}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    setup_data = data["providers"]["filesystem_smb"]["setup_data"]
+    assert setup_data["smb_version"] == ENCRYPT_SUFFIX + "3.0"
+    # an explicit '' (auto-negotiate) choice was persisted and must win over the pin
+    data = {
+        "providers": {
+            "filesystem_smb": {"domain": "filesystem_smb", "values": {"smb_version": ""}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["filesystem_smb"]["setup_data"]["smb_version"] == ENCRYPT_SUFFIX
 
 
 def test_migrate_receiver_and_connect_setup_values() -> None:
