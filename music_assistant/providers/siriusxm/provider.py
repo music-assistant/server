@@ -199,6 +199,12 @@ class SiriusXMProvider(MusicProvider):
             self.channels_by_id.setdefault(channel.id, channel)
         return channels
 
+    async def get_library_artist_stations(self) -> list[ArtistStation]:
+        """Return the artist stations saved to the SiriusXM account."""
+        # Reads the library a second time inside aiosxm: stations are not in the
+        # channel catalog, so each one is hydrated by id.
+        return await self.client.get_library_artist_stations()
+
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve the live channels saved to the SiriusXM account."""
         # Only linear channels are radio; artist stations and Xtra channels are
@@ -214,7 +220,7 @@ class SiriusXMProvider(MusicProvider):
             if channel.type not in TRACK_QUEUE_TYPES:
                 continue
             yield parse_xtra_playlist(channel, self.instance_id, self.domain)
-        for station in await self.client.get_library_artist_stations():
+        for station in await self.get_library_artist_stations():
             yield parse_station(station, self.instance_id, self.domain)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -264,7 +270,7 @@ class SiriusXMProvider(MusicProvider):
 
         # Hand out the head of the buffer without removing it. The same batch is
         # returned until one of its tracks is actually streamed, so the listing
-        # a listener sees is the listing that plays; _drop_played then advances
+        # a listener sees is the listing that plays; drop_played then advances
         # past what has been heard.
         return [
             parse_track(track, entity_type, entity_id, self.instance_id, self.domain)

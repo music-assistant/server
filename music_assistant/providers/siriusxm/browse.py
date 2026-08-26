@@ -98,8 +98,10 @@ class SiriusXMBrowseManager:
         # Saved channels are radio and saved stations are dynamic playlists, but
         # a listener thinks of them as one list of favourites, so they are not
         # split by type here.
-        # Both listings come out of the same library call, so it is made once
-        # here rather than once per generator.
+        # Browsing wants both listings at once, so the saved channels are read
+        # once here rather than once per generator. A sync does not come through
+        # here: MA drives the two generators separately, so each reads the
+        # library again.
         channels = await self.provider.get_library_channels()
         items: list[MediaItemType] = [
             parse_xtra_playlist(channel, self.instance_id, self.domain)
@@ -109,7 +111,7 @@ class SiriusXMBrowseManager:
         ]
         items.extend(
             parse_station(station, self.instance_id, self.domain)
-            for station in await self.provider.client.get_library_artist_stations()
+            for station in await self.provider.get_library_artist_stations()
         )
         return sorted(items, key=lambda item: item.name.lower())
 
