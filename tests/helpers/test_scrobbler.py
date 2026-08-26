@@ -1,13 +1,18 @@
 """Tests the event handling for LastFM Plugin Provider."""
 
 import logging
+from unittest import mock
 
 import pytest
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import EventType, MediaType, PlayerType
 from music_assistant_models.event import MassEvent
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
-from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
+from music_assistant.helpers.scrobbler import (
+    ScrobblerConfig,
+    ScrobblerHelper,
+    create_scrobble_players_config_entry,
+)
 
 
 class DummyHandler(ScrobblerHelper):
@@ -217,6 +222,33 @@ async def test_it_propagates_unexpected_scrobble_exceptions() -> None:
 
     with pytest.raises(ValueError, match="unexpected bug"):
         await handler._on_mass_media_item_played(create_report(duration=180, seconds_played=176))
+
+
+def test_it_only_offers_playback_capable_scrobble_players() -> None:
+    """The scrobble-players picker only lists players that can render audio."""
+    mass = mock.Mock()
+    mass.players.all_players.return_value = [
+        _player("wall-panel", "Wall Panel", PlayerType.DISPLAY),
+        _player("living-room", "Living Room"),
+        _player("turntable", "Turntable", PlayerType.SOURCE),
+        _player("kitchen", "Kitchen"),
+    ]
+
+    entry = create_scrobble_players_config_entry(mass)
+
+    assert entry.options is not None
+    assert [option.value for option in entry.options] == ["kitchen", "living-room"]
+
+
+def _player(
+    player_id: str, display_name: str, player_type: PlayerType = PlayerType.PLAYER
+) -> mock.Mock:
+    """Return a minimal player for config-entry option generation."""
+    player = mock.Mock()
+    player.player_id = player_id
+    player.display_name = display_name
+    player.type = player_type
+    return player
 
 
 def create_report(
