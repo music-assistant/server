@@ -152,6 +152,10 @@ POSITION_ANCHOR_KEYS = frozenset(
 # back some time later, short enough for a change made on the device itself to win again.
 VOLUME_TARGET_EXPIRY = 2.0
 
+# How long a freshly started source session may wait for its first stream request
+# before it is considered never started and released.
+AUDIO_SOURCE_CLAIM_TIMEOUT = 30
+
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
 
@@ -4321,6 +4325,40 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 exc_info=True,
             )
 
+    async def _release_unclaimed_audio_source(
+        self, player_id: str, session: AudioSourceSession, playback_session_id: str
+    ) -> None:
+        """
+        Release a source whose renderer never requested the stream.
+
+        The play command returned without error, so the late-start release in the
+        streams controller never fires: no stream request means no failed stream
+        request either. Without this the player would keep publishing a source
+        that never started, with its own queue held inactive behind it.
+
+        :param player_id: The player the source was started on.
+        :param session: The session that was started for it.
+        :param playback_session_id: Playback session active when it was started.
+        """
+        current = self.get_audio_source_session(player_id)
+        if (
+            current is not session
+            or current.playback_session_id != playback_session_id
+            or current.stream_session_id is not None
+        ):
+            return
+        self.logger.info(
+            "AudioSource %s was never streamed by player %s, releasing it",
+            session.source_id,
+            player_id,
+        )
+        await self.deselect_source(
+            player_id,
+            provider_instance_id=session.provider_instance_id,
+            source_id=session.source_id,
+            playback_session_id=playback_session_id,
+        )
+
     async def _resolve_audio_source_uri(
         self, source: str
     ) -> tuple[AudioSource, PluginProvider] | None:
@@ -4392,6 +4430,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if self.get_audio_source_session(player.player_id) is session:
                 await self._release_audio_source(player.player_id)
             raise
+        # the play command returning does not mean the renderer ever fetched the
+        # stream url: until a stream request claims the session nothing will evict
+        # the player the source may be moving from, and nothing else would ever
+        # clear a session that is never streamed
+        self.mass.call_later(
+            AUDIO_SOURCE_CLAIM_TIMEOUT,
+            self._release_unclaimed_audio_source,
+            player.player_id,
+            session,
+            session.playback_session_id,
+            task_id=f"release_unclaimed_audio_source_{player.player_id}",
+        )
 
     async def _handle_select_source(self, player_id: str, source: str | None) -> None:
         """

@@ -105,6 +105,7 @@ class AudioSourceMixin:
 
     Handles:
     - Tracking which external AudioSource is playing on which player
+    - Committing a source's move between players once its stream is claimed
     - Resolving that source (and its owning plugin) for command proxying
     - Receiving the live metadata the owning plugin pushes about the source
 
@@ -153,6 +154,45 @@ class AudioSourceMixin:
         if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
             return None
         return session.source, provider
+
+    def claim_audio_source_session(
+        self,
+        session: AudioSourceSession,
+        playback_session_id: str,
+        stream_session_id: str,
+    ) -> bool:
+        """
+        Register a stream request as the one serving a live source session.
+
+        The claim is the point of no return for a source moving between players:
+        whichever other player still held the source is evicted here, so a
+        takeover that never produces a stream request leaves it untouched on the
+        player that has it. Returns False when the session is no longer the live
+        one on its player, in which case the caller must not serve it.
+
+        :param session: The session the stream request resolved.
+        :param playback_session_id: The playback session the request set out to serve.
+        :param stream_session_id: Token identifying this stream request.
+        """
+        if (
+            self._source_sessions.get(session.player_id) is not session
+            or session.playback_session_id != playback_session_id
+        ):
+            return False
+        # a source plays on one player at a time, so it leaves whichever other player
+        # was holding it: two players both reporting it would let a command on the one
+        # that lost it drive the one that has it
+        for other_id, other in list(self._source_sessions.items()):
+            if (
+                other_id != session.player_id
+                and other.source_id == session.source_id
+                and other.provider_instance_id == session.provider_instance_id
+            ):
+                self.mass.streams.audio_processing.clear_source(other_id, other.playback_session_id)
+                del self._source_sessions[other_id]
+                self.trigger_player_update(other_id)
+        session.stream_session_id = stream_session_id
+        return True
 
     def update_source_metadata(
         self,
@@ -281,7 +321,10 @@ class AudioSourceMixin:
         and stream details it had. The source object itself is always taken from
         this call: a plugin rebuilds it whenever its capability flags change, and
         the session has to report the current ones. Selecting a different source
-        replaces the session: a player outputs one source at a time.
+        replaces the session: a player outputs one source at a time. A source
+        playing on another player stays there for now: that player is only
+        evicted when a stream request claims the new session, so a start that
+        never gets that far leaves the source where it was.
 
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
@@ -304,18 +347,6 @@ class AudioSourceMixin:
             return session
         if session is not None:
             self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
-        # a source plays on one player at a time, so it leaves whichever other player
-        # was holding it: two players both reporting it would let a command on the one
-        # that lost it drive the one that has it
-        for other_id, other in list(self._source_sessions.items()):
-            if (
-                other_id != player_id
-                and other.source_id == source.item_id
-                and other.provider_instance_id == provider_instance_id
-            ):
-                self.mass.streams.audio_processing.clear_source(other_id, other.playback_session_id)
-                del self._source_sessions[other_id]
-                self.trigger_player_update(other_id)
         session = AudioSourceSession(
             player_id=player_id,
             source=source,
