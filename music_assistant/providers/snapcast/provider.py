@@ -452,6 +452,8 @@ class SnapCastProvider(PlayerProvider):
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
         addresses = [await get_ip_pton(self.mass.streams.publish_ip)]
+        # a DNS-SD instance name is a single DNS label, so bound the name to 63 utf-8 bytes
+        instance_name = self.mass.webserver.server_name.encode()[:63].decode("utf-8", "ignore")
         # register the snapcast mdns services
         for name, port in (
             ("-http", 1780),
@@ -464,7 +466,7 @@ class SnapCastProvider(PlayerProvider):
             try:
                 info = AsyncServiceInfo(
                     zeroconf_type,
-                    name=f"{self.mass.webserver.server_name}.{zeroconf_type}",
+                    name=f"{instance_name}.{zeroconf_type}",
                     properties={"is_mass": "true"},
                     addresses=addresses,
                     port=port,

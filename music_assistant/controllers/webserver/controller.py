@@ -434,6 +434,9 @@ class WebserverController(CoreController):
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
+        # signal fresh server info so a reload (e.g. changed bind/ssl config)
+        # also refreshes the advertised urls and the mdns record
+        self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def close(self) -> None:
         """Cleanup on exit."""
