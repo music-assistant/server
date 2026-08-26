@@ -77,10 +77,15 @@ def airplay_receiver_ports(instance_id: str, player_ids: Iterable[str]) -> dict[
     :param instance_id: The provider instance id of the AirPlay receiver.
     :param player_ids: The connected player ids to derive ports for.
     """
+    unique_player_ids = sorted(set(player_ids))
+    if len(unique_player_ids) > 1000:
+        # cannot happen through the UI; guards the probing loop against a
+        # malformed stored value hanging startup
+        raise ValueError("More connected players than available AirPlay ports")
     ports: dict[str, int] = {}
     claimed: set[int] = set()
     # iterate sorted so probing resolves collisions the same way for any input order
-    for player_id in sorted(player_ids):
+    for player_id in unique_player_ids:
         digest = hashlib.md5(
             f"{instance_id}_{player_id}".encode(), usedforsecurity=False
         ).hexdigest()

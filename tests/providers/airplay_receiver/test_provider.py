@@ -34,6 +34,12 @@ def test_airplay_receiver_ports_stay_in_expected_range_and_unique() -> None:
     assert len(set(ports.values())) == 50
 
 
+def test_airplay_receiver_ports_deduplicates_player_ids() -> None:
+    """A duplicated player id claims a single port instead of probing extra slots."""
+    ports = airplay_receiver_ports("airplay_receiver", ["player-a", "player-a"])
+    assert ports == {"player-a": 7765}
+
+
 def test_airplay_receiver_ports_collision_probing_is_order_independent() -> None:
     """Colliding derivations probe deterministically regardless of the input order."""
     # player22 and player23 both derive base port 7525 for this instance id
