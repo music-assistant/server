@@ -27,6 +27,10 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio_buffer import BUFFER_READY_TIMEOUT
+from music_assistant.helpers.config_entries import (
+    PUBLISH_NAME_TEMPLATES,
+    resolve_publish_name,
+)
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
@@ -56,7 +60,6 @@ from music_assistant.providers.spotify.constants import (
 )
 from music_assistant.providers.spotify.helpers import soloist_session_present
 from music_assistant.providers.spotify.provider import SpotifyProvider
-from music_assistant.providers.spotify_connect.provider import DEFAULT_PUBLISH_NAME
 from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
@@ -1331,7 +1334,13 @@ async def test_an_audiobook_gives_up_on_capacity_instead_of_burning_chapters(
 
 def test_the_playback_device_is_named_apart_from_the_connect_one() -> None:
     """Two identically named devices in the Spotify app is what causes the takeovers."""
-    assert SOLOIST_DEVICE_NAME != DEFAULT_PUBLISH_NAME
+    # the Connect devices are named after their connected player via a template;
+    # none of the renderings for a player carrying the historic "Music Assistant"
+    # name may collide with the fixed playback device name
+    assert all(
+        resolve_publish_name(template, "Music Assistant") != SOLOIST_DEVICE_NAME
+        for template in PUBLISH_NAME_TEMPLATES
+    )
 
 
 async def test_app_volume_change_is_pinned_back_to_unity(tmp_path: Path) -> None:
