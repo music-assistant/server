@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -23,6 +24,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
+    DB_TABLE_CACHE,
     DB_TABLE_PLAYLOG,
 )
 from music_assistant.controllers.config.retired_local_audio import cleanup_retired_local_audio
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 ANALOG_ID = "local_audio_analog"
+# the universal player that wrapped ANALOG_ID before the stubs were promoted
+LEGACY_WRAPPER_ID = "uplocal_audio_analog"
 HDMI_ID = "local_audio_hdmi"
 BRIDGE_ID = "spb_analog"
 OTHER_PLAYER_ID = "cast_kitchen"
@@ -270,7 +274,7 @@ async def test_unreadable_library_keeps_the_config(
     _store_install(mass)
 
     async def _raise(*_args: Any, **_kwargs: Any) -> int:
-        raise RuntimeError("no such column: queue_id")
+        raise sqlite3.OperationalError("no such column: queue_id")
 
     monkeypatch.setattr(mass.music.database, "get_count_from_query", _raise)
 
@@ -347,3 +351,73 @@ async def test_cleanup_runs_before_the_tombstone_loads(tmp_path: pathlib.Path) -
             assert mass.config.get(f"{CONF_PROVIDERS}/local_audio") is None
             assert mass.config.get(f"{CONF_PLAYERS}/{ANALOG_ID}") is None
             assert mass.get_provider("local_audio", return_unavailable=True) is None
+
+
+async def test_playback_on_the_legacy_universal_player_keeps_the_config(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A playlog row from before the stubs were promoted still counts as use.
+
+    The universal player was the visible device the user played to; the promotion folded
+    its settings onto the stub under a new player_id, but the playlog it left behind is
+    still keyed to the old one.
+    """
+    _store_install(mass)
+    await _store_playlog_entry(mass, LEGACY_WRAPPER_ID)
+
+    await cleanup_retired_local_audio(mass)
+
+    _assert_kept(mass)
+
+
+async def test_legacy_universal_player_queue_keeps_the_config(mass: MusicAssistant) -> None:
+    """The persisted queue of the obsolete wrapper is evidence for the player that replaced it."""
+    _store_install(mass)
+    state = _empty_queue_state(LEGACY_WRAPPER_ID)
+    state["source_items"] = [{"item_id": "radio_1", "provider": "radiobrowser"}]
+    await _store_queue_cache(mass, LEGACY_WRAPPER_ID, state, [])
+
+    await cleanup_retired_local_audio(mass)
+
+    _assert_kept(mass)
+
+
+async def test_torch_purges_the_legacy_universal_player_queue(mass: MusicAssistant) -> None:
+    """No config names the obsolete wrapper anymore, so its empty saved queue goes here."""
+    _store_install(mass)
+    await _store_queue_cache(mass, LEGACY_WRAPPER_ID, _empty_queue_state(LEGACY_WRAPPER_ID), [])
+
+    await cleanup_retired_local_audio(mass)
+
+    assert mass.config.get(f"{CONF_PROVIDERS}/local_audio") is None
+    await _wait_for_queue_cache_purge(mass, LEGACY_WRAPPER_ID)
+
+
+async def test_corrupt_saved_queue_keeps_the_config(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A saved queue that cannot be decoded is unanswerable, not proof of an unused player.
+
+    CacheController.get reports an entry it fails to deserialize as a miss, which would
+    read as "never used" and delete a setup that may well have been played to.
+    """
+    _store_install(mass)
+    await _store_queue_cache(mass, ANALOG_ID, _empty_queue_state(ANALOG_ID), [])
+    assert mass.cache.database is not None
+    await mass.cache.database.update(
+        DB_TABLE_CACHE,
+        {
+            "category": CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+            "provider": "player_queues",
+            "key": ANALOG_ID,
+        },
+        {"data": "{not json"},
+    )
+
+    await cleanup_retired_local_audio(mass)
+
+    _assert_kept(mass)
+    assert "keeping its configuration" in caplog.text
+    assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is None
