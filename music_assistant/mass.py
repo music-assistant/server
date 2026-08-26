@@ -322,9 +322,8 @@ class MusicAssistant:
         await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
         # one-off: drop the retired local_audio provider on installs that never played
-        # through it. Needs the library/cache databases, so it cannot run with the other
-        # settings migrations, and it must run before the providers load so its tombstone
-        # never records an INCOMPATIBLE status and flashes a banner.
+        # through it. Needs the databases, so it cannot run with the settings migrations,
+        # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.12 release
         await cleanup_retired_local_audio(self)
         # load builtin providers (always needed, also in safe mode)

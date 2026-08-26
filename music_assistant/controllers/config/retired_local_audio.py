@@ -68,11 +68,9 @@ async def cleanup_retired_local_audio(mass: MusicAssistant) -> None:
         else:
             await _remove_local_audio_config(mass, instance_ids, player_ids)
     except Exception as err:
-        # never torch a possibly-real setup on a degraded install: keeping the config costs
-        # the user a banner, removing it wrongly costs them their settings. Deliberately
-        # broad and around the removal too, because this runs inside start(): anything
-        # escaping aborts the boot, on a half-deleted install if it escaped the removal.
-        # The flag stays unset so the next startup retries; the removal is idempotent.
+        # keeping a config costs a banner, removing it wrongly costs the user their
+        # settings. Broad and around the removal too: an escape here would abort the boot.
+        # The flag stays unset, so the next startup retries the (idempotent) removal.
         LOGGER.warning(
             "Unable to clean up the retired %s provider, keeping its configuration - %s: %s",
             LOCAL_AUDIO_DOMAIN,
@@ -119,11 +117,9 @@ async def _remove_local_audio_config(
     :param player_ids: Player ids of the local_audio player configs to remove.
     """
     for player_id in player_ids:
-        # this also drops the player's DSP/queue settings, its saved queue and the
-        # unregistered protocol players (e.g. sendspin's spb_*) that were bridged to it
+        # also drops its DSP/queue settings, saved queue and bridged spb_* children
         mass.players.delete_player_config(player_id)
-        # the universal player that used to wrap this one left its persisted queue behind
-        # under the old id; no config names it anymore, so nothing else would clean it up
+        # no config names the obsolete wrapper anymore, so nothing else would purge it
         mass.player_queues.purge_saved_queue(_legacy_universal_player_id(player_id))
     for instance_id in instance_ids:
         mass.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
@@ -143,9 +139,8 @@ async def _find_playback_evidence(mass: MusicAssistant, player_ids: list[str]) -
     :param mass: The MusicAssistant instance to query the library and cache of.
     :param player_ids: The player ids to look for evidence of playback of.
     """
-    # the visible device before the stubs were promoted was the universal player that
-    # wrapped them, and its settings were folded onto the stub under a new player_id;
-    # the playlog rows and the persisted queue it left behind still carry the old one
+    # playback from before the stubs were promoted is still keyed to the universal
+    # player that wrapped them, which is not the player_id its settings ended up on
     queue_ids = list(
         dict.fromkeys(
             queue_id
@@ -178,9 +173,7 @@ async def _queue_ids_in_playlog(mass: MusicAssistant, queue_ids: list[str]) -> s
     :param mass: The MusicAssistant instance to query the library of.
     :param queue_ids: The queue ids to look for, which for a player are its player ids.
     """
-    # resolved in one query: playlog.queue_id carries no index, so every lookup is a full
-    # scan - and the unused install this targets is the one that finds nothing, once per
-    # enumerated sound device
+    # one query: playlog.queue_id has no index, so every lookup is a full scan
     params = {f"id_{index}": queue_id for index, queue_id in enumerate(queue_ids)}
     placeholders = ",".join(f":{name}" for name in params)
     rows = await mass.music.database.get_rows_from_query(
@@ -200,10 +193,8 @@ async def _saved_queue_payloads(mass: MusicAssistant, queue_ids: list[str]) -> d
     :param mass: The MusicAssistant instance to query the cache of.
     :param queue_ids: The queue ids to read the persisted state and items of.
     """
-    # read straight off the table rather than through CacheController.get, which reports an
-    # entry it fails to deserialize as a miss: a corrupt saved queue would then read as one
-    # that was never used. Expired entries are wanted too - a queue that outlived its 30
-    # days is still evidence that the player was played to.
+    # not CacheController.get: it reports an entry it cannot decode as a miss, so a corrupt
+    # queue would read as one never used. Expired entries are evidence too, hence no filter.
     assert mass.cache.database is not None
     params: dict[str, Any] = {
         "provider": mass.player_queues.domain,
@@ -226,9 +217,7 @@ async def _saved_queue_payloads(mass: MusicAssistant, queue_ids: list[str]) -> d
 
 def _payload_holds_content(payload: Any) -> bool:
     """Return whether one persisted queue payload holds anything."""
-    # only the payload counts, never the presence of the entry: the queues controller
-    # flushes the state of every registered queue on each clean shutdown, so an install
-    # that merely booted once with a sound card attached has an entry too
+    # the entry's presence proves nothing: every registered queue is flushed on shutdown
     if isinstance(payload, dict):
         # the state payload; its items are cached under their own category
         return bool(payload.get("enqueued_media_items") or payload.get("source_items"))
