@@ -462,7 +462,7 @@ class SendspinProvider(PlayerProvider):
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
-            "Music Assistant",
+            self.mass.webserver.server_name,
             self.mass.http_session,
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
