@@ -696,3 +696,61 @@ async def test_unload_from_within_finalize_does_not_cancel_itself() -> None:
 
     assert provider._models_loaded is False
     assert not provider._finalize_tasks
+
+
+@pytest.mark.asyncio
+async def test_finalize_is_skipped_while_unloading() -> None:
+    """A finalize issued while unloading runs no inference, registers nothing, clears its session."""
+    provider = _make_provider()
+    provider._finalize = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider._sessions["s-gate"] = MagicMock()
+    provider.unloading = True
+
+    await provider.finalize("s-gate")
+
+    provider._finalize.assert_not_awaited()
+    assert not provider._finalize_tasks
+    assert "s-gate" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_started_during_unload_does_not_run_inference() -> None:
+    """A finalize registered while unload() unwinds must not infer against models being freed."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    finalized: list[str] = []
+    late_task: asyncio.Task[None] | None = None
+    started = asyncio.Event()
+
+    async def _finalize(session_id: str) -> AudioAnalysisData | None:
+        nonlocal late_task
+        finalized.append(session_id)
+        if session_id != "s-first":
+            return None
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # mirrors the controller resolving the provider and finalizing another session
+            # while unload() is suspended awaiting this cancellation
+            late_task = asyncio.create_task(provider.finalize("s-late"))
+            raise
+        return None
+
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider._free_models = MagicMock()  # type: ignore[method-assign]
+    provider._finalize = _finalize  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    first = asyncio.create_task(provider.finalize("s-first"))
+    await started.wait()
+
+    # mass.unload_provider sets this before it awaits provider.unload()
+    provider.unloading = True
+    await asyncio.wait_for(provider.unload(), timeout=5)
+
+    assert late_task is not None
+    await asyncio.wait_for(late_task, timeout=5)
+    assert finalized == ["s-first"]
+    assert first.cancelled()
+    assert not provider._finalize_tasks

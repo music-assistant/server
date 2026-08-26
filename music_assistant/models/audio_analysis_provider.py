@@ -204,6 +204,11 @@ class AudioAnalysisProvider(Provider):
 
     async def finalize(self, session_id: str) -> None:
         """Finalize analysis, persist the result, fire post_analysis, then clean up."""
+        if self.unloading:
+            # unload() has already snapshotted what to cancel, so a finalize starting now
+            # would run its inference against models that are about to be freed.
+            self._sessions.pop(session_id, None)
+            return
         task = asyncio.current_task()
         if task is not None:
             self._finalize_tasks.add(task)
