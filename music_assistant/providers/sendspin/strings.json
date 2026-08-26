@@ -165,9 +165,6 @@
     "dynamic_pin_channel_speaker": {
       "label": "The device speaks the PIN aloud."
     },
-    "dynamic_pin_digits": {
-      "label": "The PIN is {0} digits long."
-    },
     "source_autostart_target": {
       "label": "Automatically play line-in on",
       "description": "Where this device's line-in plays automatically when a signal is detected. Requires the device to report signal presence.",
@@ -237,6 +234,7 @@
     "pairing_error_storage": "Saving the pairing data failed. Please try again.",
     "pairing_error_no_pin_session": "The pairing attempt was interrupted. Please try again.",
     "pairing_error_token_invalid": "The pairing token is not valid. Make sure it was copied completely.",
-    "pairing_error_token_mismatch": "The token was issued by a different device."
+    "pairing_error_token_mismatch": "The token was issued by a different device.",
+    "invalid_value": "Enter the complete PIN."
   }
 }

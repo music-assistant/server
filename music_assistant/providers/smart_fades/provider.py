@@ -69,9 +69,8 @@ BEAT_WINDOW_OVERLAP_MODE = "keep_first"
 # While a player streams, wait this many times a window's own compute time before starting the
 # next one, so beat inference does not occupy a core continuously.
 BEAT_WINDOW_PACE_RATIO = 1.0
-# A model failure is often transient: an idle unload frees the models while an analysis that
-# outlived its own session is still running, or a one-off torch/hardware error. Record those
-# with this retry horizon instead of a permanent row that blocks the track forever.
+# Model failures such as one-off torch/hardware errors are often transient. Record them with
+# this retry horizon instead of a permanent row that blocks the track forever.
 MODEL_FAILURE_RETRY_DELAY = timedelta(hours=24)
 
 
@@ -554,7 +553,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         key_features: torch.Tensor | None,
     ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
         """Run beat inference followed by musical key inference."""
-        # Resolved before the beat stage: an idle unload may clear the models while it runs.
+        # Resolved before the beat stage: a reload or shutdown can free the models mid-run.
         models = self._require_models()
         beats, downbeats, beats_per_bar = await self._infer_beat_timings(beat_features)
         if len(beats) < 2:
@@ -649,7 +648,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         :param feats: Log-mel features for the whole track, shaped (frames, mel bins).
         """
-        # Resolved once and passed down: an idle unload may clear the models while the
+        # Resolved once and passed down: a reload or shutdown can free the models while the
         # windows below are still being dispatched.
         models = self._require_models()
 

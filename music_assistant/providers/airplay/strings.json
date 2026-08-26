@@ -90,6 +90,7 @@
   },
   "errors": {
     "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "invalid_value": "Enter the complete PIN exactly as shown on the device.",
     "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
     "connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
     "show_dashboard_failed": "Failed to show the dashboard on {0}.",
