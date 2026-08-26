@@ -2617,3 +2617,40 @@ async def test_a_cold_seek_does_not_read_a_failed_session_as_landed(tmp_path: Pa
     _client_of(session).seek.side_effect = _engine_dies
     with pytest.raises(AudioError, match="the session exited"):
         await session._cold_seek(_client_of(session), item, 60_000)
+
+
+async def test_seeking_the_playing_item_back_to_its_start_keeps_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A seek to zero is a seek: reachable once an earlier one moved the buffer.
+
+    The buffer only hands a position to the provider when it cannot serve it
+    itself, so seeking back before an earlier seek's target arrives here with a
+    target of zero.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    item.observe_position(200_000)
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        current = _current_of(session)
+        current.observe_position(position_ms)
+        current.observe_position(position_ms + 2)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    got_session, got_item = await backend._acquire(TRACK_A, 0, "player1")
+
+    assert got_session is session
+    assert got_item is not item
+    stopped.assert_not_awaited()
+    _client_of(session).seek.assert_awaited_once_with(0, await_result=True)
+    assert got_item.started_at_ms == 2

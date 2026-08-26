@@ -554,10 +554,14 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     await session.skip_to(pending)
                     pending.claim()
                     return session, pending
-                if seek_position and session.is_playing(spotify_uri):
-                    # the engine is on this item already, so it can be seeked
+                if session.is_playing(spotify_uri):
+                    # The engine is on this item already, so it can be seeked
                     # where it stands instead of paying a whole respawn - which
-                    # would also have to claim the Connect device back
+                    # would also have to claim the Connect device back. Not
+                    # gated on a non-zero position: the branches above have
+                    # returned by now, so reaching here means re-opening the
+                    # item being played, and back to its very start is as much
+                    # a seek as any other.
                     try:
                         item = await session.seek_current(spotify_uri, seek_position * 1000)
                     except ProviderStreamLimitError:
