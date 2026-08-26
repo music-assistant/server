@@ -725,8 +725,8 @@ async def test_event_dispatch_decodes_documented_payloads(tmp_path: Path) -> Non
     assert queue.upcoming[0].item.uri == "spotify:track:upcoming"
 
 
-async def test_the_item_boundary_events_keep_their_own_payload_types(tmp_path: Path) -> None:
-    """The events the playback backend cuts items on must not decode into each other."""
+async def test_the_item_boundary_events_decode_to_the_expected_payloads(tmp_path: Path) -> None:
+    """The events the playback backend cuts items on each decode to the payload it expects."""
     _publish_endpoint(tmp_path)
     ws = _FakeWebSocket()
     client = _make_client(tmp_path, ws)
