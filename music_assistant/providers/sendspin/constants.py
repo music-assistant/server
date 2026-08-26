@@ -20,7 +20,18 @@ PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
 PAIR_METHOD_TOKEN = "token"
-PAIR_METHOD_UNPAIRED = "unpaired"
+# The consent step's opt-in checkbox for pairing a device that allows unpaired use.
+CONF_PAIR_DEVICE = "pair_device"
+
+# Consent-page note that pairing is what enables the device's audio input.
+CONF_SOURCE_INPUT_NOTE = "source_input_note"
+
+# The setup flow step for a device whose audio input awaits a decision.
+CONF_SOURCE_INPUT_ACTION = "source_input_action"
+SOURCE_INPUT_PAIR = "pair"
+SOURCE_INPUT_DISMISS = "dismiss"
+# Persisted (raw player config) marker that the user declined the audio input.
+CONF_SOURCE_APPROVAL_DISMISSED = "source_approval_dismissed"
 
 CONF_PAIRING_TOKEN = "pairing_token"
 CONF_PAIRING_PIN = "pairing_pin"

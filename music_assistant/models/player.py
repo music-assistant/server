@@ -3463,7 +3463,7 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                if player.type != PlayerType.UNKNOWN:
+                if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                     result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -3473,7 +3473,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if player.type != PlayerType.UNKNOWN:
+                    if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                         result.add(player)
         return result
 

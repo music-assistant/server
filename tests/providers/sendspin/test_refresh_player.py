@@ -142,16 +142,19 @@ def test_create_player_uses_the_capture_only_class_for_source_only_clients(
     assert not isinstance(cast("object", combo), _StubSourcePlayer)
 
 
-def test_player_classes_declare_their_privacy() -> None:
+def test_player_classes_declare_their_visibility() -> None:
     """
-    Only players owned by a single device or by the server itself are private.
+    Sendspin device players are shared devices, so none of them are private.
 
-    Visualizers and lights are hidden by default too, but clients keep offering
-    them as group members, so they must not be marked private.
+    Visualizers and lights stay hidden by default but keep offering themselves as
+    group members. Source clients are listed as audio inputs so the device stays
+    discoverable.
     """
     assert SendspinVisualizerPlayer._attr_hidden_by_default is True
     assert SendspinVisualizerPlayer._attr_private is False
-    assert SendspinSourcePlayer._attr_private is True
+    assert SendspinSourcePlayer._attr_private is False
+    assert SendspinSourcePlayer._attr_hidden_by_default is False
+    assert SendspinSourcePlayer._attr_type is PlayerType.SOURCE
 
 
 def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPatch) -> None:
