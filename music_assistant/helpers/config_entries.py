@@ -73,6 +73,7 @@ def create_connected_players_entry(
         multi_value=True,
         required=False,
         default_value=[],
+        value=list(selected or []),
         options=options,
     )
 
