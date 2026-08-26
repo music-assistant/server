@@ -485,10 +485,19 @@ class AirPlayReceiverProvider(PluginProvider):
         daemon.stop_called = True
 
         # a pending stop or deferred start must not wake after the teardown and
-        # act on the replaced daemon's session
-        for pending_task in (daemon.pending_stop_task, daemon.pending_start_task):
-            if pending_task and not pending_task.done():
-                pending_task.cancel()
+        # act on the replaced daemon's session; cancel BOTH before awaiting either
+        # (awaiting first could let the other progress meanwhile), and await so a
+        # cancellation-delayed player command cannot land after the daemon is gone
+        pending_tasks = [
+            task
+            for task in (daemon.pending_stop_task, daemon.pending_start_task)
+            if task and not task.done()
+        ]
+        for pending_task in pending_tasks:
+            pending_task.cancel()
+        for pending_task in pending_tasks:
+            with suppress(asyncio.CancelledError):
+                await pending_task
         daemon.pending_stop_task = None
         daemon.pending_start_task = None
 
@@ -744,6 +753,11 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         self.logger.log(VERBOSE_LOG_LEVEL, "Received metadata update: %s", metadata)
 
+        # the metadata reader outlives the cancelled tasks for a moment during
+        # teardown; a stopped daemon must not schedule new work from late events
+        if daemon.stop_called:
+            return
+
         # Handle play state changes from sessioncontrol hooks
         if "play_state" in metadata:
             self._handle_play_state_change(daemon, metadata["play_state"])
@@ -784,6 +798,10 @@ class AirPlayReceiverProvider(PluginProvider):
             daemon.first_volume_event_received = False
             # Initiate playback via the standard play_media flow on the target player
             if not daemon.in_use_by_player:
+                if daemon.pending_start_task and not daemon.pending_start_task.done():
+                    # a start is already in flight; a second one would double play_media
+                    # and leave the first task untracked for teardown cancellation
+                    return
                 # an explicitly selected player wins, else the receiver's own player
                 target_player_id = daemon.active_player_id or daemon.player_id
                 self.logger.info("Starting AirPlay playback on player %s", target_player_id)

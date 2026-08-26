@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
@@ -687,8 +688,17 @@ class SpotifyConnectProvider(PluginProvider):
     async def _stop_daemon(self, daemon: _PlayerDaemon) -> None:
         """Stop a daemon's backend and cancel its pending tasks."""
         daemon.stop_called = True
+        pending_tasks = [
+            task
+            for task in (daemon.pending_play_media_task, daemon.pending_pause_stop_task)
+            if task is not None and not task.done()
+        ]
         self._cancel_pending_play_media(daemon)
         self._cancel_pending_pause_stop(daemon)
+        # await the cancelled tasks so no late player command outlives the daemon
+        for task in pending_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
         await daemon.backend.stop()
 
     def _create_backend(self, daemon: _PlayerDaemon, player_name: str) -> SpotifyConnectBackend:
@@ -914,9 +924,9 @@ class SpotifyConnectProvider(PluginProvider):
             target_player_id,
         )
         daemon.active_player_id = target_player_id
-        self.mass.create_task(
-            self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
-        )
+        # awaited inline so the tracked deferred task covers the whole start and
+        # a daemon teardown can still cancel an in-flight source selection
+        await self.mass.player_queues.play_media(target_player_id, str(daemon.audio_source.uri))
 
     def _clear_active_player(self, daemon: _PlayerDaemon) -> None:
         """Clear the active player and reset playback state when a session ends."""
@@ -946,6 +956,11 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def _handle_backend_event(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """Dispatch a single normalized event received from a daemon's backend."""
+        if daemon.stop_called:
+            # a deliberately stopped daemon (unload, rename restart, player removal)
+            # must not schedule new work or tear down the whole provider from a
+            # late event of its dying backend
+            return
         if event.type is BackendEventType.CONNECTION_LOST:
             # The backend's Spotify session is gone (e.g. daemon exit). Reset
             # session state so a dead/restarting backend isn't treated as active
@@ -956,10 +971,7 @@ class SpotifyConnectProvider(PluginProvider):
             daemon.last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
-            # a deliberately stopped daemon (unload, rename restart, player
-            # removal) must not tear down the whole provider
-            if not daemon.stop_called:
-                self.unload_with_error(event.error or "Spotify Connect backend failed")
+            self.unload_with_error(event.error or "Spotify Connect backend failed")
             return
         if event.type is BackendEventType.ERROR:
             # non-fatal backend error: surface it in the log only

@@ -191,6 +191,8 @@ def _make_provider(
     """Build a provider with one daemon wired to the fake backend, mirroring the start defaults."""
     mass = MagicMock()
     mass.create_task.side_effect = _create_task
+    # awaited inline by the deferred play_media trigger
+    mass.player_queues.play_media = AsyncMock()
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = mass
     provider.logger = MagicMock()
@@ -263,6 +265,43 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     assert task is not None
     await task
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
+
+
+async def test_stop_daemon_awaits_inflight_play_and_ignores_late_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Teardown awaits an in-flight play_media; late backend events schedule nothing."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(
+        backend, session_active=True, active_player_id="player1"
+    )
+    mass.players.get_player.return_value = MagicMock()
+    play_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_play(_player_id: str, _uri: str) -> None:
+        play_started.set()
+        await release.wait()
+
+    mass.player_queues.play_media = AsyncMock(side_effect=blocking_play)
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    await asyncio.wait_for(play_started.wait(), 1)
+    task = daemon.pending_play_media_task
+    assert task is not None
+    assert not task.done()
+
+    await provider._stop_daemon(daemon)
+
+    # the in-flight play was cancelled and awaited (else _stop_daemon would hang on
+    # the release event), and only then was the backend stopped
+    assert task.cancelled()
+    assert ("stop", None) in backend.calls
+    # a late backend event on the stopped daemon schedules no replacement work
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+    assert daemon.pending_play_media_task is None
+    mass.player_queues.play_media.assert_awaited_once()
 
 
 async def test_playing_before_session_active_fires_play_media(
