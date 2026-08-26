@@ -171,6 +171,8 @@ class YandexYnisonProvider(PluginProvider):
 
         # Setup identity and playback options
         self._default_player_id: str = cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or ""
+        # the display name snapshot the Ynison device connected with (set at init)
+        self._advertised_name: str | None = None
         allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
         self._allow_player_switch: bool = (
             cast("bool", allow_switch_value) if allow_switch_value is not None else True
@@ -353,9 +355,10 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Using manually configured Yandex Music token (no auto-refresh)")
         token = await self._resolve_token()
 
+        self._advertised_name = self._display_name
         device_info = YnisonDeviceInfo(
             device_id=self._device_id,
-            title=self._display_name,
+            title=self._advertised_name,
         )
 
         self._ynison = YnisonClient(
@@ -373,6 +376,15 @@ class YandexYnisonProvider(PluginProvider):
             self.mass.subscribe(
                 self._on_provider_event,
                 EventType.PROVIDERS_UPDATED,
+            )
+        )
+        # the advertised device name is snapshotted into the Ynison connection, so a
+        # rename of the connected player needs a reload to re-advertise correctly
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_connected_player_event,
+                (EventType.PLAYER_ADDED, EventType.PLAYER_CONFIG_UPDATED),
+                id_filter=self._default_player_id,
             )
         )
         # Initial check for matching provider
@@ -1418,6 +1430,18 @@ class YandexYnisonProvider(PluginProvider):
     # ------------------------------------------------------------------
     # Player selection
     # ------------------------------------------------------------------
+
+    async def _on_connected_player_event(self, event: MassEvent) -> None:
+        """Reload the provider when the connected player's display name changed."""
+        del event
+        if self._advertised_name is None or self._display_name == self._advertised_name:
+            return
+        self.logger.info(
+            "Connected player was renamed; reloading to re-advertise as '%s'",
+            self._display_name,
+        )
+        task_id = f"load_provider_{self.instance_id}"
+        self.mass.call_later(1, self.mass.load_provider_config, self.config, task_id=task_id)
 
     @property
     def _display_name(self) -> str:

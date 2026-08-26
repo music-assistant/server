@@ -108,7 +108,10 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import (
@@ -2415,13 +2418,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return the AudioSources of a plugin to list, scoped to a player when given.
 
         Player-bound plugins yield only the sources bound to the given player;
-        without a player scope (and for player-unbound plugins) all sources are yielded.
+        without a player scope all their sources bound to a player the calling
+        user may see are yielded. Player-unbound plugins always yield all sources.
         """
+        # probing with the (possibly empty) scope tells bound and unbound apart:
+        # a player-bound plugin returns a list for any player id, unbound returns None
+        if provider.get_player_audio_sources(player_id or "") is None:
+            return await provider.get_audio_sources()
+        # bound sources honor the calling user's player access filter, so a
+        # restricted user cannot discover sources of players hidden from them
+        current_user = get_current_user()
+        player_filter = (
+            current_user.player_filter
+            if current_user and not has_scope(current_user, Scope.ALL)
+            else None
+        )
         if player_id is not None:
-            bound_sources = provider.get_player_audio_sources(player_id)
-            if bound_sources is not None:
-                return bound_sources
-        return await provider.get_audio_sources()
+            if player_filter and player_id not in player_filter:
+                return []
+            return provider.get_player_audio_sources(player_id) or []
+        if not player_filter:
+            return await provider.get_audio_sources()
+        sources: list[AudioSource] = []
+        for allowed_player_id in player_filter:
+            sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
+        return sources
 
     def _apply_user_provider_filter(
         self,

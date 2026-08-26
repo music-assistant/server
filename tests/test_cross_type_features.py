@@ -679,6 +679,29 @@ async def test_browse_provider_level_without_player_scope_lists_all_sources() ->
     assert _audio_source_item("connect", "office") in result
 
 
+async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
+    """A restricted user only sees bound sources of players their filter allows."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+    restricted_user = Mock(player_filter=["office"])
+
+    with (
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=restricted_user,
+        ),
+        patch("music_assistant.controllers.music.controller.has_scope", return_value=False),
+    ):
+        unscoped = await controller.browse(path=None)
+        hidden_scope = await controller.browse(path=None, player_id="kitchen")
+
+    assert _audio_source_item("connect", "office") in unscoped
+    assert _audio_source_item("connect", "kitchen") not in unscoped
+    assert _audio_source_item("vban", "input1") in unscoped
+    # scoping to a player outside the filter yields no bound sources
+    assert _audio_source_item("connect", "kitchen") not in hidden_scope
+    assert _audio_source_item("vban", "input1") in hidden_scope
+
+
 async def test_global_search_includes_plugin_providers_with_search() -> None:
     """Plugins declaring SEARCH should be queried alongside music providers."""
     mass = Mock()
