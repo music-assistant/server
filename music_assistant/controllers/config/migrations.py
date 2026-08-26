@@ -850,6 +850,13 @@ def _collapse_connected_player_instances(
     }
     if not instances:
         return False
+    # already collapsed (or created post-change): a single instance keyed by the bare
+    # domain can only originate from the new single-instance model — the legacy
+    # multi-instance era always minted suffixed ids. This check is durable, unlike the
+    # connected_players marker below, which the config store drops again when the
+    # stored value equals the entry default (an empty selection).
+    if len(instances) == 1 and domain in instances:
+        return False
     if any(
         isinstance(cfg.get("values"), dict) and CONF_CONNECTED_PLAYERS in cfg["values"]
         for cfg in instances.values()
@@ -1538,9 +1545,15 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
             # encrypted receiver name is unavailable during this early migration.
             continue
         provider_values = provider_cfg.get("values")
-        if isinstance(provider_values, dict) and CONF_CONNECTED_PLAYERS in provider_values:
-            # a collapsed per-player instance advertises player-derived names; the
-            # legacy default names this cleanup matches on cannot originate here
+        if provider_cfg.get("instance_id") == "airplay_receiver" or (
+            isinstance(provider_values, dict) and CONF_CONNECTED_PLAYERS in provider_values
+        ):
+            # a per-player-model instance advertises player-derived names, so the
+            # legacy default names this cleanup matches on cannot originate there.
+            # The bare domain id is the durable signal (the legacy multi-instance
+            # era always minted suffixed ids); the connected_players marker alone
+            # is not, as the config store drops it again when the stored value
+            # equals the entry default (an empty selection).
             continue
         airplay_name = (
             provider_values.get("airplay_name") if isinstance(provider_values, dict) else None

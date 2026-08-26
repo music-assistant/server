@@ -68,9 +68,9 @@ class AudioSourceSession:
         """
         Return the AudioSource.item_id this session plays.
 
-        Provider-scoped rather than unique: every shipped plugin names its only
-        source "main". Use ``source_uri`` wherever the identifier has to be
-        unique server-wide, such as a player's active source.
+        Provider-scoped rather than unique: plugins reuse ids like "main" or a
+        player id across instances. Use ``source_uri`` wherever the identifier
+        has to be unique server-wide, such as a player's active source.
         """
         return self.source.item_id
 

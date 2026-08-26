@@ -1059,6 +1059,30 @@ def test_migrate_connected_player_plugins_prefers_soloist_survivor(tmp_path: Pat
     assert data == before
 
 
+def test_migrate_connected_player_plugins_skips_bare_domain_instance(tmp_path: Path) -> None:
+    """
+    A single instance keyed by the bare domain is never re-collapsed.
+
+    The connected_players marker is dropped by the config store when it equals the
+    entry default (empty selection), so the bare-domain id is the durable signal.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "spotify_connect": {
+                "domain": "spotify_connect",
+                "instance_id": "spotify_connect",
+                "values": {},
+                "setup_data": {"backend": ENCRYPT_SUFFIX + "go_librespot"},
+            }
+        },
+        "players": {},
+    }
+    before = deepcopy(data)
+
+    assert migrate_connected_player_plugins(data, _fake_decrypt, str(tmp_path)) is False
+    assert data == before
+
+
 def test_migrate_connected_player_plugins_ignores_disabled_instances(tmp_path: Path) -> None:
     """A disabled instance neither survives the collapse nor contributes its player."""
     data = _connected_plugins_data()
