@@ -324,7 +324,7 @@ class MusicAssistant:
         # one-off: drop the retired local_audio provider on installs that never played
         # through it. Needs the databases, so it cannot run with the settings migrations,
         # and must precede the provider load so its tombstone never flashes a banner.
-        # TODO: remove after 2.12 release
+        # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
