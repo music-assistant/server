@@ -26,7 +26,6 @@ from music_assistant.controllers.config.migrations import (
     _migrate_output_limiter,
     _migrate_player_icons,
     _migrate_player_setup_data,
-    _migrate_retired_local_audio,
     _migrate_unrenamed_player_names,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
@@ -342,36 +341,6 @@ def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
     assert values["cast_x"]["values"]["power_control"] == "none"
     # idempotent: nothing left to migrate on a second pass
     assert _migrate_airplay_apple_power_control(data) is False
-
-
-def test_migrate_retired_local_audio_drops_unused_config() -> None:
-    """An install that never attached a soundcard loses the auto-created config silently."""
-    data: dict[str, Any] = {
-        "providers": {
-            "local_audio": {"instance_id": "local_audio", "domain": "local_audio"},
-            "spotify": {"instance_id": "spotify", "domain": "spotify"},
-        },
-        "players": {"p1": {"player_id": "p1", "provider": "chromecast"}},
-    }
-    assert _migrate_retired_local_audio(data) is True
-    assert "local_audio" not in data["providers"]
-    assert "spotify" in data["providers"]
-
-
-def test_migrate_retired_local_audio_keeps_config_when_players_exist() -> None:
-    """An install that actually used local audio keeps the config, so it sees the notice."""
-    data: dict[str, Any] = {
-        "providers": {"local_audio": {"instance_id": "local_audio", "domain": "local_audio"}},
-        "players": {"p1": {"player_id": "p1", "provider": "local_audio"}},
-    }
-    assert _migrate_retired_local_audio(data) is False
-    assert "local_audio" in data["providers"]
-
-
-def test_migrate_retired_local_audio_noop_without_config() -> None:
-    """Migration reports no change when the provider was never configured."""
-    data: dict[str, Any] = {"providers": {"spotify": {"domain": "spotify"}}, "players": {}}
-    assert _migrate_retired_local_audio(data) is False
 
 
 def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.MonkeyPatch) -> None:
