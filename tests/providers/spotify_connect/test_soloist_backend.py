@@ -418,6 +418,8 @@ async def test_exit_code_10_with_failed_refresh_is_fatal(
     assert len(spawned) == 1  # the expired build is never restarted
     assert events[-1].type is BackendEventType.FATAL_ERROR
     assert "expired" in (events[-1].error or "")
+    # the shared binary expiring hits every daemon alike
+    assert events[-1].provider_wide is True
 
 
 async def test_five_daemon_failures_report_fatal_error(
@@ -434,6 +436,8 @@ async def test_five_daemon_failures_report_fatal_error(
     assert len(spawned) == 5
     assert sum(1 for e in events if e.type is BackendEventType.CONNECTION_LOST) == 5
     assert events[-1].type is BackendEventType.FATAL_ERROR
+    # soloist fatals take the whole provider down (engine-level failure)
+    assert events[-1].provider_wide is True
 
 
 @pytest.mark.parametrize(

@@ -735,7 +735,8 @@ async def test_fatal_backend_error_gives_up_only_the_failed_daemon() -> None:
     await prov._handle_backend_event(
         daemon, BackendEvent(type=BackendEventType.FATAL_ERROR, error="boom")
     )
-    # the give-up is scheduled so it does not stop the runner task it is called from
+    # the give-up is a deferred task so it does not stop the runner task it is called from
+    assert mocks.mass.create_task.call_args.kwargs == {"eager_start": False}
     give_up = mocks.mass.create_task.call_args.args[0]
     await give_up
 

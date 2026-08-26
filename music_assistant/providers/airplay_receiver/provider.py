@@ -615,22 +615,34 @@ class AirPlayReceiverProvider(PluginProvider):
             # Clean up pipes and config
             await self._cleanup_pipes_and_config(daemon)
 
-            if daemon.stop_called:
-                # deliberately stopped (unload, rename restart or player removal)
-                pass
-            elif not daemon.started.is_set():
-                self.unload_with_error("Unable to initialize shairport-sync daemon.")
-            # Auto restart if not stopped manually
-            elif daemon.runner_error_count >= 5:
-                # scheduled as a task: this runner task is what the give-up stops
-                self.mass.create_task(
-                    self._give_up_receiver(
-                        daemon, "shairport-sync daemon failed to start multiple times."
-                    )
-                )
-            else:
-                daemon.runner_error_count += 1
-                self.mass.call_later(2, self._setup_shairport_daemon, daemon)
+            self._handle_runner_exit(daemon)
+
+    def _handle_runner_exit(self, daemon: _ReceiverDaemon) -> None:
+        """
+        Decide how to follow up on a receiver's daemon exit (restart, give up or unload).
+
+        :param daemon: The receiver daemon whose shairport-sync process exited.
+        """
+        if daemon.stop_called:
+            # deliberately stopped (unload, rename restart or player removal)
+            return
+        if not daemon.started.is_set():
+            # the binary produced no output at all: an environment-level problem
+            # every receiver would hit alike
+            self.unload_with_error("Unable to initialize shairport-sync daemon.")
+        # Auto restart if not stopped manually
+        elif daemon.runner_error_count >= 5:
+            # deferred task (no eager start): this runs on the daemon's own
+            # runner task, which the give-up is about to stop
+            self.mass.create_task(
+                self._give_up_receiver(
+                    daemon, "shairport-sync daemon failed to start multiple times."
+                ),
+                eager_start=False,
+            )
+        else:
+            daemon.runner_error_count += 1
+            self.mass.call_later(2, self._setup_shairport_daemon, daemon)
 
     def _process_shairport_log_line(self, daemon: _ReceiverDaemon, line: str) -> None:
         """
@@ -639,6 +651,11 @@ class AirPlayReceiverProvider(PluginProvider):
         :param daemon: The receiver daemon the log line originates from.
         :param line: The log line to process.
         """
+        # any output proves the binary runs: a subsequent exit is then handled by
+        # the supervised restart path (per receiver) instead of unloading the
+        # provider as uninitializable
+        if not daemon.started.is_set():
+            daemon.started.set()
         # Check for fatal errors (log them, but process will exit on its own)
         if "fatal error:" in line.lower() or "unknown option" in line.lower():
             self.logger.error("Fatal error from shairport-sync: %s", line)
@@ -650,8 +667,6 @@ class AirPlayReceiverProvider(PluginProvider):
             # Note: Play begin/stop events are now handled via sessioncontrol hooks
             # through the metadata pipe, so we don't need to parse stderr logs
             self.logger.debug(line)
-        if not daemon.started.is_set():
-            daemon.started.set()
 
     async def _setup_pipes_and_config(self, daemon: _ReceiverDaemon) -> None:
         """

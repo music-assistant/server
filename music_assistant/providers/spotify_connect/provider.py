@@ -1110,13 +1110,13 @@ class SpotifyConnectProvider(PluginProvider):
         :param daemon: The daemon the event originates from.
         :param event: The FATAL_ERROR event to handle.
         """
-        error = event.error or "Spotify Connect backend failed"
+        error = event.error or "Spotify Connect backend failed."
         if event.provider_wide:
             self.unload_with_error(error)
             return
-        # scheduled as a task: this callback runs on the backend's own runner
-        # task, which the give-up is about to stop
-        self.mass.create_task(self._give_up_daemon(daemon, error))
+        # deferred task (no eager start): this callback runs on the backend's
+        # own runner task, which the give-up is about to stop
+        self.mass.create_task(self._give_up_daemon(daemon, error), eager_start=False)
 
     def _remember_context_uris(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """

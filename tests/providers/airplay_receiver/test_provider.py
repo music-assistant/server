@@ -279,3 +279,81 @@ async def test_give_up_on_a_replaced_receiver_is_a_noop() -> None:
     mocks.stop_receiver.assert_not_awaited()
     assert not prov._failed_player_ids
     assert prov._daemons["p1"] is replacement
+
+
+async def test_runner_exit_retries_before_the_restart_budget_is_spent() -> None:
+    """A daemon exit within the restart budget schedules a delayed restart."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.started = asyncio.Event()
+    daemon.started.set()
+    daemon.runner_error_count = 0
+
+    prov._handle_runner_exit(daemon)
+
+    assert daemon.runner_error_count == 1
+    mocks.mass.call_later.assert_called_once_with(2, prov._setup_shairport_daemon, daemon)
+
+
+async def test_runner_exit_gives_up_once_the_restart_budget_is_spent() -> None:
+    """Exhausting the restart budget gives up this receiver instead of unloading."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    unload_with_error = MagicMock()
+    prov.unload_with_error = unload_with_error  # type: ignore[method-assign]
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.started = asyncio.Event()
+    daemon.started.set()
+    daemon.runner_error_count = 5
+
+    prov._handle_runner_exit(daemon)
+    # the give-up runs as a deferred task so it never stops its own runner task
+    assert mocks.mass.create_task.call_args.kwargs == {"eager_start": False}
+    await mocks.mass.create_task.call_args.args[0]
+
+    assert "p1" not in prov._daemons
+    assert prov._failed_player_ids == {"p1"}
+    unload_with_error.assert_not_called()
+
+
+async def test_runner_exit_without_any_output_unloads_the_provider() -> None:
+    """A daemon that never produced any output is an environment-level provider failure."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    unload_with_error = MagicMock()
+    prov.unload_with_error = unload_with_error  # type: ignore[method-assign]
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.started = asyncio.Event()
+
+    prov._handle_runner_exit(daemon)
+
+    unload_with_error.assert_called_once()
+    mocks.mass.create_task.assert_not_called()
+
+
+async def test_runner_exit_after_a_deliberate_stop_does_nothing() -> None:
+    """A deliberately stopped receiver never restarts, gives up or unloads."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    unload_with_error = MagicMock()
+    prov.unload_with_error = unload_with_error  # type: ignore[method-assign]
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.started = asyncio.Event()
+    daemon.stop_called = True
+
+    prov._handle_runner_exit(daemon)
+
+    unload_with_error.assert_not_called()
+    mocks.mass.create_task.assert_not_called()
+    mocks.mass.call_later.assert_not_called()
+
+
+def test_a_fatal_log_line_marks_the_daemon_started() -> None:
+    """A fatal-error log line still proves the binary runs, routing exits to the restart path."""
+    prov, _mocks = _reconcile_provider(("p1",), {})
+    daemon = MagicMock(started=asyncio.Event())
+
+    prov._process_shairport_log_line(daemon, "fatal error: Could not bind any listening ports")
+
+    assert daemon.started.is_set()
