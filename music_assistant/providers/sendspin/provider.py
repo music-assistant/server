@@ -405,6 +405,7 @@ class SendspinProvider(PlayerProvider):
                 key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
+                hidden=True,
             ),
             ConfigEntry(
                 key=CONF_MIN_PIN_LENGTH,

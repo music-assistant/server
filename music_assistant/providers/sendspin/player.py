@@ -116,6 +116,7 @@ from .helpers import (
     error_alert,
     mac_from_bridge_client_id,
     pair_method_descriptor,
+    pin_code_format,
 )
 from .playback import SendspinPlaybackSession
 
@@ -1021,18 +1022,18 @@ class SendspinBasePlayer(Player):
     def _pin_form_entries(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> list[ConfigEntry]:
-        """Return the PIN form fields, hinting how the operator gets the PIN and how long it is."""
+        """Return the PIN form fields, hinting how the operator gets the PIN."""
         entries = self._secret_hint_entries(provider, pin_session.method)
-        if pin_session.pin_length is not None:
-            entries.append(
-                ConfigEntry(
-                    key="dynamic_pin_digits",
-                    type=ConfigEntryType.LABEL,
-                    translation_params=[str(pin_session.pin_length)],
-                )
-            )
+        # only a dynamic PIN carries a negotiated length; a static PIN is always
+        # exactly 8 digits (enforced by aiosendspin)
+        pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
         entries.append(
-            ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)
+            ConfigEntry(
+                key=CONF_PAIRING_PIN,
+                type=ConfigEntryType.PAIRING_CODE,
+                required=True,
+                format=pin_code_format(pin_length),
+            )
         )
         return entries
 

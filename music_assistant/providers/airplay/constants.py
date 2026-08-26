@@ -296,6 +296,8 @@ CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 # Interactive setup-flow input keys (transient PIN/password form fields and the
 # optional "set up now?" choice for the control pairing steps).
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
+# every AirPlay pairing PIN (streaming, Companion, MRP) is 4 digits
+PAIRING_PIN_FORMAT: Final[str] = "####"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"

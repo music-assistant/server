@@ -14,7 +14,7 @@ from aiosendspin.models.core import PairMethodDescriptor
 from aiosendspin.models.types import PairAbortReason, PairMethod
 from aiosendspin.noise.pairing import RemotePairingAbortError
 from aiosendspin.noise.trust_store import PskCategory
-from music_assistant_models.enums import FlowStepType
+from music_assistant_models.enums import ConfigEntryType, FlowStepType
 
 from music_assistant.models.setup_flow import (
     AbortFlow,
@@ -553,8 +553,8 @@ async def test_pin_form_expiry_retries_in_place(monkeypatch: pytest.MonkeyPatch)
     await task
 
 
-async def test_pin_form_names_the_pin_length() -> None:
-    """The PIN form states the negotiated digit count."""
+async def test_pin_form_encodes_the_negotiated_length() -> None:
+    """The PIN field renders as a pairing-code box matching the negotiated digit count."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
@@ -562,8 +562,44 @@ async def test_pin_form_names_the_pin_length() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
-    digits = next(entry for entry in step.entries if entry.key == "dynamic_pin_digits")
-    assert digits.translation_params == ["6"]
+    pin_entry = next(entry for entry in step.entries if entry.key == CONF_PAIRING_PIN)
+    assert pin_entry.type is ConfigEntryType.PAIRING_CODE
+    assert pin_entry.format == "###-###"
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+    await _wait_for(lambda: session.finished)
+    await task
+
+
+async def test_pin_form_accepts_a_separator_in_the_submitted_pin() -> None:
+    """A PIN submitted with the format's separator still pairs (parse_value strips it)."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "123-456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["123456"]
+
+
+async def test_pin_form_rejects_a_short_pin() -> None:
+    """A PIN shorter than the negotiated length re-serves the form with a field error."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    step = session.handle_submit({CONF_PAIRING_PIN: "123"})
+    assert step is not None
+    assert step.errors == {CONF_PAIRING_PIN: "invalid_value"}
+    assert provider.submitted_pins == []
+
     session.handle_submit({CONF_PAIRING_PIN: "123456"})
     await _wait_for(lambda: session.finished)
     await task
@@ -579,11 +615,14 @@ async def test_static_pin_form_hints_where_the_pin_lives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # The unknown location is ignored rather than rendered as a missing translation.
-    # A static PIN has no negotiated length, so nothing names a digit count.
     assert [entry.key for entry in step.entries] == [
         "static_pin_location_device",
         CONF_PAIRING_PIN,
     ]
+    # A static PIN is always exactly 8 digits (enforced by aiosendspin).
+    pin_entry = next(entry for entry in step.entries if entry.key == CONF_PAIRING_PIN)
+    assert pin_entry.type is ConfigEntryType.PAIRING_CODE
+    assert pin_entry.format == "####-####"
     session.handle_submit({CONF_PAIRING_PIN: "12345678"})
     await _wait_for(lambda: session.finished)
     await task
@@ -601,7 +640,6 @@ async def test_dynamic_pin_form_hints_how_the_pin_arrives() -> None:
     # "other" says nothing an operator can act on, so it renders no hint.
     assert [entry.key for entry in step.entries] == [
         "dynamic_pin_channel_speaker",
-        "dynamic_pin_digits",
         CONF_PAIRING_PIN,
     ]
     session.handle_submit({CONF_PAIRING_PIN: "123456"})

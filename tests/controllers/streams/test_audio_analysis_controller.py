@@ -618,6 +618,8 @@ async def test_finalize_cleans_up_provider_sessions() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(return_value=None)
 
     await AudioAnalysisProvider.finalize(provider, "test_session")
@@ -637,6 +639,7 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
     provider.domain = "test_domain"
     provider.analysis_version = 1
     provider.max_analysis_duration = None
+    provider.unloading = False
 
     streamdetails = MagicMock()
     streamdetails.item_id = "shared_id"
@@ -670,6 +673,8 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(side_effect=RuntimeError("analysis failed"))
 
     # MUST NOT raise — exception is swallowed and logged

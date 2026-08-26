@@ -117,10 +117,24 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
     :param tmp_path: Temporary directory for test data.
     """
+    async with full_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
+
+
+@asynccontextmanager
+async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """
+    Boot a full server on the given temporary directory.
+
+    Exposed next to the ``mass`` fixture so a test that needs to seed ``data/settings.json``
+    (or the cache) before the boot can prepare the directory itself and boot it here.
+
+    :param tmp_path: Temporary directory for test data.
+    """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
+    storage_path.mkdir(parents=True, exist_ok=True)
+    cache_path.mkdir(parents=True, exist_ok=True)
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
