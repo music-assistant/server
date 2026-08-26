@@ -961,8 +961,13 @@ class AriaCastReceiver(PluginProvider):
             self.logger.debug("Stored player %s no longer available", self._active_player_id)
             self._active_player_id = None
 
-        self.logger.debug("Using configured player: %s", self._default_player_id)
-        return self._default_player_id
+        if self.mass.players.get_player(self._default_player_id):
+            self.logger.debug("Using configured player: %s", self._default_player_id)
+            return self._default_player_id
+        self.logger.warning(
+            "Configured player '%s' is currently not available", self._default_player_id
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------

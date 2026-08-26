@@ -231,6 +231,9 @@ class AirPlayReceiverProvider(PluginProvider):
             self._daemons.clear()
         if daemons:
             await asyncio.gather(*(self._stop_receiver(daemon) for daemon in daemons))
+            # drop the standing source entries from the players' cached source lists
+            for daemon in daemons:
+                self.mass.players.trigger_player_update(daemon.player_id)
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""
@@ -412,6 +415,8 @@ class AirPlayReceiverProvider(PluginProvider):
                     del self._daemons[player_id]
                     await self._stop_receiver(daemon)
                 self._start_receiver(player, airplay_name)
+                # the standing source entry feeds the player's cached source list
+                self.mass.players.trigger_player_update(player_id)
 
     def _start_receiver(self, player: Player, airplay_name: str) -> None:
         """

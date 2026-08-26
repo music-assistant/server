@@ -302,6 +302,9 @@ class SpotifyConnectProvider(PluginProvider):
             self._daemons.clear()
         if daemons:
             await asyncio.gather(*(self._stop_daemon(daemon) for daemon in daemons))
+            # drop the standing source entries from the players' cached source lists
+            for daemon in daemons:
+                self.mass.players.trigger_player_update(daemon.player_id)
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""
@@ -645,6 +648,8 @@ class SpotifyConnectProvider(PluginProvider):
                     del self._daemons[player_id]
                     await self._stop_daemon(daemon)
                 await self._start_daemon(player, publish_name)
+                # the standing source entry feeds the player's cached source list
+                self.mass.players.trigger_player_update(player_id)
 
     async def _start_daemon(self, player: Player, publish_name: str) -> None:
         """
