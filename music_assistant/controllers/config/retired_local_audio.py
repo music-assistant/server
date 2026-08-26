@@ -13,7 +13,7 @@ library and cache databases, so this runs from `MusicAssistant.start()` once the
 controllers are up - and before the providers load, so the tombstone never gets the chance
 to record an INCOMPATIBLE status.
 
-TODO: remove after 2.12 release
+TODO: remove after 2.11 release
 """
 
 from __future__ import annotations
