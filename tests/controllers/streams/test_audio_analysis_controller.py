@@ -430,6 +430,44 @@ async def test_idle_monitor_keeps_models_while_sessions_active(
     await asyncio.gather(controller._idle_unload_task, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_idle_monitor_keeps_models_while_finalize_in_flight(
+    controller: AudioAnalysisController,
+    mock_mass: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-flight finalize keeps the models loaded, and releases them once it completes."""
+    prov = _unloadable_provider()
+    prov.instance_id = "prov_1"
+    release = asyncio.Event()
+
+    async def _blocking_finalize(_session_id: str) -> None:
+        await release.wait()
+
+    prov.finalize = AsyncMock(side_effect=_blocking_finalize)
+    mock_mass.get_provider = MagicMock(return_value=prov)
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._active_sessions["sess"] = {"prov_1"}
+    controller._mark_analysis_activity()
+    controller._finalize_providers("sess")
+    assert "sess" not in controller._active_sessions
+
+    await asyncio.sleep(0.05)  # several monitor ticks while the finalize is still running
+    prov.unload_idle_models.assert_not_called()
+
+    release.set()
+    assert controller._idle_unload_task is not None
+    await asyncio.wait_for(controller._idle_unload_task, timeout=2.0)
+    prov.unload_idle_models.assert_awaited_once()
+
+
 # -- Edge cases --
 
 
