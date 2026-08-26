@@ -1187,6 +1187,40 @@ async def test_skipping_from_the_app_to_the_fed_item_is_followed(tmp_path: Path)
     assert session.item_for(TRACK_B) is fed
 
 
+async def test_a_skip_leaves_the_outgoing_stream_nothing_to_report(tmp_path: Path) -> None:
+    """A jump Music Assistant asked for cuts the outgoing item, which is not starving."""
+    session = _make_session(tmp_path)
+    item = session._open_channel(TRACK_A)
+    item.duration_ms = 200_000
+    item.playing_seen = True
+    await session._observe_current(TRACK_A, 200_000, track_changed=True)
+    item.observe_position(20_000)
+    fed = _feed(session, TRACK_B)
+    # what skip_to arms before telling the engine to jump
+    session._discard_until = fed
+
+    await session._observe_current(TRACK_B, 180_000, track_changed=True)
+    assert session.current is fed
+    assert item.superseded
+    await session.validate_item(item)
+
+
+async def test_a_boundary_the_engine_drove_is_still_judged(tmp_path: Path) -> None:
+    """Nobody asked the engine to leave this item, so what it delivered still counts."""
+    session = _make_session(tmp_path)
+    item = session._open_channel(TRACK_A)
+    item.duration_ms = 200_000
+    item.playing_seen = True
+    await session._observe_current(TRACK_A, 200_000, track_changed=True)
+    item.observe_position(20_000)
+    _feed(session, TRACK_B)
+
+    await session._observe_current(TRACK_B, 180_000, track_changed=True)
+    assert item.superseded is False
+    with pytest.raises(AudioError, match="incomplete"):
+        await session.validate_item(item)
+
+
 async def test_a_takeover_snapshot_stops_pinning_volume_and_options(tmp_path: Path) -> None:
     """Once the app has the session, the rest of its snapshot must not reach the daemon."""
     session = _make_session(tmp_path)
@@ -2123,6 +2157,41 @@ async def test_a_duration_less_item_is_not_judged(tmp_path: Path) -> None:
     await session.validate_item(item)
 
 
+async def test_a_superseded_item_is_not_judged_incomplete(tmp_path: Path) -> None:
+    """A channel cut part-way is short on purpose, so it is no evidence of starving."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.playing_seen = True
+    item.duration_ms = 200_000
+    item.last_position_ms = 30_000
+    item.close(superseded=True)
+    await session.validate_item(item)
+
+
+async def test_a_superseded_item_that_never_played_is_still_rejected(tmp_path: Path) -> None:
+    """Cutting a channel excuses a short delivery, not one that carried nothing."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 200_000
+    item.close(superseded=True)
+    with pytest.raises(AudioError, match="never started playing"):
+        await session.validate_item(item)
+
+
+async def test_an_item_the_engine_moved_on_from_keeps_its_verdict(tmp_path: Path) -> None:
+    """A later teardown must not excuse a channel the engine already starved."""
+    session = _make_session(tmp_path)
+    item = session._open_channel(TRACK_A)
+    item.playing_seen = True
+    item.duration_ms = 200_000
+    item.last_position_ms = 30_000
+    # the boundary the engine drove, with the teardown following behind it
+    item.close()
+    await session.stop()
+    with pytest.raises(AudioError, match="incomplete"):
+        await session.validate_item(item)
+
+
 def test_an_unread_session_expires(tmp_path: Path) -> None:
     """A session no item stream reads from is ended so its daemon does not linger."""
     session = _make_session(tmp_path)
@@ -2228,6 +2297,20 @@ async def test_a_cancelled_teardown_still_closes_the_daemon(tmp_path: Path) -> N
     assert session._sink is None
     proc.close.assert_awaited()
     sink.unload.assert_awaited()
+
+
+async def test_a_teardown_leaves_the_running_stream_nothing_to_report(tmp_path: Path) -> None:
+    """Stopping the session cuts the item being played; that is not a starved item."""
+    session = _make_session(tmp_path)
+    item = session._current = session._open_channel(TRACK_A)
+    item.started.set()
+    item.duration_ms = 260_000
+    item.playing_seen = True
+    item.observe_position(30_000)
+    await session.stop()
+
+    assert item.superseded
+    await session.validate_item(item)
 
 
 def test_a_failed_session_is_torn_down(tmp_path: Path) -> None:
@@ -2752,6 +2835,30 @@ async def test_seeking_the_playing_item_keeps_the_session(tmp_path: Path) -> Non
     # the outgoing channel is closed, which is what ends the stream reading it
     assert playing._closed
     _client_of(session).seek.assert_awaited_once_with(120_000, await_result=True)
+
+
+async def test_a_seek_leaves_the_outgoing_stream_nothing_to_report(tmp_path: Path) -> None:
+    """
+    The superseded channel validates clean, so an ordinary seek stays out of the log.
+
+    Its stream is still attached and validates the channel when it ends, and the
+    engine is nowhere near the end of an item being seeked away from.
+    """
+    session = _make_session(tmp_path)
+    playing = _streamed(session)
+    playing.duration_ms = 260_000
+    playing.playing_seen = True
+    playing.observe_position(30_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    await session.seek_current(TRACK_A, 120_000)
+    playing.release()
+
+    assert playing.superseded
+    await session.validate_item(playing)
 
 
 async def test_a_seek_of_the_playing_item_is_sent_only_once(tmp_path: Path) -> None:
