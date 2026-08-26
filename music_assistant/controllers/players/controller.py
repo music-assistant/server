@@ -4411,8 +4411,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         prev_source = player.state.active_source
         if prev_source and source != prev_source:
             with suppress(PlayerCommandFailed, RuntimeError):
-                # just try to stop (regardless of state)
-                async with self.wait_for_player_update(player_id, timeout=5):
+                # just try to stop (regardless of state) and let it settle, so the
+                # new source does not race the teardown. A player that already
+                # reports idle has nothing to tear down and does not wait at all.
+                async with self.wait_for_player_update(
+                    player_id,
+                    attribute_name="playback_state",
+                    attribute_value=PlaybackState.IDLE,
+                    timeout=5,
+                ):
                     await self._handle_cmd_stop(player_id)
         # an audio source uri selects the live source itself, which plays on the
         # player while its queue keeps its own items and goes inactive
