@@ -383,7 +383,9 @@ class YandexYnisonProvider(PluginProvider):
         self._on_unload_callbacks.append(
             self.mass.subscribe(
                 self._on_connected_player_event,
-                (EventType.PLAYER_ADDED, EventType.PLAYER_CONFIG_UPDATED),
+                # PLAYER_UPDATED covers provider-originated renames; the handler
+                # no-ops unless the display name actually changed
+                (EventType.PLAYER_ADDED, EventType.PLAYER_CONFIG_UPDATED, EventType.PLAYER_UPDATED),
                 id_filter=self._default_player_id,
             )
         )
