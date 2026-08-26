@@ -41,7 +41,6 @@ from .constants import (
     AIRPLAY_VOLUME_MUTE,
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
-    CONF_IGNORE_VOLUME,
     CONF_PASSWORD_INVALID,
     CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
@@ -1049,10 +1048,6 @@ class AirPlayProvider(PlayerProvider):
                 parent_player = player
 
             player_id = player.player_id
-            ignore_volume_report = (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
-                or player.device_info.manufacturer.lower() == "apple"
-            )
             if path == "/ctrl-int/1/nextitem":
                 self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
@@ -1089,7 +1084,7 @@ class AirPlayProvider(PlayerProvider):
                         player_id,
                         task_id=f"debounced_pause_{player_id}",
                     )
-            elif "dmcp.device-volume=" in path and not ignore_volume_report:
+            elif "dmcp.device-volume=" in path and not player.ignore_volume_reports:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
                 # In case of a small rounding difference, we ignore this,

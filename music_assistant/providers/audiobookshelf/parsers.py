@@ -229,7 +229,7 @@ def parse_podcast_episode(
 
     release_date: datetime | None = None
     if episode.published_at is not None:
-        position = -episode.published_at
+        position = episode.published_at
         # abs published_at is ms epoch; leave the date unset if it is out of range
         with suppress(ValueError, OverflowError, OSError):
             release_date = from_utc_timestamp(episode.published_at / 1000)

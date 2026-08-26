@@ -101,10 +101,8 @@ PA_INVALID_INDEX: Final = 0xFFFFFFFF
 #   60 dB   0.001      ~6.908     -18 dB      consumer headphones / desktop speakers
 #   70 dB   0.000316   ~8.059     -21 dB      high-dynamic-range hi-fi systems
 #
-# Used both for PA hardware volume (PAVolumeController.set_sink_volume, after
-# a cube-root step to counteract PA's own cubic volume curve) and for the
-# software PCM-scaling fallback path in local_audio, so the same slider
-# position sounds the same regardless of which volume-control mode is active.
+# Used for PA hardware volume (PAVolumeController.set_sink_volume), after a
+# cube-root step to counteract PA's own cubic volume curve.
 _TAPER_A: Final = 0.01  # 10**(-40/20) — 40dB range, suits receiver/outdoor setups
 # _TAPER_A: Final = 0.003162  # 10**(-50/20) — 50dB range
 # _TAPER_A: Final = 0.001     # 10**(-60/20) — 60dB range, suits headphones/desktop

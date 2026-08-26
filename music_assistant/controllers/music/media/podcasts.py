@@ -176,6 +176,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
         episode = await prov.get_podcast_episode(item_id)
+        await self._restore_resume_position(episode, prov.instance_id)
         await self._restore_probed_duration(episode)
         return episode
 
@@ -409,6 +410,45 @@ class PodcastsController(MediaControllerBase[Podcast]):
             return
         if probed_duration := await get_probed_duration(self.mass, uri):
             episode.duration = probed_duration
+
+    async def _restore_resume_position(
+        self, episode: PodcastEpisode, provider_instance_id: str
+    ) -> None:
+        """
+        Fill in resume position from the playlog for a single episode.
+
+        Skipped when the episode already has resume info set by the provider.
+
+        :param episode: The episode to enrich with resume info.
+        :param provider_instance_id: The provider instance the episode belongs to.
+        """
+        if episode.fully_played is not None or episode.resume_position_ms:
+            return
+        user: User | None = None
+        if session_user := get_current_user():
+            user = session_user
+        elif provider_user := await self.mass.music._get_user_for_provider(
+            provider_mappings_or_instance_id=provider_instance_id
+        ):
+            user = provider_user
+        match: dict[str, Any] = {
+            "provider": provider_instance_id,
+            "media_type": MediaType.PODCAST_EPISODE,
+            "item_id": episode.item_id,
+        }
+        if user is not None:
+            match["userid"] = user.user_id
+        # without a userid filter several users can hold a row, the newest one wins
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_PLAYLOG, match=match, order_by="timestamp DESC", limit=1
+        )
+        row = rows[0] if rows else None
+        if row is None:
+            return
+        if row["seconds_played"]:
+            episode.resume_position_ms = int(row["seconds_played"] * 1000)
+        if row["fully_played"] is not None:
+            episode.fully_played = bool(row["fully_played"])
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PodcastSummary:
         """Parse a raw summary db row into a PodcastSummary object."""

@@ -144,7 +144,7 @@ class _FakePluginProvider:
 
     def __init__(self, audio_source: AudioSource) -> None:
         self._audio_source = audio_source
-        self._in_use_by_queue: str | None = None
+        self._in_use_by_player: str | None = None
         self._active_session_id: str | None = None
         self.control_calls: list[tuple[SourceControl, int | None]] = []
         self.selected_calls: list[tuple[str, str]] = []
@@ -175,18 +175,18 @@ class _FakePluginProvider:
         # Snapshot BOTH the queue id and the session id at stream start. The
         # queue-id-only guard is unsafe for same-queue reconnects: a fresh
         # on_source_selected refreshes _active_session_id without changing
-        # _in_use_by_queue, so the prior generator's teardown would otherwise
+        # _in_use_by_player, so the prior generator's teardown would otherwise
         # clobber the new session's claim.
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         captured_session_id = self._active_session_id
         try:
             yield b"\x00" * 4096
         finally:
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
 
     async def on_source_control(
         self,
@@ -204,7 +204,7 @@ class _FakePluginProvider:
         self.selected_calls.append((source_id, player_id))
         # Claim ownership for this queue. Overwriting any prior claim is
         # intentional — that is exactly how a cross-queue handoff works.
-        self._in_use_by_queue = queue_id
+        self._in_use_by_player = queue_id
         # Record this request's session id so a later on_source_unselected can
         # reject stale callbacks from superseded same-queue requests.
         self._active_session_id = stream_session_id
@@ -219,8 +219,8 @@ class _FakePluginProvider:
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
+        if self._in_use_by_player == queue_id:
+            self._in_use_by_player = None
 
 
 # -------------------------------------------------------------------- contract
@@ -249,19 +249,19 @@ class TestAudioSourceContract:
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.stream_type == StreamType.CUSTOM
         assert sd.stream_metadata is not None
-        assert prov._in_use_by_queue is None
+        assert prov._in_use_by_player is None
         # Calling it again from a different queue must also be side-effect-free
         # — no busy raise, no claim — so preload from any queue is safe.
         sd2 = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd2.media_type == MediaType.AUDIO_SOURCE
-        assert prov._in_use_by_queue is None
+        assert prov._in_use_by_player is None
 
     @pytest.mark.asyncio
     async def test_on_source_selected_claims_lock(self) -> None:
         """on_source_selected is the single point where exclusive ownership is claimed."""
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         assert prov._active_session_id == "session_1"
 
     @pytest.mark.asyncio
@@ -280,7 +280,7 @@ class TestAudioSourceContract:
         gen = prov.get_audio_stream(sd)
         await gen.__anext__()
         await gen.aclose()
-        assert prov._in_use_by_queue is None
+        assert prov._in_use_by_player is None
 
     @pytest.mark.asyncio
     async def test_on_source_control_records_action_and_value(self) -> None:
@@ -297,15 +297,15 @@ class TestAudioSourceContract:
     async def test_handoff_overwrites_prior_claim_in_on_source_selected(self) -> None:
         """A second on_source_selected from a different queue overwrites the claim."""
         # Handoff happens entirely inside on_source_selected: the new queue's
-        # call replaces _in_use_by_queue. get_stream_details is unaffected by
+        # call replaces _in_use_by_player. get_stream_details is unaffected by
         # the previous queue's state because it does not claim or check.
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         # Different queue selects the source (cross-queue handoff).
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
-        assert prov._in_use_by_queue == "queue_b"
+        assert prov._in_use_by_player == "queue_b"
         # get_stream_details for the new queue still succeeds — no busy raise.
         sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
@@ -317,7 +317,7 @@ class TestAudioSourceContract:
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         await prov.on_source_unselected("main", "queue_a", "session_1")
-        assert prov._in_use_by_queue is None
+        assert prov._in_use_by_player is None
         assert prov._active_session_id is None
 
     @pytest.mark.asyncio
@@ -331,10 +331,10 @@ class TestAudioSourceContract:
         # Handoff: B selects the source with a fresh session id, releasing A's claim
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
         await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
-        assert prov._in_use_by_queue == "queue_b"
+        assert prov._in_use_by_player == "queue_b"
         # Now queue A's late unselect (with the OLD session id) fires — must no-op
         await prov.on_source_unselected("main", "queue_a", "session_1")
-        assert prov._in_use_by_queue == "queue_b"
+        assert prov._in_use_by_player == "queue_b"
         assert prov._active_session_id == "session_2"
 
     @pytest.mark.asyncio
@@ -343,7 +343,7 @@ class TestAudioSourceContract:
         # Reviewer-flagged scenario: stream 1's generator close fires AFTER
         # stream 2 (a same-queue reconnect) has already called
         # on_source_selected with a fresh session id. Stream 1's queue id
-        # snapshot still matches _in_use_by_queue (same queue), so a
+        # snapshot still matches _in_use_by_player (same queue), so a
         # queue-id-only guard would clear the lock that now belongs to
         # stream 2. The session-id guard prevents this.
         prov = _FakePluginProvider(_audio_source())
@@ -355,11 +355,11 @@ class TestAudioSourceContract:
         # Same-queue reconnect arrives before stream 1's generator finishes
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
         # Lock is now claimed for session_2 (same queue id, refreshed session)
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         assert prov._active_session_id == "session_2"
         # Stream 1's generator now closes — its finally MUST NOT clear the lock
         await gen1.aclose()
-        post_release_queue: str | None = prov._in_use_by_queue
+        post_release_queue: str | None = prov._in_use_by_player
         post_release_session: str | None = prov._active_session_id
         assert post_release_queue == "queue_a"
         assert post_release_session == "session_2"
@@ -380,12 +380,12 @@ class TestAudioSourceContract:
         await prov.on_source_unselected("main", "queue_a", "session_1")
         # Read into a locally-typed var so mypy's literal narrowing doesn't
         # chain across the next await (which mutates the attribute it can't see).
-        post_release: str | None = prov._in_use_by_queue
+        post_release: str | None = prov._in_use_by_player
         assert post_release is None
         # Request 2 — same queue/player, no fresh get_stream_details (caller
         # has cached streamdetails). on_source_selected MUST re-claim.
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
-        post_reclaim_queue: str | None = prov._in_use_by_queue
+        post_reclaim_queue: str | None = prov._in_use_by_player
         post_reclaim_session: str | None = prov._active_session_id
         assert post_reclaim_queue == "queue_a"
         assert post_reclaim_session == "session_2"
@@ -404,16 +404,16 @@ class TestAudioSourceContract:
         # Queue A is actively streaming
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         # Queue B's preload fetches streamdetails — must NOT raise busy, must
         # NOT alter ownership.
         sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         # Queue B's actual stream request fires on_source_selected, which
         # takes over cleanly.
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
-        assert prov._in_use_by_queue == "queue_b"
+        assert prov._in_use_by_player == "queue_b"
 
     @pytest.mark.asyncio
     async def test_on_source_unselected_ignores_stale_callback_same_queue_reconnect(
@@ -432,20 +432,20 @@ class TestAudioSourceContract:
         # Same queue + same player → no handoff branch, just a fresh session id.
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
         # Lock stays held (same queue, same player); only session id rolled forward
-        assert prov._in_use_by_queue == "queue_a"
+        assert prov._in_use_by_player == "queue_a"
         assert prov._active_session_id == "session_2"
         # Now request 1's late finally fires with the stale session id — no-op
         await prov.on_source_unselected("main", "queue_a", "session_1")
         # Read into locally-typed vars so the previous literal narrowing
         # ("session_2") doesn't make mypy treat the post-release assertions
         # below as unreachable.
-        post_stale_queue: str | None = prov._in_use_by_queue
+        post_stale_queue: str | None = prov._in_use_by_player
         post_stale_session: str | None = prov._active_session_id
         assert post_stale_queue == "queue_a"
         assert post_stale_session == "session_2"
         # Request 2's finally then fires with the current session id — releases
         await prov.on_source_unselected("main", "queue_a", "session_2")
-        post_release_queue: str | None = prov._in_use_by_queue
+        post_release_queue: str | None = prov._in_use_by_player
         post_release_session: str | None = prov._active_session_id
         assert post_release_queue is None
         assert post_release_session is None
@@ -454,101 +454,13 @@ class TestAudioSourceContract:
 # ---------------------------------------------------------- active source helper
 
 
-class TestGetActiveAudioSource:
-    """Verify _get_active_audio_source resolves the active queue item."""
-
-    def test_returns_none_when_no_active_queue(
-        self,
-        controller: PlayerController,
-        player: MockPlayer,
-        mock_mass: MagicMock,
-    ) -> None:
-        """No active queue → no active AudioSource."""
-        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
-        assert controller._get_active_audio_source(player) is None
-
-    def test_returns_none_when_queue_item_is_not_audiosource(
-        self,
-        controller: PlayerController,
-        player: MockPlayer,
-        mock_mass: MagicMock,
-    ) -> None:
-        """Active queue with a non-AudioSource item → returns None."""
-        active_queue = MagicMock()
-        current_item = MagicMock()
-        media_item = MagicMock()
-        media_item.media_type = MediaType.TRACK
-        current_item.media_item = media_item
-        active_queue.current_item = current_item
-        controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
-
-        assert controller._get_active_audio_source(player) is None
-
-    def test_returns_tuple_when_audiosource_active(
-        self,
-        controller: PlayerController,
-        player: MockPlayer,
-        mock_mass: MagicMock,
-    ) -> None:
-        """Active AudioSource queue item → returns (AudioSource, PluginProvider)."""
-        from music_assistant_models.enums import ProviderFeature  # noqa: PLC0415
-
-        source = _audio_source()
-        # Use a MagicMock with spec=PluginProvider so the helper's isinstance
-        # check passes; _FakePluginProvider is duck-typed and would fail here.
-        # supported_features must include AUDIO_SOURCE — the helper rejects
-        # providers that no longer declare the feature.
-        plugin_prov = MagicMock(spec=PluginProvider)
-        plugin_prov.supported_features = {ProviderFeature.AUDIO_SOURCE}
-
-        active_queue = MagicMock()
-        current_item = MagicMock()
-        current_item.media_item = source
-        active_queue.current_item = current_item
-        controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
-        mock_mass.get_provider = MagicMock(return_value=plugin_prov)
-
-        result = controller._get_active_audio_source(player)
-        assert result is not None
-        returned_source, returned_prov = result
-        assert returned_source is source
-        assert returned_prov is plugin_prov
-
-    def test_returns_none_when_provider_no_longer_declares_audio_source(
-        self,
-        controller: PlayerController,
-        player: MockPlayer,
-        mock_mass: MagicMock,
-    ) -> None:
-        """Provider that dropped the AUDIO_SOURCE feature at runtime → returns None."""
-        source = _audio_source()
-        plugin_prov = MagicMock(spec=PluginProvider)
-        # Provider no longer declares AUDIO_SOURCE — could happen after a
-        # reload/reconfig while a queue item from the old config is still live.
-        plugin_prov.supported_features = set()
-
-        active_queue = MagicMock()
-        current_item = MagicMock()
-        current_item.media_item = source
-        active_queue.current_item = current_item
-        controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
-        mock_mass.get_provider = MagicMock(return_value=plugin_prov)
-
-        # Don't dispatch on_source_control / on_volume_change to a provider
-        # that didn't opt in to the feature.
-        assert controller._get_active_audio_source(player) is None
-
-
-# ------------------------------------------------------------ transport redirect
-
-
 class TestTransportCommandsRedirectToQueue:
     """
-    players/cmd next/previous/seek always hand off to the queue controller.
+    players/cmd next/previous/seek hand off to the queue controller.
 
-    The queue controller owns AudioSource transport delegation (gated on the
-    per-action capability flags), so the player layer carries no proxy of its
-    own — the redirect below is what routes an active AudioSource to its plugin.
+    With no live source playing, the queue is what the player is playing, so the
+    command is its business. A live source takes the command first — see
+    tests/controllers/players/test_live_source_dispatch.py.
     """
 
     def _wire_active_queue(self, mock_mass: MagicMock) -> None:
@@ -604,143 +516,12 @@ class TestTransportCommandsRedirectToQueue:
 # ------------------------------------------------------------- update_stream_metadata
 
 
-class TestUpdateStreamMetadata:
-    """Verify the streams controller helper mutates streamdetails and signals."""
-
-    def test_no_op_when_queue_missing(self) -> None:
-        """If queue doesn't exist, the helper is a silent no-op."""
-        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
-
-        mass = MagicMock()
-        mass.player_queues.get = MagicMock(return_value=None)
-        mass.player_queues.signal_update = MagicMock()
-
-        # bypass __init__ to avoid wiring the full controller
-        controller = StreamsController.__new__(StreamsController)
-        controller.mass = mass
-        controller.logger = MagicMock()
-
-        controller.update_stream_metadata("missing", "main", "x", StreamMetadata(title="t"))
-        mass.player_queues.signal_update.assert_not_called()
-
-    def test_no_op_when_no_streamdetails(self) -> None:
-        """If the current queue item lacks streamdetails, the helper is a no-op."""
-        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
-
-        mass = MagicMock()
-        queue = MagicMock()
-        queue.current_item = MagicMock()
-        queue.current_item.streamdetails = None
-        mass.player_queues.get = MagicMock(return_value=queue)
-        mass.player_queues.signal_update = MagicMock()
-
-        controller = StreamsController.__new__(StreamsController)
-        controller.mass = mass
-        controller.logger = MagicMock()
-
-        controller.update_stream_metadata("q1", "main", "x", StreamMetadata(title="t"))
-        mass.player_queues.signal_update.assert_not_called()
-
-    def test_writes_metadata_and_signals_queue(self) -> None:
-        """When streamdetails matches, the helper mutates and signals the queue update."""
-        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
-
-        mass = MagicMock()
-        sd = StreamDetails(
-            provider="x",
-            item_id="y",
-            audio_format=_audio_format(),
-            media_type=MediaType.AUDIO_SOURCE,
-            stream_type=StreamType.CUSTOM,
-        )
-        queue = MagicMock()
-        queue.current_item = MagicMock()
-        queue.current_item.streamdetails = sd
-        mass.player_queues.get = MagicMock(return_value=queue)
-        mass.player_queues.signal_update = MagicMock()
-
-        controller = StreamsController.__new__(StreamsController)
-        controller.mass = mass
-        controller.logger = MagicMock()
-
-        new_meta = StreamMetadata(title="Now Playing")
-        controller.update_stream_metadata("q1", "y", "x", new_meta)
-
-        assert sd.stream_metadata is new_meta
-        assert sd.stream_metadata_last_updated is not None
-        mass.player_queues.signal_update.assert_called_once_with("q1")
-
-    def test_rejects_when_current_item_is_not_audio_source(self) -> None:
-        """A late metadata callback must not stamp over a track/radio item."""
-        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
-
-        mass = MagicMock()
-        sd = StreamDetails(
-            provider="x",
-            item_id="y",
-            audio_format=_audio_format(),
-            media_type=MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-        )
-        queue = MagicMock()
-        queue.current_item = MagicMock()
-        queue.current_item.streamdetails = sd
-        mass.player_queues.get = MagicMock(return_value=queue)
-        mass.player_queues.signal_update = MagicMock()
-
-        controller = StreamsController.__new__(StreamsController)
-        controller.mass = mass
-        controller.logger = MagicMock()
-
-        controller.update_stream_metadata("q1", "y", "x", StreamMetadata(title="stale"))
-        assert sd.stream_metadata is None
-        mass.player_queues.signal_update.assert_not_called()
-
-    def test_rejects_when_source_id_or_provider_mismatches(self) -> None:
-        """A stale callback from a different source/provider must not overwrite."""
-        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
-
-        mass = MagicMock()
-        sd = StreamDetails(
-            provider="provider_a",
-            item_id="source_a",
-            audio_format=_audio_format(),
-            media_type=MediaType.AUDIO_SOURCE,
-            stream_type=StreamType.CUSTOM,
-        )
-        queue = MagicMock()
-        queue.current_item = MagicMock()
-        queue.current_item.streamdetails = sd
-        mass.player_queues.get = MagicMock(return_value=queue)
-        mass.player_queues.signal_update = MagicMock()
-
-        controller = StreamsController.__new__(StreamsController)
-        controller.mass = mass
-        controller.logger = MagicMock()
-
-        # Wrong provider
-        controller.update_stream_metadata(
-            "q1", "source_a", "provider_b", StreamMetadata(title="stale")
-        )
-        assert sd.stream_metadata is None
-
-        # Wrong source_id
-        controller.update_stream_metadata(
-            "q1", "source_b", "provider_a", StreamMetadata(title="stale")
-        )
-        assert sd.stream_metadata is None
-
-        mass.player_queues.signal_update.assert_not_called()
-
-
-# ----------------------------------------------- elapsed_time override
-
-
-def _make_audio_source_queue(
+def _make_audio_source_session(
     elapsed_time: int | None,
     elapsed_time_last_updated: float | None = None,
+    player_id: str = "player_1",
 ) -> MagicMock:
-    """Build a queue mock whose current item carries AudioSource streamdetails."""
+    """Build a session mock whose live source reports the given position."""
     sd = StreamDetails(
         provider="fake_plugin",
         item_id="main",
@@ -748,27 +529,25 @@ def _make_audio_source_queue(
         media_type=MediaType.AUDIO_SOURCE,
         stream_type=StreamType.CUSTOM,
     )
-    sd.stream_metadata = StreamMetadata(title="Live Track")
-    sd.stream_metadata.elapsed_time = elapsed_time
-    sd.stream_metadata.elapsed_time_last_updated = elapsed_time_last_updated
-    current_item = MagicMock()
-    current_item.streamdetails = sd
-    queue = MagicMock()
-    queue.current_item = current_item
-    return queue
+    session = MagicMock()
+    session.player_id = player_id
+    session.streamdetails = sd
+    session.source_uri = "fake_plugin://audio_source/main"
+    session.source.image = None
+    session.stream_metadata = StreamMetadata(title="Live Track")
+    session.stream_metadata.elapsed_time = elapsed_time
+    session.stream_metadata.elapsed_time_last_updated = elapsed_time_last_updated
+    return session
 
 
 class TestAudioSourceElapsedTimeOverride:
     """
-    Verify PlayerState.elapsed_time prefers AudioSource stream_metadata.
+    Verify PlayerState.elapsed_time prefers what the live source reports.
 
-    This pins the behavior of the old PluginSource elapsed_time override
-    (test_plugin_source_elapsed_time.py, deleted in the refactor) against
-    the new model: streamdetails.stream_metadata on the active queue item.
     The override is load-bearing — player.state.corrected_elapsed_time is
     consumed by the queue controller's resume logic and several player
     providers; without it those flows would run against the byte-consumed
-    clock and lose upstream seeks / pause-resume on AudioSources.
+    clock and lose upstream seeks / pause-resume on a live source.
     """
 
     def test_audio_source_elapsed_time_preferred_over_player(
@@ -786,8 +565,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=42)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         player.update_state(signal_event=False)
 
@@ -809,8 +588,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=None)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         player.update_state(signal_event=False)
 
@@ -840,8 +619,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player, "airplay_1": protocol_player}
 
-        queue = _make_audio_source_queue(elapsed_time=42)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         protocol_player.update_state(signal_event=False)
         # refresh: the mocked queue/protocol player are cross-source state and the
@@ -850,6 +629,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         # The override is layered AFTER protocol/sync resolution, so it wins
         assert player.state.elapsed_time == 42
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 42
 
     def test_audio_source_elapsed_time_last_updated_fallback(
         self,
@@ -867,8 +648,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         controller._players = {"player_1": player}
 
-        queue = _make_audio_source_queue(elapsed_time=42, elapsed_time_last_updated=None)
-        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        session = _make_audio_source_session(elapsed_time=42, elapsed_time_last_updated=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
 
         before = time.time()
         player.update_state(signal_event=False)
@@ -879,6 +660,43 @@ class TestAudioSourceElapsedTimeOverride:
         assert player.state.elapsed_time_last_updated is not None
         assert player.state.elapsed_time_last_updated >= before
         assert player.state.elapsed_time_last_updated <= after
+
+    def test_audio_source_media_position_follows_the_player(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """A source reporting no position of its own reports the player's own position."""
+        protocol_player = MockPlayer(
+            provider, "airplay_1", "AirPlay", player_type=PlayerType.PROTOCOL
+        )
+        protocol_player._attr_playback_state = PlaybackState.PLAYING
+        protocol_player._attr_elapsed_time = 5.0
+        protocol_player._attr_elapsed_time_last_updated = time.time()
+        # the owner's own clock is stale: the audio is rendered by the protocol player
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 8.0
+        player._attr_elapsed_time_last_updated = time.time()
+        player._attr_active_source = "player_1"
+        player.set_active_output_protocol("airplay_1")
+
+        controller._players = {"player_1": player, "airplay_1": protocol_player}
+
+        session = _make_audio_source_session(elapsed_time=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+
+        protocol_player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+
+        assert player.state.current_media is not None
+        assert player.state.elapsed_time == 5.0
+        assert player.state.current_media.elapsed_time == 5
+        assert (
+            player.state.current_media.elapsed_time_last_updated
+            == player.state.elapsed_time_last_updated
+        )
 
 
 # ----------------------------------------------- silence-keepalive wrapper
@@ -947,6 +765,137 @@ class TestAudioSourceSilenceKeepalive:
             )
         ]
         assert chunks == [b"one"]
+
+    @pytest.mark.asyncio
+    async def test_propagates_inner_error(self) -> None:
+        """An error from the source generator reaches the stream consumer."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise RuntimeError("source failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format())
+        assert await anext(stream) == b"one"
+        with pytest.raises(RuntimeError, match="source failed"):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_completes(self) -> None:
+        """Cancelling the wrapper also closes a source blocked on a full queue."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+        source_closed = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                source_closed.set()
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        await asyncio.wait_for(stream.aclose(), timeout=1)
+
+        assert source_closed.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_propagates_cleanup_error(self) -> None:
+        """Source cleanup errors propagate without blocking wrapper cancellation."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                raise RuntimeError("cleanup failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await asyncio.wait_for(stream.aclose(), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_source_cancelled_error_completes(self) -> None:
+        """A source-raised cancellation cleanly ends the stream."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise asyncio.CancelledError
+
+        chunks = [
+            chunk async for chunk in audio_source_silence_keepalive(_inner(), _audio_format())
+        ]
+        assert chunks == [b"one"]
+
+    @pytest.mark.asyncio
+    async def test_custom_audio_source_path_applies_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CUSTOM AudioSources are wrapped using the format their bytes arrive in."""
+        decoded_format = _audio_format()
+        wrapped_formats: list[AudioFormat] = []
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"audio"
+
+        async def _keepalive(
+            inner: AsyncGenerator[bytes], pcm_format: AudioFormat
+        ) -> AsyncGenerator[bytes]:
+            wrapped_formats.append(pcm_format)
+            async for chunk in inner:
+                yield chunk
+
+        monkeypatch.setattr(
+            "music_assistant.controllers.streams.audio.audio_source_silence_keepalive",
+            _keepalive,
+        )
+        provider = MagicMock()
+        provider.available = True
+        provider.get_audio_stream.return_value = _inner()
+        mass = MagicMock()
+        mass.get_provider.return_value = provider
+        controller = StreamsAudio(mass)
+        streamdetails = StreamDetails(
+            provider="fake_plugin",
+            item_id="main",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+            decoded_audio_format=decoded_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+        )
+
+        source, seek_position, extra_input_args = await controller._resolve_media_stream_source(
+            streamdetails, seek_position=0, extra_input_args=[]
+        )
+
+        assert not isinstance(source, str)
+        assert [chunk async for chunk in source] == [b"audio"]
+        assert wrapped_formats == [decoded_format]
+        assert seek_position == 0
+        assert extra_input_args == []
 
 
 class TestAudioSourceLibraryRejection:

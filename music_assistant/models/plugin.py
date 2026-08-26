@@ -109,10 +109,11 @@ class PluginProvider(Provider):
 
         The returned StreamDetails uses the standard fields:
         ``stream_type`` selects between a custom async generator and a path
-        (e.g. NAMED_PIPE); ``audio_format`` describes the PCM format the source
-        emits; ``stream_metadata`` carries the initial live metadata (and can
-        be updated at runtime via ``mass.streams.update_stream_metadata(queue_id, ...)``,
-        the same channel ICY radio metadata uses).
+        (e.g. NAMED_PIPE); ``audio_format`` describes the source for display and
+        ``decoded_audio_format`` the PCM actually delivered, which a plugin that
+        decoded the source itself has to set; ``stream_metadata`` carries the initial
+        live metadata (and can be updated at runtime via
+        ``mass.players.update_source_metadata(player_id, ...)``).
 
         Silence-during-pause contract:
         the player consuming the stream needs a continuous byte flow or it will
@@ -143,8 +144,9 @@ class PluginProvider(Provider):
         Return the (custom) audio stream for an AudioSource.
 
         Will only be called when the StreamDetails returned by get_stream_details
-        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in
-        the PCM format declared by ``streamdetails.audio_format``.
+        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in the PCM
+        format declared by ``streamdetails.decoded_audio_format``, falling back to
+        ``audio_format`` when the plugin delivers its source untouched.
 
         Pausing is fine: when the upstream device is paused the plugin can stop
         yielding bytes. The server wraps this generator with a silence-keepalive
@@ -162,6 +164,22 @@ class PluginProvider(Provider):
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
 
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin normalizes the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin crossfades the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
     async def on_source_control(
         self,
         source_id: str,
@@ -172,11 +190,14 @@ class PluginProvider(Provider):
         Handle a playback control command for an active AudioSource.
 
         Called when the user (or an automation) issues a control command while
-        the active queue item is an AudioSource that supports the action:
-        PLAY/PAUSE dispatch from the player controller (gated on
-        ``can_play_pause``), NEXT/PREVIOUS/SEEK from the queue controller
-        (gated on ``can_next_previous`` / ``can_seek``) and SHUFFLE/REPEAT
-        from the queue controller for sources declaring ``queue_capabilities``.
+        this AudioSource is the live source on a player. The player controller
+        gates the transport actions on the flag the source declares for each:
+        ``can_play_pause`` for PLAY/PAUSE, ``can_seek`` for SEEK and
+        ``can_next_previous`` for NEXT/PREVIOUS. SHUFFLE/REPEAT are forwarded
+        whatever ``can_shuffle`` / ``can_repeat`` say, because only the session
+        knows whether its current content can be reordered — those flags tell
+        clients what to offer, and a source declaring them is expected to report
+        the resulting state back via ``mass.players.update_source_options``.
 
         :param source_id: The AudioSource.item_id the command applies to.
         :param action: The control action to perform.
@@ -190,7 +211,7 @@ class PluginProvider(Provider):
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """
@@ -211,8 +232,13 @@ class PluginProvider(Provider):
         prior request's teardown — see ``on_source_unselected`` for details.
 
         :param source_id: The AudioSource.item_id that was selected.
-        :param player_id: The player that will receive the stream.
-        :param queue_id: The queue that owns this playback session.
+        :param player_id: The player the audio is served to. For a source playing on
+            a player this is the owner itself; only direct-PCM consumers and the
+            legacy queue-item path pass a different (protocol or group member) player.
+        :param owner_player_id: The player that owns this playback session. Prefer this
+            for anything you store: it is the user-facing player and stays valid for
+            play_media and cmd_stop, where ``player_id`` can be an ephemeral protocol
+            bridge whose id is gone by the time you use it.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
@@ -221,7 +247,7 @@ class PluginProvider(Provider):
     async def on_source_unselected(
         self,
         source_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """
@@ -236,65 +262,36 @@ class PluginProvider(Provider):
         event.
 
         Implementations MUST guard on ``stream_session_id`` matching the value
-        last set in ``on_source_selected``. A queue_id-only check is not
+        last set in ``on_source_selected``. A owner_player_id-only check is not
         sufficient: same-queue reconnects (player drops + reopens the same
         stream URL before the original request's finally fires) would
         otherwise let the old request's late callback clear the live claim of
         the new stream, silently dropping metadata and volume sync.
 
         :param source_id: The AudioSource.item_id whose stream ended.
-        :param queue_id: The queue whose stream is being torn down.
+        :param owner_player_id: The player that owns the stream being torn down.
         :param stream_session_id: The token paired with ``on_source_selected``
             for this specific stream request. Ignore the callback if it does
             not match the currently stored active session id.
         """
 
-    async def on_source_removed(self, source_id: str, queue_id: str) -> None:
+    async def on_source_released(self, source_id: str, player_id: str) -> None:
         """
-        React to a queue dropping this AudioSource from its items.
+        React to a player letting go of this AudioSource.
 
-        Fired when the source leaves a queue that held it — whether or not it
-        was the one playing: the user cleared that queue, or started media that
-        took the source's place in it. Unlike ``on_source_unselected`` this is
-        not tied to a stream, so it also fires when the stream was already torn
-        down earlier (a paused source, for example) — the one moment where
-        nothing else tells the plugin that MA is done with the source. Override
-        to release state that must not outlive the queue, such as an upstream
-        session still pointing at MA.
+        Fired when the player stops playing the source for good: another source was
+        selected on it, it was deselected, or the player went away. Not fired when a
+        stream merely ends — a paused source keeps the player, and its stream is torn
+        down without the player being done with it. Override to release state that
+        must not outlive the player's use of the source, such as an upstream session
+        still pointing at Music Assistant.
 
-        Media that leaves the source among the queue's items does NOT fire
-        this, nor does starting that very same source again, nor handing the
-        queue to another player (see ``on_source_transferred``).
+        Guard on the player still being the one you hold: a source moving to another
+        player claims the new one before releasing the old, so this can arrive after
+        the source is already playing elsewhere.
 
-        May fire while a stream for this source is still being torn down, so
-        the release has to be safe to run alongside ``on_source_unselected``.
-
-        :param source_id: The AudioSource.item_id that was removed.
-        :param queue_id: The queue that dropped the source.
-        """
-
-    async def on_source_transferred(
-        self, source_id: str, from_queue_id: str, to_queue_id: str
-    ) -> None:
-        """
-        React to this AudioSource being handed over to another queue.
-
-        Fired for every live source a transferred queue held, whether or not it
-        was the one playing. A transfer of a *playing* source re-selects it on
-        the target by itself, but one that was paused or merely queued is moved
-        without a stream request, so this is the only signal that the source
-        changed hands. Override to re-point the queue the plugin tracks as its
-        owner, so later callbacks (this hook's ``on_source_removed`` sibling
-        included) arrive for the right queue.
-
-        Only long-lived ownership belongs here. Anything scoped to a stream —
-        an exclusive claim, the ``on_source_selected`` session id — must be
-        left alone: no stream exists on the target until it starts one, and
-        ``on_source_selected`` re-establishes those when it does.
-
-        :param source_id: The AudioSource.item_id that was transferred.
-        :param from_queue_id: The queue that gave the source up.
-        :param to_queue_id: The queue that took it over.
+        :param source_id: The AudioSource.item_id that was released.
+        :param player_id: The player that let it go.
         """
 
     async def on_volume_change(self, source_id: str, volume: int) -> None:

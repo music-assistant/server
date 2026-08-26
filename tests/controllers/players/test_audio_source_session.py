@@ -6,6 +6,7 @@ without any of it living in a queue item. Nothing produces a session yet, so
 these tests drive the mixin directly.
 """
 
+from typing import cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
@@ -106,12 +107,15 @@ def test_started_session_resolves_source_and_provider() -> None:
 def test_starting_a_second_session_replaces_the_first() -> None:
     """A player outputs one source at a time, so a new session replaces the old."""
     ctrl = _Controller(_plugin_provider())
-    ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
+    first = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
     second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("second"), PROVIDER_INSTANCE)
 
     current = ctrl.get_audio_source_session(PLAYER_ID)
     assert current is second
     assert current.source_id == "second"
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID, first.playback_session_id
+    )
 
 
 def test_ending_a_session_drops_and_returns_it() -> None:
@@ -120,53 +124,12 @@ def test_ending_a_session_drops_and_returns_it() -> None:
     session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
 
     assert ctrl._end_audio_source_session(PLAYER_ID) is session
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID, session.playback_session_id
+    )
     assert ctrl.get_audio_source_session(PLAYER_ID) is None
     # ending twice is harmless
     assert ctrl._end_audio_source_session(PLAYER_ID) is None
-
-
-def test_ending_a_session_by_stream_token_requires_a_match() -> None:
-    """A teardown scoped to a stream only ends the session holding that stream."""
-    ctrl = _Controller(_plugin_provider())
-    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    session.stream_session_id = "stream-a"
-
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-b") is None
-    assert ctrl.get_audio_source_session(PLAYER_ID) is session
-
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-a") is session
-    assert ctrl.get_audio_source_session(PLAYER_ID) is None
-
-
-def test_a_superseded_teardown_does_not_end_its_replacement() -> None:
-    """
-    A reconnect's late teardown must not drop the session that replaced it.
-
-    Replays the ordering the plugin contract calls out: the player drops and
-    reopens the stream, so the first request's teardown runs after the second
-    request has already claimed the player.
-    """
-    ctrl = _Controller(_plugin_provider())
-    first = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    first.stream_session_id = "stream-a"
-
-    # the player reconnects: a new stream claims the player before the old one tears down
-    second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    second.stream_session_id = "stream-b"
-
-    # ...and only now does the first request's finally block run
-    assert ctrl._end_audio_source_session(PLAYER_ID, "stream-a") is None
-    assert ctrl.get_audio_source_session(PLAYER_ID) is second
-
-
-def test_ending_a_session_without_a_token_is_unconditional() -> None:
-    """A deselect that is not scoped to a stream ends whatever is playing."""
-    ctrl = _Controller(_plugin_provider())
-    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
-    session.stream_session_id = "stream-a"
-
-    assert ctrl._end_audio_source_session(PLAYER_ID) is session
-    assert ctrl.get_audio_source_session(PLAYER_ID) is None
 
 
 def test_sessions_are_isolated_per_player() -> None:
@@ -275,18 +238,26 @@ def test_reconnecting_the_same_source_keeps_its_metadata() -> None:
     """
     ctrl = _Controller(_plugin_provider())
     source = _audio_source()
-    first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-a")
+    first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
+    audio_details = MagicMock()
+    first.active_source_audio = audio_details
+    first_session_id = first.playback_session_id
     ctrl.update_source_metadata(
         PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
     )
 
-    again = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE, "stream-b")
+    again = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
 
     assert again is first
-    assert again.stream_session_id == "stream-b"
     assert again.stream_metadata is not None
     assert again.stream_metadata.title == "Take Five"
     assert again.started_at == first.started_at
+    assert again.active_source_audio is audio_details
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID,
+        first_session_id,
+        preserve_details=True,
+    )
 
 
 def test_selecting_a_different_source_does_not_keep_the_old_metadata() -> None:

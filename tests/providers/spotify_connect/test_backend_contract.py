@@ -27,7 +27,14 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.providers.spotify_connect import provider as provider_mod
-from music_assistant.providers.spotify_connect.base import SpotifyConnectBackend
+from music_assistant.providers.spotify_connect.base import (
+    AUDIO_QUALITY_HIGH,
+    AUDIO_QUALITY_LOSSLESS,
+    AUDIO_QUALITY_NORMAL,
+    AUDIO_QUALITY_VERY_HIGH,
+    SpotifyConnectBackend,
+    spotify_source_audio_format,
+)
 from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
@@ -197,7 +204,7 @@ def _make_provider(
     provider._stream_metadata = StreamMetadata(title="Spotify Connect | Test Device")
     provider._audio_source = MagicMock()
     provider._audio_source.uri = _SOURCE_URI
-    provider._in_use_by_queue = in_use_by_queue
+    provider._in_use_by_player = in_use_by_queue
     provider._active_session_id = active_session_id
     provider._playing = playing
     provider._spotify_session_active = session_active
@@ -249,6 +256,28 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
 
     assert provider._playing is True
+    task = provider._pending_play_media_task
+    assert task is not None
+    await task
+    mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
+
+
+async def test_playing_before_session_active_fires_play_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Playback starts when 'playing' arrives before the session becomes active."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, mass = _make_provider(backend, active_player_id="player1")
+    _player_with_volume(mass, 40)
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.PLAYING))
+
+    pending_before_active = provider._pending_play_media_task
+    assert pending_before_active is None
+
+    await provider._handle_backend_event(BackendEvent(BackendEventType.SESSION_ACTIVE))
+
     task = provider._pending_play_media_task
     assert task is not None
     await task
@@ -327,7 +356,7 @@ async def test_metadata_event_updates_stream_metadata_and_pushes() -> None:
     assert provider._stream_metadata.elapsed_time == 5
     assert provider._last_context_uri == "spotify:playlist:ctx"
     assert provider._last_track_uri == "spotify:track:tr"
-    mass.streams.update_stream_metadata.assert_called_once_with(
+    mass.players.update_source_metadata.assert_called_once_with(
         "queue1", AUDIO_SOURCE_ID, _INSTANCE_ID, provider._stream_metadata
     )
 
@@ -396,7 +425,7 @@ async def test_session_inactive_stops_active_player() -> None:
     assert provider._spotify_session_active is False
     assert provider._playing is False
     assert provider._active_player_id is None
-    assert provider._in_use_by_queue is None
+    assert provider._in_use_by_player is None
     assert provider._active_session_id is None
     mass.players.cmd_stop.assert_called_once_with("player1")
 
@@ -414,7 +443,7 @@ async def test_stream_teardown_while_playing_releases_spotify() -> None:
 
     await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
 
-    assert provider._in_use_by_queue is None
+    assert provider._in_use_by_player is None
     assert provider._active_session_id is None
     assert backend.calls == [("deactivate", None)]
 
@@ -448,7 +477,7 @@ async def test_stale_stream_teardown_is_ignored() -> None:
 
     await provider.on_source_unselected(AUDIO_SOURCE_ID, "queue1", "sess1")
 
-    assert provider._in_use_by_queue == "queue1"
+    assert provider._in_use_by_player == "queue1"
     assert provider._active_session_id == "sess2"
     assert backend.calls == []
 
@@ -470,7 +499,7 @@ async def test_connection_lost_resets_session_without_stopping_players() -> None
     assert provider._playing is False
     # the claim survives a backend restart; only session state resets
     assert provider._active_player_id == "player1"
-    assert provider._in_use_by_queue == "queue1"
+    assert provider._in_use_by_player == "queue1"
     mass.players.cmd_stop.assert_not_called()
 
 
@@ -603,7 +632,7 @@ async def test_shuffle_control_refused_without_active_session() -> None:
     assert backend.calls == []
 
 
-async def test_options_changed_pushes_queue_options_to_the_claiming_queue() -> None:
+async def test_options_changed_pushes_options_to_the_claiming_player() -> None:
     """An OPTIONS_CHANGED event mirrors the session's shuffle/repeat to the active queue."""
     backend = QueueControlFakeBackend()
     provider, mass = _make_provider(backend, in_use_by_queue="queue1")
@@ -615,7 +644,7 @@ async def test_options_changed_pushes_queue_options_to_the_claiming_queue() -> N
         )
     )
 
-    mass.streams.update_source_queue_options.assert_called_once_with(
+    mass.players.update_source_options.assert_called_once_with(
         "queue1",
         AUDIO_SOURCE_ID,
         _INSTANCE_ID,
@@ -623,7 +652,7 @@ async def test_options_changed_pushes_queue_options_to_the_claiming_queue() -> N
         repeat_mode=RepeatMode.ALL,
     )
     # an options report is no reason to re-push the (unchanged) stream metadata
-    mass.streams.update_stream_metadata.assert_not_called()
+    mass.players.update_source_metadata.assert_not_called()
 
 
 async def test_options_changed_without_claiming_queue_pushes_nothing() -> None:
@@ -638,7 +667,7 @@ async def test_options_changed_without_claiming_queue_pushes_nothing() -> None:
         )
     )
 
-    mass.streams.update_source_queue_options.assert_not_called()
+    mass.players.update_source_options.assert_not_called()
     # the options are cached for the push that follows once a queue claims the source
     assert provider._last_playback_options == BackendPlaybackOptions(
         shuffle=True, repeat=RepeatMode.ALL
@@ -657,11 +686,11 @@ async def test_options_cached_before_claim_are_pushed_on_claim() -> None:
             options=BackendPlaybackOptions(shuffle=True, repeat=RepeatMode.ALL),
         )
     )
-    mass.streams.update_source_queue_options.assert_not_called()
+    mass.players.update_source_options.assert_not_called()
 
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
 
-    mass.streams.update_source_queue_options.assert_called_once_with(
+    mass.players.update_source_options.assert_called_once_with(
         "queue1",
         AUDIO_SOURCE_ID,
         _INSTANCE_ID,
@@ -701,46 +730,36 @@ async def test_queue_changed_event_is_ignored_for_now() -> None:
         )
     )
 
-    mass.streams.update_stream_metadata.assert_not_called()
-    mass.streams.update_source_queue_options.assert_not_called()
+    mass.players.update_source_metadata.assert_not_called()
+    mass.players.update_source_options.assert_not_called()
     # the context memo still applies: it piggybacks on every event type
     assert provider._last_context_uri == "spotify:playlist:ctx"
 
 
-def test_audio_source_declares_queue_capabilities_with_queue_control() -> None:
-    """A queue-control backend makes the AudioSource declare its queue capabilities."""
+def test_audio_source_declares_ordering_with_queue_control() -> None:
+    """A queue-control backend makes the AudioSource declare it orders its session."""
     backend = QueueControlFakeBackend()
     provider, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
     source = provider._build_audio_source()
 
-    caps = source.queue_capabilities
-    assert caps is not None
-    assert caps.provider_domain == "spotify"
-    assert caps.can_shuffle is True
-    assert caps.can_repeat is True
-    # the queue-view mirror and the play/enqueue redirect are not built yet,
-    # so those capabilities are not declared
-    assert caps.provides_queue_view is False
-    assert caps.playable_media_types == []
-    assert caps.enqueueable_media_types == []
-    assert caps.native_autoplay is False
-    assert caps.native_crossfade is False
-    assert caps.native_volume_normalization is False
+    assert source.can_shuffle is True
+    assert source.can_repeat is True
     # account verification arrives with the play redirect
     assert source.account_id is None
 
 
 def test_audio_source_stays_transport_only_without_queue_control() -> None:
-    """A transport-only backend leaves the AudioSource without queue capabilities."""
+    """A transport-only backend leaves the AudioSource unable to order itself."""
     backend = FakeBackend()
     provider, _mass = _make_provider(backend)
     provider.config.name = "Spotify Connect Test"
 
     source = provider._build_audio_source()
 
-    assert source.queue_capabilities is None
+    assert source.can_shuffle is False
+    assert source.can_repeat is False
 
 
 async def test_source_selected_takes_playback_back_via_backend() -> None:
@@ -760,7 +779,7 @@ async def test_source_selected_takes_playback_back_via_backend() -> None:
 
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto1", "queue1", "sess1")
 
-    assert provider._in_use_by_queue == "queue1"
+    assert provider._in_use_by_player == "queue1"
     assert provider._active_player_id == "queue1"
     assert provider._active_session_id == "sess1"
     assert backend.calls == [
@@ -811,6 +830,35 @@ async def test_go_librespot_stream_source_is_custom_with_nobuffer() -> None:
     assert source.stream_type is StreamType.CUSTOM
     assert source.path is None
     assert source.extra_input_args == ["-fflags", "nobuffer"]
+
+
+@pytest.mark.parametrize(
+    ("quality", "lossless", "codec", "bit_depth", "bit_rate"),
+    [
+        (AUDIO_QUALITY_LOSSLESS, True, ContentType.FLAC, 24, None),
+        # an engine or item that cannot be served losslessly keeps the tier's ceiling
+        (AUDIO_QUALITY_LOSSLESS, False, ContentType.VORBIS, 16, 320),
+        (AUDIO_QUALITY_VERY_HIGH, False, ContentType.VORBIS, 16, 320),
+        (AUDIO_QUALITY_HIGH, False, ContentType.VORBIS, 16, 160),
+        (AUDIO_QUALITY_NORMAL, False, ContentType.VORBIS, 16, 96),
+        ("future_tier", False, ContentType.VORBIS, 16, 320),
+    ],
+)
+def test_the_advertised_source_format_follows_the_tier(
+    quality: str,
+    lossless: bool,
+    codec: ContentType,
+    bit_depth: int,
+    bit_rate: int | None,
+) -> None:
+    """Every soloist/librespot engine advertises the tier it was configured with."""
+    fmt = spotify_source_audio_format(quality, lossless=lossless)
+
+    assert fmt.codec_type is codec
+    assert fmt.sample_rate == 44100
+    assert fmt.bit_depth == bit_depth
+    assert fmt.channels == 2
+    assert fmt.bit_rate == bit_rate
 
 
 def _make_backend() -> GoLibrespotBackend:
@@ -1037,7 +1085,7 @@ async def test_handoff_kick_cannot_release_the_session() -> None:
     await provider.on_source_selected(AUDIO_SOURCE_ID, "proto_new", "queue_new", "sess_new")
 
     assert ("deactivate", None) not in backend.calls
-    assert provider._in_use_by_queue == "queue_new"
+    assert provider._in_use_by_player == "queue_new"
     assert provider._active_session_id == "sess_new"
     assert provider._active_player_id == "queue_new"
     mass.players.cmd_stop.assert_awaited_once_with("queue_old")

@@ -8,13 +8,26 @@ from statistics import median
 from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.audio_processing import (
+    ActiveSourceAudioDetails,
+    AudioFidelity,
+    AudioQuality,
+)
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlaybackState,
+    VolumeNormalizationMode,
+)
+from music_assistant_models.media_items import AudioFormat, AudioSource
+from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 import music_assistant.models.player as player_module
+from music_assistant.controllers.players.audio_sources import AudioSourceSession
 from tests.common import MockPlayer, MockProvider
 
 
@@ -28,6 +41,7 @@ def mock_mass() -> MagicMock:
     )
     # no queue registered: current_media resolves from the player's native media
     mass.player_queues.get = MagicMock(return_value=None)
+    mass.players.get_audio_source_session = MagicMock(return_value=None)
     mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _player_id, volume: volume)
     return mass
 
@@ -403,16 +417,111 @@ class TestStreamMetadataPosition:
         assert player.state.current_media.elapsed_time == 300
         assert player.state.current_media.elapsed_time_last_updated == queue_anchor
 
-    def test_audio_source_position_matches_player_position(self, mock_mass: MagicMock) -> None:
-        """An upstream source position is reported identically on player and media level."""
+    def test_a_radio_station_keeps_its_own_position(self, mock_mass: MagicMock) -> None:
+        """
+        A radio station's position is untouched by the live-source override.
+
+        Radio is a queue item and always was: the override this replaced was gated on
+        the media type being an audio source, so radio never went through it. Pinned
+        here because the override lost that gate, and a station reporting the byte
+        clock instead of its stream position would be a regression with nothing to do
+        with external sources.
+        """
         metadata_anchor = time.time()
         player = self._playing_player(
             mock_mass,
+            metadata_elapsed_time=42,
+            metadata_last_updated=metadata_anchor,
+            queue_elapsed_time=999.0,
+            queue_last_updated=metadata_anchor - 30,
+            media_type=MediaType.RADIO,
+        )
+
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 42
+        assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+
+    def test_a_live_source_elsewhere_does_not_move_this_players_clock(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A source playing on another player has no say in this player's position.
+
+        Asserts the player-level clock, which is what the override writes - the
+        media-level position for a radio item comes from its stream metadata by a
+        different route, so it would not notice a leak.
+        """
+        anchor = time.time()
+        player = self._playing_player(
+            mock_mass,
+            metadata_elapsed_time=None,
+            metadata_last_updated=None,
+            queue_elapsed_time=0.0,
+            queue_last_updated=anchor,
+            media_type=MediaType.RADIO,
+        )
+        player._attr_elapsed_time = 123.0
+        player._attr_elapsed_time_last_updated = anchor
+        other = MagicMock()
+        other.stream_metadata.elapsed_time = 7
+        other.stream_metadata.elapsed_time_last_updated = anchor
+        mock_mass.players.get_audio_source_session = MagicMock(
+            side_effect=lambda pid: other if pid == "other_player" else None
+        )
+        player.update_state(signal_event=False)
+
+        assert player.state.elapsed_time == 123.0
+
+
+class TestLiveSourcePosition:
+    """The published position of a live external source playing on a player."""
+
+    def _player_with_source(
+        self,
+        mock_mass: MagicMock,
+        *,
+        metadata_elapsed_time: int | None,
+        metadata_last_updated: float | None,
+    ) -> MockPlayer:
+        """Build a playing player with a live source reporting its own position."""
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="main",
+                    provider_domain="spotify_connect",
+                    provider_instance="test_instance",
+                )
+            },
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            stream_metadata=StreamMetadata(
+                title="Live Track",
+                elapsed_time=metadata_elapsed_time,
+                elapsed_time_last_updated=metadata_last_updated,
+            ),
+        )
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+        provider = MockProvider("test_provider", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 300.0
+        player._attr_elapsed_time_last_updated = (metadata_last_updated or time.time()) - 30
+        player.update_state(signal_event=False)
+        return player
+
+    def test_source_position_matches_player_position(self, mock_mass: MagicMock) -> None:
+        """An upstream source position is reported identically on player and media level."""
+        metadata_anchor = time.time()
+        player = self._player_with_source(
+            mock_mass,
             metadata_elapsed_time=0,
             metadata_last_updated=metadata_anchor,
-            queue_elapsed_time=300.0,
-            queue_last_updated=metadata_anchor - 30,
-            media_type=MediaType.AUDIO_SOURCE,
         )
 
         assert player.state.current_media is not None
@@ -420,6 +529,130 @@ class TestStreamMetadataPosition:
         assert player.state.current_media.elapsed_time == 0
         assert player.state.elapsed_time_last_updated == metadata_anchor
         assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+
+    def test_source_without_a_position_falls_back_to_the_player(self, mock_mass: MagicMock) -> None:
+        """A source that reports no position leaves the player's own clock in charge."""
+        anchor = time.time()
+        player = self._player_with_source(
+            mock_mass,
+            metadata_elapsed_time=None,
+            metadata_last_updated=anchor,
+        )
+
+        assert player.state.elapsed_time == 300.0
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 300
+
+    def test_the_source_names_what_is_playing(self, mock_mass: MagicMock) -> None:
+        """The media on screen is the track the source reports, on the source's uri."""
+        player = self._player_with_source(
+            mock_mass, metadata_elapsed_time=12, metadata_last_updated=time.time()
+        )
+
+        media = player.state.current_media
+        assert media is not None
+        assert media.title == "Live Track"
+        assert media.media_type is MediaType.AUDIO_SOURCE
+        assert media.uri == "test_instance://audio_source/main"
+        # the owner of the session, which its stream url is keyed on
+        assert media.source_id == "player_1"
+        # no queue item: this is not playing out of a queue
+        assert media.queue_item_id is None
+
+
+class TestLiveSourceAudioDetails:
+    """Audio details published for a live external source."""
+
+    @staticmethod
+    def _details(quality: AudioQuality = AudioQuality.LOSSLESS) -> ActiveSourceAudioDetails:
+        """Return source audio details with a known lossless input."""
+        return ActiveSourceAudioDetails(
+            input_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
+            input_fidelity=AudioFidelity(quality=quality),
+            crossfade_mode=CrossfadeMode.SOURCE,
+            volume_normalization_mode=VolumeNormalizationMode.SOURCE,
+        )
+
+    def test_source_audio_details_reach_player_state(self, mock_mass: MagicMock) -> None:
+        """The source session's audio snapshot is part of the published player state."""
+        details = self._details()
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=details,
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+
+        player.update_state(signal_event=False)
+
+        assert player.state.active_source_audio == details
+
+    def test_replacing_source_audio_details_signals_player_update(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Replacing the snapshot is detected even when no player-owned input changed."""
+        first = self._details()
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=first,
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+        player.update_state(signal_event=False)
+        mock_mass.players.signal_player_state_update.reset_mock()
+        session.active_source_audio = self._details(AudioQuality.STANDARD)
+
+        player.mark_state_dirty()
+        player.update_state()
+
+        assert player.state.active_source_audio is not None
+        assert player.state.active_source_audio.input_fidelity.quality is AudioQuality.STANDARD
+        mock_mass.players.signal_player_state_update.assert_called_once()
+
+    def test_ending_source_session_clears_player_audio_details(self, mock_mass: MagicMock) -> None:
+        """A player no longer owning the source publishes no source audio snapshot."""
+        source = AudioSource(
+            item_id="main",
+            provider="test_instance",
+            name="Spotify Connect",
+            provider_mappings=set(),
+        )
+        session = AudioSourceSession(
+            player_id="player_1",
+            source=source,
+            provider_instance_id="test_instance",
+            active_source_audio=self._details(),
+        )
+        mock_mass.players.get_audio_source_session.return_value = session
+        player = MockPlayer(MockProvider("test_provider", mass=mock_mass), "player_1", "Player")
+        player.update_state(signal_event=False)
+        mock_mass.players.get_audio_source_session.return_value = None
+
+        player.mark_state_dirty()
+        player.update_state(signal_event=False)
+
+        assert player.state.active_source_audio is None
 
 
 class TestMediaUpdatedCallback:

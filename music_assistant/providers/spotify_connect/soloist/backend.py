@@ -16,6 +16,7 @@ import asyncio
 import re
 from asyncio import FIRST_COMPLETED
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -32,11 +33,9 @@ from music_assistant.helpers.pulse_capture import (
     get_pulse_capture_server,
 )
 from music_assistant.providers.spotify_connect.base import (
-    AUDIO_QUALITY_HIGH,
     AUDIO_QUALITY_LOSSLESS,
-    AUDIO_QUALITY_NORMAL,
-    AUDIO_QUALITY_VERY_HIGH,
     SpotifyConnectBackend,
+    spotify_source_audio_format,
 )
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
@@ -49,6 +48,7 @@ from music_assistant.providers.spotify_connect.models import (
     QueueEntrySource,
 )
 
+from .prefs import write_audio_prefs
 from .runtime import (
     EXIT_CODE_BUILD_EXPIRED,
     BuildExpiredError,
@@ -105,42 +105,8 @@ BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
 # of on the (side-effect-free) stream request.
 GENERATION_WATCH_INTERVAL_S: Final = 5
 
-# The classic desktop-client prefs keys (bare key=value lines) through which the
-# engine's audio behavior is controlled. The per-user prefs override the global
-# prefs per key, so both stores are (re)written before every daemon spawn.
-# NOTE: audio.crossfade.time_v2 is in MILLISECONDS; sub-second values silently
-# disable crossfade (verified empirically), so the key is only written when
-# crossfade is enabled (>= 1000 ms).
-_PREF_CROSSFADE: Final = "audio.crossfade_v2"
-_PREF_CROSSFADE_TIME: Final = "audio.crossfade.time_v2"
-_PREF_NORMALIZE: Final = "audio.normalize_v2"
-# The engine reads the metered variant on a metered connection and the
-# non-metered one otherwise; both are written so the tier holds either way.
-# The "migrated" marker is what makes the engine honor the non-metered key
-# instead of deriving it once from the metered one.
-_PREF_QUALITY: Final = "audio.play_bitrate_enumeration"
-_PREF_QUALITY_NON_METERED: Final = "audio.play_bitrate_non_metered_enumeration"
-_PREF_QUALITY_MIGRATED: Final = "audio.play_bitrate_non_metered_migrated"
-_MANAGED_PREFS: Final = (
-    _PREF_CROSSFADE,
-    _PREF_CROSSFADE_TIME,
-    _PREF_NORMALIZE,
-    _PREF_QUALITY,
-    _PREF_QUALITY_NON_METERED,
-    _PREF_QUALITY_MIGRATED,
-)
-
-# Quality tier -> the engine's bitrate enumeration value. Measured against
-# build 1.3.7.349 on a 4:20 track (bytes fetched for the whole file): 2 and 3
-# deliver ~96 and ~160 kbps, 4 ~320 kbps and 5 lossless FLAC (~810 kbps).
-# 5 is the ceiling — values outside 1-5 are rejected and silently fall back to
-# ~160 kbps, so an unknown tier must never reach the prefs file.
-_QUALITY_VALUES: Final[dict[str, int]] = {
-    AUDIO_QUALITY_NORMAL: 2,
-    AUDIO_QUALITY_HIGH: 3,
-    AUDIO_QUALITY_VERY_HIGH: 4,
-    AUDIO_QUALITY_LOSSLESS: 5,
-}
+# item uri prefixes Spotify never serves losslessly, whatever the tier is set to.
+_SPOKEN_URI_PREFIXES: Final = ("spotify:episode:", "spotify:chapter:")
 
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
@@ -251,12 +217,9 @@ class SoloistBackend(SpotifyConnectBackend):
         self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
-        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
-        # capture format) — that is what actually arrives on the named pipe.
-        # Soloist decodes internally and never exposes the source codec or
-        # quality, so this capture format doubles as the display format: MA's
-        # input really is 32-bit PCM (24-bit lossless fits losslessly), while
-        # Spotify's upstream quality stays unknowable either way.
+        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM — that is what
+        # actually arrives on the named pipe, and every decision about the bytes
+        # follows it because it is reported as the decoded format
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
@@ -264,21 +227,40 @@ class SoloistBackend(SpotifyConnectBackend):
             bit_depth=32,
             channels=CAPTURE_CHANNELS,
         )
-        self._audio_format = self._capture_format
+        self._tier_format = spotify_source_audio_format(
+            audio_quality, lossless=audio_quality == AUDIO_QUALITY_LOSSLESS
+        )
+        # spoken content is Ogg Vorbis whatever the tier says; on the lossy tiers
+        # that is the tier format itself
+        self._spoken_format = (
+            spotify_source_audio_format(audio_quality, lossless=False)
+            if audio_quality == AUDIO_QUALITY_LOSSLESS
+            else self._tier_format
+        )
 
     @property
     def audio_format(self) -> AudioFormat:
         """Return the source audio format (advertised to clients for display)."""
-        return self._audio_format
+        # a Connect session plays whatever the Spotify app picked, so the uri of the
+        # item playing when the stream starts is the only media-type signal there is;
+        # an unknown item is treated as music, the dominant case for a ceiling claim
+        if self._last_track_uri and self._last_track_uri.startswith(_SPOKEN_URI_PREFIXES):
+            return self._spoken_format
+        return self._tier_format
 
     @property
     def decoded_audio_format(self) -> AudioFormat:
         """Return the PCM format the capture sink's named pipe delivers."""
-        return self._capture_format
+        # a copy per stream: the core mirrors what ffmpeg probes onto this object,
+        # which must not land on the one format every stream shares
+        return replace(self._capture_format)
 
     @property
     def stream_ends_on_pause(self) -> bool:
-        """The pipe sink delivers silence on pause; the provider stops the player."""
+        """The pipe sink never signals end of stream; the provider stops the player."""
+        # the sink renders only while a client is connected: silence while the daemon
+        # holds its stream open, nothing at all once the daemon drops it. A reader
+        # therefore sees neither audio nor EOF, so MA has to end the stream itself.
         return False
 
     @property
@@ -606,56 +588,15 @@ class SoloistBackend(SpotifyConnectBackend):
         ]
 
     def _write_audio_prefs(self) -> None:
-        """
-        Write the configured audio behavior into the engine's prefs stores (blocking).
-
-        Both the global prefs and every existing per-user prefs file are updated:
-        per-user values override the global ones per key, and a per-user file only
-        appears after an account paired — the global store covers that account's
-        first session until the next daemon (re)spawn refreshes both.
-
-        Best-effort: a write failure must never block playback, so errors are
-        logged per store and the daemon spawns with the engine's previous settings.
-        """
-        settings_dir = self._data_dir / "settings"
-        prefs_files = [settings_dir / "prefs"]
-        quality = _QUALITY_VALUES.get(self._audio_quality, _QUALITY_VALUES[AUDIO_QUALITY_LOSSLESS])
-        managed_lines = [
-            f"{_PREF_CROSSFADE}={'true' if self._crossfade_ms else 'false'}",
-            f"{_PREF_NORMALIZE}={'true' if self._loudness_normalization else 'false'}",
-            f"{_PREF_QUALITY}={quality}",
-            f"{_PREF_QUALITY_NON_METERED}={quality}",
-            f"{_PREF_QUALITY_MIGRATED}=true",
-        ]
-        if self._crossfade_ms:
-            managed_lines.insert(1, f"{_PREF_CROSSFADE_TIME}={self._crossfade_ms}")
-        try:
-            users_dir = settings_dir / "Users"
-            if users_dir.is_dir():
-                prefs_files += [
-                    user_dir / "prefs" for user_dir in users_dir.iterdir() if user_dir.is_dir()
-                ]
-        except OSError as err:
-            self.logger.warning("Failed to list the Spotify per-user settings: %s", err)
-        for prefs_file in prefs_files:
-            try:
-                lines = []
-                if prefs_file.is_file():
-                    lines = [
-                        line
-                        for line in prefs_file.read_text(encoding="utf-8").splitlines()
-                        if line.split("=", 1)[0] not in _MANAGED_PREFS
-                    ]
-                prefs_file.parent.mkdir(parents=True, exist_ok=True)
-                # the stores also carry engine-owned keys, so replace atomically
-                # (a truncated in-place write would lose those too)
-                tmp_file = prefs_file.with_suffix(".tmp")
-                tmp_file.write_text("\n".join([*lines, *managed_lines]) + "\n", encoding="utf-8")
-                tmp_file.replace(prefs_file)
-            except (OSError, UnicodeDecodeError) as err:
-                self.logger.warning(
-                    "Failed to write the Spotify audio settings to %s: %s", prefs_file, err
-                )
+        """Write the configured audio behavior into the engine's prefs stores (blocking)."""
+        # best-effort here: nothing outside this backend depends on the result
+        write_audio_prefs(
+            self._data_dir,
+            self.logger,
+            crossfade_ms=self._crossfade_ms,
+            loudness_normalization=self._loudness_normalization,
+            audio_quality=self._audio_quality,
+        )
 
     async def _daemon_runner(self) -> None:
         """Run and supervise the soloist daemon, restarting (and refreshing) as needed."""

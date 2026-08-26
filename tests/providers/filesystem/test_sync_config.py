@@ -252,6 +252,7 @@ def _classify(
         unchanged_cue_items=[],
         cue_stems=set(),
         ignore_album_playlists=False,
+        metadata_files=[],
     )
     return items_to_process, cur_filenames
 

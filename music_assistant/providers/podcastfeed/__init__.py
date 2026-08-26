@@ -35,6 +35,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_cached_podcast,
+    get_episode_positions,
     get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -133,9 +134,11 @@ class PodcastMusicprovider(MusicProvider):
     @use_cache(3600)  # Cache for 1 hour
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
-        for idx, episode in enumerate(self.parsed_podcast["episodes"]):
+        episodes = self.parsed_podcast["episodes"]
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
             if prov_episode_id == episode["guid"]:
-                if mass_episode := self._parse_episode(episode, idx):
+                if mass_episode := self._parse_episode(episode, position):
                     await enrich_episode_chapters(
                         session=self.mass.http_session,
                         chapters_json_url=episode.get("chapters_json_url"),
@@ -151,12 +154,14 @@ class PodcastMusicprovider(MusicProvider):
         """List all episodes for the podcast."""
         if prov_podcast_id != self.podcast_id:
             raise MediaNotFoundError(f"Podcast id not in provider: {prov_podcast_id}")
-        # sort episodes by published date
+        # yield newest-first like the other providers, so callers after the latest episode
+        # only have to take the first one
         episodes: list[dict[str, Any]] = self.parsed_podcast["episodes"]
         if episodes and episodes[0].get("published", 0) != 0:
-            episodes.sort(key=lambda x: x.get("published", 0))
-        for idx, episode in enumerate(episodes):
-            if mass_episode := self._parse_episode(episode, idx):
+            episodes.sort(key=lambda x: x.get("published", 0), reverse=True)
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
+            if mass_episode := self._parse_episode(episode, position):
                 yield mass_episode
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -221,13 +226,11 @@ class PodcastMusicprovider(MusicProvider):
             mass_item_id=self.podcast_id,
         )
 
-    def _parse_episode(
-        self, episode_obj: dict[str, Any], fallback_position: int
-    ) -> PodcastEpisode | None:
+    def _parse_episode(self, episode_obj: dict[str, Any], position: int) -> PodcastEpisode | None:
         episode_result = parse_podcast_episode(
             episode=episode_obj,
             prov_podcast_id=self.podcast_id,
-            episode_cnt=fallback_position,
+            position=position,
             podcast_cover=self.parsed_podcast.get("cover_url"),
             podcast_name=self.parsed_podcast.get("title"),
             instance_id=self.instance_id,

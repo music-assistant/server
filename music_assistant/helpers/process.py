@@ -26,6 +26,11 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 DEFAULT_CHUNKSIZE = 64000
 
+# Ceiling on draining a pipe while closing. A child wedged in a read syscall never
+# closes its pipes, so an unbounded drain would keep close() from ever reaching the
+# terminate/SIGKILL escalation that actually reaps it.
+PIPE_DRAIN_TIMEOUT = 5
+
 
 def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
@@ -56,6 +61,7 @@ class AsyncProcess:
         stderr: bool | int | None = False,
         name: str | None = None,
         env: dict[str, str] | None = None,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         """
         Initialize AsyncProcess.
@@ -66,6 +72,8 @@ class AsyncProcess:
         :param stderr: Stderr configuration (True for PIPE, False for DEVNULL, or custom).
         :param name: Process name for logging.
         :param env: Environment variables for the subprocess (None inherits parent env).
+        :param pass_fds: Extra file descriptors kept open in the child (e.g. an
+            input pipe the command reads as ``pipe:<fd>``); the caller owns them.
         """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
@@ -77,6 +85,7 @@ class AsyncProcess:
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
         self._env = get_subprocess_env(env)
+        self._pass_fds = pass_fds
         self._stderr_lock = asyncio.Lock()
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -125,6 +134,7 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             env=self._env,
             bufsize=0,
+            pass_fds=self._pass_fds,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
@@ -276,7 +286,13 @@ class AsyncProcess:
         return (stdout, stderr)
 
     async def close(self) -> None:
-        """Close/terminate the process and wait for exit."""
+        """
+        Close/terminate the process and wait for exit.
+
+        An enclosing timeout is not a reliable bound on this call: the cleanup may
+        swallow the cancellation and run to completion, and a cancellation that does
+        land is only re-raised after the terminate/SIGKILL escalation has run.
+        """
         if self._close_called and self.returncode is not None:
             # Already closed and reaped, so there is nothing left to signal or
             # drain. The stream locks below are still held by that first call
@@ -286,22 +302,8 @@ class AsyncProcess:
         if not self.proc:
             return
 
-        # cancel existing stdin feeder task if any
         if self._stdin_feeder_task:
-            if not self._stdin_feeder_task.done():
-                self._stdin_feeder_task.cancel()
-            # Always await the task to consume any exception and prevent
-            # "Task exception was never retrieved" errors.
-            try:
-                await self._stdin_feeder_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                # Log unexpected exceptions from the stdin feeder before suppressing
-                LOGGER.warning(
-                    "Process stdin feeder task ended with error: %s",
-                    err,
-                )
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
 
         # close stdin to signal we're done sending data
         with suppress(TimeoutError, asyncio.CancelledError):
@@ -314,12 +316,15 @@ class AsyncProcess:
             with suppress(ProcessLookupError, OSError):
                 self.proc.send_signal(SIGINT)
 
+        # Cancellation landing on the drains or the reap below must not walk away from a
+        # child that is still running, so it is held here and re-raised at the very end.
+        cancelled: asyncio.CancelledError | None = None
+
         # ensure we have no more readers active and stdout is drained
         with suppress(TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
-            with suppress(Exception):
-                await self.proc.stdout.read(-1)
+            cancelled = await self._drain_pipe(self.proc.stdout, cancelled)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
@@ -328,8 +333,7 @@ class AsyncProcess:
             with suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
-            with suppress(Exception):
-                await self.proc.stderr.read(-1)
+            cancelled = await self._drain_pipe(self.proc.stderr, cancelled)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -340,10 +344,12 @@ class AsyncProcess:
             try:
                 # use communicate to flush all pipe buffers
                 await asyncio.wait_for(self.proc.communicate(), 2)
-            except TimeoutError:
+            except (TimeoutError, asyncio.CancelledError) as err:
+                if isinstance(err, asyncio.CancelledError):
+                    cancelled = cancelled or err
                 terminate_attempts += 1
                 self.logger.debug(
-                    "Process %s with PID %s did not stop in time (attempt %d). Sending SIGKILL...",
+                    "Process %s with PID %s is still running (attempt %d). Sending SIGKILL...",
                     self.name,
                     pid,
                     terminate_attempts,
@@ -367,6 +373,8 @@ class AsyncProcess:
             self.proc.pid,
             self.returncode,
         )
+        if cancelled is not None:
+            raise cancelled
 
     async def kill(self) -> None:
         """
@@ -382,17 +390,10 @@ class AsyncProcess:
 
         pid = self.proc.pid
 
-        # Cancel stdin feeder task if any
-        if self._stdin_feeder_task and not self._stdin_feeder_task.done():
-            self._stdin_feeder_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._stdin_feeder_task
-
-        # Cancel stderr reader task if any
-        if self._stderr_reader_task and not self._stderr_reader_task.done():
-            self._stderr_reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._stderr_reader_task
+        if self._stdin_feeder_task:
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
+        if self._stderr_reader_task:
+            await self._cancel_and_await(self._stderr_reader_task, "stderr reader")
 
         # Close stdin to signal we're done sending data
         # Note: Don't manually call feed_eof() on stdout/stderr - this causes
@@ -406,6 +407,16 @@ class AsyncProcess:
         self.logger.debug("Killing process %s with PID %s", self.name, pid)
         with suppress(ProcessLookupError, OSError):
             os.kill(pid, 9)  # SIGKILL = 9
+
+        # SIGKILL leaves whatever the child already wrote in the pipes, and the reap
+        # below only completes once they disconnect - so drain them here rather than
+        # waiting that out for output nobody is going to read
+        try:
+            await asyncio.wait_for(self.proc.communicate(), 2)
+        except TimeoutError:
+            pass  # the escalation below takes over
+        except Exception as err:
+            self.logger.warning("Failed to drain the pipes of PID %s: %s", pid, err)
 
         # Wait for process to actually terminate
         try:
@@ -482,6 +493,24 @@ class AsyncProcess:
             if line := raw.decode("utf-8", errors="ignore").strip():
                 yield line
 
+    async def _drain_pipe(
+        self, stream: asyncio.StreamReader, cancelled: asyncio.CancelledError | None
+    ) -> asyncio.CancelledError | None:
+        """
+        Read whatever is left in one of the process' pipes, bounded by the drain timeout.
+
+        :param stream: The stream to drain.
+        :param cancelled: A cancellation the caller already recorded, if any.
+        :return: The first cancellation seen, so the caller can re-raise it once the
+            process is reaped, or None when none has landed yet.
+        """
+        try:
+            with suppress(Exception):
+                await asyncio.wait_for(stream.read(-1), PIPE_DRAIN_TIMEOUT)
+        except asyncio.CancelledError as err:
+            return cancelled or err
+        return cancelled
+
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """
         Empty the stdin write buffer, with the write lock already held.
@@ -510,6 +539,28 @@ class AsyncProcess:
             with suppress(RuntimeError):
                 transport.set_write_buffer_limits(high=high, low=low)
         return True
+
+    async def _cancel_and_await(self, task: asyncio.Task[None], description: str) -> None:
+        """
+        Cancel one of this process' helper tasks and wait for it to end.
+
+        A task that already finished is awaited too, so it is never left with an
+        unretrieved exception. An unexpected error is logged rather than raised.
+
+        :param task: The task to cancel and await.
+        :param description: How the task is named when logging an unexpected error.
+        """
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # expected when we cancel the task
+        except Exception as err:
+            # retrieving the failure is what keeps asyncio from reporting it as
+            # unhandled once the task is collected, so log it here rather than
+            # dropping the only trace of it
+            self.logger.warning("The %s task ended with error: %s", description, err)
 
 
 async def check_output(

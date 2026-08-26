@@ -146,8 +146,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # keep the fixture isolated from the developer's machine: no auto-loaded device
-        # providers and no local_audio bridging the host's sound devices as players
+        # keep the fixture isolated from the developer's machine: no auto-loaded
+        # device providers
         suppress_auto_loaded_providers(),
         # keep the booted instance quiet: no library sync firing into a running test
         suppress_initial_library_sync(),

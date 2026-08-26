@@ -12,7 +12,13 @@ from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType, MediaType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    FlowStepType,
+    MediaType,
+    ProviderStage,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
@@ -129,6 +135,10 @@ class SetupFlowMixin:
             raise KeyError(msg)
         owner = f"provider.{provider_domain}"
         # fail fast on conditions that would otherwise only surface at save
+        if manifest.stage == ProviderStage.DEPRECATED:
+            # a retired provider can never be set up again; its own strings explain
+            # what to use instead
+            return self._synthesized_step(FlowStepType.ABORT, owner, reason="provider_retired")
         existing = await self.get_provider_configs(provider_domain=provider_domain)
         if existing and not manifest.multi_instance:
             return self._synthesized_step(FlowStepType.ABORT, owner, reason="already_configured")

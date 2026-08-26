@@ -16,12 +16,14 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ProviderFeature, RepeatMode
 
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.media_items import AudioSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -38,18 +40,26 @@ class AudioSourceSession:
 
     ``streamdetails`` and ``stream_session_id`` are independent of the session's
     own existence: a paused external source keeps the player while its stream is
-    torn down, so both fall back to None without the session ending.
+    torn down, so both fall back to None without the session ending. The
+    ``playback_session_id`` identifies the current selection through pauses and
+    stream reconnects, and is refreshed when the source is explicitly reselected.
     """
 
     player_id: str
     source: AudioSource
     provider_instance_id: str
+    # identifies the current selection in its stream URLs
+    playback_session_id: str = field(default_factory=lambda: uuid4().hex)
     started_at: float = field(default_factory=time.time)
     streamdetails: StreamDetails | None = None
+    active_source_audio: ActiveSourceAudioDetails | None = None
     stream_metadata: StreamMetadata | None = None
     stream_metadata_last_updated: float | None = None
     # an adopted placeholder stays replaceable by a later one, a report does not
     stream_metadata_reported: bool = False
+    # the ordering the source reports for its own session; None = it has not said
+    shuffle_enabled: bool | None = None
+    repeat_mode: RepeatMode | None = None
     # token of the stream request currently holding the source's claim
     stream_session_id: str | None = None
 
@@ -188,12 +198,80 @@ class AudioSourceMixin:
         session.stream_metadata_reported = True
         self.trigger_player_update(player_id)
 
+    def refresh_source(self, player_id: str, source: AudioSource) -> None:
+        """
+        Replace the AudioSource a session is publishing with a rebuilt one.
+
+        A plugin rebuilds its source whenever its capability flags change, and the
+        controls the player publishes come from the object the session holds, so it
+        has to be handed the new one for the change to reach a client. Rejected
+        silently unless it is the same source, from the same provider, as the one
+        playing.
+
+        :param player_id: The player whose session should publish the new object.
+        :param source: The rebuilt AudioSource.
+        """
+        session = self._source_sessions.get(player_id)
+        if (
+            session is None
+            or session.source_id != source.item_id
+            or session.provider_instance_id != source.provider
+        ):
+            return
+        session.source = source
+        self.trigger_player_update(player_id)
+
+    def update_source_options(
+        self,
+        player_id: str,
+        source_id: str,
+        provider_instance_id: str,
+        *,
+        shuffle_enabled: bool | None,
+        repeat_mode: RepeatMode | None,
+    ) -> None:
+        """
+        Record the ordering a live source reports for its own session.
+
+        A None value leaves that option as it was, as does ``RepeatMode.UNKNOWN``:
+        neither is the source saying anything. Rejected silently unless the source
+        playing on the player is owned by ``provider_instance_id`` with
+        ``item_id == source_id``.
+
+        :param player_id: The player whose session should receive the update.
+        :param source_id: The AudioSource.item_id emitting this update.
+        :param provider_instance_id: The provider instance id emitting this update.
+        :param shuffle_enabled: The session's shuffle state, or None to leave it.
+        :param repeat_mode: The session's repeat mode, or None to leave it.
+        """
+        session = self._source_sessions.get(player_id)
+        if (
+            session is None
+            or session.source_id != source_id
+            or session.provider_instance_id != provider_instance_id
+        ):
+            self.logger.debug(
+                "Rejected source options for player %s from provider %s source %s",
+                player_id,
+                provider_instance_id,
+                source_id,
+            )
+            return
+        changed = False
+        if shuffle_enabled is not None and session.shuffle_enabled != shuffle_enabled:
+            session.shuffle_enabled = shuffle_enabled
+            changed = True
+        if repeat_mode not in (None, RepeatMode.UNKNOWN) and session.repeat_mode != repeat_mode:
+            session.repeat_mode = repeat_mode
+            changed = True
+        if changed:
+            self.trigger_player_update(player_id)
+
     def _start_audio_source_session(
         self,
         player_id: str,
         source: AudioSource,
         provider_instance_id: str,
-        stream_session_id: str | None = None,
     ) -> AudioSourceSession:
         """
         Record that an AudioSource is now playing on the given player.
@@ -208,8 +286,6 @@ class AudioSourceMixin:
         :param player_id: The player the source plays on.
         :param source: The AudioSource that was selected.
         :param provider_instance_id: Instance id of the plugin exposing it.
-        :param stream_session_id: Token of the stream claiming the source, when one
-            has been requested; pass it so the matching release is recognised.
         """
         session = self._source_sessions.get(player_id)
         if (
@@ -217,39 +293,48 @@ class AudioSourceMixin:
             and session.source_id == source.item_id
             and session.provider_instance_id == provider_instance_id
         ):
+            self.mass.streams.audio_processing.clear_source(
+                player_id,
+                session.playback_session_id,
+                preserve_details=True,
+            )
             session.source = source
-            session.stream_session_id = stream_session_id
+            session.playback_session_id = uuid4().hex
+            session.stream_session_id = None
             return session
+        if session is not None:
+            self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
+        # a source plays on one player at a time, so it leaves whichever other player
+        # was holding it: two players both reporting it would let a command on the one
+        # that lost it drive the one that has it
+        for other_id, other in list(self._source_sessions.items()):
+            if (
+                other_id != player_id
+                and other.source_id == source.item_id
+                and other.provider_instance_id == provider_instance_id
+            ):
+                self.mass.streams.audio_processing.clear_source(other_id, other.playback_session_id)
+                del self._source_sessions[other_id]
+                self.trigger_player_update(other_id)
         session = AudioSourceSession(
             player_id=player_id,
             source=source,
             provider_instance_id=provider_instance_id,
-            stream_session_id=stream_session_id,
         )
         self._source_sessions[player_id] = session
         return session
 
-    def _end_audio_source_session(
-        self, player_id: str, stream_session_id: str | None = None
-    ) -> AudioSourceSession | None:
+    def _end_audio_source_session(self, player_id: str) -> AudioSourceSession | None:
         """
         Drop the AudioSource session on the given player and return it.
 
-        Pass the ``stream_session_id`` of the stream being torn down to end only
-        the session that stream owns. A reconnect (the player drops and reopens
-        the stream before the first request's teardown runs) leaves the previous
-        request finishing *after* its replacement has started, and an unguarded
-        end would let that late teardown drop the live session — the same hazard
-        ``PluginProvider.on_source_unselected`` requires plugins to guard against.
-        Omit it to end whatever is playing, for a teardown that is not scoped to
-        one stream (an explicit deselect, or the player going away).
+        Not tied to a stream: a paused source keeps the player while its stream is
+        torn down, so this is only for the player being done with the source.
 
         :param player_id: The player whose session ended.
-        :param stream_session_id: Only end the session holding this stream token.
-        :return: The session that was ended, or None if none matched.
+        :return: The session that was ended, or None if there was none.
         """
-        if stream_session_id is not None:
-            session = self._source_sessions.get(player_id)
-            if session is None or session.stream_session_id != stream_session_id:
-                return None
+        session = self._source_sessions.get(player_id)
+        if session is not None:
+            self.mass.streams.audio_processing.clear_source(player_id, session.playback_session_id)
         return self._source_sessions.pop(player_id, None)
