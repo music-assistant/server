@@ -442,7 +442,7 @@ async def test_five_daemon_failures_report_fatal_error(
         pytest.param(
             SoloistAuthState(logged_in=False, is_active=False),
             BackendEventType.SESSION_INACTIVE,
-            id="auth_state-initial-logged_out",
+            id="auth_state-logged_out",
         ),
         pytest.param(
             SoloistAuthState(logged_in=True, is_active=True),

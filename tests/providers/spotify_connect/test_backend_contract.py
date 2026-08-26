@@ -428,6 +428,8 @@ async def test_session_inactive_stops_active_player() -> None:
     assert provider._in_use_by_player is None
     assert provider._active_session_id is None
     mass.players.cmd_stop.assert_called_once_with("player1")
+    # signing out is not a provider failure: it must never schedule an unload
+    mass.call_later.assert_not_called()
 
 
 async def test_stream_teardown_while_playing_releases_spotify() -> None:

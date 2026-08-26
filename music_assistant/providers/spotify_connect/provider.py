@@ -857,6 +857,7 @@ class SpotifyConnectProvider(PluginProvider):
             # non-fatal backend error: surface it in the log only
             self.logger.warning("Spotify Connect backend error: %s", event.error)
             return
+
         self._remember_context_uris(event)
 
         if event.type is BackendEventType.QUEUE_CHANGED:

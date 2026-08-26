@@ -925,14 +925,12 @@ class SoloistBackend(SpotifyConnectBackend):
         """Map a raw soloist event onto the normalized BackendEvent model."""
         data = event.data
         if isinstance(data, SoloistAuthState):
-            # a logged-out daemon keeps advertising itself for Connect, so this is
-            # just a session that ended: awaiting a first pairing, the user signing
-            # out, or another account taking the device over
-            if not data.logged_in:
-                return self._make_event(BackendEventType.SESSION_INACTIVE)
+            # a logged-out daemon keeps advertising itself for Connect, so being
+            # signed out is just a session that ended: awaiting a first pairing,
+            # the user signing out, or another account taking the device over
             return self._make_event(
                 BackendEventType.SESSION_ACTIVE
-                if data.is_active
+                if data.logged_in and data.is_active
                 else BackendEventType.SESSION_INACTIVE
             )
         if isinstance(data, SoloistDeviceChanged):
