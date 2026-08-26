@@ -109,6 +109,39 @@ async def test_selecting_a_source_on_an_idle_player_is_not_held_up_by_a_stop() -
     controller._handle_play_media.assert_awaited_once()
 
 
+async def test_selecting_a_source_waits_for_a_playing_player_to_stop() -> None:
+    """A player that was playing is settled before the new source is started on it."""
+    controller, _provider, player = _controller(_source())
+    player.state.active_source = "some_other_source"
+    player.state.playback_state = PlaybackState.PLAYING
+    state_at_start: list[PlaybackState] = []
+    settle_task: asyncio.Task[None] | None = None
+
+    async def _stop(_player_id: str) -> None:
+        # a real device reports back a moment after the stop command returns
+        async def _settle() -> None:
+            await asyncio.sleep(0.1)
+            player.state.playback_state = PlaybackState.IDLE
+            controller._dispatch_state_update_subscribers(
+                player, {"playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE)}
+            )
+
+        nonlocal settle_task
+        settle_task = asyncio.create_task(_settle())
+
+    async def _play_media(*_args: Any, **_kwargs: Any) -> None:
+        state_at_start.append(player.state.playback_state)
+
+    controller._handle_cmd_stop = AsyncMock(side_effect=_stop)
+    controller._handle_play_media = AsyncMock(side_effect=_play_media)
+
+    async with asyncio.timeout(2):
+        await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    controller._handle_cmd_stop.assert_awaited_once_with(PLAYER_ID)
+    assert state_at_start == [PlaybackState.IDLE]
+
+
 async def test_selecting_a_source_does_not_touch_the_queue() -> None:
     """The queue is not cleared, replaced or loaded — it just stops being the active source."""
     controller, _provider, _player = _controller(_source())
