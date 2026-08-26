@@ -740,9 +740,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
         # items normally. Keys off is_dynamic since a finite-only queue records sources too.
+        # A play-next track is exempt from this (see plays_next_track below).
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
 
         media_items: list[MediaItemType] = []
+        # the subset of media_items the user explicitly picked to play next
+        play_next_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
         # resolve all media items
@@ -835,6 +838,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         else shuffle,
                     )
 
+                # the user picked this exact track to play next, so it must be inserted literally
+                plays_next_track = (
+                    option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                )
                 # collect media_items to play
                 if is_dynamic_source(media_item):
                     # a dynamic playlist/station supplies its own tracks on demand; just mark it
@@ -848,20 +855,25 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             user_initiated=True,
                         )
                     )
-                elif already_dynamic:
+                elif already_dynamic and not plays_next_track:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # not (yet) a managed pool: record the finite parent as a source (kept for a
-                    # later dynamic transition and for similar/autoplay seeds) and expand it into
-                    # the linear queue
-                    if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
-                        MediaType.TRACK,
-                        MediaType.ALBUM,
-                        MediaType.PLAYLIST,
-                        MediaType.ARTIST,
+                    # a play-next track never becomes a source: the pool would re-dispatch it later
+                    if (
+                        not plays_next_track
+                        and not isinstance(media_item, BrowseFolder)
+                        and media_item.media_type
+                        in (
+                            MediaType.TRACK,
+                            MediaType.ALBUM,
+                            MediaType.PLAYLIST,
+                            MediaType.ARTIST,
+                        )
                     ):
+                        # record the finite parent as a source (kept for a later dynamic
+                        # transition and for similar/autoplay seeds)
                         source_items.append(media_item)
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -869,7 +881,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         start_item_uri = start_item
                     elif start_item is not None:
                         start_item_uri = start_item.uri
-                    media_items += await self._media_resolver._resolve_media_items(
+                    resolved_items = await self._media_resolver._resolve_media_items(
                         media_item,
                         start_item_uri,
                         userid=queue_data.userid,
@@ -881,6 +893,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         # before it - the chosen track is pinned in front of the shuffled rest
                         keep_preceding_items=queue.shuffle_enabled,
                     )
+                    media_items += resolved_items
+                    if plays_next_track:
+                        play_next_items += resolved_items
 
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
@@ -891,6 +906,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # below all the same, and a dynamic queue's imposed shuffle must not survive that
             await self._apply_shuffle(queue_id, option, shuffle)
 
+        # captured before the reassignment below replaces the local with the stored list
+        new_sources = bool(source_items)
         # overwrite or append the queue's source items
         replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
         if replace_sources:
@@ -903,13 +920,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
 
         if queue.is_dynamic:
-            # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into a
-            # single bounded, recency-orchestrated mix over ALL sources — existing finite content as
-            # materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s). Every add rebuilds
-            # from the buffer position, so the queue stays a fixed-size mix instead of growing by
-            # each added source's own batch.
-            await self._enter_dynamic_mode(queue_id, option)
-            return
+            if replace_sources or new_sources:
+                # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into
+                # a single bounded, recency-orchestrated mix over ALL sources — existing finite
+                # content as materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s).
+                # Only rebuilt when this enqueue changed the sources, so a play-next insert
+                # leaves the tail untouched.
+                await self._enter_dynamic_mode(queue_id, option)
+            # only explicit play-next tracks are inserted literally; container expansions are
+            # already in the pool via their source
+            media_items = play_next_items
+            if not media_items:
+                return
+            # fall through: play-next track(s) are inserted after the buffered index below
 
         # only add valid/available items
         queue_items: list[QueueItem] = [
