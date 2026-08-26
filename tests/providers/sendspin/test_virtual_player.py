@@ -286,6 +286,25 @@ async def test_cleanup_failed_creation_retries_a_raised_teardown() -> None:
     sendspin.logger.warning.assert_not_called()
 
 
+async def test_cleanup_failed_creation_skips_an_already_removed_player() -> None:
+    """Test that cleanup stops immediately when the player is already gone."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}gone"
+    # already torn down by a racing removal, e.g. the owner-unloaded sweep
+    sendspin._virtual_players = {}
+    sendspin.mass.players.unregister = AsyncMock()
+
+    async with asyncio.timeout(0.5):
+        await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    sendspin.mass.players.unregister.assert_not_awaited()
+    sendspin.mass.players.delete_player_config.assert_not_called()
+    sendspin.logger.warning.assert_not_called()
+
+
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
     """Test that removal is refused for players that are not virtual players."""
     sendspin = _get_sendspin_provider(mass)
