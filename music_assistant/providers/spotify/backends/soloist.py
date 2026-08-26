@@ -2177,7 +2177,17 @@ class _ItemAudio:
         self.seek_target_ms = target_ms
         self.seek_confirmed.clear()
         self.started_at_ms = None
-        reported_ms = (self.last_position_ms if floor_ms is None else floor_ms) or 0
+        if floor_ms is not None:
+            # A live position, not one a fresh session restored, so there is
+            # nothing to disprove. Only a seek BACK has to see the engine come
+            # below the mark first: a report from before the command would
+            # otherwise pass for the landing. A seek forward cannot be confused
+            # that way, and demanding the engine drop below a mark it is never
+            # going back past would leave a short one unable to confirm at all.
+            self._seek_floor_ms = floor_ms
+            self._seek_anchored = target_ms >= floor_ms
+            return
+        reported_ms = self.last_position_ms or 0
         # A fresh session restores the account's last playback state, so seeking
         # the item it was already playing - a resume, or a seek of the current
         # track - makes that restored position indistinguishable from the seek

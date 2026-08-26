@@ -2654,3 +2654,28 @@ async def test_seeking_the_playing_item_back_to_its_start_keeps_the_session(
     stopped.assert_not_awaited()
     _client_of(session).seek.assert_awaited_once_with(0, await_result=True)
     assert got_item.started_at_ms == 2
+
+
+async def test_a_short_forward_seek_still_confirms(tmp_path: Path) -> None:
+    """
+    A seek only a little past where the engine is must not wait itself out.
+
+    Reachable because the engine runs ahead of what has been delivered - up to
+    the retained cushion - so a target the buffer will not serve can still be
+    inside the tolerance window of the engine's own position. Demanding the
+    engine drop below that mark would never be satisfied by a seek forward.
+    """
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    # the engine is at 49s while only ~30s has been delivered
+    playing.observe_position(49_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 50_500)
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 50_500
