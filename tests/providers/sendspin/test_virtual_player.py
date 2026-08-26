@@ -242,6 +242,50 @@ async def test_remove_virtual_player_retries_after_partial_failure() -> None:
     sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
 
 
+async def test_cleanup_failed_creation_awaits_a_slow_teardown() -> None:
+    """Test that a slow teardown is awaited to completion instead of being retried."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}slow"
+    sendspin._virtual_players = {player_id: "owner--test"}
+    sendspin.server_api.get_client.return_value = None
+
+    async def _slow_unregister(_player_id: str, **_kwargs: object) -> None:
+        # outlasts the 2 second bound this path used to carry
+        await asyncio.sleep(2.5)
+
+    sendspin.mass.players.unregister = AsyncMock(side_effect=_slow_unregister)
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    assert sendspin.mass.players.unregister.await_count == 1
+    assert not sendspin.is_virtual_player(player_id)
+    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
+    sendspin.logger.warning.assert_not_called()
+
+
+async def test_cleanup_failed_creation_retries_a_raised_teardown() -> None:
+    """Test that a teardown raising once is retried and then reported as cleaned up."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}flaky"
+    sendspin._virtual_players = {player_id: "owner--test"}
+    sendspin.server_api.get_client.return_value = None
+    sendspin.mass.players.unregister = AsyncMock(
+        side_effect=[RuntimeError("teardown failed"), None]
+    )
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    assert sendspin.mass.players.unregister.await_count == 2
+    assert not sendspin.is_virtual_player(player_id)
+    sendspin.logger.warning.assert_not_called()
+
+
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
     """Test that removal is refused for players that are not virtual players."""
     sendspin = _get_sendspin_provider(mass)

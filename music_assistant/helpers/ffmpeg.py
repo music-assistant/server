@@ -189,26 +189,9 @@ class FFMpeg(AsyncProcess):
     ) -> tuple[bytes, bytes]:
         """Override communicate to avoid blocking."""
         if self._stdin_feeder_task:
-            if not self._stdin_feeder_task.done():
-                self._stdin_feeder_task.cancel()
-            # Always await the task to consume any exception and prevent
-            # "Task exception was never retrieved" errors.
-            try:
-                await self._stdin_feeder_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                # Log unexpected exceptions from the stdin feeder before suppressing
-                # The audio source may have failed, and we need visibility into this
-                self.logger.warning(
-                    "FFMpeg stdin feeder task ended with error: %s",
-                    err,
-                )
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
         if self._stderr_reader_task:
-            if not self._stderr_reader_task.done():
-                self._stderr_reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._stderr_reader_task
+            await self._cancel_and_await(self._stderr_reader_task, "stderr reader")
         return await super().communicate(input, timeout)
 
     async def _log_reader_task(self) -> None:

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
@@ -51,6 +51,8 @@ def _controller(session: AudioSourceSession | None) -> tuple[Any, MagicMock, Mag
     provider.instance_id = INSTANCE_ID
     provider.on_source_selected = AsyncMock()
     provider.on_source_unselected = AsyncMock()
+    provider.delivers_crossfaded_audio.return_value = True
+    provider.delivers_normalized_audio.return_value = False
     ctrl.mass.get_provider = MagicMock(return_value=provider)
     ctrl.mass.players.get_audio_source_session = MagicMock(
         return_value=session, side_effect=lambda pid: session if pid == OWNER_ID else None
@@ -59,6 +61,7 @@ def _controller(session: AudioSourceSession | None) -> tuple[Any, MagicMock, Mag
     player.player_id = CONSUMER_ID
     ctrl.mass.players.get_player = MagicMock(return_value=player)
     ctrl.mass.players.deselect_source = AsyncMock()
+    ctrl.audio_processing = MagicMock()
     return ctrl, provider, player
 
 
@@ -140,6 +143,59 @@ async def test_a_head_probe_does_not_trigger_the_plugin() -> None:
 
     assert result == "head-response"
     provider.on_source_selected.assert_not_awaited()
+
+
+async def test_http_output_is_registered_to_the_source_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The HTTP output plan is owned by the live source playback session."""
+    session = _session()
+    ctrl, provider, player = _controller(session)
+    ctrl.audio = MagicMock()
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=2,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=2,
+    )
+    ctrl.audio.select_pcm_format = AsyncMock(return_value=pcm_format)
+    ctrl.audio.get_output_format = AsyncMock(return_value=output_format)
+    ctrl.audio.get_audio_source_stream.return_value = "audio-input"
+    ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
+    player.state.group_members = ["member-1"]
+    player.get_config_value.return_value = "default"
+    response = MagicMock()
+    response.prepare = AsyncMock()
+    monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.controller.get_ffmpeg_stream",
+        MagicMock(return_value="encoded-audio"),
+    )
+    request = SimpleNamespace(match_info={"fmt": "flac"})
+
+    result = await ctrl._prepare_audio_source_stream(
+        request,
+        player,
+        session,
+        MagicMock(),
+        provider,
+    )
+
+    assert result == (response, "encoded-audio")
+    ctrl.audio.get_player_output_plan.assert_called_once_with(
+        player_id=player.player_id,
+        input_format=pcm_format,
+        output_format=output_format,
+        shared_player_ids=player.state.group_members,
+        queue_id=session.player_id,
+        session_id=session.playback_session_id,
+    )
 
 
 def test_a_direct_pcm_request_from_a_superseded_session_is_refused() -> None:
@@ -303,7 +359,7 @@ async def test_direct_pcm_stream_stops_when_the_session_is_reselected() -> None:
     """A running PCM stream ends before yielding audio for a newer selection."""
     session = _session()
     session.streamdetails = MagicMock()
-    ctrl, _provider, _player = _controller(session)
+    ctrl, provider, _player = _controller(session)
     ctrl.audio = MagicMock()
 
     async def chunks() -> AsyncGenerator[bytes]:
@@ -311,9 +367,16 @@ async def test_direct_pcm_stream_stops_when_the_session_is_reselected() -> None:
         yield b"stale"
 
     ctrl.audio.get_audio_source_stream = MagicMock(return_value=chunks())
-    stream = ctrl._get_audio_source_session_stream(session, AudioFormat(), CONSUMER_ID)
+    pcm_format = AudioFormat()
+    stream = ctrl._get_audio_source_session_stream(session, pcm_format, CONSUMER_ID)
 
     assert await anext(stream) == b"first"
+    ctrl.audio_processing.update_source_context.assert_called_once_with(
+        OWNER_ID,
+        session.playback_session_id,
+        crossfade_enabled=provider.delivers_crossfaded_audio.return_value,
+        volume_normalization_enabled=provider.delivers_normalized_audio.return_value,
+    )
     session.playback_session_id = "replacement-session"
 
     with pytest.raises(StopAsyncIteration):

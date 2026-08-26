@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import AlbumType, PlaybackState
+from music_assistant_models.media_items import Album, Track
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -138,6 +139,38 @@ def _shuffle_controller(
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.streams.is_smart_fades_active = MagicMock(return_value=False)
     return fake
+
+
+async def test_transfer_queue_carries_the_album_credit_bookkeeping() -> None:
+    """A credited album stays credited on the player the queue is handed to."""
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    album = Album(
+        item_id="a1",
+        provider="library",
+        name="A",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set(), album=album)
+    source_data = fake._queue_data["src"]
+    source_data.enqueued_media_items = [album]
+    source_data.credited_albums = {album}
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_data = fake._queue_data["tgt"]
+    # the target holds its own copy, so the source's set no longer drives it
+    assert target_data.credited_albums == {album}
+    assert target_data.credited_albums is not source_data.credited_albums
+    # and the album is not credited a second time on the new player
+    assert (
+        PlayerQueuesController._claim_enqueued_album_credit(
+            cast("PlayerQueuesController", fake), target_data, track
+        )
+        is None
+    )
 
 
 async def test_transfer_queue_overwrites_the_targets_own_shuffle() -> None:

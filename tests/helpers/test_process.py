@@ -25,6 +25,12 @@ _WEDGED_CHILD = (
     "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)"
 )
 
+# Writes more than a pipe buffer holds and never exits, so its output is still
+# undelivered when the process is killed.
+_NOISY_CHILD = (
+    "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
+)
+
 
 @pytest.fixture(name="piped_process")
 async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
@@ -213,6 +219,54 @@ async def test_second_close_returns_without_waiting_out_the_stream_locks() -> No
 
 
 @pytest.mark.asyncio
+async def test_kill_retrieves_the_exception_of_a_finished_stdin_feeder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A stdin feeder that already failed is awaited and its failure logged.
+
+    Awaiting only a still-pending task leaves the exception of one that already
+    ended unretrieved, which asyncio reports as unhandled when it is collected;
+    retrieving it without logging would drop the only trace of the failure.
+    """
+
+    async def _failing_feeder() -> None:
+        raise RuntimeError("feeder blew up")
+
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
+    await proc.start()
+    feeder = asyncio.create_task(_failing_feeder())
+    await asyncio.wait([feeder])  # let it fail without retrieving the exception
+    proc._stdin_feeder_task = feeder
+
+    await proc.kill()
+
+    # asyncio clears this flag once the exception has been retrieved; while it is
+    # set the task is the one that triggers "Task exception was never retrieved"
+    assert feeder._log_traceback is False
+    assert "feeder blew up" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_kill_returns_promptly_with_output_left_in_the_pipes() -> None:
+    """
+    Killing a process whose pipes still hold output returns without delay.
+
+    The reap only completes once every pipe has disconnected, and nothing reads
+    them after a kill, so the pipes have to be drained for it to finish.
+    """
+    proc = AsyncProcess([sys.executable, "-c", _NOISY_CHILD], stdout=True, stderr=True)
+    await proc.start()
+    await asyncio.sleep(0.5)
+
+    started = time.monotonic()
+    await proc.kill()
+
+    assert proc.returncode is not None
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
 async def test_close_reaps_a_child_that_never_closes_its_pipes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,5 +286,52 @@ async def test_close_reaps_a_child_that_never_closes_its_pipes(
 
     async with asyncio.timeout(20):
         await proc.close()
+
+    assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_mid_drain() -> None:
+    """
+    Cancellation landing while a pipe is draining must not leave the child running.
+
+    Walking away there skips the terminate/SIGKILL escalation, and nothing else
+    ever comes back for the process.
+    """
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    # well inside PIPE_DRAIN_TIMEOUT, so the cancellation lands on the stdout drain
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
+
+    assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Cancellation landing while waiting for the process to exit must still reap it.
+
+    That wait is where close() spends most of its time, so it is the likeliest place
+    for a cancellation to land, and giving up there skips the SIGKILL escalation.
+    """
+    # short enough that the drain is over well before the cancellation below
+    monkeypatch.setattr(process_module, "PIPE_DRAIN_TIMEOUT", 0.2)
+    proc = AsyncProcess(
+        [sys.executable, "-c", _WEDGED_CHILD], stdout=True, stderr=asyncio.subprocess.STDOUT
+    )
+    await proc.start()
+    assert await proc.read_stdout() == b"ready\n"
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await proc.close()
 
     assert proc.returncode is not None

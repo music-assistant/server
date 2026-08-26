@@ -133,6 +133,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
@@ -3050,12 +3051,16 @@ class StreamsAudio:
         if next_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: next item is not a track")
             return False
+        # an item picks up its library album only once it is loaded, so a queue fed straight
+        # from a provider can hold the provider album on the side that is not loaded yet.
+        # Matching on the provider mappings recognises both shapes as the same album; the
+        # uri-based equality of the album objects does not.
         if (
             isinstance(queue_item.media_item, Track)
             and isinstance(next_item.media_item, Track)
             and queue_item.media_item.album
             and next_item.media_item.album
-            and queue_item.media_item.album == next_item.media_item.album
+            and compare_item_ids(queue_item.media_item.album, next_item.media_item.album)
             and not self.mass.config.get_raw_core_config_value(
                 "streams", CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
             )
@@ -3843,8 +3848,14 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
-            # always ensure close is called which also handles all cleanup
-            await ffmpeg_proc.close()
+            # An ffmpeg wedged on an input that will never deliver again pays close()'s
+            # full drain - some 12 seconds in practice - under a held player lock,
+            # before the SIGKILL that was always coming. Once the process has exited
+            # close() is free, and it is what cleans up the stdin feeder behind it.
+            if ffmpeg_proc.returncode is not None:
+                await ffmpeg_proc.close()
+            else:
+                await ffmpeg_proc.kill()
             # determine how many seconds we've received
             # for pcm output we can calculate this easily
             seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0

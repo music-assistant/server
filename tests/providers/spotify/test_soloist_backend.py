@@ -33,6 +33,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
     _IDLE_TIMEOUT_S,
+    _ITEM_OVERRUN_S,
     _MAX_APP_PAUSE_RESUMES,
     _MAX_LEAD_TRIM_S,
     _READ_CHUNK_SIZE,
@@ -103,21 +104,62 @@ def test_trim_passes_silence_through_once_the_bound_is_exceeded() -> None:
 def test_seek_is_confirmed_only_within_tolerance(tmp_path: Path) -> None:
     """A position report confirms a seek only once it reaches the tolerance window."""
     item = _make_item(tmp_path, TRACK_A)
-    item.seek_target_ms = 60_000
+    item.arm_seek(60_000)
     item.observe_position(50_000)
     assert not item.seek_confirmed.is_set()
     item.observe_position(58_500)
     assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 58_500
 
 
 def test_small_seek_target_is_not_confirmed_by_a_pre_seek_zero_report(tmp_path: Path) -> None:
     """A position-0 report before the seek lands cannot confirm a small target."""
     item = _make_item(tmp_path, TRACK_A)
-    item.seek_target_ms = 1_500
+    item.arm_seek(1_500)
     item.observe_position(0)
     assert not item.seek_confirmed.is_set()
     item.observe_position(1_500)
     assert item.seek_confirmed.is_set()
+
+
+def test_a_small_seek_is_confirmed_without_a_report_of_exactly_zero(tmp_path: Path) -> None:
+    """A target inside the tolerance window has no room below it to be anchored on."""
+    item = _make_item(tmp_path, TRACK_A)
+    # the engine restored this item a second in, so the seek is short enough
+    # that no report can fall below its tolerance window
+    item.observe_position(1_200)
+    item.arm_seek(2_000)
+    item.observe_position(400)
+    item.observe_position(2_000)
+    assert item.seek_confirmed.is_set()
+
+
+def test_the_restored_position_of_the_same_item_cannot_confirm_a_seek(tmp_path: Path) -> None:
+    """The state a fresh session restores does not pass for the seek landing."""
+    item = _make_item(tmp_path, TRACK_A)
+    item.duration_ms = 176_000
+    # the engine restores the account's last state: this very item, sitting at
+    # the position the seek is aiming for
+    item.observe_position(117_000)
+    item.arm_seek(117_000)
+    item.observe_position(117_000)
+    assert not item.seek_confirmed.is_set()
+    # only once the engine has reloaded the track does its seek count
+    item.observe_position(0)
+    item.observe_position(117_000)
+    assert item.seek_confirmed.is_set()
+
+
+def test_a_backward_seek_is_confirmed_below_where_the_engine_was(tmp_path: Path) -> None:
+    """Seeking back into an item confirms on the target, not on where it came from."""
+    item = _make_item(tmp_path, TRACK_A)
+    # the engine restored this item well past the point being seeked back to
+    item.observe_position(117_000)
+    item.arm_seek(30_000)
+    item.observe_position(0)
+    item.observe_position(30_000)
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 30_000
 
 
 def test_position_never_regresses_and_stops_at_the_cut(tmp_path: Path) -> None:
@@ -524,19 +566,64 @@ async def test_a_busy_data_directory_is_reported_as_such(tmp_path: Path) -> None
 async def test_the_busy_marker_is_picked_up_from_the_daemon_output(tmp_path: Path) -> None:
     """The marker is read off the daemon's stdout, with the API key still redacted."""
     session = _make_session(tmp_path)
-    proc = MagicMock()
-    lines = [
-        'Error: another session is running for data directory "/data/x/soloist-data".',
-        "Stop the running session before starting soloist again.",
-    ]
-
-    async def _iter_stdout() -> AsyncGenerator[str]:
-        for line in lines:
-            yield line
-
-    proc.iter_stdout = _iter_stdout
-    await session._log_output(proc)
+    await session._log_output(
+        _stdout_of(
+            'Error: another session is running for data directory "/data/x/soloist-data".',
+            "Stop the running session before starting soloist again.",
+        )
+    )
     assert session._data_dir_busy is True
+
+
+async def test_a_lost_pairing_is_caught_the_moment_the_daemon_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon advertising for pairing fails the session at once, not on a timeout."""
+    session = _make_session(tmp_path)
+    session._logged_in = None
+    unload_with_error = MagicMock()
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", unload_with_error)
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    assert session._unpaired is True
+    # the buffer gives up on the audio long before the startup budget runs out, so
+    # the session has to fail while an item is still waiting on it
+    assert session._error is not None
+    with pytest.raises(LoginFailed) as err:
+        session._raise_startup_error("did not connect and log in", TRACK_A)
+    assert err.value.translation_key == "soloist_pairing_required"
+    unload_with_error.assert_called_once()
+
+
+async def test_a_lost_pairing_fails_the_item_without_waiting_for_the_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The item fails on the lost pairing, not on the endpoint that is no longer coming."""
+    session = _make_session(tmp_path)
+    session._logged_in = None
+    monkeypatch.setattr(session.backend.provider, "unload_with_error", MagicMock())
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    # the endpoint never appears, so the wait for it must not swallow the failure:
+    # sitting it out would outlast the queue's own patience for the audio
+    with pytest.raises(LoginFailed) as err:
+        async with asyncio.timeout(5):
+            await session._play(TRACK_A, 0, asyncio.Event())
+    assert err.value.translation_key == "soloist_pairing_required"
+
+
+async def test_a_daemon_still_restoring_its_session_is_left_alone(tmp_path: Path) -> None:
+    """The engine advertises for pairing while restoring too; the stored session decides."""
+    session = _make_session(tmp_path)
+    data_dir = session.backend._data_dir
+    (data_dir / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
+    await session._log_output(
+        _stdout_of('waiting for login - connect to "X" from your Spotify app')
+    )
+    assert session._unpaired is False
+    assert session._error is None
 
 
 async def test_a_pairing_that_never_logs_in_routes_through_setup(
@@ -581,6 +668,98 @@ def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     # and the padding silence after it is refused
     item.write(b"\x00" * 4096)
     assert item.buffered == remainder
+
+
+@pytest.mark.parametrize(
+    ("target_ms", "reports"),
+    [
+        # seeking the restored item to where the engine already was
+        (117_000, (117_000, 0, 117_000)),
+        # seeking back into it, where every report lands below where it was
+        (30_000, (117_000, 0, 30_000)),
+    ],
+)
+async def test_the_seek_retries_until_the_engine_reports_the_target(
+    tmp_path: Path, target_ms: int, reports: tuple[int, ...]
+) -> None:
+    """A seek dropped while the track loads is re-sent until a report confirms it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    client = cast("Any", session._client)
+    # the engine restored this item part-way in, before the seek goes out
+    item.observe_position(117_000)
+
+    async def _report_positions() -> None:
+        for position_ms in reports:
+            await asyncio.sleep(0)
+            item.observe_position(position_ms)
+
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        # bounded so a regression fails fast instead of sitting out the real budget
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 1.0),
+    ):
+        reporter = asyncio.create_task(_report_positions())
+        await session._cold_seek(client, item, target_ms)
+        await reporter
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == target_ms
+    assert client.seek.await_count >= 1
+
+
+async def test_a_seek_that_only_ever_sees_the_restored_position_fails(tmp_path: Path) -> None:
+    """A seek nothing confirms fails loudly rather than streaming from elsewhere."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    # the engine sits at the restored position and never reloads the track
+    item.observe_position(117_000)
+    with (
+        patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01),
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 0.05),
+        pytest.raises(AudioError, match="did not confirm seeking"),
+    ):
+        await session._cold_seek(cast("Any", session._client), item, 117_000)
+
+
+async def test_a_seek_the_engine_ignored_does_not_cut_the_item_short(tmp_path: Path) -> None:
+    """An item the engine plays from its start is bounded by its full duration."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    item.claim()
+    # the engine never made the seek and is playing the item from its start, so
+    # the audio it delivers runs well past what the seeked remainder would allow
+    item.observe_position(80_000)
+    item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
+    item.close()
+    delivered = 0
+    async for chunk in item.read():
+        delivered += len(chunk)
+    assert delivered == 89 * _BYTES_PER_SECOND
+
+
+async def test_a_seek_that_landed_still_bounds_the_item_at_its_remainder(tmp_path: Path) -> None:
+    """An item the engine really seeked into stays bounded by what is left of it."""
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 176_000
+    item.arm_seek(117_000)
+    item.observe_position(0)
+    item.observe_position(117_000)
+    assert item.seek_confirmed.is_set()
+    assert item._overrun_limit() == 59 * _BYTES_PER_SECOND + int(
+        _ITEM_OVERRUN_S * _BYTES_PER_SECOND
+    )
+    # later reports do not move the latch, which would shrink the bound
+    item.observe_position(150_000)
+    assert item.started_at_ms == 117_000
+    # so it still fails once it runs that far past the seek point
+    item.claim()
+    item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
+    with pytest.raises(AudioError, match="never moved on"):
+        async for _ in item.read():
+            pass
 
 
 def test_the_lead_trim_never_exceeds_its_budget() -> None:
@@ -634,14 +813,15 @@ async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -
     assert session.has_pending is False
 
 
-async def test_seeking_the_playing_item_restarts_the_session(
+async def test_a_seek_the_session_cannot_take_restarts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    A seek re-opens the item that is playing, which is a restart of the session.
+    A seek the running session cannot serve falls back to restarting it.
 
     A realtime source has not captured anything past the play position, so any
-    forward seek lands outside the buffer and comes back here.
+    forward seek lands outside the buffer and comes back here; the session is
+    seeked in place when it can be, and replaced when it cannot.
     """
     backend = _make_backend(tmp_path)
     backend._server = MagicMock()
@@ -1718,14 +1898,25 @@ async def test_streaming_without_setup_is_refused(tmp_path: Path) -> None:
 
 
 def test_session_present_detection(tmp_path: Path) -> None:
-    """Only a dir holding something besides the WS endpoint files counts as paired."""
+    """Only the engine's per-account state counts as paired."""
     data_dir = tmp_path / "soloist-data"
     assert soloist_session_present(data_dir) is False
     data_dir.mkdir()
     (data_dir / WS_ADDR_FILE).write_text("127.0.0.1", encoding="utf-8")
     (data_dir / WS_PORT_FILE).write_text("1234", encoding="utf-8")
     assert soloist_session_present(data_dir) is False
-    (data_dir / "session.bin").write_bytes(b"x")
+    # everything a spawn leaves behind outlives the pairing it ran on: the engine
+    # keeps its identity, lock, cache and crash handler in the data dir even
+    # though it is given a cache dir of its own, and Music Assistant writes the
+    # prefs there before every spawn
+    (data_dir / "settings").mkdir()
+    (data_dir / "settings" / "prefs").write_text("audio.normalize_v2=false\n", encoding="utf-8")
+    (data_dir / ".device_id").write_text("6b6c2a07", encoding="utf-8")
+    (data_dir / ".lock").write_bytes(b"")
+    (data_dir / "cache" / "Users" / "spotify-user-user").mkdir(parents=True)
+    (data_dir / "crashpad").mkdir()
+    assert soloist_session_present(data_dir) is False
+    (data_dir / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
     assert soloist_session_present(data_dir) is True
 
 
@@ -1875,6 +2066,18 @@ def _capture_holding(
         os.close(write_fd)
 
 
+def _stdout_of(*lines: str) -> MagicMock:
+    """Return a process mock whose stdout yields the given daemon log lines."""
+
+    async def _iter_stdout() -> AsyncGenerator[str]:
+        for line in lines:
+            yield line
+
+    proc = MagicMock()
+    proc.iter_stdout = _iter_stdout
+    return proc
+
+
 def _make_provider(tmp_path: Path, setup_data: dict[str, Any] | None = None) -> SpotifyProvider:
     """Return a SpotifyProvider (bypassing __init__) with the given setup_data."""
     prov = object.__new__(SpotifyProvider)
@@ -1964,6 +2167,13 @@ def _client_of(session: _SoloistSession) -> AsyncMock:
     return cast("AsyncMock", session._client)
 
 
+def _current_of(session: _SoloistSession) -> _ItemAudio:
+    """Return the channel the session is playing, which the caller knows exists."""
+    item = session._current
+    assert item is not None
+    return item
+
+
 def _sink_of(session: _SoloistSession) -> AsyncMock:
     """Return the session's mocked capture sink."""
     return cast("AsyncMock", session._sink)
@@ -2008,3 +2218,511 @@ def _install_fake_binary_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = MagicMock()
     manager.ensure_fresh = AsyncMock(return_value=Path("/nonexistent/soloist"))
     monkeypatch.setattr(soloist_backend, "SoloistBinaryManager", MagicMock(return_value=manager))
+
+
+async def test_seeking_the_playing_item_keeps_the_session(tmp_path: Path) -> None:
+    """The engine is moved where it stands rather than the session being respawned."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.claim()
+    playing.duration_ms = 260_000
+    playing.playing_seen = True
+    playing.observe_position(30_000)
+    # the pre-seek audio nobody may hear again
+    playing.write(b"\x01" * 32)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 120_000)
+
+    assert item is not playing
+    assert session.current is item
+    assert item.claimed
+    # what the track is stays with it; where it was does not
+    assert item.duration_ms == 260_000
+    assert item.playing_seen
+    assert item.started_at_ms == 120_000
+    # the outgoing channel is closed, which is what ends the stream reading it
+    assert playing._closed
+    _client_of(session).seek.assert_awaited_once_with(120_000, await_result=True)
+
+
+async def test_a_seek_of_the_playing_item_is_sent_only_once(tmp_path: Path) -> None:
+    """
+    A landed seek is never repeated: a repeat restarts the item, audibly.
+
+    The engine answers late on purpose, so a re-send loop around the wait would
+    have fired several times over before the confirmation arrives.
+    """
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    pending: list[asyncio.Task[None]] = []
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        async def _confirm_late() -> None:
+            await asyncio.sleep(0.05)
+            _current_of(session).observe_position(position_ms)
+
+        pending.append(asyncio.create_task(_confirm_late()))
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    with patch.object(soloist_backend, "_SEEK_RETRY_INTERVAL_S", 0.01):
+        await session.seek_current(TRACK_A, 120_000)
+    await asyncio.gather(*pending)
+    assert _client_of(session).seek.await_count == 1
+
+
+async def test_seeking_back_is_not_confirmed_by_the_position_seeked_away_from(
+    tmp_path: Path,
+) -> None:
+    """A report still describing the pre-seek position cannot land a backward seek."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    playing.observe_position(200_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        item = _current_of(session)
+        # a report from before the seek is still in flight; it sits above the
+        # target's tolerance window and must not pass for the landing
+        item.observe_position(200_000)
+        assert not item.seek_confirmed.is_set()
+        item.observe_position(position_ms)
+        item.observe_position(position_ms + 2)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 60_000)
+    assert item.started_at_ms == 60_002
+    # and the pre-seek report is not left standing in for progress this item
+    # never made, which at_own_end and the completeness check would believe
+    assert item.last_position_ms == 60_002
+
+
+async def test_audio_in_flight_across_an_in_place_seek_is_dropped(tmp_path: Path) -> None:
+    """Only audio from past the seek reaches the fresh channel."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        # still rendering the position being left behind
+        session._write_if_wanted(b"\x01" * 32)
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    with _capture_holding(session, fifo_bytes=2 * _FRAME_BYTES, reader_bytes=_FRAME_BYTES):
+        item = await session.seek_current(TRACK_A, 120_000)
+    # nothing rendered while the engine was being moved reached the channel
+    assert not item._chunks
+    # and what the pipeline still held at the confirmation is dropped after it
+    assert session._stale_budget == 3 * _FRAME_BYTES
+    session._write_if_wanted(b"\x02" * (3 * _FRAME_BYTES))
+    session._write_if_wanted(b"\x03" * 16)
+    assert b"".join(item._chunks) == b"\x03" * 16
+
+
+async def test_the_sink_is_suspended_while_a_seek_is_in_flight(tmp_path: Path) -> None:
+    """No pre-seek audio enters the capture while the engine is being moved."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._sink_running = True
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    suspended_during_seek = False
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        nonlocal suspended_during_seek
+        suspended_during_seek = not session._sink_running
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    await session.seek_current(TRACK_A, 120_000)
+    assert suspended_during_seek
+    _sink_of(session).suspend.assert_awaited()
+
+
+async def test_a_seek_the_engine_never_confirms_fails_the_item(tmp_path: Path) -> None:
+    """An unconfirmed seek is reported rather than served from the wrong position."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    with (
+        patch.object(soloist_backend, "_SEEK_CONFIRM_TIMEOUT_S", 0.01),
+        pytest.raises(AudioError, match="did not confirm"),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+
+
+async def test_a_refused_seek_command_reports_soloist(tmp_path: Path) -> None:
+    """A rejected seek names the engine, so the caller can fall back."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    _client_of(session).seek.side_effect = SoloistError("nope")
+    with pytest.raises(AudioError, match="would not seek"):
+        await session.seek_current(TRACK_A, 120_000)
+
+
+async def test_seeking_an_item_the_engine_is_not_on_is_refused(tmp_path: Path) -> None:
+    """Only the item the session is actually playing can be seeked in place."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    with pytest.raises(AudioError, match="is not playing"):
+        await session.seek_current(TRACK_B, 120_000)
+
+
+async def test_a_seek_of_the_playing_item_is_served_by_the_running_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session is seeked where it stands instead of being replaced."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    # its own stream is still attached when the seek re-opens it
+    item.claim()
+    item.observe_position(30_000)
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    got_session, got_item = await backend._acquire(TRACK_A, 90, "player1")
+
+    assert got_session is session
+    assert got_item is not item
+    assert got_item.claimed
+    stopped.assert_not_awaited()
+    _client_of(session).seek.assert_awaited_once_with(90_000, await_result=True)
+
+
+async def test_a_cancelled_seek_does_not_leave_the_session_wedged(tmp_path: Path) -> None:
+    """
+    A superseded seek ends the session instead of holding it claimed for good.
+
+    A second seek cancels the stream the first one is being made for, and the
+    channel it had already claimed would otherwise keep the session in use:
+    unable to expire, and refusing every later item as busy.
+    """
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    seeking = asyncio.create_task(session.seek_current(TRACK_A, 120_000))
+    # let it get as far as waiting for the engine to confirm
+    while not _client_of(session).seek.await_count:
+        await asyncio.sleep(0)
+    seeking.cancel()
+    with suppress(asyncio.CancelledError):
+        await seeking
+    assert not session.usable
+    assert not session._seeking
+
+
+async def test_a_seek_cancelled_before_the_channel_is_swapped_keeps_the_session(
+    tmp_path: Path,
+) -> None:
+    """Nothing has been given up yet while the sink is still being held."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    held = asyncio.Event()
+
+    async def _slow_suspend(**_kwargs: Any) -> None:
+        held.set()
+        await asyncio.sleep(60)
+
+    with patch.object(session, "_apply_sink_state", _slow_suspend):
+        seeking = asyncio.create_task(session.seek_current(TRACK_A, 120_000))
+        await held.wait()
+        seeking.cancel()
+        with suppress(asyncio.CancelledError):
+            await seeking
+    # the session is untouched and, crucially, not left dropping every chunk
+    assert session.usable
+    assert not session._seeking
+    assert session.current is playing
+
+
+async def test_a_seek_is_refused_once_the_engine_has_moved_on(tmp_path: Path) -> None:
+    """The item seeked must still be the one the engine is on when the sink settles."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    follower = session._items[TRACK_B] = _ItemAudio(TRACK_B, session)
+
+    async def _boundary_lands(**_kwargs: Any) -> None:
+        session._current = follower
+
+    with (
+        patch.object(session, "_apply_sink_state", _boundary_lands),
+        pytest.raises(AudioError, match="moved on from"),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+    # the follower the engine actually reached keeps its own channel
+    assert session.current is follower
+    assert session._items[TRACK_A] is playing
+
+
+async def test_a_seek_that_fails_part_way_restarts_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seek the engine refuses after the channel was swapped still gets its audio."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    _client_of(session).seek.side_effect = SoloistError("refused")
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+    _install_fake_binary_manager(monkeypatch)
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(TRACK_A, 90, "player1")
+    stopped.assert_awaited_once()
+
+
+async def test_a_seek_refused_because_the_app_took_over_does_not_respawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement would claim the Connect device back off the Spotify app."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    item.observe_position(30_000)
+    started = AsyncMock()
+    monkeypatch.setattr(soloist_backend._SoloistSession, "start", started)
+
+    async def _app_takes_over(_position_ms: int, **_kwargs: Any) -> None:
+        # the user moved playback elsewhere from their Spotify app while the
+        # seek was in flight; the wait is released by the session ending
+        session._end_on_app_control(SoloistAppControl.TOOK_OVER)
+
+    _client_of(session).seek.side_effect = _app_takes_over
+    with pytest.raises(SoloistAppControlError):
+        await backend._acquire(TRACK_A, 120, "player1")
+    started.assert_not_awaited()
+
+
+async def test_a_seek_is_abandoned_when_the_app_took_over_during_the_suspend(
+    tmp_path: Path,
+) -> None:
+    """Nothing is seeked on a session the Spotify app has already taken over."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+
+    async def _app_takes_over(**_kwargs: Any) -> None:
+        session._end_on_app_control(SoloistAppControl.TOOK_OVER)
+
+    with (
+        patch.object(session, "_apply_sink_state", _app_takes_over),
+        pytest.raises(SoloistAppControlError),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+    # the engine was never asked to move
+    _client_of(session).seek.assert_not_awaited()
+
+
+async def test_a_cancelled_sink_transition_is_re_issued(tmp_path: Path) -> None:
+    """
+    A suspend that may or may not have landed is never taken as done.
+
+    A sink that did suspend would otherwise still read as running, and the
+    resume that should follow would be skipped as a no-op: silence for good.
+    """
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._sink_running = True
+    session._seeking = True
+
+    async def _cancelled_suspend() -> None:
+        raise asyncio.CancelledError
+
+    _sink_of(session).suspend.side_effect = _cancelled_suspend
+    with suppress(asyncio.CancelledError):
+        await session._apply_sink_state()
+    # the engine plays on and the sink is wanted running again
+    session._seeking = False
+    await session._apply_sink_state()
+    _sink_of(session).resume.assert_awaited_once()
+
+
+async def test_a_seek_cancelled_at_the_final_resume_does_not_leave_the_session_usable(
+    tmp_path: Path,
+) -> None:
+    """The channel is claimed by then, so an abandoned seek must still end the session."""
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.observe_position(30_000)
+    calls = 0
+    real_apply = session._apply_sink_state
+
+    async def _cancel_on_the_way_out(**kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError
+        await real_apply(**kwargs)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    with (
+        patch.object(session, "_apply_sink_state", _cancel_on_the_way_out),
+        suppress(asyncio.CancelledError),
+    ):
+        await session.seek_current(TRACK_A, 120_000)
+    assert not session.usable
+
+
+async def test_a_cold_seek_does_not_read_a_failed_session_as_landed(tmp_path: Path) -> None:
+    """The wake-up a fatal failure gives every channel is not a confirmed seek."""
+    session = _make_session(tmp_path)
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+
+    async def _engine_dies(_position_ms: int, **_kwargs: Any) -> None:
+        session._fail("the session exited")
+
+    _client_of(session).seek.side_effect = _engine_dies
+    with pytest.raises(AudioError, match="the session exited"):
+        await session._cold_seek(_client_of(session), item, 60_000)
+
+
+async def test_seeking_the_playing_item_back_to_its_start_keeps_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A seek to zero is a seek: reachable once an earlier one moved the buffer.
+
+    The buffer only hands a position to the provider when it cannot serve it
+    itself, so seeking back before an earlier seek's target arrives here with a
+    target of zero.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    backend._session = session
+    item = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    item.started.set()
+    item.claim()
+    item.observe_position(200_000)
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        current = _current_of(session)
+        current.observe_position(position_ms)
+        current.observe_position(position_ms + 2)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    got_session, got_item = await backend._acquire(TRACK_A, 0, "player1")
+
+    assert got_session is session
+    assert got_item is not item
+    stopped.assert_not_awaited()
+    _client_of(session).seek.assert_awaited_once_with(0, await_result=True)
+    assert got_item.started_at_ms == 2
+
+
+async def test_a_short_forward_seek_still_confirms(tmp_path: Path) -> None:
+    """
+    A seek only a little past where the engine is must not wait itself out.
+
+    Reachable because the engine runs ahead of what has been delivered - up to
+    the retained cushion - so a target the buffer will not serve can still be
+    inside the tolerance window of the engine's own position. Demanding the
+    engine drop below that mark would never be satisfied by a seek forward.
+    """
+    session = _make_session(tmp_path)
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    # the engine is at 49s while only ~30s has been delivered
+    playing.observe_position(49_000)
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 50_500)
+    assert item.seek_confirmed.is_set()
+    assert item.started_at_ms == 50_500
+
+
+async def test_a_seek_does_not_arm_the_last_items_drain(tmp_path: Path) -> None:
+    """
+    The channel opened for a seek has no position yet, which is not an ended item.
+
+    Holding the sink can make the engine report a state that is not playing, and
+    the run's last item would then be drained out from under the seek.
+    """
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    playing = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    playing.started.set()
+    playing.duration_ms = 260_000
+    playing.observe_position(30_000)
+    armed: list[bool] = []
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        # nothing to judge the fresh channel by yet, and no follower queued
+        await session._handle_playback_state(
+            SoloistPlaybackState(status="buffering", item=None, position=None)
+        )
+        armed.append(_current_of(session).draining)
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    item = await session.seek_current(TRACK_A, 120_000)
+    assert armed == [False]
+    assert not item.draining
+
+
+async def test_the_item_a_finished_run_stopped_on_is_not_seeked_in_place(
+    tmp_path: Path,
+) -> None:
+    """
+    A matching uri is not proof the engine is still playing it.
+
+    The channel stays current through the idle grace after the run ended, and a
+    seek would wait out its confirmation on an engine that has stopped.
+    """
+    session = _make_session(tmp_path)
+    ended = session._items[TRACK_A] = session._current = _ItemAudio(TRACK_A, session)
+    ended.started.set()
+    ended.close()
+    with pytest.raises(AudioError, match="is not playing"):
+        await session.seek_current(TRACK_A, 0)
+    _client_of(session).seek.assert_not_awaited()
