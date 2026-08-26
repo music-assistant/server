@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -12,6 +13,7 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
     system_meets_requirements,
     verify_system_meets_requirements,
@@ -78,6 +80,8 @@ MIN_CPU_CORES: int = 2
 # informational notice (see get_config_entries) as it may be tight under load.
 RECOMMENDED_RAM_GB: float = 6.0
 RECOMMENDED_CPU_CORES: int = 4
+
+MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
 
 
 @dataclass
@@ -551,21 +555,37 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     async def _run_live_clap_if_eligible(
         self, session: SonicSessionData, analysis: AudioAnalysisData
     ) -> None:
-        """Finalize CLAP analysis for the session, writing scalar attributes and the embedding onto analysis."""
+        """
+        Finalize CLAP analysis, writing the scalar attributes and embedding onto the analysis.
+
+        :param session: The analysis session.
+        :param analysis: Analysis object the CLAP scalars and embedding are written onto.
+        :raises AudioAnalysisError: Retryable, when fewer windows completed than were planned.
+        """
         if not session.clap_target_starts:
             return
         if session.clap_inference_tasks:
             await asyncio.gather(*session.clap_inference_tasks, return_exceptions=True)
         n = session.clap_completed_count
+        planned = len(session.clap_target_starts)
         sd = session.streamdetails
-        if n == 0 or session.clap_sum_embedding is None or session.clap_sum_similarities is None:
+        if (
+            n < planned
+            or session.clap_sum_embedding is None
+            or session.clap_sum_similarities is None
+        ):
             self.logger.warning(
-                "Live CLAP for %s/%s: no windows completed (planned %d)",
+                "Live CLAP for %s/%s: only %d of %d planned windows completed — "
+                "failing the analysis so it is retried",
                 sd.provider,
                 sd.item_id,
-                len(session.clap_target_starts),
+                n,
+                planned,
             )
-            return
+            raise AudioAnalysisError(
+                f"live CLAP completed {n} of {planned} planned windows",
+                retry_at=utc() + MODEL_FAILURE_RETRY_DELAY,
+            )
 
         mean_emb = session.clap_sum_embedding / n
         norm = float(np.linalg.norm(mean_emb))
@@ -623,6 +643,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if not session.accumulated.rms_frames:
             raise AudioAnalysisError("no usable audio frames extracted")
 
+        self._flush_incomplete_clap_windows(session, af.sample_rate)
+
         t0 = time.monotonic()
         analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
@@ -651,6 +673,25 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             session.clap_preset,
         )
         return analysis
+
+    def _flush_incomplete_clap_windows(self, session: SonicSessionData, source_sr: int) -> None:
+        """
+        Dispatch every planned CLAP window that buffered audio but never filled to 7 seconds.
+
+        :param session: The analysis session; the buffers of flushed windows are consumed.
+        :param source_sr: Sample rate the buffered PCM was captured at.
+        """
+        # The vendored wrapper repeat-pads short input, so a partial window still embeds.
+        for i, buffered in enumerate(session.clap_target_buffers):
+            if session.clap_target_complete[i] or not buffered:
+                continue
+            window_audio = np.concatenate(buffered)
+            session.clap_target_buffers[i] = []
+            session.clap_target_complete[i] = True
+            task = self.mass.create_task(
+                self._run_single_clap_window(session, window_audio, source_sr)
+            )
+            session.clap_inference_tasks.append(task)
 
     def _single_window_inference_sync(
         self,
