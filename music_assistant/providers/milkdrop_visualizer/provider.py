@@ -94,6 +94,7 @@ class MilkdropVisualizerProvider(PluginProvider):
         user_agent: str | None = None,
         gpu: str | None = None,
         render: dict[str, Any] | None = None,
+        error: str | None = None,
     ) -> None:
         """
         Record a display's reported render capabilities in the server log.
@@ -108,6 +109,9 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param gpu: What the display's GL context reports it draws with.
         :param render: Measured render performance, for displays whose quality adapts.
         """
+        if error is not None:
+            self.logger.warning("Viewer error: %s (user_agent=%s)", str(error)[:500], user_agent)
+            return
         if render is None:
             self.logger.info(
                 "Viewer capability: webgl2=%s renderer=%s gpu=%s user_agent=%s",
@@ -120,14 +124,17 @@ class MilkdropVisualizerProvider(PluginProvider):
         # best-effort observability: a malformed field must not fail the report
         late_ratio = render.get("late_ratio")
         late_pct = round(late_ratio * 100) if isinstance(late_ratio, (int, float)) else 0
+        blocked_ratio = render.get("blocked_ratio")
+        blocked_pct = round(blocked_ratio * 100) if isinstance(blocked_ratio, (int, float)) else 0
         self.logger.info(
-            "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% render=%sms",
+            "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% blocked=%s%% render=%sms",
             render.get("note"),
             render.get("level"),
             render.get("pixels"),
             render.get("fps"),
             render.get("target_fps"),
             late_pct,
+            blocked_pct,
             render.get("render_ms"),
         )
 
