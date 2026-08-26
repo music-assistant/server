@@ -168,10 +168,10 @@ class AudioSourceMixin:
 
         Called once the owning plugin has accepted the stream request, which is
         where a source moving between players commits: whichever other player
-        still held it is evicted here, so a takeover that never gets a stream
-        request leaves it untouched on the player that has it. Returns False when
-        the session is no longer the live one on its player, in which case the
-        caller must not serve it.
+        still held it is evicted on the selection's first stream request, so a
+        takeover that never gets one leaves it untouched on the player that has
+        it. Returns False when the session is no longer the live one on its
+        player, in which case the caller must not serve it.
 
         :param session: The session the stream request resolved.
         :param playback_session_id: The playback session the request set out to serve.
@@ -184,16 +184,22 @@ class AudioSourceMixin:
             return False
         # a source plays on one player at a time, so it leaves whichever other player
         # was holding it: two players both reporting it would let a command on the one
-        # that lost it drive the one that has it
-        for other_id, other in list(self._source_sessions.items()):
-            if (
-                other_id != session.player_id
-                and other.source_id == session.source_id
-                and other.provider_instance_id == session.provider_instance_id
-            ):
-                self.mass.streams.audio_processing.clear_source(other_id, other.playback_session_id)
-                del self._source_sessions[other_id]
-                self.trigger_player_update(other_id)
+        # that lost it drive the one that has it. Only the first request for this
+        # selection evicts: a reconnect on the player already streaming the source
+        # would otherwise take away a player it is being handed to, before that one
+        # has had its chance to start.
+        if session.stream_session_id is None:
+            for other_id, other in list(self._source_sessions.items()):
+                if (
+                    other_id != session.player_id
+                    and other.source_id == session.source_id
+                    and other.provider_instance_id == session.provider_instance_id
+                ):
+                    self.mass.streams.audio_processing.clear_source(
+                        other_id, other.playback_session_id
+                    )
+                    del self._source_sessions[other_id]
+                    self.trigger_player_update(other_id)
         session.stream_session_id = stream_session_id
         return True
 

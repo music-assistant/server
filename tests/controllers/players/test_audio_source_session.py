@@ -380,6 +380,32 @@ def test_claiming_a_session_stamps_the_stream_token() -> None:
     assert session.stream_session_id == "tok-1"
 
 
+def test_a_reconnect_does_not_take_away_a_player_the_source_is_moving_to() -> None:
+    """
+    Only the first stream request for a selection evicts the other players.
+
+    A player already streaming the source reconnects through the same claim, and
+    it must not undo a handover whose target has not started streaming yet.
+    """
+    ctrl = _Controller(_plugin_provider())
+    source = _audio_source()
+    session_a = ctrl._start_audio_source_session("player-a", source, PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session_a, session_a.playback_session_id, "tok-a1")
+    session_b = ctrl._start_audio_source_session("player-b", source, PROVIDER_INSTANCE)
+
+    # player-a's renderer drops and re-opens the stream while the move is pending
+    assert ctrl.claim_audio_source_session(session_a, session_a.playback_session_id, "tok-a2")
+
+    assert ctrl.get_audio_source_session("player-b") is session_b
+    assert "player-b" not in ctrl.updated_players
+
+    # the handover still completes once player-b actually streams
+    assert ctrl.claim_audio_source_session(session_b, session_b.playback_session_id, "tok-b1")
+
+    assert ctrl.get_audio_source_session("player-a") is None
+    assert ctrl.updated_players == ["player-a"]
+
+
 def test_a_claimed_token_outlives_the_stream_that_stamped_it() -> None:
     """
     The stream token records that a selection was streamed, not that it still is.
