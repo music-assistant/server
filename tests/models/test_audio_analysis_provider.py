@@ -754,3 +754,60 @@ async def test_finalize_started_during_unload_does_not_run_inference() -> None:
     assert finalized == ["s-first"]
     assert first.cancelled()
     assert not provider._finalize_tasks
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_declines_while_unloading() -> None:
+    """A session arriving from a stale provider snapshot must not start on a dying provider."""
+    provider = _make_provider()
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    provider.unloading = True
+
+    accepted = await provider.start_analysis("s", MagicMock(), MagicMock())
+
+    assert accepted is False
+    provider._start_analysis.assert_not_awaited()
+    # The gate comes first, so nothing downstream of it runs either.
+    version_lookup = provider.mass.streams.audio_analysis.get_audio_analysis_version
+    version_lookup.assert_not_awaited()  # type: ignore[attr-defined]
+    assert "s" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_ensure_models_loaded_declines_while_unloading() -> None:
+    """Models must never be reloaded onto a provider that is on its way out."""
+    provider = _make_provider()
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider.unloading = True
+
+    assert await provider.ensure_models_loaded() is False
+    provider._load_models.assert_not_awaited()
+    assert provider._models_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_models_loaded_declines_when_queued_behind_unload() -> None:
+    """A loader already waiting on the models lock must decline once unload() has run."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    loaded = False
+
+    async def _load() -> None:
+        nonlocal loaded
+        loaded = True
+
+    provider._load_models = _load  # type: ignore[method-assign]
+    provider._free_models = MagicMock()  # type: ignore[method-assign]
+
+    # Hold the lock so the loader is queued behind the unload that follows.
+    await provider._models_lock.acquire()
+    loader = asyncio.create_task(provider.ensure_models_loaded())
+    await asyncio.sleep(0)
+    # mass.unload_provider sets this before it awaits provider.unload()
+    provider.unloading = True
+    provider._models_lock.release()
+    await provider.unload()
+
+    assert await loader is False
+    assert loaded is False
+    assert provider._models_loaded is False

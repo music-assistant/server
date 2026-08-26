@@ -134,6 +134,10 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if self.unloading:
+            # The controller snapshots providers up front and awaits between them, so a
+            # session can still arrive for a provider that is already on its way out.
+            return False
         if (
             self.max_analysis_duration is not None
             and streamdetails.duration
@@ -302,9 +306,14 @@ class AudioAnalysisProvider(Provider):
         Load this provider's heavy models if they are not resident, returning success.
 
         Safe to call from concurrent sessions: the models are loaded once. Returns False
-        when loading fails, so the caller can decline the session.
+        when loading fails, or when the provider is unloading, so the caller can decline
+        the session.
         """
         async with self._models_lock:
+            # Checked under the lock unload() frees within: the lock alone only serializes
+            # the two, so a loader that wins it afterwards would strand the models.
+            if self.unloading:
+                return False
             if self._models_loaded:
                 return True
             try:
