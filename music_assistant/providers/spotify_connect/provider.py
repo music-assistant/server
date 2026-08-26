@@ -192,6 +192,9 @@ class SpotifyConnectProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._daemons: dict[str, _PlayerDaemon] = {}
+        # players whose daemon gave up permanently; skipped by reconcile until the
+        # player re-registers or the provider reloads
+        self._failed_player_ids: set[str] = set()
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -625,6 +628,9 @@ class SpotifyConnectProvider(PluginProvider):
                     self._clear_active_player(daemon)
                     await self._stop_daemon(daemon)
             return
+        if event.event == EventType.PLAYER_ADDED and event.object_id:
+            # a re-registered player earns a permanently failed daemon a fresh start
+            self._failed_player_ids.discard(event.object_id)
         await self._reconcile()
 
     async def _reconcile(self) -> None:
@@ -639,6 +645,10 @@ class SpotifyConnectProvider(PluginProvider):
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
             for player_id in self._assigned_player_ids:
+                if player_id in self._failed_player_ids:
+                    # this daemon gave up permanently; blocked from restarts until the
+                    # player re-registers or the provider reloads
+                    continue
                 player = self.mass.players.get_player(player_id)
                 if player is None:
                     # not (yet) registered: never start a daemon for it; an already
@@ -700,6 +710,33 @@ class SpotifyConnectProvider(PluginProvider):
             with suppress(asyncio.CancelledError):
                 await task
         await daemon.backend.stop()
+
+    async def _give_up_daemon(self, daemon: _PlayerDaemon, error: str) -> None:
+        """
+        Permanently stop a single failed daemon, leaving the other daemons running.
+
+        :param daemon: The daemon whose backend failed permanently.
+        :param error: The backend's failure description.
+        """
+        async with self._reconcile_lock:
+            # a rename restart, player removal or unload may have replaced or
+            # stopped the daemon meanwhile; only the live daemon gives up
+            if self._daemons.get(daemon.player_id) is not daemon:
+                return
+            del self._daemons[daemon.player_id]
+            self._failed_player_ids.add(daemon.player_id)
+            self.logger.warning(
+                "Giving up on Spotify Connect device '%s' for player %s: %s "
+                "Other players are unaffected; reload the provider to retry.",
+                daemon.publish_name,
+                daemon.player_id,
+                error,
+            )
+            # release a consuming player so it is not left bound to a dead source
+            self._clear_active_player(daemon)
+            await self._stop_daemon(daemon)
+        # drop the standing source entry from the player's cached source list
+        self.mass.players.trigger_player_update(daemon.player_id)
 
     def _create_backend(self, daemon: _PlayerDaemon, player_name: str) -> SpotifyConnectBackend:
         """
@@ -971,7 +1008,7 @@ class SpotifyConnectProvider(PluginProvider):
             daemon.last_playback_options = None
             return
         if event.type is BackendEventType.FATAL_ERROR:
-            self.unload_with_error(event.error or "Spotify Connect backend failed")
+            self._handle_fatal_error(daemon, event)
             return
         if event.type is BackendEventType.ERROR:
             # non-fatal backend error: surface it in the log only
@@ -1065,6 +1102,21 @@ class SpotifyConnectProvider(PluginProvider):
                 self.instance_id,
                 daemon.stream_metadata,
             )
+
+    def _handle_fatal_error(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
+        """
+        Act on a backend that failed permanently.
+
+        :param daemon: The daemon the event originates from.
+        :param event: The FATAL_ERROR event to handle.
+        """
+        error = event.error or "Spotify Connect backend failed"
+        if event.provider_wide:
+            self.unload_with_error(error)
+            return
+        # scheduled as a task: this callback runs on the backend's own runner
+        # task, which the give-up is about to stop
+        self.mass.create_task(self._give_up_daemon(daemon, error))
 
     def _remember_context_uris(self, daemon: _PlayerDaemon, event: BackendEvent) -> None:
         """

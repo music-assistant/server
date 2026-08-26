@@ -551,13 +551,14 @@ async def test_connection_lost_resets_session_without_stopping_players() -> None
     mass.players.cmd_stop.assert_not_called()
 
 
-async def test_fatal_error_unloads_provider_with_error() -> None:
-    """A FATAL_ERROR event unloads the provider with the backend's error message."""
+async def test_provider_wide_fatal_error_unloads_provider_with_error() -> None:
+    """A provider-wide FATAL_ERROR unloads the provider with the backend's error message."""
     backend = FakeBackend()
     provider, daemon, mass = _make_provider(backend)
 
     await provider._handle_backend_event(
-        daemon, BackendEvent(BackendEventType.FATAL_ERROR, error="daemon kaput")
+        daemon,
+        BackendEvent(BackendEventType.FATAL_ERROR, error="daemon kaput", provider_wide=True),
     )
 
     mass.call_later.assert_called_once_with(

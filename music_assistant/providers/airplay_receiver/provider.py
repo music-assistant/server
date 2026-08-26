@@ -159,6 +159,9 @@ class AirPlayReceiverProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._shairport_bin: str | None = None
         self._daemons: dict[str, _ReceiverDaemon] = {}
+        # players whose daemon gave up permanently; skipped by reconcile until the
+        # player re-registers or the provider reloads
+        self._failed_player_ids: set[str] = set()
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -398,6 +401,9 @@ class AirPlayReceiverProvider(PluginProvider):
                     self._clear_active_player(daemon)
                     await self._stop_receiver(daemon)
             return
+        if event.event == EventType.PLAYER_ADDED and event.object_id:
+            # a re-registered player earns a permanently failed daemon a fresh start
+            self._failed_player_ids.discard(event.object_id)
         await self._reconcile()
 
     async def _reconcile(self) -> None:
@@ -412,6 +418,10 @@ class AirPlayReceiverProvider(PluginProvider):
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
             for player_id in self._assigned_player_ids:
+                if player_id in self._failed_player_ids:
+                    # this daemon gave up permanently; blocked from restarts until the
+                    # player re-registers or the provider reloads
+                    continue
                 player = self.mass.players.get_player(player_id)
                 if player is None:
                     # not (yet) registered: never start a daemon for it; an already
@@ -517,6 +527,33 @@ class AirPlayReceiverProvider(PluginProvider):
         daemon.shairport_proc = None
         daemon.started.clear()
 
+    async def _give_up_receiver(self, daemon: _ReceiverDaemon, error: str) -> None:
+        """
+        Permanently stop a single failed receiver, leaving the other receivers running.
+
+        :param daemon: The receiver whose daemon failed permanently.
+        :param error: The daemon's failure description.
+        """
+        async with self._reconcile_lock:
+            # a rename restart, player removal or unload may have replaced or
+            # stopped the receiver meanwhile; only the live one gives up
+            if self._daemons.get(daemon.player_id) is not daemon:
+                return
+            del self._daemons[daemon.player_id]
+            self._failed_player_ids.add(daemon.player_id)
+            self.logger.warning(
+                "Giving up on AirPlay receiver '%s' for player %s: %s "
+                "Other players are unaffected; reload the provider to retry.",
+                daemon.airplay_name,
+                daemon.player_id,
+                error,
+            )
+            # release a consuming player so it is not left bound to a dead source
+            self._clear_active_player(daemon)
+            await self._stop_receiver(daemon)
+        # drop the standing source entry from the player's cached source list
+        self.mass.players.trigger_player_update(daemon.player_id)
+
     def _setup_shairport_daemon(self, daemon: _ReceiverDaemon) -> None:
         """Handle setup of the shairport-sync daemon for a receiver."""
         # a delayed restart can fire after the receiver was stopped or replaced
@@ -585,7 +622,12 @@ class AirPlayReceiverProvider(PluginProvider):
                 self.unload_with_error("Unable to initialize shairport-sync daemon.")
             # Auto restart if not stopped manually
             elif daemon.runner_error_count >= 5:
-                self.unload_with_error("shairport-sync daemon failed to start multiple times.")
+                # scheduled as a task: this runner task is what the give-up stops
+                self.mass.create_task(
+                    self._give_up_receiver(
+                        daemon, "shairport-sync daemon failed to start multiple times."
+                    )
+                )
             else:
                 daemon.runner_error_count += 1
                 self.mass.call_later(2, self._setup_shairport_daemon, daemon)

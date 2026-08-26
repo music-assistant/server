@@ -47,9 +47,10 @@ and quoting pitfalls:
   credentials persisted per daemon.
 - The local HTTP/WS API binds to `127.0.0.1` on a free port per daemon.
 
-The daemon is supervised: restarts on exit, a fatal event (→ `unload_with_error`) after
-repeated failures. A self-healing WebSocket listener reconnects across daemon restarts and
-translates `/events` messages into normalized `BackendEvent`s.
+The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
+the provider gives up this one daemon (stopping it and keeping the other players' daemons
+running). A self-healing WebSocket listener reconnects across daemon restarts and translates
+`/events` messages into normalized `BackendEvent`s.
 
 ## Audio transport
 

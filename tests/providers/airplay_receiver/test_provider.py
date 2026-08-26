@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import EventType
@@ -76,6 +77,7 @@ def _reconcile_provider(
     prov.config = MagicMock()
     prov.mass = mass = MagicMock()
     prov._daemons = {}
+    prov._failed_player_ids = set()
     prov._reconcile_lock = asyncio.Lock()
     prov._unload_called = False
     prov._unsubscribe = None
@@ -93,8 +95,13 @@ def _reconcile_provider(
     mass.players.get_player.side_effect = get_player
 
     def start_receiver(player: MagicMock, airplay_name: str) -> None:
+        # stop_called / active_player_id are spelled out: a bare MagicMock attribute is
+        # truthy, which would trip the stopped-daemon guard and the deselect path
         prov._daemons[player.player_id] = MagicMock(
-            player_id=player.player_id, airplay_name=airplay_name
+            player_id=player.player_id,
+            airplay_name=airplay_name,
+            stop_called=False,
+            active_player_id=None,
         )
 
     start_mock = MagicMock(side_effect=start_receiver)
@@ -216,3 +223,59 @@ async def test_unload_stops_all_daemons() -> None:
     unsubscribe.assert_called_once()
     assert mocks.stop_receiver.await_count == 2
     assert not prov._daemons
+
+
+async def test_give_up_receiver_stops_only_the_failed_daemon() -> None:
+    """A permanently failed receiver is dropped while the other receivers keep running."""
+    prov, mocks = _reconcile_provider(("p1", "p2"), {"p1": "Kitchen", "p2": "Garage"})
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+    daemon.active_player_id = "consumer"
+
+    await prov._give_up_receiver(daemon, "shairport-sync daemon failed to start multiple times.")
+
+    assert "p1" not in prov._daemons
+    assert "p2" in prov._daemons
+    mocks.stop_receiver.assert_awaited_once_with(daemon)
+    assert prov._failed_player_ids == {"p1"}
+    mocks.mass.players.trigger_player_update.assert_called_with("p1")
+    mocks.mass.players.deselect_source.assert_called_once()
+    cast("MagicMock", prov.logger).warning.assert_called_once()
+
+
+async def test_reconcile_skips_a_given_up_receiver() -> None:
+    """A receiver that gave up permanently is not relaunched by an ordinary reconcile."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    prov._failed_player_ids = {"p1"}
+
+    await prov._reconcile()
+
+    mocks.start_receiver.assert_not_called()
+    assert "p1" not in prov._daemons
+
+
+async def test_player_added_gives_a_failed_receiver_a_fresh_start() -> None:
+    """A player re-registering lifts the block and starts its receiver again."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_ADDED, object_id="p1"))
+
+    assert "p1" not in prov._failed_player_ids
+    mocks.start_receiver.assert_called_once()
+    assert "p1" in prov._daemons
+
+
+async def test_give_up_on_a_replaced_receiver_is_a_noop() -> None:
+    """A give-up landing after the receiver was replaced leaves the replacement running."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    await prov._reconcile()
+    old_daemon = prov._daemons["p1"]
+    replacement = MagicMock(player_id="p1", airplay_name="Kitchen | Music Assistant")
+    prov._daemons["p1"] = replacement
+
+    await prov._give_up_receiver(old_daemon, "boom")
+
+    mocks.stop_receiver.assert_not_awaited()
+    assert not prov._failed_player_ids
+    assert prov._daemons["p1"] is replacement

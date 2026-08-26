@@ -667,6 +667,10 @@ class SoloistBackend(SpotifyConnectBackend):
                         # fatal errors are plain (non-localized) strings for now,
                         # matching the go-librespot backend
                         error="soloist daemon failed to start multiple times.",
+                        # repeated soloist exits are dominated by engine-level
+                        # problems (e.g. a bad or revoked API key) that hit every
+                        # daemon alike
+                        provider_wide=True,
                     )
                 )
                 return
@@ -771,6 +775,8 @@ class SoloistBackend(SpotifyConnectBackend):
                         "installed. Check the server's internet connection and reload "
                         "this provider."
                     ),
+                    # the binary (and its expiry) is shared by every daemon
+                    provider_wide=True,
                 )
             )
             return False
