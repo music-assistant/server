@@ -2417,7 +2417,7 @@ async def test_a_channel_no_stream_ever_took_stops_holding_the_cushion(
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
     session._write_if_wanted(b"\x01" * 4096)
     assert session._retained_bytes() == 4096
-    # cut while it is still the current channel, which the prune deliberately keeps
+    # still the current channel, so the prune cannot be what frees the cushion
     item.close()
     assert item in session._channels
     assert session._retained_bytes() == 0

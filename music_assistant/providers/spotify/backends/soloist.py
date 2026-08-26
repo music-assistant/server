@@ -1910,8 +1910,7 @@ class _SoloistSession:
         """Open a channel for one occurrence of an item, dropping any nothing can read."""
         # A channel the session has moved past and no stream holds can answer
         # for nothing: it is dropped here rather than carried for the rest of
-        # the run, where its buffer would go on counting against the retention
-        # cap and the capture loop would go on scanning it.
+        # the run, where every walk of the channel list would keep visiting it.
         self._channels = [
             item
             for item in self._channels
@@ -2434,9 +2433,10 @@ class _ItemAudio:
         """
         Free audio nothing can read any more, so it stops gating the capture sink.
 
-        A closed channel is never handed to a stream again; without this the
-        buffer it had filled would count against ``_MAX_RETAINED_S`` for the rest
-        of the session, and enough of them would suspend the sink for good.
+        A closed channel is not offered to a stream again, so once nothing holds
+        it its buffer can only count against ``_MAX_RETAINED_S`` - and the item a
+        run ends on stays current, so it would do so for the rest of the session
+        and suspend the sink for good.
         """
         if self.claimed or not self._closed:
             return
