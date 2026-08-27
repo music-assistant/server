@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -80,6 +80,7 @@ from music_assistant.helpers.util import is_valid_mac_address, join_task
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
+from .bridge_role import BridgePlayerRole
 from .constants import (
     BRIDGE_PREFIX,
     CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
@@ -1399,6 +1400,11 @@ class SendspinPlayer(SendspinBasePlayer):
         try:
             await self.api.group.stop()
         finally:
+            # Bridge members buffer seconds of audio on their downstream protocol
+            # and keep that transport warm across stream ends; a user stop must
+            # reach them so the device is silenced now instead of playing out its
+            # buffer. Synchronous, so nothing suspends before the cancel below.
+            self._notify_bridges_explicit_stop(self.api.group.clients)
             await self.playback_session.cancel("stop command")
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -1482,6 +1488,12 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
+            # An explicit removal ends playback for that member; a bridge among
+            # its roles must silence its device now rather than play out the
+            # audio it still holds buffered. A member moving to another group
+            # does not pass here (add_client regroups internally), so a warm
+            # transport handover between groups is unaffected.
+            self._notify_bridges_explicit_stop([member_player.api])
         # Cast-only: reset futures before add so a fatal error on a Cast-bridged
         # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
         # Only track readiness while streaming, only then add_client launches the app.
@@ -1838,6 +1850,25 @@ class SendspinPlayer(SendspinBasePlayer):
             else DisconnectBehaviour.UNGROUP
         )
         await self.playback_session.sync_members(set(desired_session_members))
+
+    def _notify_bridges_explicit_stop(self, clients: Iterable[SendspinClient]) -> None:
+        """
+        Tell bridge roles among the given clients that playback was explicitly stopped.
+
+        :param clients: The Sendspin clients whose bridge roles to notify.
+        """
+        for client in list(clients):
+            for role in client.roles_by_family("player"):
+                if not isinstance(role, BridgePlayerRole):
+                    continue
+                try:
+                    role.notify_explicit_stop()
+                except Exception:
+                    # Best effort: one bridge failing must not keep the stop
+                    # from reaching the other members or the session teardown.
+                    self.logger.exception(
+                        "Error notifying bridge %s of an explicit stop", client.client_id
+                    )
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
