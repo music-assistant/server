@@ -597,7 +597,12 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # A player stream the bridge does not own is a live native session:
+            # its reference is left in place for the start task to stop before
+            # it spawns a new process (dropping it here would orphan that
+            # session's cli process alongside the new one).
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -651,7 +656,10 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # Leave a native session's reference in place for the start task to
+            # stop, exactly as in _on_stream_start.
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -697,6 +705,34 @@ class SendspinAirPlayBridge:
                 # neither the kept stream nor the receiver is this task's to touch.
                 return
 
+            # A player stream the bridge does not own is a live native session
+            # being displaced by this start (the controller's handover never
+            # stops a solo player's native session). Stop it before the new
+            # process pairs with the receiver: two cli processes on one receiver
+            # reset each other's RTSP channel and both sessions die.
+            displaced_stream = self.airplay_player.stream
+            if displaced_stream is not None and displaced_stream is not self._airplay_stream:
+                self.logger.debug(
+                    "Stopping the native session of %s before bridging it to Sendspin",
+                    self.airplay_player.display_name,
+                )
+                with suppress(Exception):
+                    if displaced_stream.session is not None:
+                        # Release just this member: a synced native group plays
+                        # on without it, and a solo session winds down its audio
+                        # source along with the stream.
+                        await displaced_stream.session.remove_client(
+                            self.airplay_player, reason="displaced by sendspin bridge"
+                        )
+                    else:
+                        await displaced_stream.stop(force=True)
+                if self.airplay_player.stream is displaced_stream:
+                    self.airplay_player.stream = None
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    # A newer stream start took the bridge over while the
+                    # displaced session was being stopped.
+                    return
+
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
@@ -713,7 +749,8 @@ class SendspinAirPlayBridge:
                 with suppress(Exception):
                     await kept_stream.stop(force=True)
                 self._airplay_stream = None
-                self.airplay_player.stream = None
+                if self.airplay_player.stream is kept_stream:
+                    self.airplay_player.stream = None
                 self._use_shared_ptp = None
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream

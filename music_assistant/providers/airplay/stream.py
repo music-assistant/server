@@ -1400,6 +1400,15 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
+                    if player.stream is not self:
+                        # A newer session (native or Sendspin bridge) owns this
+                        # player, so this process's death says nothing about the
+                        # device: ungrouping or scheduling a re-join over it
+                        # would tear down the session that replaced it.
+                        logger.debug(
+                            "superseded cliairplay process stopped for %s", player.display_name
+                        )
+                        return
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
@@ -1913,6 +1922,10 @@ class AirPlayStream:
         if self._native_control_failure_handled:
             return
         self._native_control_failure_handled = True
+        if self.player.stream is not self:
+            # A superseded process losing its control channel (a newer session
+            # reset it on the receiver) is not evidence about the device.
+            return
         if self.player.streaming_mode != STREAMING_MODE_AUTO:
             return
         self.player.logger.warning(
