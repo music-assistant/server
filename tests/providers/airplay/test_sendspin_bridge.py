@@ -1187,6 +1187,43 @@ async def test_a_teardown_does_not_lose_the_receiver_to_a_queued_native_start() 
     assert cast("MagicMock", player).stream is native_stream
 
 
+async def test_a_native_start_joins_a_teardown_already_under_way() -> None:
+    """
+    A start waits out a stop that is already running on the stream it displaces.
+
+    A stream stops reporting itself as running the moment its own stop() begins,
+    which is before the STOP write and the process kill. Reading that as "gone"
+    would let the start pair a process with a receiver the old one has not let
+    go of yet.
+    """
+    player = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US).airplay_player
+    processes = _ReceiverProcesses()
+
+    # mid-teardown: no longer reporting itself as running, process still alive
+    stopping_stream = _make_native_stream()
+    stopping_stream.running = False
+    processes.spawn()
+
+    async def _finish_teardown(**_kwargs: object) -> None:
+        for _ in range(4):
+            await asyncio.sleep(0)
+        processes.kill()
+
+    stopping_stream.stop = AsyncMock(side_effect=_finish_teardown)
+    player.stream = stopping_stream
+
+    native_stream = _make_native_stream()
+    native_stream.running = False
+    native_stream.connect = AsyncMock(side_effect=processes.spawn)
+    native_stream.stop = AsyncMock(side_effect=processes.kill)
+
+    await _run_native_start(player, native_stream)
+
+    stopping_stream.stop.assert_awaited_once()
+    assert processes.peak == 1
+    assert cast("MagicMock", player).stream is native_stream
+
+
 async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> None:
     """
     A transport the bridge cannot release stops it from spawning a second process.

@@ -1084,7 +1084,12 @@ class AirPlayStreamSession:
         # process is connected and published, so a Sendspin bridge start cannot
         # put a second cli process on the same receiver in between.
         async with airplay_player.stream_spawn_lock:
-            if airplay_player.stream and airplay_player.stream.running:
+            if airplay_player.stream:
+                # Stopped unconditionally, not just while it reads as running: a
+                # stream stops reporting that the moment its own stop() starts,
+                # while its process can still be on the receiver. stop() is
+                # idempotent, so this joins a teardown already under way and
+                # returns at once for one that finished.
                 await airplay_player.stream.stop()
             stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
             airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
