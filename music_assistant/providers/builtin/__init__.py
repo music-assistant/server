@@ -1622,4 +1622,6 @@ def _has_music_tags(media_info: AudioTags) -> bool:
     # notification and TTS clips are untagged, which is what tells them apart from a music
     # file someone plays by URL. The artists/album properties fall back to the filename, so
     # the raw tags are what has to be checked here.
-    return any(media_info.get(tag) for tag in ("artist", "artists", "albumartist", "album"))
+    return any(
+        media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
+    )
