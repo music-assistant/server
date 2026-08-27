@@ -348,7 +348,9 @@ _LEGACY_ICON_MAP: dict[str, str] = {
 #   collects them (the options are only known from live server state), so they live in
 #   setup_data like any other flow-collected value.
 # - spotify's deprecated "refresh_token" stays in `values`: _migrate_legacy_token reads it
-#   from there to split it into the global/dev keys.
+#   from there to split it into the global/dev keys, and clears it once it has. That read
+#   runs in setup(), where seed_stored_config_values still exposes the stored values, so
+#   moving this one key here would leave the split with nothing to read.
 # TODO: remove after 2.13 release
 PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
