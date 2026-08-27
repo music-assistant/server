@@ -484,6 +484,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
+                    if self._queue_data.get(queue.queue_id) is not qdata:
+                        # the queue was removed or re-registered while tracks were fetched
+                        return
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(queue.queue_id, x)
