@@ -46,9 +46,11 @@ from .constants import (
     AIRPLAY_VOLUME_MUTE,
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
+    CONF_COMPAT_PINS_REVIEWED,
     CONF_PASSWORD_INVALID,
     CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
+    CONF_STREAMING_MODE,
     CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
     EXTERNAL_ARTWORK_PATH_PREFIX,
@@ -57,6 +59,8 @@ from .constants import (
     PTP_DAEMON_WARN_BURST,
     PTP_DAEMON_WARN_WINDOW,
     RAOP_DISCOVERY_TYPE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -229,6 +233,7 @@ class AirPlayProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
         self._drop_unverified_password_markers()
+        self._reset_auto_pinned_compat_modes()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
         # Shared audible instants for in-flight announcements, keyed by
@@ -1213,4 +1218,40 @@ class AirPlayProvider(PlayerProvider):
         # the next load instead of stranding the players it never reached
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )
+
+    def _reset_auto_pinned_compat_modes(self) -> None:
+        """
+        Reset the compatibility-mode pins left by earlier releases, once.
+
+        Those releases switched a player's streaming mode to compatibility mode
+        themselves when its native control channel failed, which a network
+        dropout of the device also triggers. The pin outlived the dropout and
+        put the player on a lane many devices reject outright, so the
+        machine-written values are returned to Automatic; a user who wants
+        compatibility mode can simply pin it again.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if (
+                self.mass.config.get_raw_player_config_value(player_id, CONF_STREAMING_MODE)
+                != STREAMING_MODE_AP2_COMPAT
+            ):
+                continue
+            self.logger.info("Resetting the streaming mode of %s back to Automatic", player_id)
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
+            )
+        # last, so a failure part-way through leaves the reset to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, True
         )
