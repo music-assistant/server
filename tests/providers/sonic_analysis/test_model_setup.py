@@ -1,4 +1,4 @@
-"""Tests for CLAP model setup in SonicAnalysisProvider: asset fetch, then load."""
+"""Tests for CLAP model setup in SonicAnalysisProvider: download and build the model."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ from music_assistant.providers.sonic_analysis import (
     SonicAnalysisProvider,
 )
 
-FETCH_TASK_ID = "sonic_analysis.model_assets.instance-1"
+SETUP_TASK_ID = "sonic_analysis.model_setup.instance-1"
+CHECKPOINT = "/cache/CLAP_weights_2023.pth"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,7 +30,7 @@ FETCH_TASK_ID = "sonic_analysis.model_assets.instance-1"
 
 class _FakeMass:
     """
-    Stand-in for MusicAssistant reproducing the ``create_task`` behaviour the fetch relies on.
+    Stand-in for MusicAssistant reproducing the ``create_task`` behaviour setup relies on.
 
     A plain MagicMock would return a MagicMock from ``create_task``, which ``join_task``
     walks straight through while the coroutine is never awaited — the dedupe this module
@@ -101,6 +102,11 @@ def _make_provider(mass: _FakeMass | None = None) -> SonicAnalysisProvider:
     return p
 
 
+def _fake_models() -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
+    """Return a stand-in for what a completed model build hands back."""
+    return MagicMock(name="clap_model"), MagicMock(name="text_embeddings"), []
+
+
 async def _never_finishes() -> str:
     """Stand in for a download that is still in flight when setup gives up on it."""
     await asyncio.Event().wait()
@@ -159,16 +165,14 @@ async def test_handle_async_init_populates_state_on_success() -> None:
         ("energetic", ("energetic", "calm")),
     ]
 
-    with (
-        patch.object(provider, "_fetch_model_assets", new=AsyncMock()),
-        patch.object(
-            provider,
-            "_load_clap",
-            return_value=(fake_model, fake_embeddings, fake_prompt_order),
-        ),
+    with patch.object(
+        provider,
+        "_prepare_models",
+        return_value=(CHECKPOINT, (fake_model, fake_embeddings, fake_prompt_order)),
     ):
         await provider.handle_async_init()
 
+    assert provider._clap_model_fp == CHECKPOINT
     assert provider._clap_model is fake_model
     assert provider._clap_text_embeddings is fake_embeddings
     assert provider._clap_prompt_order == fake_prompt_order
@@ -188,8 +192,7 @@ async def test_handle_async_init_propagates_load_failure() -> None:
     err = RuntimeError("checkpoint is corrupt")
 
     with (
-        patch.object(provider, "_fetch_model_assets", new=AsyncMock()),
-        patch.object(provider, "_load_clap", side_effect=err),
+        patch.object(provider, "_prepare_models", side_effect=err),
         pytest.raises(RuntimeError, match="checkpoint is corrupt"),
     ):
         await provider.handle_async_init()
@@ -199,28 +202,31 @@ async def test_handle_async_init_propagates_load_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_async_init_offloads_load_to_thread() -> None:
-    """``_load_models`` must offload ``_load_clap`` via asyncio.to_thread."""
+async def test_preparation_offloads_both_the_download_and_the_build() -> None:
+    """
+    Download and model build must both run off the event loop, in that order.
+
+    mass.create_task starts a task eagerly, so _prepare_models runs inline until its
+    first await — and the build is the half that would otherwise block the loop for as
+    long as a 690MB torch.load takes.
+    """
     provider = _make_provider()
-    fake_state: tuple[Any, Any, list[Any]] = (MagicMock(), MagicMock(), [])
+    models = _fake_models()
 
-    with (
-        patch.object(provider, "_fetch_model_assets", new=AsyncMock()),
-        patch(
-            "music_assistant.providers.sonic_analysis.asyncio.to_thread",
-            new=AsyncMock(return_value=fake_state),
-        ) as to_thread_mock,
-    ):
-        await provider.handle_async_init()
+    with patch(
+        "music_assistant.providers.sonic_analysis.asyncio.to_thread",
+        new=AsyncMock(side_effect=[CHECKPOINT, models]),
+    ) as to_thread_mock:
+        assert await provider._prepare_models() == (CHECKPOINT, models)
 
-    # The module has two to_thread call sites; the other one lives in
-    # _fetch_model_assets, which is mocked out above, so this call is unambiguous.
-    to_thread_mock.assert_called_once()
-    # First positional arg passed to to_thread is the callable being offloaded.
-    # Use ``==`` (not ``is``): each ``provider._load_clap`` access yields a fresh
-    # bound-method object, but bound methods of the same (instance, function)
-    # compare equal.
-    assert to_thread_mock.call_args.args[0] == provider._load_clap
+    # Use ``==`` (not ``is``): each attribute access yields a fresh bound-method
+    # object, but bound methods of the same (instance, function) compare equal.
+    assert [call.args[0] for call in to_thread_mock.call_args_list] == [
+        provider._download_clap_weights,
+        provider._load_clap,
+    ]
+    # the build is handed the path the download resolved, so it needs no lookup
+    assert to_thread_mock.call_args_list[1].args[1] == CHECKPOINT
 
 
 @pytest.mark.asyncio
@@ -237,13 +243,11 @@ async def test_handle_async_init_raises_when_requirements_not_met() -> None:
             "music_assistant.providers.sonic_analysis.verify_system_meets_requirements",
             side_effect=UnsupportedSystemError("unsupported system"),
         ),
-        patch.object(SonicAnalysisProvider, "_fetch_model_assets") as fetch_mock,
-        patch.object(SonicAnalysisProvider, "_load_clap") as load_clap_mock,
+        patch.object(SonicAnalysisProvider, "_prepare_models") as prepare_mock,
         pytest.raises(UnsupportedSystemError),
     ):
         await provider.handle_async_init()
-    fetch_mock.assert_not_called()
-    load_clap_mock.assert_not_called()
+    prepare_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +265,8 @@ async def test_slow_fetch_raises_setup_failed_and_leaves_task_running() -> None:
     provider = _make_provider()
 
     with (
-        patch("music_assistant.providers.sonic_analysis.MODEL_FETCH_GRACE_SECONDS", 0.05),
-        patch.object(provider, "_fetch_model_assets", side_effect=_never_finishes),
+        patch("music_assistant.providers.sonic_analysis.MODEL_SETUP_GRACE_SECONDS", 0.05),
+        patch.object(provider, "_prepare_models", side_effect=_never_finishes),
         pytest.raises(SetupFailedError) as exc_info,
     ):
         await provider.handle_async_init()
@@ -271,7 +275,7 @@ async def test_slow_fetch_raises_setup_failed_and_leaves_task_running() -> None:
     assert exc_info.value.translation_owner == "provider.sonic_analysis"
     assert provider._models_loaded is False
 
-    fetch_task = provider.mass.tracked[FETCH_TASK_ID]  # type: ignore[attr-defined]
+    fetch_task = provider.mass.tracked[SETUP_TASK_ID]  # type: ignore[attr-defined]
     assert not fetch_task.done(), "the fetch must survive the setup timeout"
 
     await provider.mass.drain()  # type: ignore[attr-defined]
@@ -289,14 +293,14 @@ async def test_fetch_is_started_under_a_stable_dedupe_key() -> None:
     provider = _make_provider(mass)
 
     with (
-        patch("music_assistant.providers.sonic_analysis.MODEL_FETCH_GRACE_SECONDS", 0.05),
-        patch.object(provider, "_fetch_model_assets", side_effect=_never_finishes),
+        patch("music_assistant.providers.sonic_analysis.MODEL_SETUP_GRACE_SECONDS", 0.05),
+        patch.object(provider, "_prepare_models", side_effect=_never_finishes),
         pytest.raises(SetupFailedError),
     ):
         await provider.handle_async_init()
 
     assert mass.create_task_kwargs == [
-        {"task_id": FETCH_TASK_ID, "abort_existing": False},
+        {"task_id": SETUP_TASK_ID, "abort_existing": False},
     ]
 
     await mass.drain()
@@ -308,39 +312,39 @@ async def test_retry_joins_in_flight_fetch_and_receives_its_result() -> None:
     A retry must join the running download and come away with the checkpoint path.
 
     MA builds a fresh provider instance per load attempt, so the instance that finishes
-    setup is never the one that started the fetch. If the path only reached the starting
-    instance, the retry would load with model_fp=None and download all over again.
+    setup is never the one that started the work. If the result only reached the starting
+    instance, the retry would download and build the model all over again — and a second
+    concurrent build is a full model's worth of memory on a host that has little.
     """
     mass = _FakeMass()
     release = asyncio.Event()
-    fetch_calls = 0
+    models = _fake_models()
+    prepare_calls = 0
 
-    async def _blocked_fetch() -> str:
-        nonlocal fetch_calls
-        fetch_calls += 1
+    async def _blocked_fetch() -> tuple[str, Any]:
+        nonlocal prepare_calls
+        prepare_calls += 1
         await release.wait()
-        return "/cache/CLAP_weights_2023.pth"
+        return CHECKPOINT, models
 
     first = _make_provider(mass)
     with (
-        patch("music_assistant.providers.sonic_analysis.MODEL_FETCH_GRACE_SECONDS", 0.05),
-        patch.object(first, "_fetch_model_assets", side_effect=_blocked_fetch),
+        patch("music_assistant.providers.sonic_analysis.MODEL_SETUP_GRACE_SECONDS", 0.05),
+        patch.object(first, "_prepare_models", side_effect=_blocked_fetch),
         pytest.raises(SetupFailedError) as exc_info,
     ):
         await first.handle_async_init()
     assert exc_info.value.translation_key == "model_assets_downloading"
 
     second = _make_provider(mass)
-    with (
-        patch.object(second, "_fetch_model_assets", side_effect=_blocked_fetch),
-        patch.object(second, "_load_clap", return_value=(MagicMock(), MagicMock(), [])),
-    ):
-        # the download lands partway through the retry's own grace period
+    with patch.object(second, "_prepare_models", side_effect=_blocked_fetch):
+        # the preparation lands partway through the retry's own grace period
         asyncio.get_running_loop().call_soon(release.set)
         await second.handle_async_init()
 
-    assert fetch_calls == 1, "the retry must not start a second download"
-    assert second._clap_model_fp == "/cache/CLAP_weights_2023.pth"
+    assert prepare_calls == 1, "the retry must not start a second download or build"
+    assert second._clap_model_fp == CHECKPOINT
+    assert second._clap_model is models[0]
     assert second._models_loaded is True
 
 
@@ -367,27 +371,6 @@ async def test_fetch_failure_surfaces_as_setup_failed() -> None:
 # ---------------------------------------------------------------------------
 # _download_clap_weights: what the hub can throw, and what MA sees
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_fetch_offloads_the_download_and_returns_its_path() -> None:
-    """
-    The download must be offloaded, and its path come back as the task's result.
-
-    Offloading is what keeps the vendored wrapper's torch/transformers imports off the
-    event loop: mass.create_task starts a task eagerly, so this coroutine runs inline
-    until its first await. Returning the path (rather than storing it) is what lets a
-    retry — always a different provider object — pick it up.
-    """
-    provider = _make_provider()
-
-    with patch(
-        "music_assistant.providers.sonic_analysis.asyncio.to_thread",
-        new=AsyncMock(return_value="/cache/CLAP_weights_2023.pth"),
-    ) as to_thread_mock:
-        assert await provider._fetch_model_assets() == "/cache/CLAP_weights_2023.pth"
-
-    assert to_thread_mock.call_args.args[0] == provider._download_clap_weights
 
 
 def test_cached_checkpoint_skips_the_network() -> None:
@@ -506,7 +489,7 @@ def test_load_clap_passes_cached_checkpoint_path() -> None:
         patch("music_assistant.providers.sonic_analysis.vendored_clap.CLAP") as clap_cls,
         patch("torch.from_numpy", return_value=embeddings),
     ):
-        model, _text_embeddings, _prompt_order = provider._load_clap()
+        model, _text_embeddings, _prompt_order = provider._load_clap("/cache/CLAP_weights_2023.pth")
 
     assert model is clap_cls.return_value
     assert clap_cls.call_args.kwargs["model_fp"] == "/cache/CLAP_weights_2023.pth"
@@ -527,7 +510,7 @@ def test_load_clap_raises_when_prompt_embeddings_unavailable() -> None:
         patch("music_assistant.providers.sonic_analysis.vendored_clap.CLAP") as clap_cls,
         pytest.raises(SetupFailedError) as exc_info,
     ):
-        provider._load_clap()
+        provider._load_clap("/cache/CLAP_weights_2023.pth")
 
     assert exc_info.value.translation_key == "prompt_embeddings_unavailable"
     clap_cls.assert_not_called()
