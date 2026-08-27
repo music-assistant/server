@@ -2100,6 +2100,7 @@ class AirPlayStream:
             if (
                 self.player.streaming_mode == STREAMING_MODE_AUTO
                 and ntp_offered
+                and self.player.stream is self
                 and not self.player.synced_to
                 and not self.player.group_members
             ):

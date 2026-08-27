@@ -2019,6 +2019,7 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
     """
     player = _make_player()
     stream = AirPlayStream(player)
+    player.stream = stream
     stream._handle_status_line(
         "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
         "ready_in_ms=0 ready_at_unix_ms=0"
@@ -2028,6 +2029,17 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
         player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
     )
     assert mass.create_task.called
+
+    # A superseded stream's stalled clock is the newer session resetting it on
+    # the receiver, not a verdict about the device.
+    superseded_player = _make_player()
+    superseded = AirPlayStream(superseded_player)
+    superseded_player.stream = AirPlayStream(superseded_player)
+    superseded._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+    superseded_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
     # A grouped member is reported, never moved: restarting one member of a
     # live sync group would desync it.
