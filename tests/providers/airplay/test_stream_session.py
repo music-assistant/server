@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -922,6 +922,90 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
     assert ffmpeg_factory.call_args.kwargs["audio_output"] == 77
     new_ffmpeg.start.assert_awaited_once()
     assert session._player_ffmpeg[player.player_id] is new_ffmpeg
+
+
+@pytest.mark.asyncio
+async def test_audio_confirmation_waits_for_the_source_to_feed() -> None:
+    """
+    A binary is only judged silent once it has actually been handed audio.
+
+    A seek can land seconds ahead of what the source has produced, and giving up
+    on the member there would restart the session into the very same wait.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.wait_audio_present = AsyncMock(return_value=True)
+    feeding = asyncio.Event()
+
+    async def _source() -> None:
+        await feeding.wait()
+
+    session._audio_source_task = asyncio.create_task(_source())
+
+    waiter = asyncio.create_task(session._wait_members_audio_present())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not waiter.done()
+    player.stream.wait_audio_present.assert_not_awaited()
+
+    session._feed_settled.set()
+    await waiter
+
+    player.stream.wait_audio_present.assert_awaited_once()
+    feeding.set()
+    await session._audio_source_task
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_dies_settles_the_feed_question() -> None:
+    """A source that fails never leaves a start waiting for audio it will not get."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id=None, queue_session_id=None)
+    no_chunks: list[bytes] = []
+
+    async def failing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise AudioError("source died")
+
+    await session._audio_streamer(failing_source())
+
+    assert session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_warm_replace_rearms_the_feed_question() -> None:
+    """The new source answers for its own feed; what the old one delivered does not count."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.config.get_value = MagicMock(return_value=0)
+    player.stream.flush = AsyncMock(return_value=True)
+    session._feed_settled.set()
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+    assert not session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_audio_confirmation_is_released_by_a_source_that_never_feeds() -> None:
+    """A source that ends without handing anything over never holds up the start."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.display_name = "Kantoor"
+    player.stream.wait_audio_present = AsyncMock(return_value=False)
+    session._audio_source_task = asyncio.create_task(asyncio.sleep(0))
+    await session._audio_source_task
+
+    with pytest.raises(PlayerCommandFailed, match="audio feed was not confirmed"):
+        await session._wait_members_audio_present()
 
 
 @pytest.mark.asyncio
