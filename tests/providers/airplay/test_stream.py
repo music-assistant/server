@@ -9,7 +9,7 @@ import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -2478,8 +2478,11 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
         operation_order.append("reader")
         return True
 
-    async def send_current_metadata(**_kwargs: Any) -> None:
+    metadata_push_kwargs: list[dict[str, Any]] = []
+
+    async def send_current_metadata(**kwargs: Any) -> None:
         operation_order.append("metadata")
+        metadata_push_kwargs.append(kwargs)
 
     with (
         patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
@@ -2491,6 +2494,12 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
     # Nothing is written before the binary has a reader on the command pipe.
     assert operation_order == ["reader", "metadata"]
+    # The connect push rides the budgeted artwork bundle (one now-playing
+    # rewrite on the device) instead of a bare replace with the artwork
+    # chasing it in a second replace moments later — while a render that
+    # misses the budget delivers from a background task instead of holding
+    # up the START behind this connect.
+    assert metadata_push_kwargs == [{"defer_artwork_followup": True}]
     # Metadata pushed synchronously on connect...
     player.on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
@@ -3072,6 +3081,100 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
     assert resends == ["ARTWORK=/cache/thumb.jpg\n"]
     assert prepare_artwork.await_count == 2
     assert stream._metadata_artwork_checksum == other_image_id
+
+
+def test_current_metadata_prefers_state_composition_for_the_same_item() -> None:
+    """
+    The pushes use core's composed media when it describes the session's item.
+
+    The session media carries the plain queue-item text while the media-updated
+    pushes send the state composition (title with version, album fallbacks);
+    sending one composition from every path keeps the metadata identity stable.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-1", title="Track")
+    state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = state_media
+
+    assert stream._current_metadata() is state_media
+
+
+def test_current_metadata_keeps_session_media_when_state_describes_another_item() -> None:
+    """A player state that has not settled on the started item yet cannot leak stale text."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-2", title="Next track")
+    stream.session = MagicMock(media=session_media)
+
+    player.state.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
+    assert stream._current_metadata() is session_media
+
+    player.state.current_media = None
+    assert stream._current_metadata() is session_media
+
+
+def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
+    """Media outside an MA queue (no queue item id) is pushed exactly as handed over."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id=None, title="Announcement")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = MagicMock(queue_item_id=None, title="Something else")
+
+    assert stream._current_metadata() is session_media
+
+
+@pytest.mark.asyncio
+async def test_deferred_artwork_followup_does_not_block_the_metadata_push() -> None:
+    """
+    A render that misses the bundle budget cannot hold up the connect-time push.
+
+    The identity goes out bare right after the budget, and the ARTWORK delivery
+    continues on a background task — the START waiting behind the connect must
+    never sit out a slow or stuck image fetch.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    release_render = asyncio.Event()
+
+    async def _slow_prepare(*_args: Any, **_kwargs: Any) -> str:
+        await release_render.wait()
+        return "/cache/thumb.jpg"
+
+    metadata = MagicMock(
+        corrected_elapsed_time=0,
+        queue_item_id="item-1",
+        title="Track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url=f"http://192.168.1.5:8095/imageproxy/{'ab' * 32}?size=512",
+    )
+
+    with (
+        patch.object(
+            stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True
+        ) as write_command,
+        patch.object(stream, "_prepare_artwork", side_effect=_slow_prepare),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
+    ):
+        async with asyncio.timeout(5):
+            await stream.send_metadata(0, metadata, defer_artwork_followup=True)
+
+        # the identity went out bare, without waiting for the render
+        commands = [call.args[0].decode() for call in write_command.await_args_list]
+        assert any("ACTION=SENDMETA" in command for command in commands)
+        assert not any("ARTWORKFILE=" in command for command in commands)
+        # the delivery was handed to a background task; run it to completion
+        create_task_mock = cast("MagicMock", stream.mass.create_task)
+        followup = create_task_mock.call_args.args[0]
+        release_render.set()
+        await followup
+        commands = [call.args[0].decode() for call in write_command.await_args_list]
+        assert "ARTWORK=/cache/thumb.jpg\n" in commands
 
 
 @pytest.mark.asyncio
