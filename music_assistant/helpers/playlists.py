@@ -649,6 +649,11 @@ def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str
         external_ids.add((ExternalID.ISRC, isrc))
     if mbid := metadata.get("mbid"):
         external_ids.add((ExternalID.MB_RECORDING, mbid))
+    # the release-track id (as opposed to the recording id) pins a specific release,
+    # which is what lets import matching reach an EXACT confidence instead of merely
+    # the same underlying recording on a possibly different release
+    if mb_track := metadata.get("mb_track"):
+        external_ids.add((ExternalID.MB_TRACK, mb_track))
     return external_ids
 
 
@@ -815,6 +820,8 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         metadata["isrc"] = isrc
     if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
         metadata["mbid"] = mbid
+    if mb_track := full_item.get_external_id(ExternalID.MB_TRACK):
+        metadata["mb_track"] = mb_track
 
     # collect one provider mapping per domain (highest quality)
     prov_infos: list[ProviderMappingInfo] = []

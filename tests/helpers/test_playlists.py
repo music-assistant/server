@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.helpers import playlists
+from music_assistant.helpers.compare import TrackMatchConfidence, compare_track_evidence
 from music_assistant.helpers.playlists import (
     AlbumInfo,
     ArtistInfo,
@@ -678,6 +679,124 @@ def test_media_item_to_playlist_item_sound_effect_round_trip() -> None:
     assert reconstructed.metadata.images[0].path == "https://example.com/chime.jpg"
 
 
+def test_media_item_to_playlist_item_track_round_trip_preserves_mb_track() -> None:
+    """A track's release-track (MB_TRACK) evidence survives export, generate and re-parse."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    spotify_provider = DummyProvider("spotify", "spotify_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify_provider,
+        "spotify_1": spotify_provider,
+    }.get(ref)
+    track = Track(
+        item_id="abc123",
+        provider="spotify",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_RECORDING, "recording-mbid"),
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["mb_track"] == "release-track-mbid"
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.get_external_id(ExternalID.MB_TRACK) == "release-track-mbid"
+    assert reconstructed.get_external_id(ExternalID.MB_RECORDING) == "recording-mbid"
+    assert reconstructed.get_external_id(ExternalID.ISRC) == "USRC17607839"
+
+
+def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
+    """
+    EXACT is only reachable when the parsed M3U carries release-track evidence.
+
+    A new-format export with MB_TRACK reconstructs a track that reaches EXACT confidence
+    against a candidate sharing that release-track id, while a legacy M3U that only ever
+    carried an ISRC caps out at LIKELY (the SAME_RECORDING policy tier), even against a
+    candidate that would otherwise be a plausible substitute.
+    """
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    spotify_provider = DummyProvider("spotify", "spotify_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "spotify": spotify_provider,
+        "spotify_1": spotify_provider,
+    }.get(ref)
+
+    new_m3u_item = PlaylistItem(
+        path="spotify://track/abc123",
+        title="Everything In Its Right Place",
+        length="240",
+        metadata={
+            "media_type": "track",
+            "name": "Everything In Its Right Place",
+            "isrc": "USRC17607839",
+            "mb_track": "release-track-mbid",
+        },
+    )
+    legacy_m3u_item = PlaylistItem(
+        path="spotify://track/abc123",
+        title="Everything In Its Right Place",
+        length="240",
+        metadata={
+            "media_type": "track",
+            "name": "Everything In Its Right Place",
+            "isrc": "USRC17607839",
+        },
+    )
+    candidate = Track(
+        item_id="def456",
+        provider="qobuz",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(item_id="def456", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    new_track = construct_media_item_from_playlist_item(new_m3u_item, mass)
+    legacy_track = construct_media_item_from_playlist_item(legacy_m3u_item, mass)
+    assert isinstance(new_track, Track)
+    assert isinstance(legacy_track, Track)
+
+    assert (
+        compare_track_evidence(new_track, candidate, allow_item_id_match=False)
+        is TrackMatchConfidence.EXACT
+    )
+    assert (
+        compare_track_evidence(legacy_track, candidate, allow_item_id_match=False)
+        is TrackMatchConfidence.LIKELY
+    )
+
+
 # --------------------------------------------------------------------------- #
 #  media_item_to_playlist_item tests                                           #
 # --------------------------------------------------------------------------- #
@@ -732,6 +851,7 @@ def test_media_item_to_playlist_item_track() -> None:
     assert result.metadata["name"] == "Everything In Its Right Place"
     assert result.metadata["isrc"] == "USRC17607839"
     assert result.metadata["version"] == "Deluxe"
+    assert "mb_track" not in result.metadata
     assert len(result.providers) == 1
     assert result.providers[0].domain == "spotify"
     assert result.providers[0].item_id == "abc123"

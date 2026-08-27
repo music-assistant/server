@@ -73,6 +73,12 @@ class PlaylistMatchPolicy(StrEnum):
     Shared between playlist import and (future) playlist migration: both only fall back to a
     provider search once a track's own reference (its original URI, or its library mapping)
     is no longer available.
+
+    EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
+    specific release, not just the underlying recording. M3U playlists exported by a current
+    Music Assistant persist this evidence when the source track carries it, so imports of
+    those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
+    or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
     """
 
     EXACT = "exact"
