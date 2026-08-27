@@ -668,18 +668,25 @@ def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expe
 
 @pytest.mark.asyncio
 async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlayer) -> None:
-    """The 24-bit entry is only offered when the device advertises 24-bit support."""
+    """The 24-bit entry is only shown when the device advertises 24-bit support."""
     _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
 
+    # always part of the entry list (so a stored value survives the config
+    # parse at registration, before the async formats probe has landed), but
+    # hidden until the device is known to support 24-bit
     airplay_player.advertised_audio_formats = ALAC_44100_16
     entries = await airplay_player.get_config_entries()
-    assert not any(entry.key == CONF_ENABLE_HIRES for entry in entries)
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is True
 
     airplay_player.advertised_audio_formats = ALAC_44100_24
     entries = await airplay_player.get_config_entries()
     hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is False
     assert hires_entry.default_value is True
+    # flipping the toggle must restart an active stream to take effect
+    assert hires_entry.requires_reload is True
 
 
 @pytest.mark.asyncio

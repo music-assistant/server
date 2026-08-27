@@ -391,18 +391,21 @@ class AirPlayPlayer(Player):
                 )
             )
 
-        # 24-bit toggle, only offered when the device advertises 24-bit support.
-        # HomePods default to 16-bit: they sit on WiFi and are the receivers
-        # where the oversized 24-bit audio packets audibly crackle.
-        if self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS:
-            base_entries.append(
-                ConfigEntry(
-                    key=CONF_ENABLE_HIRES,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=self._hires_default_enabled,
-                    category="protocol_generic",
-                )
+        # 24-bit toggle, shown only when the device advertises 24-bit support
+        # (per-device default: see default_hires_enabled). Hidden rather than
+        # omitted when it does not: the formats are probed async after
+        # registration, and an entry absent from the registration-time config
+        # parse would drop the user's stored value until the next config save.
+        base_entries.append(
+            ConfigEntry(
+                key=CONF_ENABLE_HIRES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=self._hires_default_enabled,
+                hidden=not self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS,
+                category="protocol_generic",
+                requires_reload=True,
             )
+        )
 
         # Regular AirPlay config entries
         base_entries += [
