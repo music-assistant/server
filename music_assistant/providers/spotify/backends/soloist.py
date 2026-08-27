@@ -1120,9 +1120,10 @@ class _SoloistSession:
         """
         Hand the engine the item that follows the one being streamed, if any.
 
-        Only consecutive tracks are stitched: the engine's queue command takes
-        track URIs, and a podcast episode or audiobook chapter would not gain
-        anything from being fed ahead.
+        Only consecutive tracks are stitched: the engine's queue takes track
+        URIs alone and answers anything else with "add_to_queue requires a valid
+        Spotify track URI", so a podcast episode or an audiobook chapter is only
+        ever reached by a fresh session.
 
         :param streamdetails: The StreamDetails of the item being streamed, used
             to locate it in the queue.
@@ -1150,6 +1151,8 @@ class _SoloistSession:
         client = self._client
         current = self._current
         if client is None or self.has_pending or not spotify_uri.startswith("spotify:track:"):
+            # the engine's queue takes track URIs only: an episode or a chapter
+            # is served by a fresh session instead of a jump
             return None
         if not self._engine_playing:
             # a stopped engine has nothing to skip out of, and waiting one out
