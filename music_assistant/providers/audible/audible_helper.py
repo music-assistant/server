@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -56,7 +57,11 @@ CACHE_CATEGORY_PODCAST_EPISODES = 4
 
 # Content delivery types
 AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
-PODCAST_CONTENT_TYPES = ("PodcastParent",)
+# Podcasts are normally reported as "PodcastParent", but (older) Audible Original
+# series are still reported with the legacy "Periodical" delivery type.
+PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
+# legacy series report their episodes as show issues rather than podcast episodes
+SHOW_CONTENT_TYPE = "Show"
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -111,31 +116,67 @@ async def refresh_access_token_compat(
     return {"access_token": access_token, "expires": expires}
 
 
-async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
+async def cached_authenticator_from_file(
+    path: str, locale: str | None = None
+) -> audible.Authenticator:
     """
     Get an authenticator from file with caching and signing auth validation.
 
     :param path: Path to the authenticator JSON file.
+    :param locale: The configured marketplace locale; when the stored file disagrees,
+        the configured locale wins and the file is corrected.
     :return: The cached or loaded Authenticator instance.
     """
     logger = logging.getLogger("audible_helper")
-    if path in _AUTH_CACHE:
-        return _AUTH_CACHE[path]
+    auth = _AUTH_CACHE.get(path)
+    if auth is None:
+        logger.debug("Loading authenticator from file %s and caching it", path)
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
 
-    logger.debug("Loading authenticator from file %s and caching it", path)
-    auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+        # Verify signing auth is available (not affected by API changes)
+        if auth.adp_token and auth.device_private_key:
+            logger.debug("Signing auth available - using stable RSA-signed requests")
+        else:
+            logger.warning(
+                "Signing auth not available - only bearer auth will work. "
+                "Consider re-authenticating for more stable auth."
+            )
 
-    # Verify signing auth is available (not affected by API changes)
-    if auth.adp_token and auth.device_private_key:
-        logger.debug("Signing auth available - using stable RSA-signed requests")
-    else:
+        _AUTH_CACHE[path] = auth
+
+    # auth files written by older versions can hold the marketplace from before a
+    # locale change; the configured locale is authoritative, so correct the file
+    if locale and (auth.locale is None or auth.locale.country_code != locale):
         logger.warning(
-            "Signing auth not available - only bearer auth will work. "
-            "Consider re-authenticating for more stable auth."
+            "Marketplace in auth file (%s) does not match the configured locale (%s), correcting",
+            auth.locale.country_code if auth.locale else None,
+            locale,
         )
+        auth.locale = audible.localization.Locale(locale)
+        await asyncio.to_thread(auth.to_file, path)
 
-    _AUTH_CACHE[path] = auth
     return auth
+
+
+def evict_cached_authenticator(path: str) -> None:
+    """
+    Drop the cached authenticator for the given file path, if any.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    _AUTH_CACHE.pop(path, None)
+
+
+async def deregister_auth_file(path: str) -> None:
+    """
+    Deregister the virtual device registration stored in the given auth file.
+
+    :param path: Path to the authenticator JSON file.
+    """
+    auth = _AUTH_CACHE.pop(path, None)
+    if auth is None:
+        auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
+    await asyncio.to_thread(auth.deregister_device)
 
 
 class AudibleHelper:
@@ -848,7 +889,7 @@ class AudibleHelper:
 
         page = 1
         page_size = 50
-        position = 0
+        all_items: list[dict[str, Any]] = []
 
         while True:
             # Query for children of the podcast parent
@@ -865,18 +906,27 @@ class AudibleHelper:
             if not items:
                 break
 
-            for episode_data in items:
-                try:
-                    episode = self._parse_podcast_episode(episode_data, podcast, position)
-                    position += 1
-                    yield episode
-                except Exception as exc:
-                    asin = episode_data.get("asin", "unknown")
-                    self.logger.warning(f"Error parsing podcast episode {asin}: {exc}")
+            all_items.extend(items)
 
             page += 1
             if len(items) < page_size:
                 break
+
+        if all(ep.get("content_type") == SHOW_CONTENT_TYPE for ep in all_items):
+            # a legacy series is released in one go, so its publication timestamps record the
+            # ingestion rather than the episode order; the newest-first listing is all we have
+            positions = [len(all_items) - idx for idx in range(len(all_items))]
+        else:
+            # the API lists most shows newest-first but serialised ones oldest-first, so rank on
+            # the publication timestamp; release_date is date only and cannot separate episodes
+            # that a serialised show published on the same day
+            positions = rank_episodes_by_date([ep.get("publication_datetime") for ep in all_items])
+        for position, episode_data in zip(positions, all_items, strict=True):
+            try:
+                yield self._parse_podcast_episode(episode_data, podcast, position)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                asin = episode_data.get("asin", "unknown")
+                self.logger.warning(f"Error parsing podcast episode {asin}: {exc}")
 
     async def get_podcast_episode(self, episode_asin: str) -> PodcastEpisode:
         """

@@ -57,7 +57,7 @@ from .constants import (
     TTS_SPEECHNORM_FILTER,
     WEATHER_PLACEHOLDER_TOKENS,
 )
-from .helpers import coerce_int, soft_limit_text
+from .helpers import coerce_int, format_ai_radio_timestamp, soft_limit_text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -348,7 +348,7 @@ class AIRadioRenderMixin:
     async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
-        values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
+        values["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it
         if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):

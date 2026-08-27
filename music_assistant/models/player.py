@@ -27,7 +27,13 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
@@ -66,13 +72,16 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.helpers.util import html_to_markdown
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.config_entries import (
         ConfigActionResult,
         ConfigEntry,
         PlayerConfig,
     )
+    from music_assistant_models.enums import RepeatMode
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -302,6 +311,11 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "synced_to": state.synced_to,
         "active_sound_mode": state.active_sound_mode,
         "active_source": state.active_source,
+        "active_source_audio": (
+            _freeze(state.active_source_audio.to_dict())
+            if state.active_source_audio is not None
+            else None
+        ),
         "active_group": state.active_group,
         "enabled": state.enabled,
         "hide_in_ui": state.hide_in_ui,
@@ -886,6 +900,32 @@ class Player(ABC):
         """
         raise NotImplementedError("seek needs to be implemented when PlayerFeature.SEEK is set")
 
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """
+        Handle SET SHUFFLE command on the player.
+
+        Will only be called if the player's currently active source declares
+        ``can_shuffle``.
+
+        :param shuffle_enabled: Whether the source should play its content shuffled.
+        """
+        raise NotImplementedError(
+            "set_shuffle needs to be implemented when a source declares can_shuffle"
+        )
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """
+        Handle SET REPEAT command on the player.
+
+        Will only be called if the player's currently active source declares
+        ``can_repeat``.
+
+        :param repeat_mode: The repeat mode the source should apply.
+        """
+        raise NotImplementedError(
+            "set_repeat needs to be implemented when a source declares can_repeat"
+        )
+
     async def play_media(
         self,
         media: PlayerMedia,
@@ -941,6 +981,18 @@ class Player(ABC):
         raise NotImplementedError(
             "enqueue_next_media needs to be implemented when PlayerFeature.ENQUEUE is set"
         )
+
+    @property
+    def applies_announcement_volume(self) -> bool:
+        """
+        Return True if the player applies the announcement volume itself.
+
+        A player that mixes an announcement into audio it is already playing knows when
+        the clip becomes audible, so it applies and restores the level at that moment -
+        through the volume control that owns its output. The players controller then
+        leaves the volume alone instead of raising it before the announcement starts.
+        """
+        return False
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -2542,6 +2594,7 @@ class Player(ABC):
             can_group_with=self.__final_can_group_with,
             synced_to=self.__final_synced_to,
             active_source=self.__final_active_source,
+            active_source_audio=self.__final_active_source_audio,
             source_list=self.__final_source_list,
             active_group=self.__final_active_group,
             current_media=self.__final_current_media,
@@ -2821,6 +2874,23 @@ class Player(ABC):
 
     @cached_property
     @final
+    def __final_active_source_audio(self) -> ActiveSourceAudioDetails | None:
+        """Return audio details for the FINAL active external source."""
+        if parent_player_id := (self.__final_active_group or self.__final_synced_to):
+            if parent_player_id != self.player_id and (
+                parent_player := self.mass.players.get_player(parent_player_id)
+            ):
+                return parent_player.state.active_source_audio
+            return None
+        if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
+            if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
+                return parent_player.state.active_source_audio
+        if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
+            return session.active_source_audio
+        return None
+
+    @cached_property
+    @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
         # if the player is grouped/synced, use the current_media of the group/parent player
@@ -2974,12 +3044,10 @@ class Player(ABC):
             else None
         )
         image_url = (metadata.image_url if metadata else None) or source_image_url
-        elapsed_time, elapsed_time_last_updated = _resolve_position(
-            metadata.elapsed_time if metadata else None,
-            metadata.elapsed_time_last_updated if metadata else None,
-            self.elapsed_time,
-            self.elapsed_time_last_updated,
-        )
+        # the final playback state already resolves the source's own position against
+        # the clock this player reports (protocol player, or its own) - taking it from
+        # there is what keeps current_media and PlayerState.elapsed_time in agreement
+        _, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         return PlayerMedia(
             uri=session.source_uri or session.source_id,
             media_type=MediaType.AUDIO_SOURCE,
@@ -2994,7 +3062,7 @@ class Player(ABC):
             # carried so this object can be handed back to the player and still
             # resolve, as the announcement restore does
             queue_session_id=session.playback_session_id,
-            elapsed_time=elapsed_time,
+            elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
             elapsed_time_last_updated=elapsed_time_last_updated,
         )
 
@@ -3046,6 +3114,30 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
+        # standing entries for the audio sources plugins bound to this player, so they
+        # are selectable from the source menu without a session being active first;
+        # an already listed uri is skipped: the live session entry above carries the
+        # live shuffle/repeat state and must win
+        present_ids = {x.id for x in sources}
+        for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+            if not isinstance(prov, PluginProvider):
+                continue
+            for source in prov.get_player_audio_sources(self.player_id) or ():
+                if not (uri := source.uri) or uri in present_ids:
+                    continue
+                present_ids.add(uri)
+                sources.append(
+                    PlayerSource(
+                        id=uri,
+                        name=source.name,
+                        passive=not source.can_initiate,
+                        can_play_pause=source.can_play_pause,
+                        can_seek=source.can_seek,
+                        can_next_previous=source.can_next_previous,
+                        can_shuffle=source.can_shuffle,
+                        can_repeat=source.can_repeat,
+                    )
+                )
         return sources
 
     @cached_property
@@ -3371,7 +3463,7 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                if player.type != PlayerType.UNKNOWN:
+                if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                     result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -3381,7 +3473,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if player.type != PlayerType.UNKNOWN:
+                    if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                         result.add(player)
         return result
 

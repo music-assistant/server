@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     FlowStepType,
     PlayerType,
     ProviderFeature,
+    ProviderStage,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -1120,6 +1121,46 @@ async def test_setup_provider_single_instance_guard(flow_mass: MusicAssistant) -
     assert step.reason == "already_configured"
 
 
+async def test_setup_provider_retired_guard(flow_mass: MusicAssistant) -> None:
+    """Setting up a provider whose manifest is deprecated aborts with the retirement notice."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=ProviderStage.DEPRECATED)
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.type == FlowStepType.ABORT
+    assert step.reason == "provider_retired"
+    assert step.translation_owner == f"provider.{FAKE_DOMAIN}"
+    assert not flow_mass.config._setup_flows
+
+
+async def test_retired_guard_precedes_the_other_setup_guards(flow_mass: MusicAssistant) -> None:
+    """A retired provider reports the retirement, not that it is already configured."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=ProviderStage.DEPRECATED)
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{FAKE_DOMAIN}",
+        {"type": "music", "domain": FAKE_DOMAIN, "instance_id": FAKE_DOMAIN, "enabled": True},
+    )
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.reason == "provider_retired"
+
+
+@pytest.mark.parametrize(
+    "stage", [ProviderStage.STABLE, ProviderStage.ALPHA, ProviderStage.UNMAINTAINED]
+)
+async def test_setup_gate_is_specific_to_deprecated(
+    flow_mass: MusicAssistant, stage: ProviderStage
+) -> None:
+    """Every other stage falls through the gate to the ordinary setup guards."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=stage)
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{FAKE_DOMAIN}",
+        {"type": "music", "domain": FAKE_DOMAIN, "instance_id": FAKE_DOMAIN, "enabled": True},
+    )
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.reason == "already_configured"
+
+
 async def test_setup_unknown_provider_domain(flow_mass: MusicAssistant) -> None:
     """Setting up an unknown provider domain raises."""
     with pytest.raises(KeyError):
@@ -1462,6 +1503,7 @@ async def test_player_setup_reason_in_state_fingerprint() -> None:
 async def test_has_setup_flow_serialized_for_own_flow() -> None:
     """A player implementing its own flow serializes has_setup_flow (regardless of needs_setup)."""
     provider = MockProvider("sendspin", instance_id="sendspin")
+    provider.mass.players.get_audio_source_session.return_value = None
     plain = MockPlayer(provider, "plain_player", "Plain Player")
     player = _FlowPlayer(provider, "flow_player", "Flow Player")
     assert plain.has_setup_flow is False
@@ -1478,6 +1520,7 @@ async def test_has_setup_flow_serialized_for_own_flow() -> None:
 async def test_has_setup_flow_serialized_for_protocol_child() -> None:
     """A wrapper player inherits has_setup_flow from a linked protocol child with a flow."""
     parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    parent_provider.mass.players.get_audio_source_session.return_value = None
     child_provider = MockProvider("airplay", instance_id="airplay")
     parent = MockPlayer(parent_provider, "up_parent", "Hallway")
     child = _ProtocolChildPlayer(child_provider, "ap_child", "Hallway AirPlay")
@@ -1647,7 +1690,9 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
 ) -> None:
     """The real Spotify flow: hosted-bounce auth, playback authorization, stored credentials."""
     from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
         CONF_LIBRESPOT_CREDENTIALS,
+        CONF_PLAYBACK_BACKEND,
         CONF_REFRESH_TOKEN_GLOBAL,
     )
     from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
@@ -1703,7 +1748,17 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert step.flow_id in step.url
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
-        # playback needs its own authorization; pick the browser fallback
+        # playback needs an explicit backend choice; stay on librespot here
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
+        # the librespot branch then authorizes playback; pick the browser fallback
         await _wait_for(
             lambda: (
                 session.current_step is not None and session.current_step.step_id == "playback_auth"
@@ -2147,6 +2202,10 @@ async def test_spotify_flow_rejects_playback_authorized_by_another_account(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Authorizing playback as a different Spotify account re-asks instead of storing it."""
+    from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
+        CONF_PLAYBACK_BACKEND,
+    )
     from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
         CONF_PLAYBACK_AUTH_METHOD,
         CONF_PLAYBACK_CALLBACK_URL,
@@ -2185,6 +2244,16 @@ async def test_spotify_flow_rejects_playback_authorized_by_another_account(
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # playback needs an explicit backend choice; stay on librespot here
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
         await _wait_for(
             lambda: (
                 session.current_step is not None and session.current_step.step_id == "playback_auth"

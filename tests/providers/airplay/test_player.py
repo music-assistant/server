@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import time
-from typing import cast
+from collections.abc import Coroutine
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -675,6 +676,9 @@ async def test_session_pcm_format_selects_processing_depth(
         sample_rate=48000,
         bit_depth=24,
     )
+    # nothing was decoded on our behalf here, and a MagicMock attribute would
+    # otherwise stand in for a real handoff format
+    streamdetails.decoded_audio_format = None
     streamdetails.media_type = MediaType.TRACK
     streamdetails.volume_normalization_mode = normalization_mode
     queue_item = MagicMock(streamdetails=streamdetails)
@@ -954,31 +958,138 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     assert PlayerFeature.PAUSE in airplay_player.supported_features
 
 
-def test_bridged_player_advertises_announcements_only_while_streaming(
+def test_announcements_are_advertised_only_with_live_audio(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    A Sendspin-bridged player advertises PLAY_ANNOUNCEMENT only while streaming.
+    PLAY_ANNOUNCEMENT is advertised only while there is audio to mix a clip into.
 
-    The bridge's live stream is a regular AirPlayStream the clip mixes into, so
-    the feature stays available then. An idle bridged player must not advertise
-    it - a dedicated announcement session would fight the bridge for the
-    device, so those announcements keep their existing routing.
+    A clip is mixed over the live stream, so without one the players controller
+    has to announce its own way - which leaves the device to whatever else may be
+    streaming to it (a Sendspin bridge, for one).
     """
+    airplay_player._attr_playback_state = PlaybackState.PLAYING
+    assert airplay_player.stream is None
+    assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+    # a stream that is up but not yet connected renders nothing
+    airplay_player.stream = MagicMock(running=True, connected=False)
+    assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+    airplay_player.stream = MagicMock(running=True, connected=True)
+    assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
+    # the bridge's own stream is a regular AirPlayStream the clip mixes into, so a
+    # Sendspin-bridged player streaming through it keeps the feature
     bridge_manager = cast("AirPlayProvider", airplay_player.provider).bridge_manager
-    with patch.object(bridge_manager, "get_bridge", return_value=None):
+    with patch.object(bridge_manager, "get_bridge", return_value=MagicMock()):
         assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
-    streaming_bridge = MagicMock(owns_airplay_stream=True)
-    with patch.object(bridge_manager, "get_bridge", return_value=streaming_bridge):
-        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
-    idle_bridge = MagicMock(owns_airplay_stream=False)
-    with patch.object(bridge_manager, "get_bridge", return_value=idle_bridge):
-        assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
-        # ... but a configured-yet-idle bridge never hides the feature while the
-        # player runs its own session-backed stream (playing over AirPlay itself)
-        airplay_player.stream = MagicMock(running=True, session=MagicMock())
-        assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
-        airplay_player.stream = None
+    airplay_player._attr_playback_state = PlaybackState.PAUSED
+    assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
+
+
+def test_player_applies_the_announcement_volume_itself(airplay_player: AirPlayPlayer) -> None:
+    """The clip is mixed into live audio, so the level is moved around it, not before it."""
+    assert airplay_player.applies_announcement_volume is True
+
+
+def test_volume_reports_are_ignored_while_our_own_level_echoes(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A level we sent ourselves is ignored when the receiver echoes it back.
+
+    Every level handed to a receiver comes back over DACP; taken at face value that
+    echo reads as the user turning the knob and is written straight back out.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+
+    airplay_player.suppress_volume_reports(10)
+
+    assert airplay_player.ignore_volume_reports is True
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(55)
+    assert airplay_player._attr_volume_level == 30
+    mock_update.assert_not_called()
+    airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_volume_report_suppression_expires(airplay_player: AirPlayPlayer) -> None:
+    """Past its window the device's own volume reports are acted on again."""
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    expired = time.time() + 10
+
+    airplay_player.suppress_volume_reports(5)
+    # a shorter window never shortens the one already open
+    airplay_player.suppress_volume_reports(1)
+
+    with patch("music_assistant.providers.airplay.player.time.time", return_value=expired - 6):
+        assert airplay_player.ignore_volume_reports is True
+    with patch("music_assistant.providers.airplay.player.time.time", return_value=expired):
+        assert airplay_player.ignore_volume_reports is False
+
+
+@pytest.mark.asyncio
+async def test_adopting_a_device_level_keeps_the_next_report_visible(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Writing a device-reported level back does not blind us to the reports after it.
+
+    That write is a volume command like any other and so arms the echo grace, but it
+    only hands the device its own level: left armed it would swallow the rest of a
+    volume the user is still turning up.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    stream = MagicMock(running=True)
+    # the running stream arms the grace for every level it delivers
+    stream.send_cli_command = AsyncMock(
+        side_effect=lambda _command: airplay_player.suppress_volume_reports()
+    )
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(55)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player._attr_volume_level == 55
+    stream.send_cli_command.assert_awaited_once_with("VOLUME=55")
+
+    # the user keeps turning the knob: the report that follows is acted on
+    airplay_player.update_volume_from_device(70)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player._attr_volume_level == 70
+
+
+@pytest.mark.asyncio
+async def test_adopting_a_device_level_keeps_an_announcement_window(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Adopting a device level leaves a longer window opened meanwhile in place.
+
+    An announcement holds the reports off for its whole span; a write-back that lands
+    inside it must clear only the moment its own command opened, not that span.
+    """
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 30
+    stream = MagicMock(running=True)
+    # an announcement arms its own span while the write-back is in flight
+    stream.send_cli_command = AsyncMock(
+        side_effect=lambda _command: airplay_player.suppress_volume_reports(30)
+    )
+    airplay_player.stream = stream
+    adoptions: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(55)
+    while adoptions:
+        await adoptions.pop()
+
+    assert airplay_player.ignore_volume_reports is True
 
 
 @pytest.mark.asyncio

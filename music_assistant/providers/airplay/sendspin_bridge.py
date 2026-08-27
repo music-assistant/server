@@ -431,6 +431,7 @@ class SendspinAirPlayBridge:
                 on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
+                on_explicit_stop=self._on_bridge_explicit_stop,
                 initial_volume=self.airplay_player.volume_level or 25,
                 initial_muted=bool(self.airplay_player.volume_muted),
             )
@@ -597,7 +598,12 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # A player stream the bridge does not own is a live native session:
+            # its reference is left in place for the start task to stop before
+            # it spawns a new process (dropping it here would orphan that
+            # session's cli process alongside the new one).
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -651,7 +657,10 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # Leave a native session's reference in place for the start task to
+            # stop, exactly as in _on_stream_start.
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -697,6 +706,20 @@ class SendspinAirPlayBridge:
                 # neither the kept stream nor the receiver is this task's to touch.
                 return
 
+            # A player stream the bridge does not own is a live native session
+            # being displaced by this start. Stop it before the new process
+            # pairs with the receiver: two cli processes on one receiver reset
+            # each other's RTSP channel and both sessions die.
+            displaced_stream = self.airplay_player.stream
+            if displaced_stream is not None and displaced_stream is not self._airplay_stream:
+                await self._stop_displaced_stream(displaced_stream)
+                if self.airplay_player.stream is displaced_stream:
+                    self.airplay_player.stream = None
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    # A newer stream start took the bridge over while the
+                    # displaced session was being stopped.
+                    return
+
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
@@ -713,7 +736,8 @@ class SendspinAirPlayBridge:
                 with suppress(Exception):
                     await kept_stream.stop(force=True)
                 self._airplay_stream = None
-                self.airplay_player.stream = None
+                if self.airplay_player.stream is kept_stream:
+                    self.airplay_player.stream = None
                 self._use_shared_ptp = None
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
@@ -735,6 +759,42 @@ class SendspinAirPlayBridge:
                 )
                 return
             self._abandon_streaming()
+
+    async def _stop_displaced_stream(self, stream: AirPlayStream) -> None:
+        """
+        Release the speaker from a session the bridge is taking it away from.
+
+        Lets a failure to release the transport propagate, so the caller never
+        adds a second cli process to a receiver that is still serving one.
+
+        :param stream: The stream currently published on the AirPlay player.
+        """
+        # Only the transport and its session are this method's: native group membership
+        # belongs to the player controller, which releases it in the grouping command that
+        # hands the speaker over.
+        if stream.running:
+            # An idle player keeps its last stream published, so only a live one
+            # is worth reporting as displaced.
+            self.logger.debug(
+                "Stopping the session already running on %s before bridging it to Sendspin",
+                self.airplay_player.display_name,
+            )
+        await stream.stop(force=True)
+        if stream.session is None:
+            return
+        try:
+            # Bookkeeping only, the transport is already gone: this releases the
+            # speaker from the session's client list and ends a session left
+            # without clients, so its audio source is not left running.
+            await stream.session.remove_client(
+                self.airplay_player, reason="displaced by sendspin bridge"
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Could not release %s from its previous session: %s",
+                self.airplay_player.display_name,
+                err,
+            )
 
     async def _start_cold_stream(self, stream: AirPlayStream) -> bool:
         """
@@ -978,17 +1038,64 @@ class SendspinAirPlayBridge:
         """
         Handle the sendspin stream ending: defer the CLI teardown briefly.
 
-        A seek or next-track ends the stream and immediately starts a new one.
-        Tearing the CLI down here would force every such switch through a cold
-        reconnect; instead we keep the connected binary alive for a short grace
-        window so the next stream can reuse it via flush-refill. If no new
-        stream arrives within the window (a real stop), the deferred cleanup
-        kills the CLI so AirPlay stops instead of draining its buffer.
+        A stream end that is immediately followed by a new stream (a seek or
+        next-track on setups that end the stream for those) would force every
+        such switch through a cold reconnect if the CLI were torn down here;
+        instead the connected binary is kept alive for a short grace window so
+        the next stream can reuse it via flush-refill. If no new stream arrives
+        within the window, the deferred cleanup kills the CLI so AirPlay stops
+        instead of draining its buffer. A stop the user asked for skips the
+        window through _on_bridge_explicit_stop.
         """
         self._is_streaming = False
         self._queued_frames = 0
+        if self._transport_state_empty():
+            # A stream end with no transport behind it (an explicit stop already
+            # tore it down, or no chunk ever started one): nothing to keep warm
+            # and nothing to defer.
+            self.logger.debug(
+                "Sendspin stream ended for %s with no transport to keep warm",
+                self.airplay_player.display_name,
+            )
+            return
+        self.logger.debug(
+            "Sendspin stream ended for %s; keeping the CLI warm for %.0fs",
+            self.airplay_player.display_name,
+            BRIDGE_WARM_GRACE_SECONDS,
+        )
         self.mass.call_later(
             BRIDGE_WARM_GRACE_SECONDS, self._deferred_cleanup, task_id=self._teardown_timer_id
+        )
+
+    def _on_bridge_explicit_stop(self) -> None:
+        """
+        Tear the transport down at once for a stop the user asked for.
+
+        The stream end preceding this callback armed the warm grace window,
+        which exists for a next track to ride the connected binary. Nothing
+        follows an explicit stop, and the device holds seconds of buffered
+        audio, so waiting the window out would play out what the user asked to
+        end. The bridge stays registered in its group, so a later play includes
+        this speaker again.
+        """
+        self.mass.cancel_timer(self._teardown_timer_id)
+        if self._is_streaming:
+            # A new stream already took the bridge over; the transport belongs to it now.
+            return
+        if self._transport_state_empty():
+            return
+        self.logger.debug(
+            "Explicit stop for %s: tearing the transport down without the warm grace",
+            self.airplay_player.display_name,
+        )
+        self._schedule_cleanup()
+
+    def _transport_state_empty(self) -> bool:
+        """Return whether the bridge holds no transport, writer or pending start."""
+        return (
+            self._airplay_stream is None
+            and self._writer_task is None
+            and self._airplay_stream_start_task is None
         )
 
     def _deferred_cleanup(self) -> None:
@@ -1521,7 +1628,10 @@ class SendspinAirPlayBridge:
         self._airplay_stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None
-        if stream is not None:
+        # Only unpublish what this bridge put there: a deferred teardown can fire
+        # after the native path already replaced the player's stream, and dropping
+        # that reference would strand a session the bridge never owned.
+        if stream is not None and self.airplay_player.stream is stream:
             self.airplay_player.stream = None
         self._is_streaming = False
         self._use_shared_ptp = None

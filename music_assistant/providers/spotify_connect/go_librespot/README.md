@@ -9,7 +9,7 @@ December 2024 and may break whenever Spotify changes the protocol.
    Spotify app  (mobile / desktop / web)
         │   Connect protocol: mDNS discovery + audio
         ▼
-   go-librespot daemon  (one per instance)
+   go-librespot daemon  (one per connected player)
         │   decodes Ogg Vorbis → s16le PCM on stdout, driven by
         │   GoLibrespotClient over its local HTTP + WS API
         ▼
@@ -33,8 +33,8 @@ December 2024 and may break whenever Spotify changes the protocol.
 ## Daemon & configuration
 
 The binary is resolved from `PATH` (installed into the Docker image / HA add-on at build
-time; `brew install go-librespot` for manual macOS installs). Each instance writes a
-`config.yml` into its cache dir — emitted as JSON (valid YAML) to avoid a YAML dependency
+time; `brew install go-librespot` for manual macOS installs). Each daemon writes a
+`config.yml` into its own cache dir (keyed by its identity key) — emitted as JSON (valid YAML) to avoid a YAML dependency
 and quoting pitfalls:
 
 - `audio_backend: pipe` with `audio_output_pipe: /dev/stdout` (`s16le`): the daemon writes
@@ -42,14 +42,15 @@ and quoting pitfalls:
   reader, so the daemon's non-blocking pipe open never fails.
 - `external_volume: true`: the daemon never attenuates the PCM — MA/the player owns the
   audible volume. Volume events still flow both ways so the app slider stays in sync.
-- A stable `device_id` derived from the instance id (the Spotify app keeps recognising the
-  same device), zeroconf advertised on the streams bind interface, credentials persisted
-  per instance.
-- The local HTTP/WS API binds to `127.0.0.1` on a free port per instance.
+- A stable `device_id` derived from the daemon's identity key (the Spotify app keeps
+  recognising the same device), zeroconf advertised on the streams bind interface,
+  credentials persisted per daemon.
+- The local HTTP/WS API binds to `127.0.0.1` on a free port per daemon.
 
-The daemon is supervised: restarts on exit, a fatal event (→ `unload_with_error`) after
-repeated failures. A self-healing WebSocket listener reconnects across daemon restarts and
-translates `/events` messages into normalized `BackendEvent`s.
+The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
+the provider gives up this one daemon (stopping it and keeping the other players' daemons
+running). A self-healing WebSocket listener reconnects across daemon restarts and translates
+`/events` messages into normalized `BackendEvent`s.
 
 ## Audio transport
 

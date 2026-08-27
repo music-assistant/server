@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
 
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
@@ -99,6 +99,8 @@ def _make_chromecast_player(
     player.next_track = AsyncMock()
     player.previous_track = AsyncMock()
     player.seek = AsyncMock()
+    player.set_shuffle = AsyncMock()
+    player.set_repeat = AsyncMock()
     _register_players(mass, player)
     return player
 
@@ -178,6 +180,24 @@ async def test_transport_proxied_to_external_source(
     universal, chromecast = setup
     await universal.pause()
     chromecast.pause.assert_awaited_once_with()
+
+
+async def test_ordering_proxied_to_external_source(
+    setup: tuple[UniversalPlayer, MagicMock],
+) -> None:
+    """
+    Shuffle and repeat reach the protocol player playing the source.
+
+    The source_list is taken from that player too, so the capability it declares and
+    the command that acts on it must arrive at the same place.
+    """
+    universal, chromecast = setup
+
+    await universal.set_shuffle(True)
+    await universal.set_repeat(RepeatMode.ALL)
+
+    chromecast.set_shuffle.assert_awaited_once_with(True)
+    chromecast.set_repeat.assert_awaited_once_with(RepeatMode.ALL)
 
 
 def test_no_features_without_external_source() -> None:

@@ -38,11 +38,9 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
-    CONF_STREAMING_MODE,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AP2_PTP,
-    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     ClockReadiness,
     StreamingProtocol,
@@ -265,7 +263,7 @@ class AirPlayStream:
         # stays a single support signal instead of repeating with every
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
-        self._native_control_failure_handled: bool = False
+        self._native_control_failure_warned: bool = False
 
     @property
     def running(self) -> bool:
@@ -276,6 +274,17 @@ class AirPlayStream:
             and self._cli_proc is not None
             and not self._cli_proc.closed
         )
+
+    @property
+    def accepts_audio(self) -> bool:
+        """
+        Return boolean if this stream can still be fed audio.
+
+        The binary treats a closed stdin as the end of the stream and there is no
+        reopening it, so a stream that has been sent its audio EOF stays running
+        (playing out what it holds) while no longer taking anything new.
+        """
+        return self.running and self._cli_proc is not None and not self._cli_proc.stdin_closed
 
     @property
     def connected(self) -> bool:
@@ -359,13 +368,8 @@ class AirPlayStream:
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
-        # set to. A latched mute would start the stream silent, and a volume explicitly
-        # requested for this session (an announcement) is not an unsolicited push.
-        if (
-            self.player.owns_volume
-            or self.player.volume_muted
-            or (self.session is not None and self.session.requested_volume is not None)
-        ):
+        # set to. A latched mute would start the stream silent, so it does travel along.
+        if self.player.owns_volume or self.player.volume_muted:
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.
@@ -841,11 +845,12 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
-                    # the push resets a changed track to position zero (a
-                    # same-item refinement carries the current position), so
-                    # the correction below only follows when playback is
-                    # actually elsewhere (mid-track start, tag refinement)
-                    self._last_progress_sent = 0
+                    # every identity push is followed by one explicit progress
+                    # anchor, even at position zero: some receivers (WiiM Amp)
+                    # mute a flushed-and-restarted session mid-track when no
+                    # PROGRESS ever follows the SENDMETA, and un-mute on the
+                    # first one that arrives
+                    self._last_progress_sent = None
                     if artwork_file:
                         # the bundle delivered the artwork: settle it and stand
                         # down the ARTWORK follow-up
@@ -1404,6 +1409,15 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
+                    if player.stream is not self:
+                        # A newer session (native or Sendspin bridge) owns this
+                        # player, so this process's death says nothing about the
+                        # device: ungrouping or scheduling a re-join over it
+                        # would tear down the session that replaced it.
+                        logger.debug(
+                            "superseded cliairplay process stopped for %s", player.display_name
+                        )
+                        return
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
@@ -1689,33 +1703,6 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
 
-    async def _restart_playback_on_ntp(self) -> None:
-        """
-        Restart this player's playback after its streaming mode switched to NTP.
-
-        The running session was spawned with PTP timing and needs a full cold
-        start to pick up the new mode, so the stream stops hard first; the
-        queue then restarts the current item. The receiver rendered nothing on
-        the stalled session, so restarting from the top loses no audio.
-        """
-        try:
-            queue = self.mass.player_queues.get_active_queue(self.player.player_id)
-            # Tear the whole owning session down, not just this stream: the
-            # session holds the audio source and ffmpeg feed, and a plain
-            # play_index would warm-replace onto the still-running (PTP)
-            # binary instead of cold-starting with the new timing.
-            if self.session is not None:
-                await self.session.stop()
-            else:
-                await self.stop(force=True)
-            if queue is None or queue.current_index is None:
-                return
-            await self.mass.player_queues.play_index(queue.queue_id, queue.current_index)
-        except Exception as err:
-            # Fire-and-forget heal: never let a failed restart replace one
-            # silent outcome with an unhandled-task error.
-            self.player.logger.warning("Restart on NTP timing failed: %s", err)
-
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1769,6 +1756,9 @@ class AirPlayStream:
         command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
         if command_delivered:
             self.player.last_command_sent = time.time()
+            if command.startswith("VOLUME="):
+                # the receiver echoes every level it is handed back over DACP
+                self.player.suppress_volume_reports()
         return command_delivered
 
     def _check_password_preflight(self) -> None:
@@ -1910,19 +1900,27 @@ class AirPlayStream:
             self.player.set_password_invalid(True)
 
     def _handle_native_control_failure(self) -> None:
-        """Switch an automatic native AirPlay 2 route to compatibility mode."""
-        if self._native_control_failure_handled:
+        """Warn once that the receiver dropped the native AirPlay 2 control channel."""
+        if self._native_control_failure_warned:
             return
-        self._native_control_failure_handled = True
-        if self.player.streaming_mode != STREAMING_MODE_AUTO:
+        if self.player.stream is not self:
+            # Not evidence about the device: either a newer session reset the
+            # control channel on the receiver, or this stream is still coming up
+            # and has not been published yet. The binary keeps reporting while
+            # the failure lasts, so leaving the once-only latch unset here keeps
+            # a genuine failure reportable once the stream does own the player.
             return
+        self._native_control_failure_warned = True
+        # Deliberately no automatic streaming-mode change here: the usual cause
+        # is the device dropping off the network, and a persisted mode switch
+        # would outlive that dropout and pin the player to a lane it may not
+        # even accept. The streaming mode stays whatever the user configured.
         self.player.logger.warning(
-            "%s stopped answering native AirPlay 2 control keepalives; switching this "
-            "player to compatibility mode for its next playback.",
+            "%s stopped answering native AirPlay 2 control keepalives; the stream has "
+            "ended. If this happens repeatedly, check the network connection to the "
+            "device, or pin one of the offered streaming modes in the player's "
+            "advanced settings.",
             self.player.display_name,
-        )
-        self.mass.config.set_raw_player_config_value(
-            self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
         )
 
     def _parse_anchor_corrected(self, line: str) -> None:
@@ -2077,47 +2075,26 @@ class AirPlayStream:
             # keeps reporting until one exists.
             return
         stalled = state == "stalled" and mode != "ntp"
-        if stalled and not self._clock_stall_warned:
+        # A superseded stream is judging a receiver a newer session has already
+        # taken over: neither its verdict nor its advice describes what the user
+        # is hearing. The clock-ready wait below is still resolved, so its own
+        # start path is not left hanging on evidence that will not arrive.
+        if stalled and not self._clock_stall_warned and self.player.stream is self:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
+            # Deliberately no automatic streaming-mode change: the streaming
+            # mode setting stays under the user's control.
             self._clock_stall_warned = True
-            ntp_offered = any(
-                option.value == STREAMING_MODE_AP2_NTP
-                for option in self.player.streaming_mode_options
+            self.player.logger.warning(
+                "%s has not answered the server's PTP clock (%s clock exchange(s), "
+                "probe streak %s ms), so it will not play any audio. Check that UDP "
+                "319/320 traffic can flow between the speaker and the server, or "
+                "pin one of the offered streaming modes in the player's advanced "
+                "settings.",
+                self.player.display_name,
+                fields.get("exchanges", "?"),
+                fields.get("streak_ms", "?"),
             )
-            if (
-                self.player.streaming_mode == STREAMING_MODE_AUTO
-                and ntp_offered
-                and not self.player.synced_to
-                and not self.player.group_members
-            ):
-                # Measured truth: the device advertises PTP but never answers a
-                # probe (AirPlay 2 video-class TVs). Pin the visible streaming
-                # mode to NTP timing and restart playback on it, so the user
-                # hears music instead of silence — and can see and revert the
-                # decision in the player's advanced settings.
-                self.player.logger.warning(
-                    "%s never answered the server's PTP clock; switching this "
-                    "player to NTP timing and restarting playback.",
-                    self.player.display_name,
-                )
-                self.mass.config.set_raw_player_config_value(
-                    self.player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_NTP
-                )
-                self.mass.create_task(self._restart_playback_on_ntp())
-            else:
-                # A pinned mode is the user's explicit choice, and moving one
-                # member of a live sync group would desync it: report instead.
-                self.player.logger.warning(
-                    "%s has not answered the server's PTP clock (%s clock exchange(s), "
-                    "probe streak %s ms), so it will not play any audio. Check that UDP "
-                    "319/320 traffic can flow between the speaker and the server, or "
-                    "pin one of the offered streaming modes in the player's advanced "
-                    "settings.",
-                    self.player.display_name,
-                    fields.get("exchanges", "?"),
-                    fields.get("streak_ms", "?"),
-                )
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive. A stalled clock

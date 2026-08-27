@@ -214,11 +214,19 @@ def test_emit_does_no_sanitization_work() -> None:
 def test_emit_does_no_disk_io() -> None:
     """Test that capturing an exception never reads source files (linecache)."""
     handler = DiagnosticsLogHandler()
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        record = logging.LogRecord(
+            "test.diagnostics", logging.ERROR, __file__, 1, "it broke", None, sys.exc_info()
+        )
+    # emit directly: routing through a logger would also invoke unrelated handlers
+    # (e.g. pytest's own log capture) whose formatting does read source files
     with (
         patch("linecache.getline", side_effect=AssertionError("linecache hit on emit")),
         patch("linecache.updatecache", side_effect=AssertionError("linecache hit on emit")),
     ):
-        _emit_exception(handler)
+        handler.emit(record)
     _, exceptions = handler.snapshot()
     assert len(exceptions) == 1
 

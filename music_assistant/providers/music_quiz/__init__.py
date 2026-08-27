@@ -68,7 +68,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderFeature, QueueOption
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature, QueueOption
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -84,6 +84,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     impersonated_user,
 )
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
@@ -1802,7 +1803,7 @@ class MusicQuizPlugin(PluginProvider):
             and not state.needs_setup
             and state.synced_to is None
             and state.active_group is None
-            and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
+            and state.type in PLAYBACK_TARGET_TYPES
             and any(protocol.available for protocol in state.output_protocols)
             and not is_remote_session_host(self.mass, player.player_id)
         )

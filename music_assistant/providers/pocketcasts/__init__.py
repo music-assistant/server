@@ -39,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import PocketCastsClient
@@ -246,12 +247,15 @@ class PocketCastsProvider(MusicProvider):
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
 
-        for episode_data in episodes:
+        # the full-podcast payload carries no episode number, so rank on the publication date
+        positions = rank_episodes_by_date([ep.get("published") or None for ep in episodes])
+        for position, episode_data in zip(positions, episodes, strict=True):
             episode_item = self._convert_episode(
                 episode_data,
                 prov_podcast_id,
                 show_notes.get(episode_data.get("uuid", "")),
                 podcast_name,
+                position=position,
             )
             if episode_item:
                 self._enrich_episode_with_status(
@@ -519,8 +523,13 @@ class PocketCastsProvider(MusicProvider):
         podcast_uuid: str,
         show_notes: dict[str, Any] | None = None,
         podcast_name: str = "",
+        position: int = 0,
     ) -> PodcastEpisode | None:
-        """Convert episode data to a PodcastEpisode, or None when it carries no episode uuid."""
+        """
+        Convert episode data to a PodcastEpisode, or None when it carries no episode uuid.
+
+        :param position: The episode's listing position. Defaults to 0 (unknown).
+        """
         episode_uuid = episode_data.get("uuid")
         if not episode_uuid:
             return None
@@ -541,7 +550,7 @@ class PocketCastsProvider(MusicProvider):
                 provider=self.instance_id,
                 name=podcast_name,
             ),
-            position=episode_data.get("episodeNumber", 0),
+            position=position,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,

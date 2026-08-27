@@ -43,6 +43,7 @@ def _make_stream(
     player.provider.logger = logging.getLogger("test.airplay.prov")
 
     stream = AirPlayStream(player)
+    player.stream = stream
 
     # Mock a CLI process whose stderr is already exhausted: the reader loop
     # exits immediately without seeing an end-of-stream marker, i.e. an
