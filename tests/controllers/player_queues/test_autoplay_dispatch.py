@@ -565,3 +565,46 @@ async def test_settle_task_bails_when_the_queue_is_removed_while_waiting(
     tracker.play_index.assert_not_called()
     tracker.load.assert_not_called()
     tracker._finish_queue.assert_not_called()
+
+
+async def test_settle_task_skips_finish_when_the_queue_vanishes_during_fetch() -> None:
+    """A failed dynamic fetch on a removed queue must not mark anything as ended."""
+    tracker = _tracker()
+    tracker._queue_data["q1"].userid = None
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    queue = cast(
+        "PlayerQueue",
+        SimpleNamespace(
+            queue_id="q1",
+            next_item=None,
+            flow_mode=False,
+            state=PlaybackState.IDLE,
+            current_index=None,
+            display_name="Q1",
+        ),
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, queue, prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    async def _fetch_and_remove_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+        tracker._queue_data.pop("q1")
+        raise ProviderUnavailableError("provider unloaded")
+
+    tracker._media_resolver.get_dynamic_source_tracks = AsyncMock(
+        side_effect=_fetch_and_remove_queue
+    )
+    with (
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+            AsyncMock(),
+        ),
+        patch(
+            "music_assistant.controllers.player_queues.playback_tracker.find_dynamic_source",
+            return_value=MagicMock(),
+        ),
+    ):
+        await settle_coro
+
+    tracker._finish_queue.assert_not_called()
