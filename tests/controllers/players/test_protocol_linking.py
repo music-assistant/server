@@ -12242,7 +12242,7 @@ class TestCanGroupWithExternalSource:
     @staticmethod
     def _build_rig(mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer]:
         """
-        Wire two devices that can only reach each other over AirPlay.
+        Wire a player with one native peer and one reachable only over AirPlay.
 
         Returns the controller and the player whose grouping candidates are asserted on.
         """
@@ -12258,6 +12258,13 @@ class TestCanGroupWithExternalSource:
         )
         sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
         sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
         sonos_airplay = MockPlayer(
             airplay_provider,
             "airplay_sonos",
@@ -12305,6 +12312,7 @@ class TestCanGroupWithExternalSource:
         mock_mass.player_queues.get = MagicMock(return_value=None)
         controller._players = {
             "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
             "wiim_789": wiim_player,
             "airplay_sonos": sonos_airplay,
             "airplay_other": airplay_other,
@@ -12314,6 +12322,7 @@ class TestCanGroupWithExternalSource:
         sonos_airplay.refresh_state(signal_event=False)
         airplay_other.refresh_state(signal_event=False)
         sonos_player.refresh_state(signal_event=False)
+        sonos_player_b.refresh_state(signal_event=False)
         wiim_player.refresh_state(signal_event=False)
         return controller, sonos_player
 
@@ -12339,19 +12348,23 @@ class TestCanGroupWithExternalSource:
         sonos_player.refresh_state(signal_event=False)
 
         assert sonos_player.state.active_source == "spotify_connect://audio_source/sonos_123"
-        assert "wiim_789" in sonos_player.state.can_group_with
+        # MA produces the audio, so both the native peer and the one reachable
+        # only over AirPlay can be added to it
+        assert sonos_player.state.can_group_with == {"sonos_456", "wiim_789"}
 
     def test_device_own_external_source_hides_protocol_candidates(
         self, mock_mass: MagicMock
     ) -> None:
-        """A source MA does not produce (line-in, TV) cannot be sent to other players."""
+        """The device can still group its own line-in natively, just not over a protocol."""
         _, sonos_player = self._build_rig(mock_mass)
         sonos_player._attr_active_source = "tv"
         sonos_player._attr_playback_state = PlaybackState.PLAYING
         sonos_player.refresh_state(signal_event=False)
 
         assert sonos_player.state.active_source == "tv"
-        assert "wiim_789" not in sonos_player.state.can_group_with
+        # the device distributes its own input to its own kind, but MA cannot put
+        # audio it never receives onto an AirPlay/Sendspin protocol player
+        assert sonos_player.state.can_group_with == {"sonos_456"}
 
 
 class TestExternalSourceTakeover:
