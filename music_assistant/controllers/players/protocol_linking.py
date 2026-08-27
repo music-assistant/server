@@ -2512,9 +2512,10 @@ class ProtocolLinkingMixin:
         Move the native members that a switch to the given protocol strands onto that protocol.
 
         Returns the member IDs that are still attached to the parent's own stream, so the
-        caller can release them from it. Empty unless the parent renders that stream itself
-        while its native grouping attaches the members to exactly that stream: only then are
-        they left without anything to play.
+        caller can release them from it. Empty unless the parent's native grouping attaches
+        its members to exactly that stream: only then are they left without anything to play.
+        An idle parent counts too, since its group outlives the session and would otherwise
+        keep members that stay silent on the next play.
 
         :param parent_player: The parent player that is about to switch protocol.
         :param parent_protocol_player: The protocol player the parent will render through.
@@ -2525,8 +2526,6 @@ class ProtocolLinkingMixin:
         if not parent_player.native_grouping_requires_own_stream:
             return []
         if parent_player.active_output_protocol not in (None, "native"):
-            return []
-        if parent_player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return []
         stranded = [
             member_id
@@ -2540,21 +2539,24 @@ class ProtocolLinkingMixin:
                 protocol_members.append(protocol_id)
         return stranded
 
-    async def _stop_native_session(
+    async def _release_native_members(
         self,
         parent_player: Player,
         parent_protocol_player: Player,
         stranded_native_members: list[str],
+        *,
+        stop_session: bool,
     ) -> None:
         """
-        Release the given members from the parent's own stream and stop it.
+        Release the given members from the parent's own stream, and stop it when it is live.
 
-        :param parent_player: The parent player whose native session is handed over.
+        :param parent_player: The parent player whose native grouping is handed over.
         :param parent_protocol_player: The protocol player taking the output over.
         :param stranded_native_members: The members to release, already migrated.
+        :param stop_session: Whether the parent still renders the stream they were attached to.
         """
         self.logger.debug(
-            "Stopping the native session of %s before switching to %s, migrated members: %s",
+            "Releasing the native members of %s before switching to %s: %s",
             parent_player.state.name,
             parent_protocol_player.state.name,
             stranded_native_members,
@@ -2564,7 +2566,8 @@ class ProtocolLinkingMixin:
         # keeps a later native playback command from resurrecting it. Both calls take the
         # provider's own lock, so they must run one after the other.
         await parent_player.set_members(player_ids_to_remove=stranded_native_members)
-        await parent_player.stop()
+        if stop_session:
+            await parent_player.stop()
 
     def _translate_members_for_protocols(
         self,
@@ -2942,8 +2945,8 @@ class ProtocolLinkingMixin:
             return
 
         # Members that ride the parent's own stream are stranded by the protocol switch below,
-        # so they join the protocol group in this very same call and their native session is
-        # torn down afterwards.
+        # so they join the protocol group in this very same call and are released from the
+        # parent's native grouping afterwards.
         stranded_native_members = (
             self._migrate_stranded_native_members(
                 parent_player, parent_protocol_player, filtered_protocol_add
@@ -3014,7 +3017,8 @@ class ProtocolLinkingMixin:
 
         The handover only runs when the parent is actually switching protocol while it is
         rendering; playback is resumed only for a parent that was playing, so adding a member
-        never starts playback on its own.
+        never starts playback on its own. Migrated native members are released regardless,
+        because they moved to the protocol group whether or not the parent was rendering.
 
         :param parent_player: The parent player that just gained protocol members.
         :param parent_protocol_player: The protocol player the members joined.
@@ -3046,19 +3050,26 @@ class ProtocolLinkingMixin:
         if not (is_native_protocol and already_using_native):
             parent_player.set_active_output_protocol(parent_protocol_player.player_id)
 
-        if not (was_rendering and switching_protocols):
+        handing_over = was_rendering and switching_protocols
+        if handing_over:
+            self.logger.info(
+                "Handing the output of %s over to the %s protocol%s",
+                parent_player.state.name,
+                parent_protocol_player.provider.domain,
+                " and resuming playback" if was_playing else "",
+            )
+        if stranded_native_members:
+            # The members joined the protocol group in the same call, so their place on the
+            # parent's own stream is released either way; only a live session needs stopping.
+            await self._release_native_members(
+                parent_player,
+                parent_protocol_player,
+                stranded_native_members,
+                stop_session=handing_over,
+            )
+        if not handing_over:
             return
 
-        self.logger.info(
-            "Handing the output of %s over to the %s protocol%s",
-            parent_player.state.name,
-            parent_protocol_player.provider.domain,
-            " and resuming playback" if was_playing else "",
-        )
-        if stranded_native_members:
-            await self._stop_native_session(
-                parent_player, parent_protocol_player, stranded_native_members
-            )
         old_parent_members = await self._stop_previous_protocol(
             parent_player, parent_protocol_player, previous_protocol
         )
