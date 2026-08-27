@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import defusedxml.ElementTree as DET
+import defusedxml.ElementTree as DefusedET
 import functools
 import time
 
@@ -12,7 +12,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 from uuid import UUID
-from xml.etree.ElementTree import ParseError
+from xml.etree.ElementTree import Element, ParseError
 
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
@@ -20,11 +20,9 @@ from async_upnp_client.profiles.ohmedia import (
     InfoState,
     OhmDevice,
     PlaylistState,
-    PlaylistStateAllowedValues,
     ProductSourceType,
     ProductState,
     RadioState,
-    ReceiverState,
     ServiceId,
     TimeState,
     Transport,
@@ -93,18 +91,17 @@ class OpenHomePlayer(Player):
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        self.profile: OhmDevice = device
+        self.profile: OhmDevice | None = device
         self.description_url: str = description_url
         self.last_seen: float | None = None
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
-        self.sources: list[PlayerSource] = []
         self.state_update_pending: bool = False
         self.state_update_period_ms: int = 1000
+        self.product_source_xml: Element | None = None  # state var converted from string
         # overrides
         self._attr_type: PlayerType = PlayerType.PROTOCOL
-        self._attr_name: str = f"Linn/OpenHome Media Player {player_id}" # override when connected
+        self._attr_name: str = f"Linn/OpenHome Media Player {player_id}"  # update when connected
 
-    # region adapted from DLNA Player
     def set_available(self, available: bool) -> None:
         """Set the availability of the player."""
         self._attr_available = available
@@ -124,27 +121,6 @@ class OpenHomePlayer(Player):
         await self.mass.players.register_or_update(self)
         return True
 
-    async def poll_transport_state_variables(self):
-        """Poll state variables needed for transport state."""
-
-        if self.profile.has_transport_state:
-            await self.profile._async_poll_state_variables(Service.TRANSPORT, TransportState.TRANSPORT_STATE)
-        else:
-            await self.profile._async_poll_state_variables(Service.PRODUCT, ProductState.SOURCE_XML)
-            await self.profile._async_poll_state_variables(Service.PRODUCT, ProductState.SOURCE_INDEX)
-            await self.profile._async_poll_state_variables(Service.PLAYLIST, PlaylistState.TRANSPORT_STATE)
-            await self.profile._async_poll_state_variables(Service.RADIO, RadioState.TRANSPORT_STATE)
-            await self.profile._async_poll_state_variables(Service.RECEIVER, ReceiverState.TRANSPORT_STATE)
-
-    async def poll_min_state_variables(self):
-        """Poll a minimal set of state variables."""
-
-        await self.profile._async_poll_state_variables(Service.PRODUCT, ProductState.STANDBY)
-        await self.profile._async_poll_state_variables(Service.VOLUME, VolumeState.MUTE)
-        await self.profile._async_poll_state_variables(Service.VOLUME, VolumeState.VOLUME)
-    # endregion
-
-    # region adapted from Demo Player
     @property
     def poll_interval(self) -> int:
         """Return the interval in seconds to poll the player for state updates."""
@@ -154,14 +130,11 @@ class OpenHomePlayer(Player):
         self,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-
         base_entries = await super().get_config_entries()
         config_entries: list[ConfigEntry] = [
             *base_entries,
         ]
         return config_entries
-
-    # endregion
 
     # region COMMANDS
     @catch_request_errors
@@ -267,7 +240,7 @@ class OpenHomePlayer(Player):
         if self.profile.has_transport_seek_second_absolute:
             await self.profile.async_transport_seek_absolute(position)
         else:
-            if self.active_source == ProductSourceType.RADIO:
+            if self.profile.active_source == ProductSourceType.RADIO:
                 await self.profile.async_radio_seek_second_absolute(position)
             else:
                 await self.profile.async_playlist_seek_second_absolute(position)
@@ -303,7 +276,7 @@ class OpenHomePlayer(Player):
             await asyncio.sleep(1)
             await self.profile.async_radio_play()
         else:
-            # if no Radio available (e.g. BubbleUPnPserver) then revert to using Playlist
+            # if no Radio available (e.g. BubbleUPnP Server) then revert to using Playlist
             logger.debug("play_media - using playlist")
             last_id = await self.profile.async_playlist_last_id()
             new_id = (await self.profile.async_playlist_insert(last_id, url, didl_metadata)).get("NewId")
@@ -321,6 +294,11 @@ class OpenHomePlayer(Player):
         if new_source:
             await self.profile.async_product_set_source_index(int(new_source.id))
 
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return list of available (native) sources for this player."""
+        return self._attr_source_list
+
     async def poll(self) -> None:
         """Poll player for all state variables (fallback mode only)."""
 
@@ -331,15 +309,20 @@ class OpenHomePlayer(Player):
             return
 
         now: float | int = time.time()
-        do_ping: bool = self._attr_needs_poll or (now - self.last_seen) > 60
+        if self.last_seen is None:
+            do_ping = True
+        else:
+            do_ping: bool = (now - self.last_seen) > 60
+
         try:
             with suppress(ValueError, ParseError):
                 await self.profile.async_update_state_variables(do_ping=do_ping)
-            self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
             logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
             raise PlayerUnavailableError from err
+        else:
+            self.last_seen = now
         finally:
             self._attr_needs_poll = False
 
@@ -365,66 +348,33 @@ class OpenHomePlayer(Player):
         return None
 
     @staticmethod
-    def is_valid_uuid(uuid_string):
-        try:
-            UUID(uuid_string)
-            return True
-        except ValueError:
-            return False
-
-    def _get_visible_sources(self, source_xml: str) -> list:
-        """Extract list of visible sources."""
-
-        logger = self.provider.logger.getChild(self.player_id)
-        sources: list = []
-        if source_xml is not None:
+    def is_valid_uuid(uuid_string: str) -> bool:
+        if uuid_string is not None:
             try:
-                source_list = DET.fromstring(source_xml)
-                for index, source_xml in enumerate(source_list):
-                    visible = source_xml.findtext("Visible")
-                    if visible in ("true", "1"):
-                        sources.append(
-                            {
-                                "Index": index,
-                                "Name": source_xml.findtext("Name"),
-                                "Type": source_xml.findtext("Type"),
-                                "SystemName": source_xml.findtext("SystemName"),
-                            }
-                        )
-            except DET.ParseError as error:
-                logger.debug("Value is not valid XML - %s", source_xml)
-
-        return sources
+                UUID(uuid_string)
+                return True
+            except ValueError:
+                return False
+        return False
 
     @staticmethod
-    def _source_list_from_sources(sources) -> list[PlayerSource]:
-        """Return MusicAssistant source list from the Linn/OpenHome Media device list of sources."""
-        player_source_list = []
-        for source in sources:
-            passive = False
-            can_play_pause = False
-            can_seek = False
-            can_next_previous = False
-            match source["Type"]:
-                case ProductSourceType.PLAYLIST:
-                    can_play_pause = True
-                    can_seek = True
-                    can_next_previous = True
-                case ProductSourceType.RADIO:
-                    can_play_pause = True
-                case _:
-                    pass
+    def _source_list_from_source_xml(source_xml: Element) -> list[PlayerSource]:
 
-            source_entry = PlayerSource(
-                id=str(source["Index"]),
-                name=source["Name"],
-                passive=passive,
-                can_play_pause=can_play_pause,
-                can_seek=can_seek,
-                can_next_previous=can_next_previous,
-            )
-            player_source_list.append(source_entry)
-
+        player_source_list: list[PlayerSource] = []
+        if isinstance(source_xml, Element):
+            for index, element in enumerate(source_xml):
+                visible: str | None = element.findtext("Visible")
+                if visible and visible.lower().strip() in ("true", "1"):
+                    source_type = element.findtext("Type")
+                    source_entry = PlayerSource(
+                        id = str(index),
+                        name = element.findtext("Name", default="Unknown"),
+                        can_play_pause = True if source_type in ("Playlist", "Radio") else False,
+                        can_seek = True if source_type in ("Playlist",) else False,
+                        can_next_previous = True if source_type in ("Playlist",) else False,
+                        passive = False,  # visible sources only so can be selected
+                    )
+                    player_source_list.append(source_entry)
         return player_source_list
 
     @staticmethod
@@ -514,11 +464,9 @@ class OpenHomePlayer(Player):
             if self._attr_needs_poll:
                 await self.profile.async_update_state_variables() # poll all state variables
 
-            self.visible_sources = await self.profile.async_visible_sources()
-            self._attr_source_list = self._source_list_from_sources(self.visible_sources)
-            source_xml = (await self.profile.async_product_source_xml()).get('Value')
-            if source_xml:
-                self.product_source_xml = DET.fromstring(source_xml)
+            self.product_source_xml = (await self.profile.async_product_source_xml()).get('Value')
+            if self.product_source_xml:
+                self._attr_source_list = self._source_list_from_source_xml(self.product_source_xml)
 
             try:
                 self.update_state()
@@ -547,7 +495,7 @@ class OpenHomePlayer(Player):
         self.update_state()
 
     async def _deferred_state_update(self) -> None:
-        """Execute deferred state update after pause."""
+        """Defer state update for a period."""
 
         await asyncio.sleep(self.state_update_period_ms / 1000.0)
         try:
@@ -575,6 +523,7 @@ class OpenHomePlayer(Player):
             active_queue_id = None
 
         schedule_state_update: bool = False
+        # Cases intended to be exhaustive but not fully implemented yet
         match service.service_id:
             case ServiceId.CREDENTIALS:
                 pass
@@ -629,9 +578,12 @@ class OpenHomePlayer(Player):
                                 logger.debug("Unable to process Product source index %s", sv.value)
                         case ProductState.SOURCE_XML:
                             schedule_state_update = True
-                            self.visible_sources = self._get_visible_sources(sv.value)
-                            self._attr_source_list = self._source_list_from_sources(self.visible_sources)
-                            self.product_source_xml = DET.fromstring(sv.value)
+                            try:
+                                self.product_source_xml = DefusedET.fromstring(sv.value)
+                            except (ParseError, AttributeError, IndexError, KeyError, TypeError):
+                                logger.debug("Unable to process Source XML %s", sv.value)
+                            else:
+                                self._attr_source_list = self._source_list_from_source_xml(self.product_source_xml)
                         case _:
                             pass
             case ServiceId.RADIO:
@@ -726,4 +678,7 @@ class OpenHomePlayer(Player):
         self._attr_volume_muted = self.profile.is_muted
         self._attr_volume_level = self.profile.volume
         self._attr_playback_state = self._transport_state_to_playback_state(self.profile.transport_state)
-        self._attr_source_list = self._source_list_from_sources(self.visible_sources)
+        if self.product_source_xml:
+            self._attr_source_list = self._source_list_from_source_xml(self.product_source_xml)
+        else:
+            self._attr_source_list = []
