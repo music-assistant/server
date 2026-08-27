@@ -12236,6 +12236,18 @@ class TestPreferNativeGrouping:
         assert native_members == ["plain_child"]
 
 
+def _live_source(item_id: str, provider: str = "spotify_connect") -> AudioSource:
+    """Build the AudioSource a live session publishes on a player."""
+    return AudioSource(
+        item_id=item_id,
+        provider=provider,
+        name=f"Live source ({item_id})",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain=provider, provider_instance=provider)
+        },
+    )
+
+
 class TestCanGroupWithExternalSource:
     """Grouping candidates while something other than the player's queue is playing."""
 
@@ -12330,20 +12342,7 @@ class TestCanGroupWithExternalSource:
         """A source MA streams itself (e.g. Spotify Connect) can still be grouped."""
         controller, sonos_player = self._build_rig(mock_mass)
         controller._start_audio_source_session(
-            "sonos_123",
-            AudioSource(
-                item_id="sonos_123",
-                provider="spotify_connect",
-                name="Spotify Connect (Living Room)",
-                provider_mappings={
-                    ProviderMapping(
-                        item_id="sonos_123",
-                        provider_domain="spotify_connect",
-                        provider_instance="spotify_connect",
-                    )
-                },
-            ),
-            "spotify_connect",
+            "sonos_123", _live_source("sonos_123"), "spotify_connect"
         )
         sonos_player.refresh_state(signal_event=False)
 
@@ -12356,7 +12355,9 @@ class TestCanGroupWithExternalSource:
         self, mock_mass: MagicMock
     ) -> None:
         """The device can still group its own line-in natively, just not over a protocol."""
-        _, sonos_player = self._build_rig(mock_mass)
+        controller, sonos_player = self._build_rig(mock_mass)
+        # a live source elsewhere says nothing about what this player is playing
+        controller._start_audio_source_session("wiim_789", _live_source("wiim_789"), "vban")
         sonos_player._attr_active_source = "tv"
         sonos_player._attr_playback_state = PlaybackState.PLAYING
         sonos_player.refresh_state(signal_event=False)
@@ -12385,20 +12386,7 @@ class TestExternalSourceTakeover:
         """MA putting a live source on the player must not tear down its protocol group."""
         controller, sonos_player = self._playing_over_airplay(mock_mass)
         controller._start_audio_source_session(
-            "sonos_123",
-            AudioSource(
-                item_id="sonos_123",
-                provider="spotify_connect",
-                name="Spotify Connect (Living Room)",
-                provider_mappings={
-                    ProviderMapping(
-                        item_id="sonos_123",
-                        provider_domain="spotify_connect",
-                        provider_instance="spotify_connect",
-                    )
-                },
-            ),
-            "spotify_connect",
+            "sonos_123", _live_source("sonos_123"), "spotify_connect"
         )
         sonos_player.refresh_state(signal_event=False)
 
@@ -12407,7 +12395,10 @@ class TestExternalSourceTakeover:
         assert sonos_player.active_output_protocol == "airplay_sonos"
 
     def test_device_own_external_source_stays_external(self, mock_mass: MagicMock) -> None:
-        """A source MA does not produce is still classified as a takeover."""
-        controller, sonos_player = self._playing_over_airplay(mock_mass)
+        """A source MA does not produce is still classified as external."""
+        # checked on the classifier directly: while an output protocol renders the audio,
+        # __final_active_source overrules what the device reports, so a device-local
+        # source cannot be driven through _check_external_source_takeover at all
+        controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
 
         assert not controller._is_ma_managed_source(sonos_player, "tv")

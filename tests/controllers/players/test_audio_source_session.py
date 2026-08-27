@@ -490,9 +490,9 @@ def test_live_source_recognised_by_the_uri_it_publishes() -> None:
     session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
     assert session.source_uri is not None
 
-    assert ctrl.is_live_source(session.source_uri)
-    assert not ctrl.is_live_source("tv")
-    assert not ctrl.is_live_source(PLAYER_ID)
+    assert ctrl.is_live_audio_source(session.source_uri)
+    assert not ctrl.is_live_audio_source("tv")
+    assert not ctrl.is_live_audio_source(PLAYER_ID)
 
     ctrl._end_audio_source_session(PLAYER_ID)
-    assert not ctrl.is_live_source(session.source_uri)
+    assert not ctrl.is_live_audio_source(session.source_uri)

@@ -3312,7 +3312,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # A live AudioSource (e.g. Spotify Connect) is streamed by MA itself, so it is
         # MA that put it on the player rather than something taking the player over
-        if self.is_live_source(source):
+        if self.is_live_audio_source(source):
             return True
 
         # Check if it's a known queue ID

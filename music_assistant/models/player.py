@@ -3369,7 +3369,7 @@ class Player(ABC):
         # a live external source playing on this player is what it is playing, and MA
         # put it there, so it outranks whatever the device reports about itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
-            return session.source_uri or session.player_id
+            return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input, we use an explicit list here
@@ -3449,7 +3449,7 @@ class Player(ABC):
 
         # A live AudioSource (e.g. Spotify Connect) is audio MA produces itself, unlike
         # the device's own streaming endpoint or a line-in it switched to
-        if self.mass.players.is_live_source(active_source):
+        if self.mass.players.is_live_audio_source(active_source):
             return False
 
         # If it's a known queue ID it's MA-managed; anything else is external
