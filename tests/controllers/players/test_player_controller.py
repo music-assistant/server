@@ -369,41 +369,6 @@ class TestGroupUngroup:
         # Verify member was added to leader's group
         assert "member" in leader._attr_group_members
 
-    async def test_ungroup_protocol_child_targets_native_leader(self, mock_mass: MagicMock) -> None:
-        """
-        Ungrouping a protocol child addresses its native sync leader.
-
-        The child's exposed synced_to is translated to the leader's visible
-        parent, but the sync membership lives at the native leader: sending the
-        removal to the visible parent can get lost in a group-level redirect,
-        leaving the leader's member list stale.
-        """
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        universal = MockPlayer(provider, "universal_parent", "Universal")
-        leader = MockPlayer(provider, "proto_leader", "Leader", player_type=PlayerType.PROTOCOL)
-        leader.set_protocol_parent_id("universal_parent")
-        leader._attr_group_members = ["proto_leader", "proto_child"]
-        child = MockPlayer(provider, "proto_child", "Child", player_type=PlayerType.PROTOCOL)
-
-        controller._players = {p.player_id: p for p in (universal, leader, child)}
-        mock_mass.players = controller
-        for p in (universal, leader, child):
-            p.set_initialized()
-            p.update_state(signal_event=False)
-
-        # sanity: the child's exposed sync state is translated to the visible parent
-        assert child.synced_to == "proto_leader"
-        assert child.state.synced_to == "universal_parent"
-
-        controller.cmd_set_members = AsyncMock()  # type: ignore[method-assign]
-        await controller.cmd_ungroup("proto_child")
-
-        controller.cmd_set_members.assert_awaited_once_with(
-            "proto_leader", player_ids_to_remove=["proto_child"]
-        )
-
     async def test_remove_accepted_on_native_synced_child(self, mock_mass: MagicMock) -> None:
         """
         A removal addressed at the native sync leader survives a stale member list.
@@ -416,14 +381,16 @@ class TestGroupUngroup:
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
 
         universal = MockPlayer(provider, "universal_parent", "Universal")
+        universal_child = MockPlayer(provider, "universal_child", "Universal Child")
         leader = MockPlayer(provider, "proto_leader", "Leader", player_type=PlayerType.PROTOCOL)
         leader.set_protocol_parent_id("universal_parent")
         leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         child = MockPlayer(provider, "proto_child", "Child", player_type=PlayerType.PROTOCOL)
+        child.set_protocol_parent_id("universal_child")
 
-        controller._players = {p.player_id: p for p in (universal, leader, child)}
+        controller._players = {p.player_id: p for p in (universal, universal_child, leader, child)}
         mock_mass.players = controller
-        for p in (universal, leader, child):
+        for p in (universal, universal_child, leader, child):
             p.set_initialized()
             p.update_state(signal_event=False)
 

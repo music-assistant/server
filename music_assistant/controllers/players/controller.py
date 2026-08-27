@@ -1440,13 +1440,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
 
         if player.state.synced_to:
-            # player is a sync member. For a protocol player the state value is
-            # translated to the visible parent, but the sync membership itself
-            # lives at the native sync leader: address that leader directly so
-            # the removal cannot get lost in a redirect at the visible/group
-            # level (which would leave the leader's member list stale).
-            sync_leader = player.synced_to or player.state.synced_to
-            await self.cmd_set_members(sync_leader, player_ids_to_remove=[player_id])
+            # player is a sync member
+            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
             return
 
         if player.state.group_members:

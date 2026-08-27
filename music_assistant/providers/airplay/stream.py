@@ -1446,16 +1446,14 @@ class AirPlayStream:
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    # One exception: a member that is a STATIC member of an active group
-                    # player must not go through cmd_ungroup - the controller interprets
-                    # unjoining a static member as releasing the whole group (HA unjoin
-                    # semantics), which would silence every room over one dead transport.
-                    # Its membership is configuration; drop only this member from the
-                    # leader's live session instead. The set_members call cannot bounce
-                    # back to the group player: the controller only redirects it when
-                    # the group advertises SET_MEMBERS, which a static group never does.
-                    static_member_of = self._static_group_membership(player)
-                    if static_member_of and player.synced_to:
+                    # A synced member is dropped from its NATIVE sync leader directly:
+                    # cmd_ungroup resolves a linked protocol player to its visible parent
+                    # (handle_player_command) and from there acts at the visible/group
+                    # level, which can remove the member from its (sync)group - or, for a
+                    # static member, release the whole group (HA unjoin semantics) - over
+                    # one dead transport. The device fell out; its membership is intent
+                    # that must survive, so only the leader's live session loses it.
+                    if player.synced_to:
                         self.mass.create_task(
                             self.mass.players.cmd_set_members(
                                 player.synced_to, player_ids_to_remove=[player.player_id]
@@ -1472,16 +1470,6 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
-
-    def _static_group_membership(self, player: AirPlayPlayer) -> str | None:
-        """Return the active group player id the player is a static member of, if any."""
-        active_group_id = player.state.active_group
-        if not active_group_id:
-            return None
-        group_player = self.mass.players.get_player(active_group_id)
-        if group_player and player.player_id in group_player.static_group_members:
-            return active_group_id
-        return None
 
     def _handle_status_line(self, line: str) -> bool:  # noqa: PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""

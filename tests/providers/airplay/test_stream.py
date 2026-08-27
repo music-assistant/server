@@ -2781,6 +2781,15 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
 
     stream = await _run_unexpected_process_death(player)
 
+    # the member is dropped from its native sync leader directly: cmd_ungroup
+    # would resolve a linked protocol player to its visible parent and act at
+    # the group level, removing the member from its (sync)group over one dead
+    # transport
+    players_controller = player.provider.mass.players
+    players_controller.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
