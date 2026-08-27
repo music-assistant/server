@@ -1495,9 +1495,9 @@ class SendspinPlayer(SendspinBasePlayer):
             await self.api.group.remove_client(member_player.api)
             # An explicit removal ends playback for that member; a bridge among
             # its roles must silence its device now rather than play out the
-            # audio it still holds buffered. A member moving to another group
-            # does not pass here (add_client regroups internally), so a warm
-            # transport handover between groups is unaffected.
+            # audio it still holds buffered. A move to another group passes
+            # here too (the controller ungroups before it adds) and trades its
+            # warm transport handover for that immediate silence.
             self._notify_bridges_explicit_stop([member_player.api])
         # Cast-only: reset futures before add so a fatal error on a Cast-bridged
         # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
