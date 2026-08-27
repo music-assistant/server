@@ -1,10 +1,10 @@
 
+import defusedxml.ElementTree as DefusedET
 import pytest
 from async_upnp_client.profiles.ohmedia import TransportStateAllowedValues
-import defusedxml.ElementTree as DefusedET
-from defusedxml.ElementTree import ParseError
-from music_assistant.providers.openhome_media.player import OpenHomePlayer, PlayerSource
 from music_assistant_models.enums import PlaybackState
+
+from music_assistant.providers.openhome_media.player import OpenHomePlayer, PlayerSource
 
 
 class TestIsValidUuid:
@@ -90,7 +90,7 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
         assert len(result) == 1
-        assert result[0].id == '0'
+        assert result[0].id == "0"
         assert result[0].name == "CD"
 
 
@@ -338,9 +338,9 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
 
-        assert result[0].id == '0'
-        assert result[1].id == '1'
-        assert result[2].id == '2'
+        assert result[0].id == "0"
+        assert result[1].id == "1"
+        assert result[2].id == "2"
 
     def test_mixed_visibility_preserves_order(self):
         """Test that visible sources maintain their relative order."""
@@ -385,9 +385,9 @@ class TestSourceList:
         assert result[1].name == "Visible 2"
         assert result[2].name == "Visible 3"
         # Id should match original index position in source_xml
-        assert result[0].id == '1'
+        assert result[0].id == "1"
         assert result[1].id == "3"
-        assert result[2].id == '4'
+        assert result[2].id == "4"
 
     def test_case_sensitive_type_values_preserved(self):
         """Test that Type values preserve case."""

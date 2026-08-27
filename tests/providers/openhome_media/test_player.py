@@ -5,18 +5,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from music_assistant.providers.openhome_media.player import (
-    UpnpError,
-    OpenHomePlayer,
-    ServiceId,
-    TransportStateAllowedValues,
-    ProductState,
-    ProductSourceType,
-    TransportState,
-    VolumeState,
-)
-
 from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
@@ -24,6 +12,18 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.player import PlayerMedia
+
+from music_assistant.providers.openhome_media.player import (
+    OpenHomePlayer,
+    ProductSourceType,
+    ProductState,
+    ServiceId,
+    TransportState,
+    TransportStateAllowedValues,
+    UpnpError,
+    VolumeState,
+)
+
 # from music_assistant_models.config_entries import ConfigEntry
 
 
@@ -400,7 +400,6 @@ class TestEventHandling:
 
     def test_handle_event_no_state_variables(self, player):
         """Test event with no state variables triggers poll mode."""
-
         service = MagicMock(service_id=ServiceId.VOLUME)
         player._handle_event(service, [])
         assert player._attr_needs_poll is True

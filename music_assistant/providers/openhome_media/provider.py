@@ -1,4 +1,5 @@
 """OpenHome/Linn Player Provider implementation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +22,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_NETWORK_SCAN, CALLBACK_URL
+from .constants import CALLBACK_URL
 from .helpers import OpenHomeNotifyServer
 from .player import OpenHomePlayer
 
@@ -32,38 +33,35 @@ if TYPE_CHECKING:
 class OpenHomePlayerProvider(PlayerProvider):
     """Linn/OpenHome Media Player provider."""
 
-    openhome_players: dict[str, OpenHomePlayer] = {}
-    _discovery_running: bool = False
-
     lock: asyncio.Lock
     requester: UpnpRequester
     upnp_factory: UpnpFactory
     notify_server: OpenHomeNotifyServer
 
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize the Player."""
+        super().__init__(mass, manifest, config)
+        self.openhome_players: dict[str, OpenHomePlayer] = {}
+        self._discovery_running: bool = False
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-
-        self.logger.info(
-            "Initializing OpenHomePlayerProvider with config: %s", self.config
-        )
+        self.logger.info("Initializing OpenHomePlayerProvider with config: %s", self.config)
         self.lock = asyncio.Lock()
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("async_upnp_client").setLevel(logging.INFO)
         else:
             logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
-        self.logger.info(
-            "Initializing OpenHomePlayerProvider with config: %s", self.config
-        )
-        self.requester = AiohttpSessionRequester(
-            self.mass.http_session, with_sleep=True
-        )
+        self.logger.info("Initializing OpenHomePlayerProvider with config: %s", self.config)
+        self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = OpenHomeNotifyServer(self.requester, self.mass)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-
-        self.mass.streams.unregister_dynamic_route(path = CALLBACK_URL, method = "NOTIFY")
+        self.mass.streams.unregister_dynamic_route(path=CALLBACK_URL, method="NOTIFY")
         async with TaskManager(self.mass) as tg:
             for openhome_player in self.openhome_players.values():
                 tg.create_task(self._device_disconnect(openhome_player))
@@ -166,10 +164,7 @@ class OpenHomePlayerProvider(PlayerProvider):
         self.logger.debug(f"DISCOVERED: {udn} {description_url}")
         async with self.lock:
             if openhome_player := self.openhome_players.get(udn):
-                if (
-                        openhome_player.description_url == description_url
-                        and openhome_player.available
-                ):
+                if openhome_player.description_url == description_url and openhome_player.available:
                     return
                 openhome_player.description_url = description_url
             else:
@@ -201,13 +196,13 @@ class OpenHomePlayerProvider(PlayerProvider):
         Also call when removing this entity from MA to clean up connections.
         """
         async with openhome_player.lock:
-            if not openhome_player.device:
+            if not openhome_player.profile:
                 self.logger.debug("Disconnecting from device that's not connected")
                 return
 
-            self.logger.debug("Disconnecting from %s", openhome_player.device.name)
+            self.logger.debug("Disconnecting from %s", openhome_player.profile.name)
 
-            openhome_player.device.on_event = None
-            old_device = openhome_player.device
-            openhome_player.device = None
+            openhome_player.profile.on_event = None
+            old_device = openhome_player.profile
+            openhome_player.profile = None
             await old_device.async_unsubscribe_services()

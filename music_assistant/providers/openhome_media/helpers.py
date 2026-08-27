@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import defusedxml.ElementTree as DET
 from typing import TYPE_CHECKING
 
+import defusedxml.ElementTree as DefusedET
 from aiohttp.web import Request, Response
 from async_upnp_client.const import HttpRequest
 from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester
+
     from music_assistant import MusicAssistant
 
 from .constants import CALLBACK_URL
@@ -20,14 +21,16 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
     """Notify server for async_upnp_client which uses the MA webserver."""
 
     def __init__(
-            self,
-            requester: UpnpRequester,
-            mass: MusicAssistant,
+        self,
+        requester: UpnpRequester,
+        mass: MusicAssistant,
     ) -> None:
         """Initialize."""
         self.mass = mass
         self.event_handler = UpnpEventHandler(self, requester)
-        self.mass.streams.register_dynamic_route(path=CALLBACK_URL, handler=self._handle_request, method="NOTIFY")
+        self.mass.streams.register_dynamic_route(
+            path=CALLBACK_URL, handler=self._handle_request, method="NOTIFY"
+        )
 
     @property
     def callback_url(self) -> str:
@@ -53,7 +56,7 @@ class OpenHomeNotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore
 
         try:
             status = await self.event_handler.handle_notify(http_request)
-        except DET.ParseError as err:
+        except DefusedET.ParseError as err:
             self.mass.logger.debug(
                 "Ignoring malformed XML in OpenHome Media notify from %s: %s",
                 request.remote,
