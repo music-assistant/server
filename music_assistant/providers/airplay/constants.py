@@ -226,13 +226,14 @@ AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
 # footprint.
 AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 
-# Delay (seconds) before automatically re-joining a group member whose
+# Delays (seconds) between automatic re-join attempts for a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
-# network blackout longer than the binary's own keepalive tolerance). A single
-# attempt keeps the behaviour predictable: it waits long enough for a short
-# blackout to clear, and if the device is still gone the player is left idle.
-# Staged retries can be reintroduced by adding entries to the tuple.
-AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+# network blackout longer than the binary's own keepalive tolerance). A device
+# recovering from a network dropout typically needs tens of seconds to come
+# back, so the ladder stretches to a few minutes; every attempt re-validates
+# that the group still plays and the player was not repurposed meanwhile, and
+# the whole schedule is abandoned as soon as either no longer holds.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into

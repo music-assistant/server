@@ -1346,19 +1346,20 @@ async def test_rejoin_succeeds_on_first_attempt() -> None:
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
 
-    async def cmd_group(player_id: str, target_id: str) -> None:
-        assert player_id == player.player_id
-        assert target_id == leader.player_id
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
         _attach_running_session(player, [leader, player])
 
-    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    assert players_mock.cmd_group.await_count == 1
-    players_mock.cmd_ungroup.assert_not_awaited()
+    assert leader.set_members.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1370,13 +1371,18 @@ async def test_rejoin_retries_after_failure_then_succeeds() -> None:
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     attempts: list[int] = []
 
-    async def cmd_group(_player_id: str, _target_id: str) -> None:
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
         attempts.append(1)
         if len(attempts) == 1:
             raise PlayerCommandFailed("device unreachable")
         _attach_running_session(player, [leader, player])
 
-    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
@@ -1390,12 +1396,12 @@ async def test_rejoin_gives_up_after_all_attempts() -> None:
     player = _make_idle_player()
     players_mock = _players_mock(player)
     players_mock.get_player.return_value = None
-    players_mock.cmd_group = AsyncMock()
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    players_mock.cmd_group.assert_not_awaited()
+    # every attempt tried (and failed) to resolve a re-join target
+    assert players_mock.get_player.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -1405,7 +1411,7 @@ async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     # the user started something else on the player during the backoff
     stream = MagicMock()
     stream.running = True
@@ -1414,7 +1420,7 @@ async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1424,16 +1430,17 @@ async def test_rejoin_undoes_dangling_membership() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    # cmd_group "succeeds" but the late-join failed internally: no stream appears
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    # the join "succeeds" but the late-join failed internally: no stream appears
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    # every attempt rolled its dangling membership back
-    assert players_mock.cmd_group.await_count == 3
-    assert players_mock.cmd_ungroup.await_count == 3
+    # every attempt joined and rolled its dangling membership back
+    joins = [c for c in leader.set_members.await_args_list if c.kwargs.get("player_ids_to_add")]
+    undos = [c for c in leader.set_members.await_args_list if c.kwargs.get("player_ids_to_remove")]
+    assert len(joins) == 3
+    assert len(undos) == 3
 
 
 @pytest.mark.asyncio
@@ -1443,14 +1450,14 @@ async def test_rejoin_cancelled_when_player_unavailable() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     player._attr_available = False
 
     # the later long delays prove the loop returns on the first pass
     with patch(_NO_DELAYS, (0, 60, 60)):
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
     players_mock.get_player.assert_not_called()
 
 
@@ -1466,12 +1473,12 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     _players_mock(player).iter_players.return_value = [foreign_leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 60, 60)):
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
@@ -1541,8 +1548,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
     _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
 
     async def add_client(joiner: AirPlayPlayer) -> None:
@@ -1555,8 +1561,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
         await player._group_rejoin_attempts(["leader"])
 
     session.add_client.assert_awaited_once()
-    players_mock.cmd_group.assert_not_awaited()
-    players_mock.cmd_ungroup.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1568,8 +1573,7 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
     _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
     # the late-join fails internally: no stream appears on the player
     session.add_client = AsyncMock()
@@ -1578,7 +1582,7 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
         await player._group_rejoin_attempts(["leader"])
 
     session.add_client.assert_awaited_once()
-    players_mock.cmd_ungroup.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1440,8 +1440,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
 
         if player.state.synced_to:
-            # player is a sync member
-            await self.cmd_set_members(player.state.synced_to, player_ids_to_remove=[player_id])
+            # player is a sync member. For a protocol player the state value is
+            # translated to the visible parent, but the sync membership itself
+            # lives at the native sync leader: address that leader directly so
+            # the removal cannot get lost in a redirect at the visible/group
+            # level (which would leave the leader's member list stale).
+            sync_leader = player.synced_to or player.state.synced_to
+            await self.cmd_set_members(sync_leader, player_ids_to_remove=[player_id])
             return
 
         if player.state.group_members:
@@ -3535,9 +3540,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     continue
                 # also accept the removal if the child player itself reports
                 # being synced to this parent - handles race conditions where the
-                # parent's group_members state is stale/not yet updated
+                # parent's group_members state is stale/not yet updated. The
+                # native synced_to is checked as well: a protocol child's state
+                # value is translated to the visible parent, which would reject
+                # a removal correctly addressed at its native sync leader.
                 child_player = self.get_player(child_player_id)
-                if child_player and child_player.state.synced_to == target_player:
+                if child_player and target_player in (
+                    child_player.state.synced_to,
+                    child_player.synced_to,
+                ):
                     final_player_ids_to_remove.append(child_player_id)
                     continue
 
