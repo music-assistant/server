@@ -15,6 +15,7 @@ from music_assistant.providers.snapcast.constants import (
     snapcast_stream_format,
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
+from music_assistant.providers.snapcast.provider import SnapCastProvider
 
 if TYPE_CHECKING:
     from .conftest import FakeSnapserver
@@ -367,3 +368,72 @@ def test_pick_port_avoids_already_tried() -> None:
         assert 4953 <= port <= 4953 + 200
         assert port not in used
         used.add(port)
+
+
+def _displaced_stream(provider: MagicMock, stream_id: str = "music-1") -> SnapcastMAStream:
+    """Build a registered stream and point every snapserver group somewhere else."""
+    stream = _make_stream(provider, name="Music Assistant - music")
+    stream.snap_stream = MagicMock(identifier=stream_id)
+    provider._snapcast_ma_streams = {stream_id: stream}
+    provider._snapserver.groups = [MagicMock(stream="announcement-1")]
+    return stream
+
+
+def test_displaced_stream_is_scheduled_for_stop(fake_provider: MagicMock) -> None:
+    """A stream no group plays anymore is stopped after the idle delay."""
+    stream = _displaced_stream(fake_provider)
+
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
+
+
+def test_pinned_stream_survives_being_displaced(fake_provider: MagicMock) -> None:
+    """
+    Regression: the music stream must outlive an announcement taking over the group.
+
+    The announcement points the group at its own stream, so the music stream reads as
+    unused. Stopping it there leaves nothing to hand the group back to afterwards.
+    """
+    stream = _displaced_stream(fake_provider)
+    stream.pin("player-1")
+
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_not_called()
+
+
+def test_one_member_finishing_does_not_release_another_members_pin(
+    fake_provider: MagicMock,
+) -> None:
+    """
+    Regression: announcements on group members run concurrently and share one stream.
+
+    The member that finishes first must not hand the stream back while the others still
+    have every group displaced from it.
+    """
+    stream = _displaced_stream(fake_provider)
+    stream.pin("player-1")
+    stream.pin("player-2")
+
+    stream.unpin("player-1")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_not_called()
+
+    stream.unpin("player-2")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
+
+
+def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) -> None:
+    """A stream that stays unused after its pin is released is stopped as usual."""
+    stream = _displaced_stream(fake_provider)
+    stream.pin("player-1")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    stream.unpin("player-1")
+    SnapCastProvider.update_stream_usage(fake_provider)
+
+    fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
