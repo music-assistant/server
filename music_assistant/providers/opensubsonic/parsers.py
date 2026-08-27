@@ -92,6 +92,16 @@ def parse_track(  # noqa: PLR0915
 
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_song.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_song.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if lyrics:
         ly, synced = lyrics
         if synced:
@@ -512,24 +522,25 @@ def parse_podcast(instance_id: str, sonic_podcast: SonicPodcast) -> Podcast:
 
 
 def parse_epsiode(
-    instance_id: str, sonic_episode: SonicEpisode, sonic_channel: SonicPodcast
+    instance_id: str,
+    sonic_episode: SonicEpisode,
+    sonic_channel: SonicPodcast,
+    position: int = 0,
 ) -> PodcastEpisode:
-    """Parse an Open Subsonic Podcast Episode into an MA PodcastEpisode."""
+    """
+    Parse an Open Subsonic Podcast Episode into an MA PodcastEpisode.
+
+    :param position: The episode's listing position. Defaults to 0 (unknown).
+    """
     eid = f"{sonic_episode.channel_id}{EP_CHAN_SEP}{sonic_episode.id}"
-    pos = 1
     if not sonic_channel.episode:
         raise MediaNotFoundError(f"Podcast Channel '{sonic_channel.id}' missing episode list")
-
-    for ep in sonic_channel.episode:
-        if ep.id == sonic_episode.id:
-            break
-        pos += 1
 
     episode = PodcastEpisode(
         item_id=eid,
         provider=SUBSONIC_DOMAIN,
         name=sonic_episode.title,
-        position=pos,
+        position=position,
         podcast=parse_podcast(instance_id, sonic_channel),
         provider_mappings={
             ProviderMapping(

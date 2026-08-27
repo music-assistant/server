@@ -21,13 +21,13 @@ import asyncio
 import time
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import IdentifierType, PlaybackState
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
@@ -91,10 +91,10 @@ BRIDGE_COLD_CONNECT_BUDGET_MS: int = 2000
 
 # Lead (ms) reported to Sendspin so it schedules the first chunk that far ahead
 # of the instant it wants audible. It has to cover getting the transport ready
-# plus the binary's own clock-verification floor, which the anchor can never
-# undercut -- a shorter lead makes the anchor land past the first chunks and
-# their audio is dropped. A cold start adds its connect budget on top; a kept,
-# already-connected CLI pays no connect, leaving only the floor.
+# plus the join floor the anchor can never undercut -- a shorter lead makes the
+# anchor land past the first chunks and their audio is dropped. A cold start
+# adds its connect budget on top; a kept, already-connected CLI pays no connect,
+# leaving only the floor.
 BRIDGE_COLD_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS + BRIDGE_COLD_CONNECT_BUDGET_MS
 BRIDGE_WARM_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
 
@@ -140,6 +140,10 @@ BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
 # which is typically absent from mDNS for far longer than the first. Once they
 # run out the player stays out and idle.
 BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
+
+# Player state fields that mean the AirPlay side moved the volume or the mute, so
+# the bridge role's copy of it has to follow.
+_VOLUME_STATE_FIELDS: frozenset[str] = frozenset({"volume_level", "volume_muted"})
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -427,7 +431,9 @@ class SendspinAirPlayBridge:
                 on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
+                on_explicit_stop=self._on_bridge_explicit_stop,
                 initial_volume=self.airplay_player.volume_level or 25,
+                initial_muted=bool(self.airplay_player.volume_muted),
             )
             self._bridge_role.setup_audio_requirements()
             self._refresh_bridge_timing()
@@ -450,6 +456,24 @@ class SendspinAirPlayBridge:
                 self._bridge_role = None
 
         self.logger.debug("Sendspin bridge stopped for %s", self.airplay_player.display_name)
+
+    def sync_role_volume_state(self) -> None:
+        """
+        Adopt the AirPlay player's volume and mute into the bridge role.
+
+        The role is what the visible Sendspin player reports, so without this a
+        change made on the AirPlay side -- the device's own volume feedback, or a
+        mute released when a stream starts -- would leave the parent showing a
+        level and mute state the speaker is not at.
+        """
+        if not self._bridge_role:
+            return
+        # Both sides hold the device-scale level, so a value read back here compares
+        # equal to the one the role just sent instead of bouncing between the two.
+        self._bridge_role.update_player_state(
+            volume=self.airplay_player.volume_level,
+            muted=bool(self.airplay_player.volume_muted),
+        )
 
     def stop_streaming(self) -> None:
         """
@@ -574,7 +598,12 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # A player stream the bridge does not own is a live native session:
+            # its reference is left in place for the start task to stop before
+            # it spawns a new process (dropping it here would orphan that
+            # session's cli process alongside the new one).
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -628,7 +657,10 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            self.airplay_player.stream = None
+            # Leave a native session's reference in place for the start task to
+            # stop, exactly as in _on_stream_start.
+            if self.airplay_player.stream is old_stream:
+                self.airplay_player.stream = None
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -653,7 +685,6 @@ class SendspinAirPlayBridge:
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self.airplay_player.sync_volume_level()
         self._writer_task = self.mass.create_task(self._cli_writer())
         self.logger.info(
             "Bridge writer started for %s, awaiting first chunk",
@@ -675,6 +706,20 @@ class SendspinAirPlayBridge:
                 # neither the kept stream nor the receiver is this task's to touch.
                 return
 
+            # A player stream the bridge does not own is a live native session
+            # being displaced by this start. Stop it before the new process
+            # pairs with the receiver: two cli processes on one receiver reset
+            # each other's RTSP channel and both sessions die.
+            displaced_stream = self.airplay_player.stream
+            if displaced_stream is not None and displaced_stream is not self._airplay_stream:
+                await self._stop_displaced_stream(displaced_stream)
+                if self.airplay_player.stream is displaced_stream:
+                    self.airplay_player.stream = None
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    # A newer stream start took the bridge over while the
+                    # displaced session was being stopped.
+                    return
+
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
@@ -691,7 +736,8 @@ class SendspinAirPlayBridge:
                 with suppress(Exception):
                     await kept_stream.stop(force=True)
                 self._airplay_stream = None
-                self.airplay_player.stream = None
+                if self.airplay_player.stream is kept_stream:
+                    self.airplay_player.stream = None
                 self._use_shared_ptp = None
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
@@ -714,6 +760,42 @@ class SendspinAirPlayBridge:
                 return
             self._abandon_streaming()
 
+    async def _stop_displaced_stream(self, stream: AirPlayStream) -> None:
+        """
+        Release the speaker from a session the bridge is taking it away from.
+
+        Lets a failure to release the transport propagate, so the caller never
+        adds a second cli process to a receiver that is still serving one.
+
+        :param stream: The stream currently published on the AirPlay player.
+        """
+        # Only the transport and its session are this method's: native group membership
+        # belongs to the player controller, which releases it in the grouping command that
+        # hands the speaker over.
+        if stream.running:
+            # An idle player keeps its last stream published, so only a live one
+            # is worth reporting as displaced.
+            self.logger.debug(
+                "Stopping the session already running on %s before bridging it to Sendspin",
+                self.airplay_player.display_name,
+            )
+        await stream.stop(force=True)
+        if stream.session is None:
+            return
+        try:
+            # Bookkeeping only, the transport is already gone: this releases the
+            # speaker from the session's client list and ends a session left
+            # without clients, so its audio source is not left running.
+            await stream.session.remove_client(
+                self.airplay_player, reason="displaced by sendspin bridge"
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Could not release %s from its previous session: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+
     async def _start_cold_stream(self, stream: AirPlayStream) -> bool:
         """
         Connect a fresh bridge transport and anchor its first START.
@@ -731,6 +813,9 @@ class SendspinAirPlayBridge:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
             self._use_shared_ptp = self._resolve_shared_ptp()
+            # A cold connect is the only path that can still act on the latch, so the
+            # release belongs here: a kept process never reaches this point.
+            self.airplay_player.release_foreign_mute_latch()
             await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
@@ -760,10 +845,11 @@ class SendspinAirPlayBridge:
         """
         Flush a kept, still-connected stream and resume it on the new track.
 
-        The stream is flushed in place (receiver + ring + stdin drained) while
-        its connection stays alive, then the new PCM is fed into the SAME cli
-        stdin and re-anchored with a single START. Returns True once resumed; any
-        failure returns False so the caller falls back to a cold restart.
+        The stream is flushed in place (the binary's input ring and stdin
+        drained) while its connection stays alive, then the new PCM is fed into
+        the SAME cli stdin and re-anchored with a single START. Returns True once
+        resumed; any failure returns False so the caller falls back to a cold
+        restart.
 
         :param stream: The kept AirPlayStream to flush and resume.
         """
@@ -802,9 +888,13 @@ class SendspinAirPlayBridge:
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         if readiness is ClockReadiness.STALLED:
-            # A bridged device that never answered our clock renders silence,
-            # and unlike a group member it is the whole playback: say so where
-            # the anchor is decided rather than letting it look anchored.
+            # Anchored anyway, like a group start and unlike a late joiner: a
+            # joiner is dropped because the session plays on without it, while
+            # here it would stop the speaker - and a stall is not evidence
+            # enough for that. The binary reports it as a diagnosis rather than
+            # a verdict (a receiver that begins probing late still comes good)
+            # and re-arms that reporting per cycle, so a warm re-anchor is
+            # reading the cycle before it.
             self.logger.warning(
                 "%s never answered the server's PTP clock, so this stream will be silent "
                 "until it does; anchoring anyway",
@@ -861,8 +951,9 @@ class SendspinAirPlayBridge:
             )
 
         # Always a join: the Sendspin timeline is the group's, never the bridge's
-        # to set, so the binary must hold its ack until the receiver clock
-        # verification resolves and report the instant it really scheduled.
+        # to set, so the binary reports the instant it really scheduled - holding
+        # its ack until the receiver clock verification resolves whenever that
+        # verification is armed.
         acked_adjusted = await stream.start(commanded_ms, join=True)
 
         # The ack can be held for seconds, so re-check ownership before touching
@@ -925,27 +1016,86 @@ class SendspinAirPlayBridge:
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""
+        # The level is already on the AirPlay device's scale, so it is applied as-is.
+        # Where the role is the parent's volume control - a parent with no volume of
+        # its own, while the bridge streams - a volume from Music Assistant arrives
+        # here having passed the controller and been scaled into the parent's min/max
+        # range, so routing it back through cmd_volume_set would scale it a second
+        # time and return over the same route, settling the speaker below the level
+        # that was asked for. A volume a Sendspin controller set never passed the
+        # parent at all: that is an externally changed volume like any other, clamped
+        # to the limits on the parent's state update.
         self.mass.create_task(self.airplay_player.volume_set(volume))
 
     def _on_mute_change(self, muted: bool) -> None:
         """Forward mute changes to the AirPlay player."""
+        # Applied here for the same reason as the volume above. A mute has no scale
+        # to get wrong, but it would come straight back through the role, and an
+        # unchanged mute is not a command the controller drops.
         self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_end(self) -> None:
         """
         Handle the sendspin stream ending: defer the CLI teardown briefly.
 
-        A seek or next-track ends the stream and immediately starts a new one.
-        Tearing the CLI down here would force every such switch through a cold
-        reconnect; instead we keep the connected binary alive for a short grace
-        window so the next stream can reuse it via flush-refill. If no new
-        stream arrives within the window (a real stop), the deferred cleanup
-        kills the CLI so AirPlay stops instead of draining its buffer.
+        A stream end that is immediately followed by a new stream (a seek or
+        next-track on setups that end the stream for those) would force every
+        such switch through a cold reconnect if the CLI were torn down here;
+        instead the connected binary is kept alive for a short grace window so
+        the next stream can reuse it via flush-refill. If no new stream arrives
+        within the window, the deferred cleanup kills the CLI so AirPlay stops
+        instead of draining its buffer. A stop the user asked for skips the
+        window through _on_bridge_explicit_stop.
         """
         self._is_streaming = False
         self._queued_frames = 0
+        if self._transport_state_empty():
+            # A stream end with no transport behind it (an explicit stop already
+            # tore it down, or no chunk ever started one): nothing to keep warm
+            # and nothing to defer.
+            self.logger.debug(
+                "Sendspin stream ended for %s with no transport to keep warm",
+                self.airplay_player.display_name,
+            )
+            return
+        self.logger.debug(
+            "Sendspin stream ended for %s; keeping the CLI warm for %.0fs",
+            self.airplay_player.display_name,
+            BRIDGE_WARM_GRACE_SECONDS,
+        )
         self.mass.call_later(
             BRIDGE_WARM_GRACE_SECONDS, self._deferred_cleanup, task_id=self._teardown_timer_id
+        )
+
+    def _on_bridge_explicit_stop(self) -> None:
+        """
+        Tear the transport down at once for a stop the user asked for.
+
+        The stream end preceding this callback armed the warm grace window,
+        which exists for a next track to ride the connected binary. Nothing
+        follows an explicit stop, and the device holds seconds of buffered
+        audio, so waiting the window out would play out what the user asked to
+        end. The bridge stays registered in its group, so a later play includes
+        this speaker again.
+        """
+        self.mass.cancel_timer(self._teardown_timer_id)
+        if self._is_streaming:
+            # A new stream already took the bridge over; the transport belongs to it now.
+            return
+        if self._transport_state_empty():
+            return
+        self.logger.debug(
+            "Explicit stop for %s: tearing the transport down without the warm grace",
+            self.airplay_player.display_name,
+        )
+        self._schedule_cleanup()
+
+    def _transport_state_empty(self) -> bool:
+        """Return whether the bridge holds no transport, writer or pending start."""
+        return (
+            self._airplay_stream is None
+            and self._writer_task is None
+            and self._airplay_stream_start_task is None
         )
 
     def _deferred_cleanup(self) -> None:
@@ -1127,6 +1277,8 @@ class SendspinAirPlayBridge:
         """
         Clean up captured resources from a previous stream.
 
+        Leaves the player idle at position 0 unless a newer stream owns it.
+
         Unlike _stop_streaming(), this operates on explicitly captured references
         rather than instance variables. This prevents a race condition where the
         async cleanup runs after a new stream has already reused the instance
@@ -1153,6 +1305,9 @@ class SendspinAirPlayBridge:
         if stream:
             with suppress(Exception):
                 await stream.stop(force=True)
+            # Restore the IDLE reset that stop() dropped because the stream was detached first
+            if self.airplay_player.stream is None:
+                self.airplay_player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""
@@ -1473,7 +1628,10 @@ class SendspinAirPlayBridge:
         self._airplay_stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None
-        if stream is not None:
+        # Only unpublish what this bridge put there: a deferred teardown can fire
+        # after the native path already replaced the player's stream, and dropping
+        # that reference would strand a session the bridge never owned.
+        if stream is not None and self.airplay_player.stream is stream:
             self.airplay_player.stream = None
         self._is_streaming = False
         self._use_shared_ptp = None
@@ -1492,6 +1650,17 @@ class SendspinAirPlayBridge:
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
+
+    def __init__(self, provider: AirPlayProvider) -> None:
+        """
+        Initialize the bridge manager.
+
+        :param provider: The AirPlay provider owning the bridged players.
+        """
+        super().__init__(provider)
+        self._unsubs.append(
+            self.mass.players.subscribe_player_state_update(self._on_player_state_updated)
+        )
 
     def resolve_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool:
         """
@@ -1588,3 +1757,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     def _should_have_bridge(self, player: Player) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
+
+    def _on_player_state_updated(
+        self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Feed an AirPlay player's own volume/mute changes back into its bridge role."""
+        if not changed_values.keys() & _VOLUME_STATE_FIELDS:
+            return
+        if bridge := self._bridges.get(updated_player.player_id):
+            bridge.sync_role_volume_state()

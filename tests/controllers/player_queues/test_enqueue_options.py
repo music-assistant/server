@@ -9,7 +9,7 @@ side-effecting ``play_index`` and ``signal_update`` are stubbed out.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
@@ -33,6 +33,7 @@ def _controller() -> PlayerQueuesController:
     """Create a bare controller instance with the noisy ``signal_update`` stubbed out."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.mass = MagicMock()
     return ctrl
 
 
@@ -83,12 +84,13 @@ def _podcast(item_id: str) -> Podcast:
     )
 
 
-def _radio(item_id: str) -> Radio:
+def _radio(item_id: str, *, is_dynamic: bool = False) -> Radio:
     """Build a Radio on the 'test' provider (an individual item, omitted from the wire `sources`)."""
     return Radio(
         item_id=item_id,
         provider="test",
         name=f"Radio {item_id}",
+        is_dynamic=is_dynamic,
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
@@ -430,6 +432,20 @@ def test_store_sources_keeps_only_container_types_on_wire() -> None:
     assert ctrl._queue_data["q1"].source_items == items
     # but only the container sources are shown to clients, in original order
     assert [mapping.uri for mapping in queue.sources] == [album.uri, podcast.uri]
+
+
+def test_store_sources_keeps_a_dynamic_station_on_wire() -> None:
+    """A dynamic station is a source the queue plays from, so clients get to show it."""
+    ctrl = _controller()
+    ctrl._managed_pool = Mock()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    station = _radio("dyn", is_dynamic=True)
+    live_stream = _radio("live")
+
+    ctrl.store_sources(queue, [station, live_stream])
+
+    assert [mapping.uri for mapping in queue.sources] == [station.uri]
 
 
 def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:

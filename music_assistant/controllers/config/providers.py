@@ -314,6 +314,9 @@ class ProviderConfigMixin:
             raise RuntimeError(msg)
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id, True)
+        # a user access filter is an allow-list of provider instance ids, so it must not be
+        # left pointing at a provider that no longer exists
+        await self.mass.webserver.auth.remove_from_user_filters(provider_instance_ids=[instance_id])
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)

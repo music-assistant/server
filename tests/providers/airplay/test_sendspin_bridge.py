@@ -39,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -67,6 +68,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BYTES_PER_SAMPLE,
     BRIDGE_CHANNELS,
     BRIDGE_SAMPLE_RATE,
+    BridgePlayerRole,
 )
 
 BRIDGE_BYTES_PER_SECOND = BRIDGE_SAMPLE_RATE * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
@@ -211,6 +213,9 @@ def _make_bridge(
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
     airplay_player.protocol = protocol
+    # A real None: the start path stops whatever stream the player already holds
+    # before it spawns a process, and a bare MagicMock reads as a live session.
+    airplay_player.stream = None
     # A real int: the anchor math guards sync_adjust with isinstance(..., int), so
     # a MagicMock would silently read as 0 and pass the test for the wrong reason.
     airplay_player.config.get_value = MagicMock(return_value=sync_adjust)
@@ -531,6 +536,99 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     assert bridge._airplay_stream_ready.is_set()
 
 
+async def test_a_fresh_process_releases_a_foreign_mute_latch_before_it_connects() -> None:
+    """
+    A cold start releases a foreign mute latch before it connects.
+
+    Connecting is what carries that state to the device, so releasing the latch
+    after it would not be heard until the next command.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+    order: list[str] = []
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch = MagicMock(
+        side_effect=lambda: order.append("release_mute")
+    )
+    stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert order == ["release_mute", "connect"]
+
+
+async def test_a_kept_process_keeps_a_mute_latch_owned_by_another_control() -> None:
+    """
+    A warm handover does not release a foreign mute latch.
+
+    Only a connect re-sends VOLUME=, so releasing the latch over a kept process
+    would clear it while the device is still muted on its own end, leaving the
+    stream silent with nothing to say so.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_anchor_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._started = True
+
+    # the whole warm restart, from the Sendspin stream-start callback to the handover
+    bridge._on_bridge_stream_start()
+    assert bridge._airplay_stream is kept_stream
+    bridge._drop_until_us = SENDSPIN_EPOCH_US
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    kept_stream.flush.assert_awaited_once_with()
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch.assert_not_called()
+
+
+async def test_a_failed_warm_handover_releases_the_latch_before_its_cold_retry() -> None:
+    """
+    The cold retry after a failed warm handover still releases a foreign mute latch.
+
+    That retry spawns a fresh process, which is sent whatever volume and mute it
+    finds on connect, so a mute latch the parent no longer owns would start it silent.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream()
+    kept_stream.flush = AsyncMock(return_value=False)
+    bridge._airplay_stream = kept_stream
+    cold_stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=cold_stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    cold_stream.connect.assert_awaited_once_with(False)
+    cast("MagicMock", bridge.airplay_player).release_foreign_mute_latch.assert_called_once_with()
+
+
 async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:
     """
     A cold start that already lost the race bails out before it spawns anything.
@@ -696,6 +794,231 @@ async def test_superseded_cold_stream_teardown_spares_the_newer_owner() -> None:
     assert bridge.airplay_player.stream is newer_stream
 
 
+# --- Displacing a native session the bridge does not own ---
+
+
+def _make_native_stream(session: MagicMock | None = None) -> MagicMock:
+    """Build a live native AirPlayStream mock the bridge has to displace."""
+    stream = MagicMock()
+    stream.stop = AsyncMock()
+    stream.session = session
+    return stream
+
+
+async def test_cold_start_stops_a_native_session_before_it_spawns_a_process() -> None:
+    """
+    A native session on the same player is released before the bridge connects.
+
+    Two cliairplay processes on one receiver reset each other's control
+    channel, so the displaced transport has to be gone before the new
+    pair-setup; the session bookkeeping follows it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    session = MagicMock()
+    order: list[str] = []
+    session.remove_client = AsyncMock(side_effect=lambda *_a, **_kw: order.append("remove_client"))
+    native_stream = _make_native_stream(session)
+    native_stream.stop = AsyncMock(side_effect=lambda **_kw: order.append("stop"))
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+    stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert order == ["stop", "remove_client", "connect"]
+    assert session.remove_client.await_args.args[0] is bridge.airplay_player
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> None:
+    """
+    A transport the bridge cannot release stops it from spawning a second process.
+
+    Carrying on would put the new cli process on a receiver that is still
+    serving the old one, which is the collision this guard exists to prevent.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    native_stream = _make_native_stream()
+    native_stream.stop = AsyncMock(side_effect=RuntimeError("device unreachable"))
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_not_awaited()
+    # the session we could not stop stays published, so it is not lost track of
+    assert bridge.airplay_player.stream is native_stream
+
+
+async def test_failed_session_bookkeeping_still_lets_the_start_proceed() -> None:
+    """The transport is what matters: a failed client removal does not block the start."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    session = MagicMock()
+    session.remove_client = AsyncMock(side_effect=RuntimeError("session already gone"))
+    bridge.airplay_player.stream = _make_native_stream(session)
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_awaited_once()
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_deferred_teardown_spares_a_native_stream_that_replaced_the_bridge() -> None:
+    """
+    A teardown that fires after the native path took the speaker leaves it alone.
+
+    The grace window between a Sendspin stream ending and its cleanup is long
+    enough for native playback to start, and unpublishing its stream here would
+    strand the process behind it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge_stream = MagicMock()
+    bridge_stream.stop = AsyncMock()
+    bridge._airplay_stream = bridge_stream
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+
+    await bridge._stop_streaming()
+
+    assert bridge.airplay_player.stream is native_stream
+    native_stream.stop.assert_not_awaited()
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_not_called()
+
+
+async def test_cold_start_stops_a_sessionless_native_stream_directly() -> None:
+    """A displaced stream with no session behind it is stopped on its own."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    native_stream.stop.assert_awaited_once_with(force=True)
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_warm_reuse_never_displaces_the_stream_it_reuses() -> None:
+    """The stream a warm handover rides is the bridge's own, so it is not stopped."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + WARM_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream(ack=UNIX_NOW_MS + WARM_LEAD_MS)
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    kept_stream.stop.assert_not_awaited()
+    kept_stream.flush.assert_awaited_once()
+    assert bridge.airplay_player.stream is kept_stream
+
+
+@pytest.mark.parametrize("server_side", [False, True])
+def test_stream_start_callbacks_leave_a_native_session_published(server_side: bool) -> None:
+    """
+    Both Sendspin stream-start callbacks leave a native stream on the player.
+
+    Dropping the reference there would strand its cli process: the start task
+    stops what the player still points at, and only that.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+
+    if server_side:
+        bridge._on_stream_start(MagicMock())
+    else:
+        bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is None
+    assert bridge.airplay_player.stream is native_stream
+
+
+# --- Teardown player state reset ---
+
+
+async def test_bridge_teardown_resets_the_players_stream_state() -> None:
+    """A torn-down bridge stream leaves the AirPlay player IDLE at position 0."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = MagicMock()
+    stream.stop = AsyncMock()
+    bridge._airplay_stream = stream
+    bridge.airplay_player.stream = stream
+
+    await bridge._stop_streaming()
+
+    stream.stop.assert_awaited_once_with(force=True)
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0
+    )
+
+
+async def test_bridge_teardown_spares_a_newer_streams_state() -> None:
+    """Cleanup of a superseded stream never resets state a newer stream owns."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    old_stream = MagicMock()
+    old_stream.stop = AsyncMock()
+    bridge.airplay_player.stream = MagicMock()
+
+    await bridge._cleanup_old_stream(old_stream, None, None)
+
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_not_called()
+
+
 # --- Anchoring: command an instant the device can hit, then honour the ack ---
 
 
@@ -724,12 +1047,10 @@ def _commanded_instant(stream: MagicMock) -> int:
 
 async def test_anchor_floors_at_the_join_headroom() -> None:
     """
-    A Sendspin lead shorter than the binary needs is raised to the join floor.
+    A Sendspin lead shorter than the join floor is raised to it.
 
-    The binary verifies the receiver's clock before it will seat an anchor and
-    gives up on that verification shortly before the commanded instant, so an
-    anchor inside AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS leaves the device seating on
-    an unverified clock and landing audibly behind the group.
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS is the least the anchor may sit ahead of
+    now, so a shorter lead is floored rather than honoured.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     stream = _make_anchor_stream()
@@ -784,6 +1105,27 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
     assert await _anchor(bridge, stream) is True
 
     assert _commanded_instant(stream) == ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
+
+
+async def test_anchor_still_starts_a_receiver_whose_clock_stalled() -> None:
+    """
+    A stalled receiver is anchored anyway, unlike a late joiner, and warned about.
+
+    A joiner is dropped because the session plays on without it, while here
+    dropping would stop the speaker, and the binary's stall report is a
+    diagnosis a receiver can still come good from.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream()
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+    _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
+
+    with patch.object(bridge.logger, "warning") as warning:
+        assert await _anchor(bridge, stream) is True
+
+    assert _commanded_instant(stream) == UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
+    assert bridge._started is True
+    assert len([call for call in warning.call_args_list if "PTP clock" in call.args[0]]) == 1
 
 
 async def test_anchor_never_precedes_content_already_scheduled() -> None:
@@ -2556,6 +2898,91 @@ async def test_a_stop_never_reaches_a_player_without_a_bridge() -> None:
     assert _bridge_manager_for(bridge).stop_streaming("apother") is False
 
 
+# --- A stop on the Sendspin side skips the warm grace (support#6195) -----------
+
+
+def test_a_sendspin_stop_skips_the_grace_and_tears_the_transport_down() -> None:
+    """
+    A stop reaching the bridge through its role kills the CLI at once.
+
+    The stream end that precedes it arms the warm grace window, during which
+    the device plays out the seconds it holds buffered. The explicit-stop
+    signal cancels that window and hands the transport straight to the
+    cleanup path.
+    """
+    bridge, stream = _make_anchored_bridge(running=True)
+    writer_task = MagicMock()
+    bridge._writer_task = writer_task
+    start_task = bridge._airplay_stream_start_task
+
+    with patch.object(bridge, "_cleanup_old_stream", MagicMock()) as cleanup:
+        bridge._on_bridge_stream_end()
+        bridge._on_bridge_explicit_stop()
+
+    cast("MagicMock", bridge.mass).cancel_timer.assert_called_with(bridge._teardown_timer_id)
+    assert cleanup.call_args.args[:3] == (stream, writer_task, start_task)
+    assert bridge._airplay_stream is None
+
+
+def test_a_sendspin_stop_keeps_the_bridges_seat_in_the_group() -> None:
+    """
+    A group-wide stop leaves the membership alone.
+
+    The group's own STOPPED state is what the visible player reports, and the
+    next play on the group must include this speaker -- unlike a stop aimed at
+    the AirPlay player itself, there is no session to leave here.
+    """
+    bridge, _ = _make_anchored_bridge(running=True)
+
+    with (
+        patch.object(bridge, "_cleanup_old_stream", MagicMock()),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        bridge._on_bridge_stream_end()
+        bridge._on_bridge_explicit_stop()
+
+    leave.assert_not_called()
+
+
+def test_an_explicit_stop_spares_a_stream_that_already_took_over() -> None:
+    """A play racing the stop owns the transport; the stop must not kill it."""
+    bridge, stream = _make_anchored_bridge(running=True)
+    bridge._is_streaming = True
+
+    with patch.object(bridge, "_schedule_cleanup", MagicMock()) as schedule:
+        bridge._on_bridge_explicit_stop()
+
+    schedule.assert_not_called()
+    assert bridge._airplay_stream is stream
+
+
+def test_an_explicit_stop_with_nothing_held_is_a_no_op() -> None:
+    """The ungroup that follows a stop finds the transport already gone."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._is_streaming = False
+
+    with patch.object(bridge, "_schedule_cleanup", MagicMock()) as schedule:
+        bridge._on_bridge_explicit_stop()
+
+    schedule.assert_not_called()
+
+
+def test_a_stream_end_with_no_transport_arms_no_grace_timer() -> None:
+    """
+    A stream end that left nothing behind has nothing to keep warm or defer.
+
+    Removing the member from its Sendspin group ends the stream for its roles
+    a second time after the stop already tore the transport down; re-arming
+    the timer there would only reschedule an empty teardown.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+
+    bridge._on_bridge_stream_end()
+
+    cast("MagicMock", bridge.mass).call_later.assert_not_called()
+    assert bridge._is_streaming is False
+
+
 # --- One shared-PTP decision per Sendspin group --------------------------------
 
 
@@ -2903,3 +3330,189 @@ def test_an_abandoned_process_stops_deciding_for_its_group() -> None:
 
     assert abandoned._use_shared_ptp is None
     assert abandoned.active_shared_ptp is None
+
+
+# --- Volume/mute moved on the AirPlay side, fed back into the bridge role ------
+
+
+def _make_bridge_with_role(
+    volume: int | None = 40, muted: bool = False
+) -> tuple[SendspinAirPlayBridge, BridgePlayerRole]:
+    """Build a bridge whose (real) role is wired to its mocked AirPlay player."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    role = BridgePlayerRole(client=MagicMock())
+    role.set_callbacks(
+        on_audio_chunk=bridge._on_audio_chunk,
+        on_volume_change=bridge._on_volume_change,
+        on_mute_change=bridge._on_mute_change,
+        on_stream_start=bridge._on_bridge_stream_start,
+        on_stream_end=bridge._on_bridge_stream_end,
+        initial_volume=volume or 25,
+        initial_muted=muted,
+    )
+    bridge._bridge_role = role
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_level = volume
+    player.volume_muted = muted
+    return bridge, role
+
+
+async def test_registration_seeds_the_role_with_the_state_the_speaker_is_in() -> None:
+    """
+    A bridge (re)registering adopts the volume and mute the speaker is already at.
+
+    A bridge is torn down and rebuilt on a config change, so starting from a
+    fixed unmuted default would re-create the divergence on every rebuild.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_level = 35
+    player.volume_muted = True
+    role = MagicMock()
+    server = cast("MagicMock", bridge.sendspin_server)
+    server.register_external_player.return_value.roles_by_family.return_value = [role]
+
+    await bridge.start()
+
+    assert role.set_callbacks.call_args.kwargs["initial_volume"] == 35
+    assert role.set_callbacks.call_args.kwargs["initial_muted"] is True
+
+
+def test_device_volume_feedback_reaches_the_visible_player() -> None:
+    """
+    A volume the device reports itself is adopted by the role, not sent back to it.
+
+    The role is what the parent's volume resolves to while the bridge streams, so
+    it has to follow the speaker; forwarding it would hand the device back the
+    value it just reported.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_level = 55
+
+    bridge.sync_role_volume_state()
+
+    assert role.get_player_volume() == 55
+    player.volume_set.assert_not_called()
+
+
+def test_a_mute_latched_on_the_airplay_side_shows_through_the_bridge() -> None:
+    """
+    A mute applied on the AirPlay side is visible on the Sendspin player.
+
+    While it is latched the AirPlay player swallows every volume command, so a
+    bridge still reporting the speaker as unmuted leaves nothing to explain why
+    it is silent - or to unmute it with.
+    """
+    bridge, role = _make_bridge_with_role(muted=False)
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_muted = True
+
+    bridge.sync_role_volume_state()
+
+    assert role.get_player_muted() is True
+    player.volume_mute.assert_not_called()
+
+
+def test_an_airplay_volume_change_is_routed_to_that_player_s_bridge() -> None:
+    """A state update carrying a volume or mute change lands on the right bridge."""
+    bridge, role = _make_bridge_with_role(volume=40)
+    manager = _bridge_manager_for(bridge)
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_level = 55
+    player.volume_muted = True
+
+    manager._on_player_state_updated(
+        player, {"volume_level": (40, 55), "volume_muted": (False, True)}
+    )
+
+    assert role.get_player_volume() == 55
+    assert role.get_player_muted() is True
+
+
+def test_state_updates_without_a_volume_change_leave_the_role_alone() -> None:
+    """
+    Every player's state update passes through, so unrelated ones do no work.
+
+    The callback runs for the whole player graph on every tick, including the
+    position updates of a playing queue.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    manager = _bridge_manager_for(bridge)
+    player = cast("MagicMock", bridge.airplay_player)
+    player.volume_level = 55
+
+    manager._on_player_state_updated(player, {"playback_state": ("idle", "playing")})
+
+    assert role.get_player_volume() == 40
+
+
+def test_a_player_without_a_bridge_is_ignored() -> None:
+    """A volume change on a player this manager knows nothing about leaves bridges alone."""
+    bridge, role = _make_bridge_with_role(volume=40)
+    manager = _bridge_manager_for(bridge)
+    other_player = MagicMock()
+    other_player.player_id = "ap0011223344ff"
+    other_player.volume_level = 55
+
+    manager._on_player_state_updated(other_player, {"volume_level": (40, 55)})
+
+    assert role.get_player_volume() == 40
+
+
+def test_the_manager_listens_for_the_state_updates_it_routes() -> None:
+    """
+    The bridged AirPlay players are watched for the whole life of the manager.
+
+    A protocol player emits no PLAYER_UPDATED event, so the controller's internal
+    state-update subscription is the only way their volume changes are seen.
+    """
+    manager = SendspinBridgeManager(MagicMock())
+
+    cast("MagicMock", manager.mass).players.subscribe_player_state_update.assert_called_once_with(
+        manager._on_player_state_updated
+    )
+
+
+def test_a_volume_set_through_the_bridge_settles_in_one_pass() -> None:
+    """
+    A volume coming down from Sendspin is not announced again on its way back.
+
+    The player ends up holding what the role handed it, so reading that state back
+    has to compare equal - otherwise every command would bounce between the two.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    player = cast("MagicMock", bridge.airplay_player)
+    client = cast("MagicMock", role._client)
+
+    role.set_player_volume(70)
+    player.volume_set.assert_called_once_with(70)
+    # the AirPlay player records the level it was handed
+    player.volume_level = 70
+    client.reset_mock()
+
+    bridge.sync_role_volume_state()
+
+    assert role.get_player_volume() == 70
+    client._signal_event.assert_not_called()
+
+
+def test_a_volume_from_the_role_is_not_resolved_a_second_time() -> None:
+    """
+    A volume the role delivers reaches the speaker as-is, not via the controller.
+
+    The level arrives on the device's own scale, already resolved and scaled where
+    it came from Music Assistant, so sending it back through the controller would
+    resolve it a second time and return over the same route.
+    """
+    bridge, role = _make_bridge_with_role(volume=40)
+    player = cast("MagicMock", bridge.airplay_player)
+    players_ctrl = cast("MagicMock", bridge.mass).players
+
+    role.set_player_volume(60)
+    role.set_player_mute(True)
+
+    player.volume_set.assert_called_once_with(60)
+    player.volume_mute.assert_called_once_with(True)
+    players_ctrl.cmd_volume_set.assert_not_called()
+    players_ctrl.cmd_volume_mute.assert_not_called()

@@ -284,6 +284,7 @@ class GenreController(MediaControllerBase[Genre]):
             {self._summary_base_columns()},
             {DB_TABLE_GENRES}.translation_key,
             {DB_TABLE_GENRES}.content_type,
+            {DB_TABLE_GENRES}.genre_aliases,
             {self._provider_mappings_query()} AS provider_mappings
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
@@ -1403,6 +1404,20 @@ class GenreController(MediaControllerBase[Genre]):
         )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    async def _merge_library_item_references(self, target_id: int, source_id: int) -> None:
+        """Transfer media mappings and exclusions owned by a merged genre."""
+        await self._merge_genre_references(target_id, source_id)
+
+    async def _validate_library_item_merge(self, target: Genre, source: Genre) -> None:
+        """Validate that two genres belong to the same taxonomy."""
+        await super()._validate_library_item_merge(target, source)
+        if target.content_type != source.content_type:
+            msg = (
+                f"Cannot merge genre '{source.name}' into '{target.name}': "
+                "genres must belong to the same taxonomy (music / podcast / audiobook)."
+            )
+            raise InvalidDataError(msg)
+
     async def _bulk_scan_media_genres(self) -> None:
         """
         Bulk-scan all media items and rebuild genre mappings using CTE.
@@ -2186,4 +2201,12 @@ class GenreController(MediaControllerBase[Genre]):
             item.translation_key = translation_key
         if content_type := db_row["content_type"]:
             item.content_type = MediaType(content_type)
+        if genre_aliases := db_row["genre_aliases"]:
+            # the genre's own name lives inside genre_aliases but is not a mapped alias
+            own_name = create_safe_string(item.name, True, True)
+            item.genre_alias_count = sum(
+                1
+                for x in json.loads(genre_aliases)
+                if create_safe_string(x, True, True) != own_name
+            )
         return item

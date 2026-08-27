@@ -660,5 +660,8 @@
   "provider.ai_radio.config_entries.timezone.label": "Часова зона",
   "provider.airplay.setup_flow.streaming_repair_offer.description": "Това устройство вече е сдвоено за стрийминг. По желание сдвоете отново, за да заместите съхраненото сдвояване, например след като устройството е било нулирано или паролата му е била променена. Можете да пропуснете това, за да запазите текущото сдвояване.",
   "provider.airplay.setup_flow.streaming_repair_offer.title": "Сдвояване отново (по избор)",
-  "provider.airplay.errors.invalid_pin": "Въведете числовия ПИН, показан на екрана на вашето устройство."
+  "provider.airplay.errors.invalid_pin": "Въведете числовия ПИН, показан на екрана на вашето устройство.",
+  "provider.airplay.config_entries.buffer_depth.options.2000": "2000 ms",
+  "provider.airplay.config_entries.buffer_depth.options.2500": "2500 ms",
+  "provider.airplay.config_entries.buffer_depth.options.3000": "3000 ms"
 }

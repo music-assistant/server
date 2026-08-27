@@ -139,6 +139,11 @@ def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTr
 class ARDAudiothek(MusicProvider):
     """ARD Audiothek Music provider."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the configuration (options) entries for the ARD Audiothek provider.

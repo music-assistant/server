@@ -40,6 +40,7 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
     get_cached_podcast,
+    get_episode_positions,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -213,8 +214,8 @@ class GPodder(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except MediaNotFoundError:
-                self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
+            except MediaNotFoundError as err:
+                self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
 
             # playlog
@@ -299,11 +300,12 @@ class GPodder(MusicProvider):
             self.timestamp_actions = timestamp
             await self._cache_set_timestamps()
 
-        for cnt, parsed_episode in enumerate(parsed_episodes):
+        positions = get_episode_positions(parsed_episodes)
+        for position, parsed_episode in zip(positions, parsed_episodes, strict=True):
             mass_episode = parse_podcast_episode(
                 episode=parsed_episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast.get("title"),
                 domain=self.domain,

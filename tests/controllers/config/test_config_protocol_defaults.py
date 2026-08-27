@@ -19,7 +19,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_FLOW_MODE_SAMPLE_RATE,
@@ -29,7 +28,7 @@ from music_assistant.constants import (
     FLOW_MODE_SAMPLE_RATE_SMART,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 
 PARENT_ID = "sonos_123"
 CHILD_ID = "dlna_AABBCCDDEEFF"
@@ -106,9 +105,8 @@ async def _setup_parent_with_protocol_child(mass: MusicAssistant) -> _TestPlayer
     # link the DLNA protocol output to the parent so the virtual prefixed entry is emitted
     parent.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=CHILD_ID,
-                name="DLNA",
                 protocol_domain="dlna",
                 priority=50,
             )

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from zeroconf import (
     NonUniqueNameException,
     ServiceStateChange,
@@ -34,6 +34,7 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.event import MassEvent
 
     from music_assistant.models import ProviderInstanceType
 
@@ -94,6 +95,9 @@ class DiscoveryController(CoreController):
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
+        # the mdns record embeds the server info, so refresh it when that info
+        # changes (e.g. the server was renamed or its state/urls changed)
+        self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
@@ -274,6 +278,12 @@ class DiscoveryController(CoreController):
             self.logger.error(
                 "Music Assistant instance with identical name present in the local network!"
             )
+
+    async def _on_core_state_updated(self, event: MassEvent) -> None:
+        """Refresh the advertised mdns record after the server info changed."""
+        if self._aiozc is None or self.mass.closing:
+            return
+        await self._register_mass_service()
 
     def _on_mdns_service_state_change(
         self,

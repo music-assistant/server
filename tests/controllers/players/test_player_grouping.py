@@ -17,6 +17,7 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -51,6 +52,15 @@ def mock_mass() -> MagicMock:
 def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
+
+
+class SessionBoundMockPlayer(MockPlayer):
+    """Mock player whose native members ride its own stream session (e.g. AirPlay)."""
+
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: native members are attached to this player's own stream session."""
+        return True
 
 
 class TestCanGroupWithBasics:
@@ -337,6 +347,46 @@ class TestProviderInstanceIdExpansion:
         assert "player_b" in can_group
         assert "player_c" in can_group
 
+    def test_provider_instance_id_excludes_unknown_players(self, mock_mass: MagicMock) -> None:
+        """Test that players without an output type are not offered as grouping targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.get_provider = MagicMock(return_value=provider)
+
+        leader = MockPlayer(
+            provider,
+            "leader",
+            "Leader",
+            player_type=PlayerType.PROTOCOL,
+        )
+        leader._attr_can_group_with = {"test"}
+        public_player = MockPlayer(provider, "public", "Public Player")
+        unknown_player = MockPlayer(
+            provider,
+            "unknown",
+            "Unknown Player",
+            player_type=PlayerType.UNKNOWN,
+        )
+        controller._players = {
+            "leader": leader,
+            "public": public_player,
+            "unknown": unknown_player,
+        }
+        mock_mass.players = controller
+
+        for player in controller._players.values():
+            player.set_initialized()
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        assert "public" in leader.state.can_group_with
+        assert "unknown" not in leader.state.can_group_with
+
+        leader._attr_can_group_with = {"unknown"}
+        leader.update_state(signal_event=False, force_update=True)
+
+        assert leader.state.can_group_with == set()
+
 
 class TestFinalActiveGroupNewModel:
     """
@@ -465,36 +515,142 @@ class TestPlayerBaseIsActiveSession:
         assert player.is_active_session is False
 
 
+def _make_ad_hoc_group(
+    controller: PlayerController, mock_mass: MagicMock, airplay_available: bool
+) -> None:
+    """
+    Register an ad-hoc group playing over AirPlay, with only member "b" on that domain.
+
+    Member "a" is a plain native player, member "b" is a native player with a linked
+    AirPlay protocol player whose availability is driven by ``airplay_available``.
+    """
+    sonos = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+    airplay = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+
+    leader = MockPlayer(sonos, "leader", "Leader")
+    leader_protocol = MockPlayer(
+        airplay, "leader_airplay", "Leader AirPlay", player_type=PlayerType.PROTOCOL
+    )
+    leader.set_linked_output_protocols([_airplay_link(leader_protocol.player_id)])
+    leader.set_active_output_protocol(leader_protocol.player_id)
+
+    member_a = MockPlayer(sonos, "a", "Member A")
+    member_b = MockPlayer(sonos, "b", "Member B")
+    member_b_protocol = MockPlayer(
+        airplay, "b_airplay", "B AirPlay", player_type=PlayerType.PROTOCOL
+    )
+    member_b_protocol._attr_available = airplay_available
+    member_b.set_linked_output_protocols([_airplay_link(member_b_protocol.player_id)])
+
+    for player in (leader, member_a, member_b):
+        player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        player._cache.clear()
+
+    controller._players = {
+        p.player_id: p for p in (leader, leader_protocol, member_a, member_b, member_b_protocol)
+    }
+    mock_mass.players = controller
+
+
+def _airplay_link(protocol_id: str) -> LinkedOutputProtocol:
+    """Build an AirPlay link to the given protocol player."""
+    return LinkedOutputProtocol(
+        output_protocol_id=protocol_id,
+        protocol_domain="airplay",
+        priority=10,
+    )
+
+
 class TestAdHocLeadershipTransfer:
     """Unjoining an ad-hoc sync leader transfers leadership instead of dissolving."""
 
     def test_select_ad_hoc_leader_prefers_active_protocol(
-        self, controller: PlayerController
+        self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """The new leader should be a member that supports the group's active protocol."""
-        # leader is playing via an airplay protocol player
-        leader = MagicMock()
-        leader.active_output_protocol = "leader_airplay"
-        protocol_player = MagicMock()
-        protocol_player.provider.domain = "airplay"
-        # member_a can't do airplay, member_b can
-        member_a = MagicMock()
-        member_a.provider.domain = "sonos"
-        member_a.linked_output_protocols = []
-        member_b = MagicMock()
-        member_b.provider.domain = "airplay"
-        member_b.linked_output_protocols = []
-        controller._players = {"leader_airplay": protocol_player, "a": member_a, "b": member_b}
+        # member_a can't do airplay, member_b has an airplay protocol player that is up
+        _make_ad_hoc_group(controller, mock_mass, airplay_available=True)
 
+        leader = controller.get_player("leader")
+        assert leader is not None
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "b"
+
+    def test_select_ad_hoc_leader_skips_offline_protocol(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A member whose protocol player went offline must not inherit the session."""
+        # member_b still claims an airplay link, but its protocol player is gone
+        _make_ad_hoc_group(controller, mock_mass, airplay_available=False)
+
+        leader = controller.get_player("leader")
+        assert leader is not None
+
+        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
+
+    def test_select_ad_hoc_leader_accepts_native_member_on_active_domain(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A member that plays the active protocol natively is still a valid leader."""
+        # a Chromecast speaker has no linked protocol player: it *is* the chromecast output
+        chromecast = MockProvider("chromecast", instance_id="chromecast", mass=mock_mass)
+        sonos = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+
+        leader = MockPlayer(sonos, "leader", "Leader")
+        leader_protocol = MockPlayer(
+            chromecast, "leader_cast", "Leader Cast", player_type=PlayerType.PROTOCOL
+        )
+        leader.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id=leader_protocol.player_id,
+                    protocol_domain="chromecast",
+                    priority=30,
+                )
+            ]
+        )
+        leader.set_active_output_protocol(leader_protocol.player_id)
+
+        member_a = MockPlayer(sonos, "a", "Member A")
+        member_c = MockPlayer(chromecast, "c", "Member C")
+        for player in (leader, member_a, member_c):
+            player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+            player._cache.clear()
+
+        controller._players = {
+            p.player_id: p for p in (leader, leader_protocol, member_a, member_c)
+        }
+        mock_mass.players = controller
+
+        assert controller._select_ad_hoc_leader(leader, ["a", "c"]) == "c"
 
     def test_select_ad_hoc_leader_falls_back_to_first(self, controller: PlayerController) -> None:
         """Without an active protocol to match, fall back to the first remaining member."""
         leader = MagicMock()
         leader.active_output_protocol = None
-        controller._players = {"a": MagicMock(), "b": MagicMock()}
+        member_a = MagicMock()
+        member_a.state.type = PlayerType.PLAYER
+        member_b = MagicMock()
+        member_b.state.type = PlayerType.PLAYER
+        controller._players = {"a": member_a, "b": member_b}
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
+
+    def test_select_ad_hoc_leader_never_picks_non_audio_member(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A visualizer listed before an audio member must never inherit the queue."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        visualizer = MockPlayer(provider, "viz", "Visualizer", player_type=PlayerType.VISUALIZER)
+        member_b = MockPlayer(provider, "b", "Member B")
+        controller._players = {"viz": visualizer, "b": member_b}
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (visualizer, member_b):
+            player.update_state(signal_event=False)
+
+        leader = MagicMock()
+        leader.active_output_protocol = None
+
+        assert controller._select_ad_hoc_leader(leader, ["viz", "b"]) == "b"
 
     async def test_handle_set_members_transfers_leader_when_playing(
         self, mock_mass: MagicMock
@@ -526,6 +682,82 @@ class TestAdHocLeadershipTransfer:
         assert called_leader is leader
         assert set(called_remaining) == {"member_a", "member_b"}
 
+    async def test_handle_set_members_keeps_non_audio_member_as_follower(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A non-audio member does not block the transfer and stays in the regroup set."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"member_a", "visualizer"}
+        leader._attr_group_members = ["leader", "member_a", "visualizer"]
+        member_a = MockPlayer(provider, "member_a", "Member A")
+        visualizer = MockPlayer(
+            provider, "visualizer", "Visualizer", player_type=PlayerType.VISUALIZER
+        )
+
+        controller._players = {
+            "leader": leader,
+            "member_a": member_a,
+            "visualizer": visualizer,
+        }
+        mock_mass.players = controller
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (leader, member_a, visualizer):
+            player.update_state(signal_event=False)
+
+        playing_queue = MagicMock()
+        playing_queue.state = PlaybackState.PLAYING
+        controller.get_active_queue = MagicMock(return_value=playing_queue)  # type: ignore[method-assign]
+        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
+
+        controller._transfer_ad_hoc_leadership.assert_awaited_once()
+        _, called_remaining = controller._transfer_ad_hoc_leadership.call_args.args
+        # the visualizer stays a group member (it follows the new leader), the
+        # heir itself is picked from the audio-capable members only
+        assert set(called_remaining) == {"member_a", "visualizer"}
+
+    async def test_handle_set_members_dissolves_when_only_non_audio_members_remain(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With only non-audio members left there is no heir: dissolve and stop."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"visualizer"}
+        leader._attr_group_members = ["leader", "visualizer"]
+        visualizer = MockPlayer(
+            provider, "visualizer", "Visualizer", player_type=PlayerType.VISUALIZER
+        )
+
+        controller._players = {"leader": leader, "visualizer": visualizer}
+        mock_mass.players = controller
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (leader, visualizer):
+            player.update_state(signal_event=False)
+
+        playing_queue = MagicMock()
+        playing_queue.state = PlaybackState.PLAYING
+        controller.get_active_queue = MagicMock(return_value=playing_queue)  # type: ignore[method-assign]
+        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members_with_protocols = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
+
+        controller._transfer_ad_hoc_leadership.assert_not_awaited()
+        # the dissolve removes the visualizer from the group and stops the leader
+        controller._handle_set_members_with_protocols.assert_awaited_once_with(
+            leader, [], ["visualizer"]
+        )
+        controller._handle_cmd_stop.assert_awaited_once_with("leader")
+
     async def test_handle_set_members_dissolves_leader_when_idle(
         self, mock_mass: MagicMock
     ) -> None:
@@ -554,6 +786,110 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         controller._handle_cmd_stop.assert_awaited_once_with("leader")
+
+
+class TestSessionBoundLeaderJoinsAnotherGroup:
+    """A leader whose members ride its own stream gives that group up when it joins another."""
+
+    def _build(
+        self, mock_mass: MagicMock, leader_class: type[MockPlayer]
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer, MockPlayer]:
+        """Build an idle leader with one native member, plus the group it is about to join."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+
+        leader = leader_class(provider, "leader", "Living Room")
+        leader._attr_supported_features |= {PlayerFeature.SET_MEMBERS, PlayerFeature.PLAY_MEDIA}
+        leader._attr_can_group_with = {"member", "target"}
+        leader._attr_group_members = ["leader", "member"]
+
+        member = MockPlayer(provider, "member", "Kitchen")
+        member._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        target = MockPlayer(provider, "target", "Study")
+        target._attr_supported_features |= {PlayerFeature.SET_MEMBERS, PlayerFeature.PLAY_MEDIA}
+        target._attr_can_group_with = {"leader", "member"}
+
+        controller._players = {p.player_id: p for p in (leader, member, target)}
+        mock_mass.players = controller
+        for player in controller._players.values():
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        assert member.synced_to == "leader"
+        return controller, leader, member, target
+
+    async def test_own_group_is_dissolved_before_it_joins(self, mock_mass: MagicMock) -> None:
+        """
+        The members are released before the leader becomes a member itself.
+
+        A native group outlives its session, so a leader that stopped still lists its
+        members. Joining another group leaves it unable to serve them, and they would be
+        silent while the UI still shows them grouped.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert "member" not in leader.group_members
+        assert member.synced_to is None
+        assert target.group_members == ["target", "leader"]
+
+    async def test_a_leader_without_members_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that leads nothing has no group to give up."""
+        controller, leader, _member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader._attr_group_members = []
+        leader.update_state(signal_event=False)
+        leader.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        leader.set_members.assert_not_awaited()
+        assert target.group_members == ["target", "leader"]
+
+    async def test_a_playing_group_is_never_torn_down(self, mock_mass: MagicMock) -> None:
+        """
+        A leader still serving its own group stays out instead of silencing its members.
+
+        Grouping never offers a rendering leader as a target, but the candidate list is a
+        snapshot: it is only recomputed when a group membership or availability changes, so
+        one taken before playback started still lists the leader.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader._attr_playback_state = PlaybackState.PLAYING
+        leader.update_state(signal_event=False)
+        leader.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        leader.set_members.assert_not_awaited()
+        assert target.group_members == []
+        assert member.synced_to == "leader"
+
+    async def test_a_group_that_cannot_be_dissolved_keeps_the_player_out(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A leader that could not give its group up stays out instead of joining on top of it.
+
+        Joining anyway leaves it leading a group it can no longer serve, and a player that
+        is synced refuses every later member change, so the state cannot be cleaned up.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader.set_members = AsyncMock(side_effect=RuntimeError("speaker unreachable"))  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert target.group_members == []
+        assert member.synced_to == "leader"
+
+    async def test_a_group_that_survives_the_join_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A provider whose members do not ride the leader's own stream keeps its group."""
+        controller, leader, member, target = self._build(mock_mass, MockPlayer)
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert leader.group_members == ["leader", "member"]
+        assert member.synced_to == "leader"
 
 
 if __name__ == "__main__":
