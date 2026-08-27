@@ -83,6 +83,7 @@ class AudioBuffer:
         buffer_size: BufferSize = BufferSize.BALANCED,
         mode: BufferMode = BufferMode.SEEKABLE,
         ready_threshold: int = 1,
+        is_realtime: bool = False,
     ) -> None:
         """
         Initialize AudioBuffer.
@@ -91,8 +92,10 @@ class AudioBuffer:
         :param buffer_size: Buffer size preset.
         :param mode: Buffer mode (SEEKABLE for tracks, ROLLING for radio).
         :param ready_threshold: Seconds of audio to buffer before signaling ready.
+        :param is_realtime: Whether the source hands its audio over at playback pace.
         """
         self.pcm_format = pcm_format
+        self.is_realtime = is_realtime
         self.max_size_seconds = (
             RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
         )
@@ -202,9 +205,13 @@ class AudioBuffer:
         if seek_chunk < total_chunks or self._eof_received:
             return True
 
-        # chunk is ahead of what's buffered — check if close enough to wait
+        # The position is ahead of what the producer has made. One that runs
+        # faster than playback covers that in a fraction of the time, so waiting
+        # beats starting a new producer - but one that hands its audio over at
+        # playback pace needs exactly as long as the gap, while a fresh producer
+        # starts at the position right away (see get_buffer below).
         chunks_ahead = seek_chunk - total_chunks
-        return chunks_ahead <= SEEK_WAIT_THRESHOLD
+        return chunks_ahead <= (0 if self.is_realtime else SEEK_WAIT_THRESHOLD)
 
     async def get_raw_stream(
         self, seek_position_ms: int = 0, exact_seek: bool = False
@@ -523,7 +530,13 @@ class AudioBuffer:
             buffer_size,
             seek_position_ms,
         )
-        audio_buffer = AudioBuffer(pcm_format, buffer_size, mode, ready_threshold=ready_threshold)
+        audio_buffer = AudioBuffer(
+            pcm_format,
+            buffer_size,
+            mode,
+            ready_threshold=ready_threshold,
+            is_realtime=streamdetails.is_realtime,
+        )
         # align chunk numbering with the actual stream start position so that
         # get_raw_stream(seek_position_ms) requests the correct chunk number
         audio_buffer._discarded_chunks = buffer_seek_seconds
