@@ -86,7 +86,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistVolumeChanged,
 )
 
-from .base import SpotifyPlaybackBackend
+from .base import SpotifyPlaybackBackend, StreamSupersededError
 
 if TYPE_CHECKING:
     import logging
@@ -417,8 +417,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         if self._server is None or self._binary is None:
             raise AudioError("Spotify Soloist backend is not started")
-        queue_id = streamdetails.queue_id if streamdetails is not None else None
-        session, item = await self._acquire(spotify_uri, seek_position, queue_id)
+        session, item = await self._acquire(spotify_uri, seek_position, streamdetails)
         try:
             # Feed before the first byte is handed over: the item's own stream
             # must not be able to reach its end before the next one is queued.
@@ -438,6 +437,12 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 yield chunk
         finally:
             item.release()
+        if item.superseded:
+            # A new stream of this item took the session over (a seek): whatever
+            # follows here is that stream's to deliver, not this one's. Answered
+            # before the audio is judged: a channel Music Assistant cut stops
+            # short by construction, whatever the engine had reported about it.
+            raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
         await session.validate_item(item)
 
     async def discard_session(self, session: _SoloistSession) -> None:
@@ -523,7 +528,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         return session
 
     async def _acquire(
-        self, spotify_uri: str, seek_position: int, queue_id: str | None
+        self, spotify_uri: str, seek_position: int, streamdetails: StreamDetails | None
     ) -> tuple[_SoloistSession, _ItemAudio]:
         """
         Return the session and audio channel to stream this item from.
@@ -532,13 +537,20 @@ class SoloistBackend(SpotifyPlaybackBackend):
         this queue — playing it, fed it, or able to be sent to it — and seeks it
         in place when it is the one the engine is on; anything else — another
         queue, a session that is gone — starts a fresh session.
+
+        :param spotify_uri: Canonical Spotify URI of the item to stream.
+        :param seek_position: Position in seconds to start from.
+        :param streamdetails: The StreamDetails the audio is requested for, which
+            say which queue and which Music Assistant item it belongs to.
         """
         async with self._session_lock:
             self._raise_if_app_controlled()
+            queue_id = streamdetails.queue_id if streamdetails is not None else None
+            media_key = streamdetails.uri if streamdetails is not None else None
             session = self._session
             if session is not None and session.usable and session.queue_id == queue_id:
                 if not seek_position and (item := session.item_for(spotify_uri)) is not None:
-                    item.claim()
+                    item.claim(media_key)
                     return session, item
                 if not seek_position and (pending := session.pending_item(spotify_uri)) is not None:
                     # skipped to the item that was fed next: the engine can jump
@@ -556,7 +568,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
                             err,
                         )
                     else:
-                        pending.claim()
+                        pending.claim(media_key)
                         return session, pending
                 if session.is_playing(spotify_uri):
                     # The engine is on this item already, so it can be seeked
@@ -566,7 +578,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # played is a seek of it whatever the target, back to its
                     # very start included.
                     try:
-                        item = await session.seek_current(spotify_uri, seek_position * 1000)
+                        item = await session.seek_current(
+                            spotify_uri, seek_position * 1000, media_key
+                        )
                     except ProviderStreamLimitError:
                         # the Spotify app took the session over: a replacement
                         # would claim the Connect device straight back off it
@@ -586,11 +600,12 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # the queue settled on a next item the session was not fed -
                     # it was reordered after the feed - and the engine can still
                     # be sent there, which keeps the session
-                    item.claim()
+                    item.claim(media_key)
                     return session, item
             if session is not None:
                 if session.in_use and (
-                    session.queue_id != queue_id or not session.is_playing(spotify_uri)
+                    session.queue_id != queue_id
+                    or not (session.is_playing(spotify_uri) or session.serves_only(media_key))
                 ):
                     # Restarting the session here would cut short whatever it is
                     # still delivering: another player's item, or an early fetch
@@ -600,8 +615,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # softly and the real request, made once the other item has
                     # been released, gets the session.
                     raise SoloistSessionBusyError(self.provider)
-                # a seek of the playing item the session could not take, which
-                # a fresh session serves at the target instead
+                # this queue's own seek of the item the session is delivering,
+                # which it could not take: a fresh session serves it at the
+                # target instead. An audiobook's chapters are separate Spotify
+                # URIs, so such a seek can land on one the engine is not on.
                 await session.stop()
                 self._session = None
             # cheap thanks to the shared verify cache; swaps in a fresh build when
@@ -617,7 +634,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 await session.stop()
                 raise
             self._session = session
-            item.claim()
+            item.claim(media_key)
             return session, item
 
     def _note_app_control(self, reason: SoloistAppControl) -> None:
@@ -817,6 +834,21 @@ class _SoloistSession:
         """Return whether an item stream is reading this session right now."""
         return any(item.claimed for item in self._channels)
 
+    def serves_only(self, media_key: str | None) -> bool:
+        """
+        Return whether this one Music Assistant item is all the session still delivers.
+
+        Only then may the session be restarted for it: the request is a seek of
+        what is playing, however different the Spotify URI it asks for - an
+        audiobook's chapters are separate URIs of one item.
+
+        :param media_key: Identity of the Music Assistant item asking (the uri of
+            its StreamDetails), or None when the caller has none.
+        """
+        if media_key is None:
+            return False
+        return all(item.media_key == media_key for item in self._channels if item.claimed)
+
     def pending_item(self, spotify_uri: str) -> _ItemAudio | None:
         """
         Return the channel of an item that was fed but has not started yet.
@@ -859,7 +891,9 @@ class _SoloistSession:
         finally:
             self._discard_until = None
 
-    async def seek_current(self, spotify_uri: str, target_ms: int) -> _ItemAudio:
+    async def seek_current(
+        self, spotify_uri: str, target_ms: int, media_key: str | None = None
+    ) -> _ItemAudio:
         """
         Seek the item the engine is playing, on a fresh audio channel.
 
@@ -869,6 +903,8 @@ class _SoloistSession:
 
         :param spotify_uri: The item to seek, which the engine must be playing.
         :param target_ms: The position to seek to.
+        :param media_key: Identity of the Music Assistant item the channel is
+            opened for.
         :raises AudioError: When the engine does not confirm the seek.
         """
         client = self._client
@@ -905,7 +941,7 @@ class _SoloistSession:
             item.started.set()
             # claimed here rather than by the caller: _expire_idle only counts
             # claimed channels, and the outgoing one is closed below
-            item.claim()
+            item.claim(media_key)
             self._current = item
             outgoing.close(superseded=True)
             try:
@@ -2183,6 +2219,8 @@ class _ItemAudio:
         self.status: str | None = None
         self.playing_seen = False
         self.claimed = False
+        # the Music Assistant item whose stream reads this channel
+        self.media_key: str | None = None
         # served once already: its audio was handed over and cannot be replayed
         self.spent = False
         # cut by Music Assistant rather than ended by the engine
@@ -2261,10 +2299,17 @@ class _ItemAudio:
         # no duration to aim at: settle for nothing new arriving
         return time.monotonic() - self._last_write >= _DRAIN_TIMEOUT_S
 
-    def claim(self) -> None:
-        """Mark this channel as being read; a channel is only ever served once."""
+    def claim(self, media_key: str | None = None) -> None:
+        """
+        Mark this channel as being read; a channel is only ever served once.
+
+        :param media_key: Identity of the Music Assistant item whose stream reads
+            it, so a later request for that item is recognised as a seek of what
+            the session is delivering.
+        """
         self.claimed = True
         self.spent = True
+        self.media_key = media_key
 
     def release(self) -> None:
         """Release the channel after its stream ended (or was abandoned)."""

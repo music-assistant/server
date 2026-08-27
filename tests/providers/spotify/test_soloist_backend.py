@@ -34,6 +34,7 @@ from music_assistant.helpers.config_entries import (
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
+from music_assistant.providers.spotify.backends.base import StreamSupersededError
 from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
@@ -80,6 +81,10 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
 TRACK_A = "spotify:track:aaa"
 TRACK_B = "spotify:track:bbb"
 TRACK_C = "spotify:track:ccc"
+# an audiobook is one item stitched from a Spotify URI per chapter
+AUDIOBOOK = "spotify:show:book"
+CHAPTER_A = "spotify:episode:ch1"
+CHAPTER_B = "spotify:episode:ch2"
 
 
 def test_trim_drops_an_all_zero_chunk_within_the_bound() -> None:
@@ -848,7 +853,7 @@ async def test_a_seek_the_session_cannot_take_restarts_it(
         soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
     )
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_A, 90, "player1")
+        await backend._acquire(TRACK_A, 90, _streamdetails_for(queue_id="player1", uri=TRACK_A))
     stopped.assert_awaited_once()
 
 
@@ -879,12 +884,14 @@ async def test_a_session_in_use_is_never_cut_short(
     backend._session = session
     item = session._open_channel(TRACK_A)
     item.started.set()
-    item.claim()
+    item.claim(_streamdetails_for(uri=TRACK_A).uri)
     # the session really is playing TRACK_A, so a same-track request from another
     # player cannot be mistaken for a seek
     session._current = item
     with pytest.raises(ProviderStreamLimitError) as err:
-        await backend._acquire(requested, 0, other_queue)
+        await backend._acquire(
+            requested, 0, _streamdetails_for(queue_id=other_queue, uri=requested)
+        )
     # a stream-limit error so the item is not marked unplayable, but the message
     # is about the session, not the provider's source-stream budget
     assert err.value.limit == 1
@@ -892,6 +899,139 @@ async def test_a_session_in_use_is_never_cut_short(
     # the session that was playing is untouched
     assert backend._session is session
     assert session.usable is True
+
+
+async def test_a_seek_across_an_audiobook_chapter_supersedes_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A seek of the item being delivered restarts the session instead of being refused.
+
+    An audiobook's chapters are separate Spotify URIs of one item, so a seek
+    across a chapter boundary asks for a URI the engine is not on - which is
+    still this queue's own seek, not another item after a busy session.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
+    # the engine is on the first chapter, whose stream is still attached
+    _streamed(session, CHAPTER_A, media_key=book.uri)
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+    _install_fake_binary_manager(monkeypatch)
+    # the replacement spawn is out of scope here; only the takeover decision is
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(CHAPTER_B, 90, book)
+    stopped.assert_awaited_once()
+
+
+async def test_a_seek_of_another_queues_audiobook_is_still_refused(tmp_path: Path) -> None:
+    """One queue's seek must not restart a session another player is listening to."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
+    _streamed(session, CHAPTER_A, media_key=book.uri)
+    # the same audiobook, played on another player
+    elsewhere = _streamdetails_for(
+        queue_id="player2", uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK
+    )
+    with pytest.raises(ProviderStreamLimitError):
+        await backend._acquire(CHAPTER_B, 90, elsewhere)
+    assert backend._session is session
+    assert session.usable is True
+
+
+@pytest.mark.parametrize(
+    "playing_seen",
+    [
+        True,
+        # a second seek cuts the first one's channel before the engine reports
+        # it playing, which must not read as an item that failed - the caller
+        # answers that by stitching the next part on
+        False,
+    ],
+    ids=["was_playing", "never_started"],
+)
+async def test_a_stream_a_seek_cut_short_reports_itself_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, playing_seen: bool
+) -> None:
+    """
+    A stream Music Assistant cut ends with an error of its own, not a clean end.
+
+    Its caller stitches the item's next part onto a part that ended by itself;
+    everything past the cut belongs to the stream that replaced this one.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _make_session(tmp_path)
+    item = session._current = session._open_channel(CHAPTER_A)
+    item.started.set()
+    item.playing_seen = playing_seen
+    item.claim()
+    item.write(b"a" * 16)
+    # the seek cuts the channel while its stream is still reading it
+    item.close(superseded=True)
+
+    async def _acquired(*_args: Any, **_kwargs: Any) -> tuple[_SoloistSession, _ItemAudio]:
+        return session, item
+
+    monkeypatch.setattr(backend, "_acquire", _acquired)
+    chunks: list[bytes] = []
+
+    async def _drain() -> None:
+        async for chunk in backend.stream_spotify_uri(CHAPTER_A):
+            chunks.append(chunk)
+
+    with pytest.raises(StreamSupersededError):
+        await _drain()
+    # the audio it did capture is still handed over
+    assert b"".join(chunks) == b"a" * 16
+
+
+async def test_a_superseded_audiobook_stream_stops_instead_of_stitching_on(
+    tmp_path: Path,
+) -> None:
+    """The chapters after a seek belong to the stream that took over, not to this one."""
+    provider = _make_provider(tmp_path)
+    calls: list[str] = []
+
+    async def _cut(uri: str, *_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        calls.append(uri)
+        yield b"audio"
+        raise StreamSupersededError("replaced")
+
+    provider.backend = MagicMock(stream_spotify_uri=_cut)
+    streamdetails = MagicMock(
+        media_type=MediaType.AUDIOBOOK,
+        data={"chapters": [CHAPTER_A, CHAPTER_B], "chapters_data": []},
+    )
+    chunks = [chunk async for chunk in provider.get_audio_stream(streamdetails)]
+    assert chunks == [b"audio"]
+    assert calls == [CHAPTER_A]
+
+
+async def test_a_superseded_track_stream_ends_without_an_error(tmp_path: Path) -> None:
+    """A replaced stream is no failure: the item plays on the stream that took over."""
+    provider = _make_provider(tmp_path)
+
+    async def _cut(_uri: str, *_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        yield b"audio"
+        raise StreamSupersededError("replaced")
+
+    provider.backend = MagicMock(stream_spotify_uri=_cut)
+    streamdetails = MagicMock(media_type=MediaType.TRACK, item_id="aaa", data=None)
+    chunks = [chunk async for chunk in provider.get_audio_stream(streamdetails)]
+    assert chunks == [b"audio"]
 
 
 async def test_a_session_nobody_reads_is_replaced_for_another_item(
@@ -914,7 +1054,7 @@ async def test_a_session_nobody_reads_is_replaced_for_another_item(
     )
     monkeypatch.setattr(session, "stop", AsyncMock())
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_B, 0, "player1")
+        await backend._acquire(TRACK_B, 0, _streamdetails_for(queue_id="player1", uri=TRACK_B))
 
 
 async def test_a_replacement_waits_for_the_old_daemon_to_be_gone(
@@ -945,7 +1085,7 @@ async def test_a_replacement_waits_for_the_old_daemon_to_be_gone(
     discard = asyncio.create_task(backend.discard_session(session))
     await asyncio.sleep(0)
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_B, 0, "player1")
+        await backend._acquire(TRACK_B, 0, _streamdetails_for(queue_id="player1", uri=TRACK_B))
     await discard
     assert order == ["stop-start", "stop-done", "spawn"]
 
@@ -968,7 +1108,7 @@ async def test_an_idle_session_is_taken_over(
         soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
     )
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_B, 0, "player2")
+        await backend._acquire(TRACK_B, 0, _streamdetails_for(queue_id="player2", uri=TRACK_B))
     stopped.assert_awaited_once()
 
 
@@ -1294,7 +1434,7 @@ async def test_no_session_is_started_while_the_app_holds_the_last_one(tmp_path: 
     backend = _make_backend(tmp_path)
     backend._note_app_control(SoloistAppControl.TOOK_OVER)
     with pytest.raises(SoloistAppControlError):
-        await backend._acquire(TRACK_A, 0, "player1")
+        await backend._acquire(TRACK_A, 0, _streamdetails_for(queue_id="player1", uri=TRACK_A))
 
 
 async def test_the_hold_on_a_new_session_expires(tmp_path: Path) -> None:
@@ -1460,7 +1600,9 @@ async def test_skipping_to_the_fed_item_keeps_the_session(tmp_path: Path) -> Non
         await session._observe_current(TRACK_B, 200_000, track_changed=True)
 
     _client_of(session).skip_next.side_effect = _engine_gets_there
-    got_session, got_item = await backend._acquire(TRACK_B, 0, "player1")
+    got_session, got_item = await backend._acquire(
+        TRACK_B, 0, _streamdetails_for(queue_id="player1", uri=TRACK_B)
+    )
     # the same session, no respawn, and the item that was already queued
     assert got_session is session
     assert got_item is fed
@@ -1485,7 +1627,9 @@ async def test_a_repeated_track_keeps_the_session(tmp_path: Path) -> None:
         await session._observe_current(TRACK_A, 200_000, track_changed=True)
 
     _client_of(session).skip_next.side_effect = _engine_gets_there
-    got_session, got_item = await backend._acquire(TRACK_A, 0, "player1")
+    got_session, got_item = await backend._acquire(
+        TRACK_A, 0, _streamdetails_for(queue_id="player1", uri=TRACK_A)
+    )
     assert got_session is session
     assert got_item is second
     assert backend._session is session
@@ -1510,7 +1654,9 @@ async def test_a_next_item_the_session_was_not_fed_is_queued_and_skipped_to(
         await session._observe_current(TRACK_C, 200_000, track_changed=True)
 
     _client_of(session).skip_next.side_effect = _engine_gets_there
-    got_session, got_item = await backend._acquire(TRACK_C, 0, "player1")
+    got_session, got_item = await backend._acquire(
+        TRACK_C, 0, _streamdetails_for(queue_id="player1", uri=TRACK_C)
+    )
     assert got_session is session
     assert got_item.uri == TRACK_C
     assert got_item.claimed is True
@@ -1539,9 +1685,9 @@ async def test_a_session_delivering_an_item_is_never_sent_to_another(tmp_path: P
     session._engine_playing = True
     backend._session = session
     # an item the engine is on and a stream is reading
-    _streamed(session, TRACK_B)
+    _streamed(session, TRACK_B, media_key=_streamdetails_for(uri=TRACK_B).uri)
     with pytest.raises(ProviderStreamLimitError):
-        await backend._acquire(TRACK_C, 0, "player1")
+        await backend._acquire(TRACK_C, 0, _streamdetails_for(queue_id="player1", uri=TRACK_C))
     _client_of(session).add_to_queue.assert_not_awaited()
     _client_of(session).skip_next.assert_not_awaited()
     assert backend._session is session
@@ -1582,7 +1728,7 @@ async def test_a_session_that_cannot_be_sent_on_is_replaced(
     )
     monkeypatch.setattr(session, "stop", AsyncMock())
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_C, 0, "player1")
+        await backend._acquire(TRACK_C, 0, _streamdetails_for(queue_id="player1", uri=TRACK_C))
     if blocker != "refused":
         _client_of(session).add_to_queue.assert_not_awaited()
 
@@ -1606,7 +1752,7 @@ async def test_a_jump_to_the_fed_item_that_misses_is_replaced(
     )
     monkeypatch.setattr(session, "stop", AsyncMock())
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_B, 0, "player1")
+        await backend._acquire(TRACK_B, 0, _streamdetails_for(queue_id="player1", uri=TRACK_B))
 
 
 async def test_a_skip_drops_what_arrives_while_the_command_is_in_flight(
@@ -2693,11 +2839,13 @@ def _feed(session: _SoloistSession, uri: str) -> _ItemAudio:
     return item
 
 
-def _streamed(session: _SoloistSession, uri: str = TRACK_A) -> _ItemAudio:
+def _streamed(
+    session: _SoloistSession, uri: str = TRACK_A, media_key: str | None = None
+) -> _ItemAudio:
     """Return the channel of the item the engine plays and a stream is reading."""
     item = session._current = session._open_channel(uri)
     item.started.set()
-    item.claim()
+    item.claim(media_key)
     return item
 
 
@@ -3023,7 +3171,9 @@ async def test_a_seek_of_the_playing_item_is_served_by_the_running_session(
         _current_of(session).observe_position(position_ms)
 
     _client_of(session).seek.side_effect = _engine_seeks
-    got_session, got_item = await backend._acquire(TRACK_A, 90, "player1")
+    got_session, got_item = await backend._acquire(
+        TRACK_A, 90, _streamdetails_for(queue_id="player1", uri=TRACK_A)
+    )
 
     assert got_session is session
     assert got_item is not item
@@ -3121,7 +3271,7 @@ async def test_a_seek_that_fails_part_way_restarts_the_session(
         soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
     )
     with pytest.raises(AudioError, match="spawn"):
-        await backend._acquire(TRACK_A, 90, "player1")
+        await backend._acquire(TRACK_A, 90, _streamdetails_for(queue_id="player1", uri=TRACK_A))
     stopped.assert_awaited_once()
 
 
@@ -3148,7 +3298,7 @@ async def test_a_seek_refused_because_the_app_took_over_does_not_respawn(
 
     _client_of(session).seek.side_effect = _app_takes_over
     with pytest.raises(SoloistAppControlError):
-        await backend._acquire(TRACK_A, 120, "player1")
+        await backend._acquire(TRACK_A, 120, _streamdetails_for(queue_id="player1", uri=TRACK_A))
     started.assert_not_awaited()
 
 
@@ -3268,7 +3418,9 @@ async def test_seeking_the_playing_item_back_to_its_start_keeps_the_session(
         current.observe_position(position_ms + 2)
 
     _client_of(session).seek.side_effect = _engine_seeks
-    got_session, got_item = await backend._acquire(TRACK_A, 0, "player1")
+    got_session, got_item = await backend._acquire(
+        TRACK_A, 0, _streamdetails_for(queue_id="player1", uri=TRACK_A)
+    )
 
     assert got_session is session
     assert got_item is not item

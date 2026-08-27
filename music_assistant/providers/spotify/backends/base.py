@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from music_assistant_models.errors import AudioError
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -14,6 +16,16 @@ if TYPE_CHECKING:
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.providers.spotify.provider import SpotifyProvider
+
+
+class StreamSupersededError(AudioError):
+    """
+    Raised when Music Assistant replaced the stream that was delivering an item.
+
+    A backend that serves a queue from one session cuts the stream of an item it
+    is asked to serve from a new one - a seek - so nothing beyond the cut belongs
+    to the stream that was replaced.
+    """
 
 
 class SpotifyPlaybackBackend(ABC):
@@ -90,6 +102,8 @@ class SpotifyPlaybackBackend(ABC):
             Backends that fetch each item on its own ignore these; a backend
             that keeps one session needs them to know which queue and which
             item of it this audio belongs to.
+        :raises StreamSupersededError: When Music Assistant replaced this stream
+            with a new one for the same item, leaving it nothing to deliver.
         """
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
