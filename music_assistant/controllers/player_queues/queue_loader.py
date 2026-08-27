@@ -512,7 +512,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             "Filling dynamic tracks for queue %s",
             queue_id,
         )
-        queue_data = self._queue_data[queue_id]
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            # the delayed refill timer can fire after the queue was removed
+            return
         queue = queue_data.queue
         # restore the queue owner's user context so provider filters are respected during this
         # background refill (dynamic-playlist generation honours the current user)

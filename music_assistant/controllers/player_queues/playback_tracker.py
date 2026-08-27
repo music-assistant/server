@@ -450,6 +450,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
+                if self._queue_data.get(queue.queue_id) is not queue_data:
+                    # the queue was removed or re-registered while we waited
+                    return
                 if queue.state != PlaybackState.IDLE:
                     return
                 if queue.next_item is not None:
@@ -468,8 +471,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         await self.play_index(queue.queue_id, next_index)
                     return
             # If the queue was started from a dynamic source, fetch fresh tracks and continue.
-            qdata = self._queue_data.get(queue.queue_id)
-            dynamic_source = find_dynamic_source(qdata) if qdata else None
+            dynamic_source = find_dynamic_source(queue_data)
             if dynamic_source is not None:
                 try:
                     # Restore the queue owner's user context so provider filters and
@@ -484,7 +486,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
-                    if self._queue_data.get(queue.queue_id) is not qdata:
+                    if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
                         return
                     if dynamic_tracks:
