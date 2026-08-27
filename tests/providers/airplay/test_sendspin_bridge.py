@@ -870,6 +870,8 @@ async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> N
         await bridge._start_protocol_from_chunk()
 
     stream.connect.assert_not_awaited()
+    # the session we could not stop stays published, so it is not lost track of
+    assert bridge.airplay_player.stream is native_stream
 
 
 async def test_failed_session_bookkeeping_still_lets_the_start_proceed() -> None:
