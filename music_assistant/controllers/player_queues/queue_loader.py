@@ -667,10 +667,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
+        if queue_id not in self._queue_data:
+            # the queue was removed (player deleted or ungrouped) while tracks were fetched
+            return
         await self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_data[queue_id].items) + 1,
+            insert_at_index=len(queue_data.items) + 1,
         )
 
     @handle_play_action

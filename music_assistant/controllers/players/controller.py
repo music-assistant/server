@@ -106,6 +106,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
@@ -3382,6 +3383,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # to a remaining member (keeping playback alive) or dissolve the group entirely
         should_stop = False
         if player_ids_to_remove and target_player in player_ids_to_remove:
+            # only audio-capable members qualify as a new leader: a display, visualizer or
+            # lighting member can be grouped along but must never inherit the queue
             remaining_members = [
                 m
                 for m in parent_player.state.group_members
@@ -3389,6 +3392,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 and m not in player_ids_to_remove
                 and (member := self.get_player(m))
                 and member.state.available
+                and member.state.type in PLAYBACK_TARGET_TYPES
             ]
             active_queue = self.get_active_queue(parent_player)
             if remaining_members and active_queue and active_queue.state != PlaybackState.IDLE:
@@ -3646,7 +3650,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
-            availability. Must not be empty.
+            availability and playback capability. Must not be empty.
         """
         active_domain: str | None = None
         if leader.active_output_protocol and leader.active_output_protocol != "native":

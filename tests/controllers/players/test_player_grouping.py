@@ -652,6 +652,76 @@ class TestAdHocLeadershipTransfer:
         assert called_leader is leader
         assert set(called_remaining) == {"member_a", "member_b"}
 
+    async def test_handle_set_members_never_transfers_to_non_audio_member(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A visualizer/light/display member is never offered as the new leader."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"member_a", "visualizer"}
+        leader._attr_group_members = ["leader", "member_a", "visualizer"]
+        member_a = MockPlayer(provider, "member_a", "Member A")
+        visualizer = MockPlayer(
+            provider, "visualizer", "Visualizer", player_type=PlayerType.VISUALIZER
+        )
+
+        controller._players = {
+            "leader": leader,
+            "member_a": member_a,
+            "visualizer": visualizer,
+        }
+        mock_mass.players = controller
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (leader, member_a, visualizer):
+            player.update_state(signal_event=False)
+
+        playing_queue = MagicMock()
+        playing_queue.state = PlaybackState.PLAYING
+        controller.get_active_queue = MagicMock(return_value=playing_queue)  # type: ignore[method-assign]
+        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
+
+        controller._transfer_ad_hoc_leadership.assert_awaited_once()
+        _, called_remaining = controller._transfer_ad_hoc_leadership.call_args.args
+        assert called_remaining == ["member_a"]
+
+    async def test_handle_set_members_dissolves_when_only_non_audio_members_remain(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With only non-audio members left there is no heir: dissolve and stop."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"visualizer"}
+        leader._attr_group_members = ["leader", "visualizer"]
+        visualizer = MockPlayer(
+            provider, "visualizer", "Visualizer", player_type=PlayerType.VISUALIZER
+        )
+
+        controller._players = {"leader": leader, "visualizer": visualizer}
+        mock_mass.players = controller
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (leader, visualizer):
+            player.update_state(signal_event=False)
+
+        playing_queue = MagicMock()
+        playing_queue.state = PlaybackState.PLAYING
+        controller.get_active_queue = MagicMock(return_value=playing_queue)  # type: ignore[method-assign]
+        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_set_members_with_protocols = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
+
+        controller._transfer_ad_hoc_leadership.assert_not_awaited()
+        controller._handle_cmd_stop.assert_awaited_once_with("leader")
+
     async def test_handle_set_members_dissolves_leader_when_idle(
         self, mock_mass: MagicMock
     ) -> None:
