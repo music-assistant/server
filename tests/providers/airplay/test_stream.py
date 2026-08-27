@@ -2099,6 +2099,28 @@ def test_native_control_failure_on_a_superseded_stream_changes_nothing() -> None
     player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
 
+def test_native_control_failure_before_publication_stays_actionable() -> None:
+    """
+    A failure reported before the stream owns the player does not spend the one-shot.
+
+    A bridge stream is published only once its process has connected, so a
+    verdict dropped during that window must not stop the same failure from
+    being acted on afterwards.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+
+    player.stream = stream
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    player.provider.mass.config.set_raw_player_config_value.assert_called_once_with(
+        player.player_id, CONF_STREAMING_MODE, STREAMING_MODE_AP2_COMPAT
+    )
+
+
 def test_native_control_failure_does_not_override_pinned_mode() -> None:
     """A terminal native control failure leaves an explicit streaming mode unchanged."""
     player = _make_player()

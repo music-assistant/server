@@ -1921,11 +1921,14 @@ class AirPlayStream:
         """Switch an automatic native AirPlay 2 route to compatibility mode."""
         if self._native_control_failure_handled:
             return
-        self._native_control_failure_handled = True
         if self.player.stream is not self:
-            # A superseded process losing its control channel (a newer session
-            # reset it on the receiver) is not evidence about the device.
+            # Not evidence about the device: either a newer session reset the
+            # control channel on the receiver, or this stream is still coming up
+            # and has not been published yet. The binary keeps reporting while
+            # the failure lasts, so leaving the once-only latch unset here keeps
+            # a genuine failure actionable once the stream does own the player.
             return
+        self._native_control_failure_handled = True
         if self.player.streaming_mode != STREAMING_MODE_AUTO:
             return
         self.player.logger.warning(
