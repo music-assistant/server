@@ -3362,13 +3362,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     synced_to,
                 )
 
-    async def _dissolve_own_native_group(self, player: Player, target_name: str) -> bool:
+    async def _dissolve_own_group(self, player: Player, target_name: str) -> bool:
         """
-        Dissolve the native group a player leads before it joins another group.
+        Dissolve the group a player leads before it joins another group.
 
-        Only a player whose native members ride its own stream has a group to give up: it
-        stops rendering that stream the moment it joins the other group, which would leave
-        its members silent while they still show up as grouped.
+        Only a player whose members ride its own stream has a group to give up: it stops
+        rendering that stream the moment it joins the other group, which would leave its
+        members silent while they still show up as grouped. A group that is still playing
+        is refused instead, so the player stays out rather than silencing its members.
 
         :param player: The player about to join another group.
         :param target_name: Name of the group being joined, for the log messages.
@@ -3381,6 +3382,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ]
         if not members:
             return True
+        if player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            # Grouping never offers a rendering leader as a target, so reaching this means
+            # the caller worked from a can_group_with snapshot taken before the playback
+            # started. Tearing the group down now would cut its members off mid-track.
+            self.logger.warning(
+                "Player %s is still serving its own group, leaving it out of %s",
+                player.name,
+                target_name,
+            )
+            return False
         self.logger.info(
             "Player %s leads a group of its own, dissolving it before it joins %s",
             player.name,
@@ -3496,7 +3507,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
             # handle edge case: the child leads a native group of its own, which it cannot
             # keep serving from inside this one
-            if not await self._dissolve_own_native_group(child_player, parent_player.state.name):
+            if not await self._dissolve_own_group(child_player, parent_player.state.name):
                 continue
 
             # power on the player if needed

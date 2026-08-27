@@ -749,6 +749,25 @@ class TestSessionBoundLeaderJoinsAnotherGroup:
         leader.set_members.assert_not_awaited()
         assert target.group_members == ["target", "leader"]
 
+    async def test_a_playing_group_is_never_torn_down(self, mock_mass: MagicMock) -> None:
+        """
+        A leader still serving its own group stays out instead of silencing its members.
+
+        Grouping never offers a rendering leader as a target, but the candidate list is a
+        snapshot: it is only recomputed when a group membership or availability changes, so
+        one taken before playback started still lists the leader.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader._attr_playback_state = PlaybackState.PLAYING
+        leader.update_state(signal_event=False)
+        leader.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        leader.set_members.assert_not_awaited()
+        assert target.group_members == []
+        assert member.synced_to == "leader"
+
     async def test_a_group_that_cannot_be_dissolved_keeps_the_player_out(
         self, mock_mass: MagicMock
     ) -> None:
