@@ -41,7 +41,7 @@ def _make_provider(tmp_path: Any) -> PlaylistMetadataProvider:
 
     provider = PlaylistMetadataProvider(mass, manifest, config, set())
     provider._images_dir = str(tmp_path / "playlist_images")
-    os.makedirs(provider._images_dir, exist_ok=True)
+    Path(provider._images_dir).mkdir(parents=True, exist_ok=True)
 
     return provider
 
@@ -176,14 +176,14 @@ async def test_get_playlist_metadata_returns_metadata_when_sufficient_images(
         thumb_image = next((img for img in result.images if img.type == ImageType.THUMB), None)
         assert thumb_image is not None
         assert thumb_image.provider == "playlist_metadata"
-        assert os.path.exists(thumb_image.path)
+        assert Path(thumb_image.path).exists()
         assert "_thumb.jpg" in thumb_image.path
 
         # Check FANART image
         fanart_image = next((img for img in result.images if img.type == ImageType.FANART), None)
         assert fanart_image is not None
         assert fanart_image.provider == "playlist_metadata"
-        assert os.path.exists(fanart_image.path)
+        assert Path(fanart_image.path).exists()
         assert "_fanart.jpg" in fanart_image.path
 
 
@@ -253,7 +253,7 @@ async def test_get_playlist_metadata_cleans_up_old_files(
         assert playlist.item_id in thumb_image.path
         assert "_thumb.jpg" in thumb_image.path
         # Old files are cleaned up asynchronously by _cleanup_stale_images, not inline here.
-        assert os.path.exists(thumb_image.path)
+        assert Path(thumb_image.path).exists()
 
 
 @pytest.mark.asyncio

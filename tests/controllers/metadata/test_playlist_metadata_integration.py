@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, AsyncIterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -161,7 +161,7 @@ async def test_update_playlist_metadata_preserves_collage_thumb_when_no_new_gene
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
     enrichment._collage_images_dir = str(tmp_path / "collage")
-    os.makedirs(enrichment._collage_images_dir, exist_ok=True)
+    Path(enrichment._collage_images_dir).mkdir(parents=True, exist_ok=True)
     enrichment.create_collage_image = AsyncMock()  # type: ignore[method-assign]
 
     # Mock metadata provider that returns None

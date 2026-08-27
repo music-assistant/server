@@ -9,6 +9,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import aiohttp
@@ -60,6 +61,7 @@ from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    CONF_ACCOUNT_ID,
     CONF_CLIENT_ID,
     CONF_LIBRESPOT_CREDENTIALS,
     CONF_REFRESH_TOKEN_DEV,
@@ -178,6 +180,11 @@ class SpotifyProvider(MusicProvider):
             )
 
     @property
+    def max_concurrent_streams(self) -> int:
+        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
+        return 2
+
+    @property
     def audiobooks_supported(self) -> bool:
         """Check if audiobooks are supported for this user/region."""
         return self._audiobooks_supported
@@ -202,6 +209,11 @@ class SpotifyProvider(MusicProvider):
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
         return features
+
+    @property
+    def account_id(self) -> str | None:
+        """Return the Spotify user id of the logged-in account, if known."""
+        return str(self._sp_user["id"]) if self._sp_user else None
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -252,7 +264,7 @@ class SpotifyProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
-            if item and item["track"]["id"]:
+            if item and item["track"] and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
@@ -625,23 +637,40 @@ class SpotifyProvider(MusicProvider):
             await self.get_playlist(prov_playlist_id)
             use_global = await self._playlist_requires_global_token(prov_playlist_id)
 
-        result: list[Track] = []
         page_size = 50
         offset = page * page_size
+        known_global = use_global
 
-        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
-        cache_checksum = meta["etag"]
-        total = meta["total"]
+        while True:
+            try:
+                meta = await self._get_playlist_pagination_meta(uri, page, use_global)
+                cache_checksum = meta["etag"]
+                total = meta["total"]
 
-        # Spotify has started returning 5xx for offset >= total on some
-        # playlists (notably algorithmic ones like Daily Mix). The retry
-        # storm that follows surfaces as "No playable items found".
-        if total and offset >= total:
-            return result
+                # Spotify has started returning 5xx for offset >= total on some
+                # playlists (notably algorithmic ones like Daily Mix). The retry
+                # storm that follows surfaces as "No playable items found".
+                if total and offset >= total:
+                    spotify_result = {"total": total, "items": []}
+                else:
+                    spotify_result = await self._get_data_with_caching(
+                        uri,
+                        cache_checksum,
+                        limit=page_size,
+                        offset=offset,
+                        use_global_session=use_global,
+                    )
+                break
+            except MediaNotFoundError:
+                if use_global or not self.dev_session_active:
+                    raise
+                # Development Mode exposes metadata but restricts items for non-owned playlists.
+                use_global = True
 
-        spotify_result = await self._get_data_with_caching(
-            uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
-        )
+        if use_global and not known_global:
+            await self._set_playlist_requires_global_token(prov_playlist_id)
+
+        result: list[Track] = []
         total = spotify_result.get("total", 0)
         items = spotify_result.get("items", [])
         # playlists/{id}/items is transitioning from item["track"] to item["item"]
@@ -927,6 +956,10 @@ class SpotifyProvider(MusicProvider):
             )
             if country := userinfo.get("country"):
                 self.mass.metadata.set_default_preferred_language(country)
+            if self.get_setup_value(CONF_ACCOUNT_ID) != userinfo["id"]:
+                # instances configured before the account was recorded fill it in here,
+                # so the setup flow can spot a duplicate account without loading them
+                self._update_setup_data(CONF_ACCOUNT_ID, userinfo["id"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
         return auth_info
 
@@ -1098,7 +1131,7 @@ class SpotifyProvider(MusicProvider):
     @staticmethod
     def _write_librespot_credentials(cache_dir: str, credentials: str) -> None:
         """Write the stored credential to librespot's cache, replacing any stale one."""
-        os.makedirs(cache_dir, exist_ok=True)
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
         credentials_file = os.path.join(cache_dir, CREDENTIALS_FILE)
         with open(credentials_file, "w", encoding="utf-8") as fileobj:
             fileobj.write(credentials)

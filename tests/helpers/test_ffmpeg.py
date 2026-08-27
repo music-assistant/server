@@ -11,18 +11,24 @@ from pathlib import Path
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import AudioError
+from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
+    CACHE_ATTR_HLS_CMAF_BLOCKED,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
     _build_overlay_mixer,
     _get_overlay_volume_filter,
+    check_ffmpeg_version,
     get_ffmpeg_args,
+    get_ffmpeg_hls_cmaf_input_args,
     get_ffmpeg_overlay_stream,
+    get_ffmpeg_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
@@ -523,6 +529,87 @@ async def _silence(seconds: int) -> AsyncGenerator[bytes]:
 
 async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
     return [chunk async for chunk in stream]
+
+
+@pytest.mark.parametrize("source_error", [RuntimeError("source failed"), BrokenPipeError()])
+async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception) -> None:
+    """An input generator failure is surfaced after FFmpeg emits its buffered output."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise source_error
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=failing_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value.__cause__ is source_error
+
+
+async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
+    """A cancelled input generator ends the FFmpeg stream without an error."""
+
+    async def cancelled_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise asyncio.CancelledError
+
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=cancelled_input(),
+            input_format=AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
+            output_format=_PCM_FORMAT,
+        )
+    )
+
+    assert b"".join(chunks) == b"\x00" * _BYTES_PER_SECOND
+
+
+async def test_ffmpeg_stream_ignores_early_stdin_close() -> None:
+    """FFmpeg ending its input early does not report a source failure."""
+    chunks = await _collect_chunks(
+        get_ffmpeg_stream(
+            audio_input=_silence(30),
+            input_format=_PCM_FORMAT,
+            output_format=_PCM_FORMAT,
+            extra_input_args=["-t", "0.1"],
+        )
+    )
+
+    assert chunks
+
+
+async def test_overlay_stream_surfaces_stdin_feeder_error(overlay_file: Path) -> None:
+    """A failure in the main input is surfaced after the mixed output is emitted."""
+
+    async def failing_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise RuntimeError("source failed")
+
+    with pytest.raises(AudioError, match="Error while feeding audio to FFmpeg") as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=failing_input(),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert isinstance(err.value.__cause__, RuntimeError)
 
 
 def _samples(pcm: bytes, channel: int | None = None) -> Sequence[int]:
@@ -1091,3 +1178,113 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert abs(_rms_db(out) - _rms_db(main)) < 0.5
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_relax_a_build_that_blocks_cmaf() -> None:
+    """A build whose HLS demuxer rejects CMAF gets the extension check turned off."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: True})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == ["-extension_picky", "0"]
+
+
+async def test_get_ffmpeg_hls_cmaf_input_args_leave_a_capable_build_alone() -> None:
+    """A build that accepts CMAF keeps its extension check, which guards hostile playlists."""
+    await set_global_cache_values({CACHE_ATTR_HLS_CMAF_BLOCKED: False})
+
+    assert get_ffmpeg_hls_cmaf_input_args() == []
+
+
+# Trimmed `ffmpeg -h demuxer=hls` output for the three generations of the segment extension
+# check: absent before 7.1.1, present without CMAF in 7.1.1, present with CMAF from 7.1.2 on.
+_HLS_OPTIONS_WITHOUT_CHECK = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_BLOCKING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_HLS_OPTIONS_ALLOWING_CMAF = b"""Demuxer hls [Apple HTTP Live Streaming]:
+hls demuxer AVOptions:
+  -allowed_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4")
+  -allowed_segment_extensions <string>     .D......... List of file extensions that hls is allowed to access (default "3gp,aac,m3u8,m4a,m4s,mp4,mpegts,ts,wav,cmfv,cmfa,ec3,fmp4,html")
+  -extension_picky   <boolean>    .D......... Be picky with all extensions matching (default true)
+  -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
+"""
+_FFMPEG_VERSION_OUTPUT = (
+    b"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n"
+    b"configuration: --enable-libsoxr\n"
+)
+
+
+def _fake_ffmpeg_probes(
+    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
+) -> None:
+    """Answer the version and HLS demuxer probes with canned output."""
+
+    async def _check_output(
+        *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
+    ) -> tuple[int, bytes]:
+        if "-h" in args:
+            return (hls_returncode, hls_options)
+        return (0, _FFMPEG_VERSION_OUTPUT)
+
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.check_output", _check_output)
+
+
+async def test_check_ffmpeg_version_finds_a_demuxer_that_blocks_cmaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that is picky about extensions but does not know CMAF blocks those segments."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is True
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_that_whitelists_cmaf_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that lists CMAF among the extensions it accepts needs no relaxation."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_leaves_a_demuxer_without_the_check_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A demuxer that never gained the extension check accepts CMAF as it is."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_WITHOUT_CHECK)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable probe must not relax a check that may well be doing its job."""
+    _fake_ffmpeg_probes(monkeypatch, b"Unknown demuxer 'hls'.\n", hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Output that reads as blocking is worthless once the probe itself reported failure."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_BLOCKING_CMAF, hls_returncode=1)
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False

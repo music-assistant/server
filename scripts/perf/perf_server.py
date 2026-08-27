@@ -241,10 +241,10 @@ async def run(args: argparse.Namespace) -> None:
     from music_assistant.controllers.config.controller import ConfigController  # noqa: PLC0415
     from music_assistant.mass import MusicAssistant  # noqa: PLC0415
 
-    data_dir = os.path.abspath(args.data_dir)
+    data_dir = str(Path(args.data_dir).resolve())
     cache_dir = os.path.join(data_dir, ".cache")
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(cache_dir, exist_ok=True)
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
     # force local-only webserver/streamserver binding before anything reads the config
     orig_cfg_setup = ConfigController.setup

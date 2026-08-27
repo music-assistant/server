@@ -71,6 +71,11 @@ class InternetArchiveProvider(MusicProvider):
         self.client = InternetArchiveClient(mass)
         self.streaming = InternetArchiveStreaming(self)
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return ()
@@ -79,6 +84,18 @@ class InternetArchiveProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if provider is a streaming provider."""
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # catalogue access is search/browse only, there are no library items at all
+        return {
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.AUDIOBOOK,
+            MediaType.PODCAST,
+        }
 
     @throttle_with_retries
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -678,9 +695,9 @@ class InternetArchiveProvider(MusicProvider):
                         "Network error processing album for artist %s: %s", prov_artist_id, err
                     )
                     continue
-                except Exception as err:
+                except Exception:
                     self.logger.exception(
-                        "Unexpected error processing album for artist %s: %s", prov_artist_id, err
+                        "Unexpected error processing album for artist %s", prov_artist_id
                     )
                     continue
             page += 1
@@ -729,9 +746,9 @@ class InternetArchiveProvider(MusicProvider):
                     "Network error processing track for artist %s: %s", prov_artist_id, err
                 )
                 continue
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "Unexpected error processing track for artist %s: %s", prov_artist_id, err
+                    "Unexpected error processing track for artist %s", prov_artist_id
                 )
                 continue
 

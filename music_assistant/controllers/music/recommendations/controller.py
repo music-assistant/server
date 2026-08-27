@@ -16,6 +16,7 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ITEMS_TIMEOUT,
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
@@ -68,13 +69,16 @@ class RecommendationsController:
         return [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
 
     async def get_recommendation_items(
-        self, provider: str, item_id: str
+        self, provider: str, item_id: str, providers: list[str] | None = None
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single recommendation row.
 
         :param provider: The provider instance id owning the row.
         :param item_id: The item_id of the row, as returned by the recommendations listing.
+        :param providers: Restrict items to those reachable through one of these provider
+            instance ids (OR semantics). Only honored on rows that advertise
+            `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
         try:
             prov = self.mass.get_provider(provider)
@@ -87,6 +91,10 @@ class RecommendationsController:
                 # providers declaring the feature, matching the rows listing
                 return UniqueList()
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
+                if isinstance(prov, LibraryRecommendationsProvider):
+                    return await prov.get_recommendation_items(item_id, providers=providers)
+                # external provider rows don't support provider filtering: their SPI
+                # signature is unchanged, so `providers` is silently ignored here
                 return await cast(
                     "MusicProvider | MetadataProvider | PluginProvider", prov
                 ).get_recommendation_items(item_id)

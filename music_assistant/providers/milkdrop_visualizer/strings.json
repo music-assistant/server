@@ -1,0 +1,8 @@
+{
+  "config_entries": {
+    "color_tint": {
+      "label": "Tint with track color",
+      "description": "Recolor the visualizer toward the current track's dominant artwork color."
+    }
+  }
+}

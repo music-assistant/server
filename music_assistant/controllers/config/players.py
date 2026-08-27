@@ -582,14 +582,16 @@ class PlayerConfigMixin:
             # Player.__init__ where the type can still be a transient class default.
             # Genuine type changes are persisted by update_state after registration.
             return
-        # config does not yet exist, create a default one
+        # config does not yet exist, create a default one.
+        # the name is stored as the default name only: a stored (custom) name means
+        # the user renamed the player and must keep shadowing the default name.
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
             values={},
             provider=provider,
             player_id=player_id,
             enabled=enabled,
-            name=name,
+            name=None,
             default_name=name,
             player_type=player_type,
         )
@@ -938,8 +940,12 @@ class PlayerConfigMixin:
         if has_native:
             default_value = "native"
         else:
-            default_value = "auto"
+            # Without a native output the entry default stays "auto": runtime selection
+            # honours the player's default_output_protocol_domain (e.g. DLNA-first for a
+            # LinkPlay shell) with plain priority fallback, so the stored config default
+            # must not depend on which linked protocols happen to be available right now.
             options.append(ConfigValueOption("auto"))
+            default_value = "auto"
 
         all_entries.append(
             ConfigEntry(

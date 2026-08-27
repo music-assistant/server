@@ -74,6 +74,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
     provider.config.get_value = MagicMock(return_value=False)
     provider.mass = MagicMock()
     provider.mass.streams.base_url = BASE_URL
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     provider.tree = TREE if tree is None else tree
     provider.file_data = FILE_DATA
     provider.fail_list = set()
@@ -349,6 +350,17 @@ async def test_enumerate_root_error_aborts() -> None:
     await _run_enumerate(provider, scan_errors=scan_errors)
 
     assert scan_errors.fatal is not None
+
+
+async def test_is_reachable_asks_the_api_for_the_root() -> None:
+    """Cloud storage has no local path to stat, so reachability is a live root listing."""
+    provider = _make_provider()
+
+    assert await provider._is_reachable() is True
+
+    provider.fail_list = {ROOT_ID}
+    with pytest.raises(ProviderUnavailableError):
+        await provider._is_reachable()
 
 
 async def test_enumerate_stops_on_directory_cycle() -> None:

@@ -10,7 +10,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, _render_qr
+from music_assistant.providers.msx_bridge.http_server import (
+    MSXHTTPServer,
+    _render_qr,
+)
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 

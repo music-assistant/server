@@ -79,6 +79,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
+from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -89,6 +90,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
@@ -119,6 +121,7 @@ from .constants import (
 )
 from .cue import (
     CueSheetHandler,
+    cue_metadata_checksum,
     cue_referenced_audio_stem,
     make_cue_track_id,
     parse_cue_track_id,
@@ -150,7 +153,6 @@ isfile = wrap(os.path.isfile)
 ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
-scandir = wrap(os.scandir)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -249,7 +251,7 @@ class LocalFileSystemProvider(MusicProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        return self.base_path.split(os.sep)[-1]
+        return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -262,6 +264,13 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._cancel_availability_probe()
+        # a check that already started runs as a task under the same id, and it would
+        # otherwise keep talking to storage this unload is in the middle of tearing down
+        self.mass.cancel_task(self._availability_probe_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -462,12 +471,12 @@ class LocalFileSystemProvider(MusicProvider):
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # provider_mappings stores synthetic per-track ids for CUE sheets, not the
-        # CUE path, so derive a path-keyed checksum map for the scan classifier
-        cue_file_checksums: dict[str, str] = {}
+        # CUE path, so collect every track checksum per path for the scan classifier
+        cue_file_checksums: dict[str, set[str]] = {}
         for prov_item_id, checksum in file_checksums.items():
             parsed = parse_cue_track_id(prov_item_id)
             if parsed is not None:
-                cue_file_checksums[parsed[0]] = checksum
+                cue_file_checksums.setdefault(parsed[0], set()).add(checksum)
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames: set[str] = set()
@@ -1032,7 +1041,7 @@ class LocalFileSystemProvider(MusicProvider):
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
+            if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
@@ -1070,7 +1079,7 @@ class LocalFileSystemProvider(MusicProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
@@ -1086,7 +1095,7 @@ class LocalFileSystemProvider(MusicProvider):
         ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
@@ -1128,7 +1137,7 @@ class LocalFileSystemProvider(MusicProvider):
         item: FileSystemItem,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
@@ -1140,7 +1149,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         :param item: The file to classify.
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
@@ -1161,12 +1170,17 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             return
         is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
+        item_checksum = item.checksum
         if is_cue:
             cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
-            prev_checksum = cue_file_checksums.get(item.relative_path)
+            item_checksum = cue_metadata_checksum(item.checksum)
+            prev_checksums = cue_file_checksums.get(item.relative_path, set())
+            prev_checksum = min(prev_checksums, default=None)
+            checksum_matches = prev_checksums == {item_checksum}
         else:
             prev_checksum = file_checksums.get(item.relative_path)
-        if item.checksum == prev_checksum:
+            checksum_matches = item_checksum == prev_checksum
+        if checksum_matches:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -1195,7 +1209,55 @@ class LocalFileSystemProvider(MusicProvider):
         if self.available == available:
             return
         self.available = available
+        if available:
+            self._cancel_availability_probe()
+        else:
+            self._schedule_availability_probe()
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the storage backing this provider can be read."""
+        return bool(await isdir(self.base_path))
+
+    @property
+    def _availability_probe_id(self) -> str:
+        """Return the timer id of this provider's reachability checks."""
+        return f"filesystem_availability_probe_{self.instance_id}"
+
+    def _schedule_availability_probe(self) -> None:
+        """Arm the next reachability check."""
+        self.mass.call_later(
+            AVAILABILITY_PROBE_INTERVAL,
+            self._probe_availability,
+            task_id=self._availability_probe_id,
+        )
+
+    def _cancel_availability_probe(self) -> None:
+        """Stop checking for the storage coming back."""
+        self.mass.cancel_timer(self._availability_probe_id)
+
+    async def _probe_availability(self) -> None:
+        """Mark the provider available again once its storage can be read."""
+        try:
+            reachable = await self._is_reachable()
+        except MusicAssistantError as err:
+            # storage that is simply still gone, which is what this loop waits for
+            self.logger.debug("%s is still unreachable: %s", self.name, err)
+            reachable = False
+        except Exception:
+            # an unexpected failure must not end the loop, since it is what brings the
+            # provider back, but it is a defect rather than an outage so it is logged loudly
+            self.logger.exception("Reachability check for %s failed", self.name)
+            reachable = False
+        if self.unloading:
+            # the provider was torn down while this check was running; re-arming here
+            # would leave a timer firing against an instance nothing owns anymore
+            return
+        if reachable:
+            self.logger.info("%s is reachable again", self.name)
+            self._set_available(True)
+            return
+        self._schedule_availability_probe()
 
     async def _process_item_async(
         self,
@@ -1463,12 +1525,10 @@ class LocalFileSystemProvider(MusicProvider):
                     normalized = posixpath.normpath(f"{playlist_path}/{_line}")
                     with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                         file_item = await self.resolve(normalized)
-                        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                        return await self._parse_track(file_item, tags)
+                        return await self._get_playlist_line_track(file_item)
                 with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                     file_item = await self.resolve(_line)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    return await self._parse_track(file_item, tags)
+                    return await self._get_playlist_line_track(file_item)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1477,12 +1537,52 @@ class LocalFileSystemProvider(MusicProvider):
 
         return None
 
+    async def _get_playlist_line_track(self, file_item: FileSystemItem) -> Track:
+        """
+        Return the track for a resolved playlist entry.
+
+        :param file_item: The resolved file the playlist entry points at.
+        """
+        # filesystem tracks are synced into the library, so prefer the database over
+        # (expensive) tag parsing - this keeps loading large playlists fast
+        library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            file_item.relative_path, self.instance_id
+        )
+        # only trust the library item if its mapping for this file is available: the file
+        # just resolved, so an unavailable mapping is stale (e.g. the file was missing
+        # during the last scan) and would wrongly exclude the track from playback
+        if library_track is not None and any(
+            mapping.provider_instance == self.instance_id
+            and mapping.item_id == file_item.relative_path
+            and mapping.available
+            for mapping in library_track.provider_mappings
+        ):
+            # callers expect the provider item identity here (not the library one),
+            # e.g. for duplicate detection when editing the playlist
+            library_track.item_id = file_item.relative_path
+            library_track.provider = self.instance_id
+            library_track.uri = create_uri(
+                MediaType.TRACK, self.instance_id, file_item.relative_path
+            )
+            return library_track
+        # not (yet) in the library: parse the file tags
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_track(file_item, tags)
+
     @staticmethod
     def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
         """Append the file checksum so the image cache busts when the file is replaced."""
         if checksum:
             return f"{relative_path}?cs={checksum}"
         return relative_path
+
+    @staticmethod
+    def _codec_type_from_tags(tags: AudioTags) -> ContentType:
+        """Return the audio codec detected by ffprobe, if any."""
+        if tags.raw and (streams := tags.raw.get("streams")):
+            if codec_name := streams[0].get("codec_name"):
+                return ContentType.try_parse(codec_name)
+        return ContentType.UNKNOWN
 
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
@@ -1503,6 +1603,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1879,6 +1980,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1978,6 +2080,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2102,6 +2205,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2204,7 +2308,7 @@ class LocalFileSystemProvider(MusicProvider):
                     track_path,
                     possible_artist_folder,
                 )
-                album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                album_artist_str = Path(possible_artist_folder).name
                 album_artists = UniqueList(
                     [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
                 )
@@ -2413,6 +2517,7 @@ class LocalFileSystemProvider(MusicProvider):
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(file_item.ext or tags.format),
+                codec_type=self._codec_type_from_tags(tags),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,

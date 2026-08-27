@@ -250,7 +250,7 @@ class RadioController(MediaControllerBase[Radio]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.RADIO):
+            if MediaType.RADIO not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

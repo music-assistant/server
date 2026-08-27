@@ -62,3 +62,13 @@ async def test_get_artist_fallback_still_returns_unknown() -> None:
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
         artist = await helpers.get_artist(prov_artist_id="UC123", headers={})
     assert artist == {"channelId": "UC123", "name": "Unknown"}
+
+
+async def test_search_passes_auth_headers_and_user() -> None:
+    """search() must authenticate its YTMusic client so results respect account context."""
+    mock_ytm = MagicMock()
+    mock_ytm.search.return_value = []
+    headers = {"cookie": "abc"}
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await helpers.search(query="test", headers=headers, user="123")
+    mock_ytmusic.assert_called_once_with(auth=headers, language="en", user="123")

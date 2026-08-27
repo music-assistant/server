@@ -25,6 +25,7 @@ from music_assistant.controllers.streams.audio_processing import (
     AudioOutputPlan,
     get_media_session_id,
 )
+from music_assistant.helpers.buffered_generator import buffered
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
@@ -328,11 +329,16 @@ class SnapcastMAStream:
             self._register_output_plan()
             self._filter_settings = self._output_plan.filter_params
         stream_format = self._provider.stream_audio_format
-        audio_source = self._mass.streams.get_stream(
-            self.media,
-            stream_format,
-            self._filter_settings_owner,
-            use_flow_stream_buffering=True,
+        # ffmpeg reads this pipeline at 1x (-re) and snapserver only holds ~1 second,
+        # so buffer here to give the source room to hiccup without starving the server
+        audio_source = buffered(
+            self._mass.streams.get_stream(
+                self.media,
+                stream_format,
+                self._filter_settings_owner,
+            ),
+            buffer_size=30,
+            min_buffer_before_yield=1,
         )
         try:
             async with FFMpeg(

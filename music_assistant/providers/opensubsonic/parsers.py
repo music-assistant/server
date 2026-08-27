@@ -92,6 +92,16 @@ def parse_track(  # noqa: PLR0915
 
     metadata: MediaItemMetadata = MediaItemMetadata()
 
+    if sonic_song.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_song.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     if lyrics:
         ly, synced = lyrics
         if synced:

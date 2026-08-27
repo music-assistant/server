@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -338,6 +338,46 @@ class TestProviderInstanceIdExpansion:
         assert "player_b" in can_group
         assert "player_c" in can_group
 
+    def test_provider_instance_id_excludes_unknown_players(self, mock_mass: MagicMock) -> None:
+        """Test that players without an output type are not offered as grouping targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.get_provider = MagicMock(return_value=provider)
+
+        leader = MockPlayer(
+            provider,
+            "leader",
+            "Leader",
+            player_type=PlayerType.PROTOCOL,
+        )
+        leader._attr_can_group_with = {"test"}
+        public_player = MockPlayer(provider, "public", "Public Player")
+        unknown_player = MockPlayer(
+            provider,
+            "unknown",
+            "Unknown Player",
+            player_type=PlayerType.UNKNOWN,
+        )
+        controller._players = {
+            "leader": leader,
+            "public": public_player,
+            "unknown": unknown_player,
+        }
+        mock_mass.players = controller
+
+        for player in controller._players.values():
+            player.set_initialized()
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        assert "public" in leader.state.can_group_with
+        assert "unknown" not in leader.state.can_group_with
+
+        leader._attr_can_group_with = {"unknown"}
+        leader.update_state(signal_event=False, force_update=True)
+
+        assert leader.state.can_group_with == set()
+
 
 class TestFinalActiveGroupNewModel:
     """
@@ -503,11 +543,10 @@ def _make_ad_hoc_group(
     mock_mass.players = controller
 
 
-def _airplay_link(protocol_id: str) -> OutputProtocol:
-    """Build an AirPlay link the way production does: without an `available` argument."""
-    return OutputProtocol(
+def _airplay_link(protocol_id: str) -> LinkedOutputProtocol:
+    """Build an AirPlay link to the given protocol player."""
+    return LinkedOutputProtocol(
         output_protocol_id=protocol_id,
-        name="AirPlay",
         protocol_domain="airplay",
         priority=10,
     )
@@ -536,9 +575,6 @@ class TestAdHocLeadershipTransfer:
 
         leader = controller.get_player("leader")
         assert leader is not None
-        member_b = controller.get_player("b")
-        assert member_b is not None
-        assert member_b.linked_output_protocols[0].available is True
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
@@ -556,9 +592,8 @@ class TestAdHocLeadershipTransfer:
         )
         leader.set_linked_output_protocols(
             [
-                OutputProtocol(
+                LinkedOutputProtocol(
                     output_protocol_id=leader_protocol.player_id,
-                    name="Chromecast",
                     protocol_domain="chromecast",
                     priority=30,
                 )

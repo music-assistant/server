@@ -106,6 +106,7 @@ from music_assistant.providers.sendspin.helpers import (
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
+    SendspinSourcePlayer,
     SendspinVisualizerPlayer,
 )
 from music_assistant.providers.sendspin.security import (
@@ -380,7 +381,6 @@ class SendspinProvider(PlayerProvider):
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
-        self._headless_client_ids: set[str] = set()
         self._bridge_underlying_players = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
@@ -581,16 +581,6 @@ class SendspinProvider(PlayerProvider):
             return
         self._bridge_static_delay_defaults[client_id] = default_ms
 
-    def register_headless_client(self, client_id: str) -> None:
-        """
-        Mark a client id as headless: no MA player is registered for it.
-
-        Called by in-process consumers (e.g. the MilkDrop visualizer tap) whose
-        Sendspin clients exist purely to receive group audio and must never
-        surface as players anywhere in the UI or API.
-        """
-        self._headless_client_ids.add(client_id)
-
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
         """
         Pre-register a PlayerType override for a bridge client.
@@ -651,6 +641,7 @@ class SendspinProvider(PlayerProvider):
         # (hidden). Restore protocol semantics so UI links it under its native peer.
         player.is_web_player = False
         player._attr_hidden_by_default = False
+        player._attr_private = False
         player._attr_expose_to_ha_by_default = True
         player._attr_type = PlayerType.PROTOCOL
         self.logger.info(
@@ -1223,7 +1214,8 @@ class SendspinProvider(PlayerProvider):
         Create the appropriate player class based on client roles.
 
         Priority: player role -> SendspinPlayer, metadata role -> DISPLAY,
-        visualizer role -> VISUALIZER. Bridge-registered type overrides the default.
+        visualizer role -> VISUALIZER, source role -> SendspinSourcePlayer.
+        Bridge-registered type overrides the default.
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
@@ -1253,6 +1245,10 @@ class SendspinProvider(PlayerProvider):
             viz_player = SendspinVisualizerPlayer(self, client_id, initial_hello=initial_hello)
             viz_player._attr_type = bridge_player_type or default_type
             player = viz_player
+        elif "source" in negotiated_families:
+            # Capture-only device: a SendspinPlayer here would advertise playback it
+            # cannot do. It only needs a settings page.
+            player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
             if isinstance(existing_player, SendspinPlayer):
@@ -1539,7 +1535,7 @@ class SendspinProvider(PlayerProvider):
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
-            if self._unloading or client_id in self._headless_client_ids:
+            if self._unloading:
                 return
             sendspin_client = self.server_api.get_client(client_id)
             if sendspin_client is None:
@@ -1620,9 +1616,6 @@ class SendspinProvider(PlayerProvider):
         """Handle a client disconnection asynchronously."""
         try:
             if self._unloading:
-                return
-            if client_id in self._headless_client_ids:
-                self._headless_client_ids.discard(client_id)
                 return
             self.logger.debug("Client %s disconnected", client_id)
             if not self._is_current_client_event(client_id, event_version):

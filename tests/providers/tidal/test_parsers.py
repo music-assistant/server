@@ -90,3 +90,15 @@ def test_parse_track_partial_album(provider_mock: Mock) -> None:
     track_obj["album"] = {"title": "Test Album"}
     track = parse_track(provider_mock, track_obj)
     assert track.album is None
+
+
+def test_parse_track_skips_artist_with_null_name(provider_mock: Mock) -> None:
+    """Test a malformed artist does not prevent parsing the containing track."""
+    with open(TRACK_FIXTURES[0], encoding="utf-8") as f:
+        data = json.load(f)
+    data["item"]["artists"][0]["name"] = None
+
+    track = parse_track(provider_mock, data)
+
+    assert track.artists == []
+    provider_mock.logger.warning.assert_called_once()

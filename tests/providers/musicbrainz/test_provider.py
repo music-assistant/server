@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.errors import RateLimited
+import pytest
+from music_assistant_models.errors import InvalidDataError, RateLimited
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
@@ -637,3 +638,103 @@ async def test_release_year_by_track_name_escapes_lucene_specials() -> None:
         query='"T.N.T. \\(live\\!\\)" AND artist:"AC\\/DC"',
         limit="100",
     )
+
+
+# ---------------------------------------------------------------------------
+# get_releases_by_barcode
+# ---------------------------------------------------------------------------
+
+
+def _barcode_release(release_id: str, release_group_id: str, barcode: str) -> dict[str, Any]:
+    """
+    Return one release stub as a barcode search actually returns it.
+
+    Includes the summary ``media`` object (format/track-count, no tracklist) that the
+    full release model cannot parse, so the slim search model is exercised realistically.
+    """
+    return {
+        "id": release_id,
+        "status-id": "status-id",
+        "count": 1,
+        "title": "( )",
+        "status": "Official",
+        "barcode": barcode,
+        "artist-credit": [_credit("Sigur Rós", "artist-1")],
+        "release-group": {"id": release_group_id, "title": "( )", "primary-type": "Album"},
+        "media": [{"format": "CD", "disc-count": 1, "track-count": 14}],
+        "track-count": 14,
+    }
+
+
+async def test_releases_by_barcode_parses_releases() -> None:
+    """Return every release MusicBrainz has on file for a barcode (summary media and all)."""
+    response = {
+        "count": 2,
+        "releases": [
+            _barcode_release("rel-1", "rg-1", "0888072439412"),
+            _barcode_release("rel-2", "rg-1", "0888072439412"),
+        ],
+    }
+    provider, _ = _provider(response)
+
+    releases = await provider.get_releases_by_barcode("888072439412")
+
+    assert [release.id for release in releases] == ["rel-1", "rel-2"]
+    assert {release.release_group.id for release in releases} == {"rg-1"}
+
+
+async def test_releases_by_barcode_queries_every_compatible_form() -> None:
+    """Query the UPC-12 and its zero-padded EAN-13/GTIN forms in a single request."""
+    provider, get_data = _provider({"releases": []})
+
+    await provider.get_releases_by_barcode("888072439412")
+
+    get_data.assert_awaited_once()
+    call = get_data.await_args
+    assert call is not None
+    assert call.args == ("release",)
+    assert call.kwargs["limit"] == "100"
+    query = call.kwargs["query"]
+    assert "barcode:888072439412" in query
+    assert "barcode:0888072439412" in query
+
+
+async def test_releases_by_barcode_skips_an_invalid_barcode() -> None:
+    """A structurally invalid barcode is treated as absent, without any request."""
+    provider, get_data = _provider({"releases": []})
+
+    assert await provider.get_releases_by_barcode("not-a-barcode") == []
+    get_data.assert_not_awaited()
+
+
+async def test_releases_by_barcode_is_empty_when_not_found() -> None:
+    """An unknown barcode yields an empty list rather than an error."""
+    provider, _ = _provider(None)
+
+    assert await provider.get_releases_by_barcode("888072439412") == []
+
+
+async def test_releases_by_barcode_abstains_on_malformed_entry() -> None:
+    """One unparsable release makes the whole lookup abstain rather than look complete."""
+    response = {
+        "releases": [
+            {"id": "broken"},
+            _barcode_release("rel-2", "rg-2", "0888072439412"),
+        ]
+    }
+    provider, _ = _provider(response)
+
+    with pytest.raises(InvalidDataError):
+        await provider.get_releases_by_barcode("888072439412")
+
+
+async def test_releases_by_barcode_abstains_on_truncated_result() -> None:
+    """A truncated page abstains rather than treating a partial set as complete."""
+    response = {
+        "count": 5,
+        "releases": [_barcode_release("rel-1", "rg-1", "0888072439412")],
+    }
+    provider, _ = _provider(response)
+
+    with pytest.raises(InvalidDataError):
+        await provider.get_releases_by_barcode("888072439412")

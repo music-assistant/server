@@ -191,9 +191,10 @@ class BoseSoundTouchPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self._client.set_volume(volume_level, mute=False)
+        # the device takes volume and mute in one call, so pass the mute it already
+        # holds: a volume change is not an unmute
+        await self._client.set_volume(volume_level, mute=bool(self.volume_muted))
         self._attr_volume_level = volume_level
-        self._attr_volume_muted = False
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:

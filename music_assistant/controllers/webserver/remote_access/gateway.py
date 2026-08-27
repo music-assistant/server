@@ -13,8 +13,9 @@ import base64
 import contextlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from urllib.parse import urlparse
 
@@ -39,18 +40,39 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
-# Max concurrent proxied (image) fetches, so a burst of album-art requests over the
-# data channel stays bounded and never blocks the API message pump (see #4889).
+# Max concurrent proxied (image) fetches, so a burst of album-art requests stays bounded
+# instead of piling up local requests and the response bodies they buffer (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
 
-# Chunk ma-api messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
-MA_API_CHUNK_SIZE = 64 * 1024
+# Preferred piece size when chunking an oversized message; each piece becomes a base64 frame
+# roughly a third larger, so the channel's negotiated limit can size it down further.
+DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
+
+# Room a chunk frame's JSON envelope takes around its base64 payload: 60 bytes of fixed keys
+# plus the group, sequence and count numbers.
+DATA_CHANNEL_CHUNK_OVERHEAD = 128
+
+# Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
+# so this sits close to libdatachannel's 256 KiB cap; the channel's negotiated limit still wins.
+HTTP_PROXY_BODY_CHUNK_SIZE = 192 * 1024
+
+# How long one proxied frame may wait for the client to drain its receive buffer. That wait
+# holds the channel's send lock and a semaphore slot, so a client that stops draining would
+# otherwise park both for the life of the session.
+HTTP_PROXY_SEND_TIMEOUT = 10
+
+# Budget for one proxied fetch, in place of aiohttp's five minute default: the response body
+# is buffered whole and holds a semaphore slot until it has been handed to the client.
+# Both budgets sit inside the 30 seconds a client waits before it abandons a proxied request,
+# so neither works on (or answers) a request nobody is listening for any more.
+HTTP_PROXY_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
-# Labels of the data channels that are bridged to a local WebSocket
+# Labels of the data channels the gateway routes, next to the client's own API channel
 CHANNEL_SENDSPIN = "sendspin"
 CHANNEL_LIVE_ANNOUNCEMENT = "live_announcement"
+CHANNEL_HTTP_PROXY = "http_proxy"
 
 
 class _BridgeTarget(NamedTuple):
@@ -61,11 +83,10 @@ class _BridgeTarget(NamedTuple):
 
 
 @dataclass
-class _ChannelBridge:
-    """A bridged data channel together with the local WebSocket it is connected to."""
+class _ServedChannel:
+    """A data channel the gateway serves, plus the local WebSocket it is bridged to (if any)."""
 
     label: str
-    target: _BridgeTarget
     channel: DataChannel | None
     local_ws: aiohttp.ClientWebSocketResponse | None = None
 
@@ -79,9 +100,15 @@ class WebRTCSession:
     # Main API channel (ma-api) - bridges to local MA WebSocket API
     data_channel: DataChannel | None = None
     local_ws: aiohttp.ClientWebSocketResponse | None = None
-    # Bridged WebSocket channels (sendspin, live announcements) by data channel label
-    ws_bridges: dict[str, _ChannelBridge] = field(default_factory=dict)
+    # Channels served by label (sendspin, live announcements, http proxy)
+    channels: dict[str, _ServedChannel] = field(default_factory=dict)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
+
+
+# Serves one incoming data channel for a session until that channel goes away.
+type _ChannelHandler = Callable[
+    [WebRTCSession, _ServedChannel, DataChannel], Coroutine[Any, Any, None]
+]
 
 
 class WebRTCGateway:
@@ -145,15 +172,19 @@ class WebRTCGateway:
         self._ice_servers_callback = ice_servers_callback
         self._set_sendspin_player_callback = set_sendspin_player_callback
 
-        # Data channel label -> the local WebSocket that channel is bridged to. The live
-        # announcement route sits on the same webserver as the ma-api WebSocket.
-        self._bridge_targets: dict[str, _BridgeTarget] = {
-            CHANNEL_SENDSPIN: _BridgeTarget(
-                self.sendspin_url, self._try_extract_sendspin_client_id
+        # Data channel label -> the handler that serves it. The bridged labels each name a
+        # local WebSocket; the live announcement route sits on the same webserver as the
+        # ma-api WebSocket. The http proxy is served in-process instead of bridged.
+        self._channel_handlers: dict[str, _ChannelHandler] = {
+            CHANNEL_SENDSPIN: partial(
+                self._bridge_websocket,
+                target=_BridgeTarget(self.sendspin_url, self._try_extract_sendspin_client_id),
             ),
-            CHANNEL_LIVE_ANNOUNCEMENT: _BridgeTarget(
-                _ws_url_for_path(self.local_ws_url, LIVE_ANNOUNCEMENT_ROUTE)
+            CHANNEL_LIVE_ANNOUNCEMENT: partial(
+                self._bridge_websocket,
+                target=_BridgeTarget(_ws_url_for_path(self.local_ws_url, LIVE_ANNOUNCEMENT_ROUTE)),
             ),
+            CHANNEL_HTTP_PROXY: self._serve_http_proxy,
         }
 
         # Static ICE servers used at registration time (relayed to clients via signaling server)
@@ -513,9 +544,20 @@ class WebRTCGateway:
             self.logger.exception("Failed to add ICE candidate for session %s", session_id)
 
     async def _handle_http_proxy_request(
-        self, session: WebRTCSession, request_data: dict[str, Any]
+        self,
+        channel: DataChannel | None,
+        request_data: dict[str, Any],
+        send_lock: asyncio.Lock | None = None,
     ) -> None:
-        """Handle HTTP proxy request from remote client."""
+        """
+        Handle an HTTP proxy request from a remote client.
+
+        :param channel: Data channel the request arrived on, and the response is sent back on.
+        :param request_data: The decoded ``http-proxy-request`` message.
+        :param send_lock: Send lock of the dedicated http proxy channel, which answers with a
+            JSON header plus a raw binary body. Omitted for clients that proxy over the API
+            channel, which get the whole response hex-encoded in one JSON message instead.
+        """
         request_id = request_data.get("id")
         method = request_data.get("method", "GET")
         path = request_data.get("path", "/")
@@ -536,57 +578,143 @@ class WebRTCGateway:
                 # this dial never leaves the host: TLS verification would fail on the bind
                 # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
-                    method, local_http_url, headers=headers, ssl=False, allow_redirects=False
+                    method,
+                    local_http_url,
+                    headers=headers,
+                    ssl=False,
+                    allow_redirects=False,
+                    timeout=HTTP_PROXY_FETCH_TIMEOUT,
                 ) as response:
                     body = await response.read()
                     await self._send_http_proxy_response(
-                        session, request_id, response.status, dict(response.headers), body
+                        channel,
+                        request_id,
+                        response.status,
+                        dict(response.headers),
+                        body,
+                        send_lock,
                     )
+            except TimeoutError:
+                self.logger.warning("Timeout proxying %s %s", method, local_http_url)
+                await self._send_http_proxy_response(
+                    channel,
+                    request_id,
+                    504,
+                    {"Content-Type": "text/plain"},
+                    b"Gateway Timeout",
+                    send_lock,
+                )
             except Exception as err:
                 self.logger.exception("Error handling HTTP proxy request")
                 await self._send_http_proxy_response(
-                    session, request_id, 500, {"Content-Type": "text/plain"}, str(err).encode()
+                    channel,
+                    request_id,
+                    500,
+                    {"Content-Type": "text/plain"},
+                    str(err).encode(),
+                    send_lock,
                 )
 
     async def _send_http_proxy_response(
         self,
-        session: WebRTCSession,
+        channel: DataChannel | None,
         request_id: str | None,
         status: int,
         headers: dict[str, str],
         body: bytes,
+        send_lock: asyncio.Lock | None = None,
     ) -> None:
-        """Send an HTTP-proxy response over the ma-api channel."""
-        await self._send_ma_api(
-            session.data_channel,
-            json.dumps(
+        """
+        Send an HTTP-proxy response back on the channel its request arrived on.
+
+        :param send_lock: Send lock of the dedicated http proxy channel, whose responses are a
+            JSON header followed by the body as raw binary frames. Without it the response goes
+            out hex-encoded inside one JSON message, as clients on the API channel expect.
+        """
+        try:
+            if send_lock is None:
+                await self._send_chunked(
+                    channel,
+                    json.dumps(
+                        {
+                            "type": "http-proxy-response",
+                            "id": request_id,
+                            "status": status,
+                            "headers": headers,
+                            "body": body.hex(),
+                        }
+                    ),
+                    timeout=HTTP_PROXY_SEND_TIMEOUT,
+                )
+                return
+
+            header = json.dumps(
                 {
                     "type": "http-proxy-response",
                     "id": request_id,
                     "status": status,
                     "headers": headers,
-                    "body": body.hex(),
+                    "size": len(body),
                 }
-            ),
-        )
+            )
+            # The body frames carry no request id, so an interleaved response would be
+            # indistinguishable from this one's body: hold the channel for header plus body.
+            # Responses therefore queue whole rather than frame by frame, which costs nothing on
+            # a channel that already sends one message at a time.
+            async with send_lock:
+                await self._send_on_channel(channel, header, timeout=HTTP_PROXY_SEND_TIMEOUT)
+                if channel is None or not channel.is_open:
+                    return
+                # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
+                chunk_size = min(HTTP_PROXY_BODY_CHUNK_SIZE, channel.max_message_size)
+                for offset in range(0, len(body), chunk_size):
+                    await self._send_on_channel(
+                        channel,
+                        body[offset : offset + chunk_size],
+                        timeout=HTTP_PROXY_SEND_TIMEOUT,
+                    )
+        except TimeoutError:
+            # abandon this response rather than keep the send lock (and the semaphore slot the
+            # caller holds) on a client that is no longer taking what it asked for
+            self.logger.warning(
+                "Timeout sending proxy response %s: client is not draining the channel",
+                request_id,
+            )
 
-    async def _send_ma_api(self, channel: DataChannel | None, text: str) -> None:
-        """Send a text message on the ma-api channel, chunking it if it exceeds the size limit."""
+    async def _send_chunked(
+        self, channel: DataChannel | None, text: str, timeout: float | None = None
+    ) -> None:
+        """
+        Send a text message on a data channel, chunking it if it exceeds the size limit.
+
+        :param timeout: Seconds a single frame may wait for the client to drain, raising
+            TimeoutError once it elapses. Waits indefinitely when omitted.
+        """
+        # reading the limit off a closed channel raises, and it has nothing left to receive
+        if channel is None or channel.is_closed:
+            return
+        # a peer that advertises no limit in its SDP is assumed to accept only 64 KiB
+        limit = channel.max_message_size
         data = text.encode()
-        if len(data) <= MA_API_CHUNK_SIZE:
-            await self._send_on_channel(channel, text)
+        if len(data) <= min(DATA_CHANNEL_CHUNK_SIZE, limit):
+            await self._send_on_channel(channel, text, timeout=timeout)
             return
 
-        # libdatachannel enforces the 256 KiB message limit, so oversized messages are split
-        # into base64 frames the client reassembles by group id (base64 keeps each frame's size
-        # predictable regardless of JSON escaping / unicode).
+        # Oversized messages are split into base64 frames the client reassembles by group id
+        # (base64 keeps each frame's size predictable regardless of JSON escaping / unicode).
+        # A piece is sized so its frame still fits the limit: base64 turns every 3 bytes into 4,
+        # on top of the JSON envelope.
+        piece_size = min(DATA_CHANNEL_CHUNK_SIZE, (limit - DATA_CHANNEL_CHUNK_OVERHEAD) // 4 * 3)
         self._chunk_group_seq += 1
         group_id = self._chunk_group_seq
-        count = (len(data) + MA_API_CHUNK_SIZE - 1) // MA_API_CHUNK_SIZE
+        count = (len(data) + piece_size - 1) // piece_size
         for seq in range(count):
-            if channel is None or not channel.is_open:
+            # a send onto a channel that is no longer open returns without suspending, so
+            # without this the loop would frame and discard every remaining piece without
+            # ever yielding
+            if not channel.is_open:
                 return
-            piece = data[seq * MA_API_CHUNK_SIZE : (seq + 1) * MA_API_CHUNK_SIZE]
+            piece = data[seq * piece_size : (seq + 1) * piece_size]
             await self._send_on_channel(
                 channel,
                 json.dumps(
@@ -598,6 +726,7 @@ class WebRTCGateway:
                         "b64": base64.b64encode(piece).decode(),
                     }
                 ),
+                timeout=timeout,
             )
 
     async def _close_session(self, session_id: str) -> None:
@@ -607,13 +736,13 @@ class WebRTCGateway:
             return
 
         # Close the local bridges first so no more data is fed through the channels
-        bridged = [bridge.local_ws for bridge in session.ws_bridges.values()]
+        bridged = [served.local_ws for served in session.channels.values()]
         for local_ws in (session.local_ws, *bridged):
             if local_ws is not None and not local_ws.closed:
                 with contextlib.suppress(Exception):
                     await local_ws.close()
         session.local_ws = None
-        session.ws_bridges.clear()
+        session.channels.clear()
 
         # aclose tears down all PC-owned pumps and every data channel; safe here because
         # _close_session is never invoked from within a PC-owned task
@@ -646,12 +775,12 @@ class WebRTCGateway:
             )
 
     async def _accept_channels(self, session: WebRTCSession) -> None:
-        """Accept incoming data channels and start their bridges."""
+        """Accept incoming data channels and start their handlers."""
         async for channel in session.pc.incoming_data_channels():
-            if (target := self._bridge_targets.get(channel.label)) is not None:
-                if channel.label in session.ws_bridges:
-                    # replacing the entry would leave the running bridge untracked, and
-                    # tearing either one down would then orphan the other's websocket
+            if (handler := self._channel_handlers.get(channel.label)) is not None:
+                if channel.label in session.channels:
+                    # replacing the entry would leave the running handler untracked, and
+                    # tearing either one down would then orphan the other's resources
                     self.logger.warning(
                         "Refusing a second '%s' data channel for session %s",
                         channel.label,
@@ -659,9 +788,9 @@ class WebRTCGateway:
                     )
                     channel.close()
                     continue
-                bridge = _ChannelBridge(label=channel.label, target=target, channel=channel)
-                session.ws_bridges[channel.label] = bridge
-                session.pc.spawn_task(self._bridge_websocket(session, bridge, channel))
+                served = _ServedChannel(label=channel.label, channel=channel)
+                session.channels[channel.label] = served
+                session.pc.spawn_task(handler(session, served, channel))
             elif session.data_channel is None:
                 # the browser opens its API channel first, whatever label it gives it
                 session.data_channel = channel
@@ -715,11 +844,11 @@ class WebRTCGateway:
                             isinstance(msg_data, dict)
                             and msg_data.get("type") == "http-proxy-request"
                         ):
-                            # Handle off the receive loop so a slow image fetch never
-                            # blocks API messages or the next image (bounded by the
-                            # gateway-wide semaphore; see #4889).
+                            # clients without a dedicated http proxy channel proxy over
+                            # this one; handle off the receive loop so a slow fetch never
+                            # blocks API messages or the next image (see #4889)
                             session.pc.spawn_task(
-                                self._handle_http_proxy_request(session, msg_data)
+                                self._handle_http_proxy_request(channel, msg_data)
                             )
                             continue
                     except json.JSONDecodeError, ValueError:
@@ -745,7 +874,7 @@ class WebRTCGateway:
         try:
             async for msg in local_ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._send_ma_api(channel, msg.data)
+                    await self._send_chunked(channel, msg.data)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                     break
         except asyncio.CancelledError:
@@ -757,34 +886,47 @@ class WebRTCGateway:
         self._schedule_close(session.session_id)
 
     async def _bridge_websocket(
-        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+        self,
+        session: WebRTCSession,
+        served: _ServedChannel,
+        channel: DataChannel,
+        *,
+        target: _BridgeTarget,
     ) -> None:
-        """Bridge a data channel to the local WebSocket its label is routed to."""
+        """
+        Bridge a data channel to the local WebSocket its label is routed to.
+
+        :param target: The local WebSocket this channel's label is routed to.
+        """
         try:
             # TLS verification would fail on the bind address and adds nothing to a dial
             # that never leaves this host (a no-op for the plain ws:// targets)
-            bridge.local_ws = await self.http_session.ws_connect(bridge.target.url, ssl=False)
+            served.local_ws = await self.http_session.ws_connect(target.url, ssl=False)
             self.logger.debug(
-                "%s channel connected for session %s", bridge.label, session.session_id
+                "%s channel connected for session %s", served.label, session.session_id
             )
         except Exception:
             self.logger.exception(
                 "Failed to connect %s channel to %s for session %s",
-                bridge.label,
-                bridge.target.url,
+                served.label,
+                target.url,
                 session.session_id,
             )
-            await self._close_ws_bridge(session, bridge)
+            await self._close_channel(session, served)
             return
 
         # from_local runs as its own PC-owned pump; this task drives channel -> local
-        session.pc.spawn_task(self._ws_bridge_from_local(session, bridge, channel))
-        await self._ws_bridge_to_local(session, bridge, channel)
+        session.pc.spawn_task(self._ws_bridge_from_local(session, served, channel))
+        await self._ws_bridge_to_local(session, served, channel, target)
         # channel -> local loop ended (remote channel closed): tear down only this bridge
-        await self._close_ws_bridge(session, bridge)
+        await self._close_channel(session, served)
 
     async def _ws_bridge_to_local(
-        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+        self,
+        session: WebRTCSession,
+        served: _ServedChannel,
+        channel: DataChannel,
+        target: _BridgeTarget,
     ) -> None:
         """Forward messages from a bridged data channel to its local WebSocket."""
         first_message = True
@@ -792,27 +934,27 @@ class WebRTCGateway:
             async for message in channel:
                 if first_message:
                     first_message = False
-                    if bridge.target.on_first_message and isinstance(message, str):
-                        bridge.target.on_first_message(session, message)
+                    if target.on_first_message and isinstance(message, str):
+                        target.on_first_message(session, message)
 
-                local_ws = bridge.local_ws
+                local_ws = served.local_ws
                 if local_ws and not local_ws.closed:
                     if isinstance(message, bytes):
                         await local_ws.send_bytes(message)
                     else:
                         await local_ws.send_str(message)
         except ConnectionClosedError:
-            self.logger.debug("%s channel closed for session %s", bridge.label, session.session_id)
+            self.logger.debug("%s channel closed for session %s", served.label, session.session_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger.exception("Error forwarding %s to local", bridge.label)
+            self.logger.exception("Error forwarding %s to local", served.label)
 
     async def _ws_bridge_from_local(
-        self, session: WebRTCSession, bridge: _ChannelBridge, channel: DataChannel
+        self, session: WebRTCSession, served: _ServedChannel, channel: DataChannel
     ) -> None:
         """Forward messages from a bridged local WebSocket to its data channel."""
-        local_ws = bridge.local_ws
+        local_ws = served.local_ws
         if local_ws is None:
             return
         try:
@@ -824,23 +966,51 @@ class WebRTCGateway:
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger.exception("Error forwarding %s from local", bridge.label)
+            self.logger.exception("Error forwarding %s from local", served.label)
         # the local WS closed: close only this bridge, leaving the ma-api session up
-        await self._close_ws_bridge(session, bridge)
+        await self._close_channel(session, served)
 
-    async def _close_ws_bridge(self, session: WebRTCSession, bridge: _ChannelBridge) -> None:
-        """Close one bridged data channel and its local WebSocket."""
-        # only drop the entry while it still points at this bridge, so a teardown can
-        # never untrack a bridge that replaced it
-        if session.ws_bridges.get(bridge.label) is bridge:
-            del session.ws_bridges[bridge.label]
-        local_ws = bridge.local_ws
-        bridge.local_ws = None
+    async def _serve_http_proxy(
+        self, session: WebRTCSession, served: _ServedChannel, channel: DataChannel
+    ) -> None:
+        """Serve proxied HTTP requests arriving on their own data channel."""
+        send_lock = asyncio.Lock()
+        try:
+            async for message in channel:
+                if not isinstance(message, str):
+                    continue
+                try:
+                    request = json.loads(message)
+                except json.JSONDecodeError, ValueError:
+                    continue
+                if isinstance(request, dict) and request.get("type") == "http-proxy-request":
+                    # handle off the receive loop so a slow fetch never holds up the next
+                    # request (bounded by the gateway-wide semaphore; see #4889)
+                    session.pc.spawn_task(
+                        self._handle_http_proxy_request(channel, request, send_lock)
+                    )
+        except ConnectionClosedError:
+            self.logger.debug("%s channel closed for session %s", served.label, session.session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception("Error serving %s channel", served.label)
+        # the remote channel closed: tear down only this channel, leaving the session up
+        await self._close_channel(session, served)
+
+    async def _close_channel(self, session: WebRTCSession, served: _ServedChannel) -> None:
+        """Close one served data channel and the local WebSocket it is bridged to."""
+        # only drop the entry while it still points at this channel, so a teardown can
+        # never untrack a channel that replaced it
+        if session.channels.get(served.label) is served:
+            del session.channels[served.label]
+        local_ws = served.local_ws
+        served.local_ws = None
         if local_ws is not None and not local_ws.closed:
             with contextlib.suppress(Exception):
                 await local_ws.close()
-        channel = bridge.channel
-        bridge.channel = None
+        channel = served.channel
+        served.channel = None
         if channel is not None and not channel.closed:
             with contextlib.suppress(Exception):
                 await channel.aclose()
@@ -875,17 +1045,28 @@ class WebRTCGateway:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _send_on_channel(self, channel: DataChannel | None, data: str | bytes) -> None:
-        """Send data on a data channel if it is currently open."""
+    async def _send_on_channel(
+        self, channel: DataChannel | None, data: str | bytes, timeout: float | None = None
+    ) -> None:
+        """
+        Send data on a data channel if it is currently open.
+
+        :param timeout: Seconds to wait for the client to drain enough of its receive buffer
+            to take this message, raising TimeoutError once it elapses. A send only suspends
+            before it hands over any bytes, so a timed-out message is never half-delivered.
+            Waits indefinitely when omitted.
+        """
         if channel is None or not channel.is_open:
             return
         try:
-            await channel.send(data)
+            async with asyncio.timeout(timeout):
+                await channel.send(data)
         except ConnectionClosedError:
             pass
         except RTCError as err:
             # a single failed send (e.g. an over-limit message) must not tear down the pump
-            self.logger.warning("Dropping %d-byte data channel message: %s", len(data), err)
+            size = len(data.encode()) if isinstance(data, str) else len(data)
+            self.logger.warning("Dropping %d-byte data channel message: %s", size, err)
 
     def _try_extract_sendspin_client_id(self, session: WebRTCSession, message: str) -> None:
         """Try to extract client_id from sendspin auth message and set on websocket client."""

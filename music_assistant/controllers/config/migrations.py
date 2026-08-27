@@ -39,6 +39,8 @@ from music_assistant.controllers.player_queues.constants import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from music_assistant_models.config_entries import ConfigValueType
+
 LOGGER = logging.getLogger(__name__)
 
 # removed player config key, only referenced by its migration
@@ -452,6 +454,31 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Fallback defaults for setup-flow keys that were never stored in the first place.
+# A config value that matches its entry default is not persisted, so a key left at its
+# default had nothing in `values` for the migration below to move and now reads back as
+# None. These are the defaults those keys carried as config entries before the setup
+# flows landed. Only keys whose read site has no fallback of its own are listed; the
+# others already resolve their default at runtime. This runs on every startup, so only
+# keys their setup flow persists unconditionally belong here - a key a flow may
+# legitimately omit would be re-injected forever.
+# TODO: remove after 2.13 release
+PROVIDER_SETUP_FLOW_DEFAULTS: dict[str, dict[str, ConfigValueType]] = {
+    "alexa": {"url": "amazon.com", "api_url": "http://localhost:5000"},
+    "audiobookshelf": {"verify_ssl": True},
+    "filesystem_local": {"path": "/media"},
+    "filesystem_smb": {"subfolder": "", "smb_version": "3.0"},
+    "jellyfin": {"verify_ssl": True},
+    "lastfm_scrobble": {"_provider": "lastfm"},
+    "plex": {
+        "local_server_port": 32400,
+        "local_server_ssl": False,
+        "local_server_verify_cert": True,
+    },
+    "siriusxm": {"sxm_region": "US"},
+}
+
+
 async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
     changed = False
@@ -623,12 +650,22 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_orphaned_disabled_protocol_configs(data):
         changed = True
 
+    # Clear the stored name of players that were never renamed, so an updated default
+    # name is no longer shadowed by the auto-generated name stored at creation time.
+    # TODO: remove after 2.12 release
+    if _migrate_unrenamed_player_names(data):
+        changed = True
+
     return changed
 
 
 def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
     """
     Move each provider's setup-flow-owned keys from `values` to `setup_data` in-place.
+
+    Also restores the keys listed in PROVIDER_SETUP_FLOW_DEFAULTS that are absent from
+    `setup_data`, which covers the installs whose values were already moved by an
+    earlier run of this step.
 
     Runs after encryption is initialized (unlike migrate()), so string values are
     encrypted at rest with the given callback - matching how the setup flows persist
@@ -645,28 +682,38 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
     for provider_cfg in all_provider_configs.values():
         if not isinstance(provider_cfg, dict):
             continue
-        owned_keys = PROVIDER_SETUP_FLOW_KEYS.get(provider_cfg.get("domain", ""))
+        domain = provider_cfg.get("domain", "")
+        owned_keys = PROVIDER_SETUP_FLOW_KEYS.get(domain)
         if not owned_keys:
             continue
         values = provider_cfg.get("values")
         if not isinstance(values, dict):
-            continue
+            # a config without stored values has nothing to move, but may still
+            # be missing a default
+            values = {}
         movable_keys = [key for key in owned_keys if key in values]
         setup_data = provider_cfg.get("setup_data")
-        needs_airplay_default = provider_cfg.get("domain") == "airplay_receiver" and (
-            not isinstance(setup_data, dict) or "airplay_name" not in setup_data
-        )
-        if not movable_keys and not needs_airplay_default:
-            continue
         if not isinstance(setup_data, dict):
             setup_data = {}
-            provider_cfg["setup_data"] = setup_data
+        # a key that is about to be moved carries the user's own value and is left alone
+        missing_defaults = {
+            key: value
+            for key, value in PROVIDER_SETUP_FLOW_DEFAULTS.get(domain, {}).items()
+            if key not in setup_data and key not in movable_keys
+        }
+        needs_airplay_default = domain == "airplay_receiver" and "airplay_name" not in setup_data
+        if not movable_keys and not missing_defaults and not needs_airplay_default:
+            continue
+        provider_cfg["setup_data"] = setup_data
         for key in movable_keys:
             # a value already collected into setup_data wins; only drop the stale copy
             if key not in setup_data:
                 value = values[key]
                 setup_data[key] = encrypt(value) if isinstance(value, str) else value
             del values[key]
+        for key, value in missing_defaults.items():
+            setup_data[key] = encrypt(value) if isinstance(value, str) else value
+        # re-checked after the move: airplay_name may have just arrived from values
         if needs_airplay_default and "airplay_name" not in setup_data:
             setup_data["airplay_name"] = encrypt("Music Assistant")
         changed = True
@@ -1413,6 +1460,31 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
+    """
+    Clear the stored name of player configs that hold the default name verbatim.
+
+    Player configs used to store the name a player was created with as both the custom
+    and the default name, which makes a never-renamed player indistinguishable from a
+    renamed one and lets the creation-time name shadow every later default name.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        # a config without a default name would be left without any name at all
+        if not (default_name := player_cfg.get("default_name")):
+            continue
+        if player_cfg.get("name") != default_name:
+            continue
+        player_cfg["name"] = None
+        changed = True
     return changed
 
 

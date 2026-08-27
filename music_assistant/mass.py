@@ -12,6 +12,7 @@ import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -83,6 +84,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -106,7 +108,7 @@ EventSubscriptionType = tuple[
 
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = str(Path(__file__).resolve().parent)
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 # These bounds guard against a wedged provider, they are not a performance budget: several
 # providers load at once on a busy event loop, so a step can take much longer in wall clock
@@ -704,6 +706,7 @@ class MusicAssistant:
         task_id: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
+        log_exceptions: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """
@@ -718,6 +721,9 @@ class MusicAssistant:
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
                            when creating multiple tasks in sequence.
+        :param log_exceptions: Set to False when the caller awaits the task and reports
+                               its failures itself; the task then logs at debug level
+                               instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
@@ -760,7 +766,11 @@ class MusicAssistant:
             # "Task exception was never retrieved" error at garbage collection time
             if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-                LOGGER.warning(
+                # a failure the waiters report themselves is demoted rather than dropped:
+                # work that outlives every waiter (join_task keeps it running) would
+                # otherwise fail without a trace anywhere
+                LOGGER.log(
+                    logging.WARNING if log_exceptions else logging.DEBUG,
                     "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
@@ -1033,6 +1043,10 @@ class MusicAssistant:
             # below have await points, so without this a callback that is still in flight
             # could register a player back onto a provider that is already gone
             provider.unloading = True
+            if isinstance(provider, PluginProvider):
+                # a live source cannot outlive the plugin exposing it: the player would go
+                # on naming a source that can no longer be streamed, its queue held inactive
+                await self.players.release_provider_sources(instance_id)
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):
