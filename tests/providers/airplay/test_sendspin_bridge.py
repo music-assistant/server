@@ -1129,6 +1129,62 @@ async def test_a_native_start_waits_for_the_bridge_to_let_go_of_the_receiver() -
     assert processes.live == 1
 
 
+async def test_a_teardown_does_not_lose_the_receiver_to_a_queued_native_start() -> None:
+    """
+    A native start already queued for the lock still finds the process to displace.
+
+    The lock is handed out in arrival order, so a teardown that only queues for
+    it after cancelling the start holding it lands behind a native start that
+    was already waiting. That start has to see the stream the teardown has not
+    released yet, or it reads the speaker as free and pairs a second process
+    with it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    player = bridge.airplay_player
+    processes = _ReceiverProcesses()
+    scheduled = _run_bridge_tasks_for_real(bridge)
+
+    kept_stream = _make_kept_stream()
+    flush_gate = asyncio.Event()
+
+    async def _blocking_flush(**_kwargs: object) -> bool:
+        await flush_gate.wait()
+        return True
+
+    kept_stream.flush = AsyncMock(side_effect=_blocking_flush)
+    kept_stream.stop = AsyncMock(side_effect=lambda **_kw: processes.kill())
+    bridge._airplay_stream = kept_stream
+    # a legacy RAOP process carries no timing decision, so it stays warm eligible
+    bridge._use_shared_ptp = None
+    player.stream = kept_stream
+    processes.spawn()
+
+    warm_task = asyncio.create_task(bridge._start_protocol_from_chunk())
+    bridge._airplay_stream_start_task = warm_task
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert player.stream_spawn_lock.locked()
+
+    native_stream = _make_native_stream()
+    native_stream.running = False
+    native_stream.connect = AsyncMock(side_effect=processes.spawn)
+    native_stream.stop = AsyncMock(side_effect=processes.kill)
+    native_task = asyncio.create_task(_run_native_start(player, native_stream))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not native_task.done()
+
+    # the speaker is stopped: the teardown cancels the warm start that holds the
+    # lock, and can only queue for it behind the native start already waiting
+    bridge._release_streaming()
+
+    await asyncio.gather(warm_task, native_task, *scheduled, return_exceptions=True)
+
+    assert processes.peak == 1
+    assert cast("MagicMock", player).stream is native_stream
+
+
 async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> None:
     """
     A transport the bridge cannot release stops it from spawning a second process.
@@ -2003,7 +2059,9 @@ def test_on_bridge_stream_start_replaces_uncommitted_stream() -> None:
     bridge._on_bridge_stream_start()
 
     assert bridge._airplay_stream is None
-    assert bridge.airplay_player.stream is None  # type: ignore[unreachable]
+    # the player keeps the reference until the scheduled teardown has the process
+    # off the receiver, so nothing reads the speaker as free while it is not
+    assert bridge.airplay_player.stream is old_stream  # type: ignore[unreachable]
 
 
 def test_on_stream_start_keeps_warm_eligible_stream() -> None:
@@ -2301,7 +2359,9 @@ def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
     bridge._on_audio_chunk(_pcm_chunk(chunk_ts))
 
     assert bridge._airplay_stream is None
-    assert bridge.airplay_player.stream is None
+    # released from the bridge, but still published until the teardown that owns
+    # it has the dead process cleared
+    assert bridge.airplay_player.stream is not None
     assert bridge._started is False
     assert bridge._anchor_settled is False
     # a fresh start is armed and anchored where the group is playing right now

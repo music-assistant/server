@@ -1090,7 +1090,11 @@ class AirPlayStreamSession:
             airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
             airplay_player.stream.session = self
             await airplay_player.stream.connect(use_shared_ptp)
-        await self._start_player_ffmpeg(airplay_player, self.media)
+            # Wiring the audio producer to the cli stdin belongs to the same
+            # claim: a displacement landing between the connect and this would
+            # leave an ffmpeg feeding a process that is already gone, with
+            # nothing tracking it to clean up.
+            await self._start_player_ffmpeg(airplay_player, self.media)
 
     def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """

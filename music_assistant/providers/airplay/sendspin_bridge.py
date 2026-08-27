@@ -598,12 +598,10 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            # A player stream the bridge does not own is a live native session:
-            # its reference is left in place for the start task to stop before
-            # it spawns a new process (dropping it here would orphan that
-            # session's cli process alongside the new one).
-            if self.airplay_player.stream is old_stream:
-                self.airplay_player.stream = None
+            # The player's reference is left in place either way: a native
+            # session is the start task's to stop before it spawns, and the
+            # bridge's own old stream stays published until the cleanup below
+            # actually has it off the receiver.
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -657,10 +655,8 @@ class SendspinAirPlayBridge:
 
         if not keep_stream:
             self._airplay_stream = None
-            # Leave a native session's reference in place for the start task to
-            # stop, exactly as in _on_stream_start.
-            if self.airplay_player.stream is old_stream:
-                self.airplay_player.stream = None
+            # Left published for the start task or the cleanup to clear, exactly
+            # as in _on_stream_start.
             self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
@@ -1323,6 +1319,12 @@ class SendspinAirPlayBridge:
                 with suppress(asyncio.CancelledError, Exception):
                     await writer_task
             if stream:
+                # Only unpublish what this bridge put there: a deferred teardown
+                # can fire after the native path already replaced the player's
+                # stream, and dropping that reference would strand a session the
+                # bridge never owned.
+                if self.airplay_player.stream is stream:
+                    self.airplay_player.stream = None
                 with suppress(Exception):
                     await stream.stop(force=True)
                 # Restore the IDLE reset that stop() dropped because the stream was detached first
@@ -1650,11 +1652,10 @@ class SendspinAirPlayBridge:
         self._airplay_stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None
-        # Only unpublish what this bridge put there: a deferred teardown can fire
-        # after the native path already replaced the player's stream, and dropping
-        # that reference would strand a session the bridge never owned.
-        if stream is not None and self.airplay_player.stream is stream:
-            self.airplay_player.stream = None
+        # The player's reference stays until the teardown has the process off the
+        # receiver (see _cleanup_old_stream): it is what a start reads to decide
+        # there is something to displace, and clearing it here would tell one
+        # that the speaker is free while the old process still holds it.
         self._is_streaming = False
         self._use_shared_ptp = None
         self._queued_frames = 0
