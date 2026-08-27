@@ -90,6 +90,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         seek_position: int = 0,
         *,
         streamdetails: StreamDetails | None = None,
+        continuation: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the Ogg Vorbis audio for one Spotify URI.
@@ -98,6 +99,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             ``spotify:episode:<id>``).
         :param seek_position: Position in seconds to start from.
         :param streamdetails: Unused: every item is fetched on its own.
+        :param continuation: Unused: every item is fetched on its own.
         """
         # librespot's --single-track parser wants its own spotify://type:id form
         librespot_uri = spotify_uri.replace("spotify:", "spotify://", 1)
