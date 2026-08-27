@@ -431,6 +431,7 @@ class SendspinAirPlayBridge:
                 on_mute_change=self._on_mute_change,
                 on_stream_start=self._on_bridge_stream_start,
                 on_stream_end=self._on_bridge_stream_end,
+                on_explicit_stop=self._on_bridge_explicit_stop,
                 initial_volume=self.airplay_player.volume_level or 25,
                 initial_muted=bool(self.airplay_player.volume_muted),
             )
@@ -1034,17 +1035,64 @@ class SendspinAirPlayBridge:
         """
         Handle the sendspin stream ending: defer the CLI teardown briefly.
 
-        A seek or next-track ends the stream and immediately starts a new one.
-        Tearing the CLI down here would force every such switch through a cold
-        reconnect; instead we keep the connected binary alive for a short grace
-        window so the next stream can reuse it via flush-refill. If no new
-        stream arrives within the window (a real stop), the deferred cleanup
-        kills the CLI so AirPlay stops instead of draining its buffer.
+        A stream end that is immediately followed by a new stream (a seek or
+        next-track on setups that end the stream for those) would force every
+        such switch through a cold reconnect if the CLI were torn down here;
+        instead the connected binary is kept alive for a short grace window so
+        the next stream can reuse it via flush-refill. If no new stream arrives
+        within the window, the deferred cleanup kills the CLI so AirPlay stops
+        instead of draining its buffer. A stop the user asked for skips the
+        window through _on_bridge_explicit_stop.
         """
         self._is_streaming = False
         self._queued_frames = 0
+        if self._transport_state_empty():
+            # A stream end with no transport behind it (an explicit stop already
+            # tore it down, or no chunk ever started one): nothing to keep warm
+            # and nothing to defer.
+            self.logger.debug(
+                "Sendspin stream ended for %s with no transport to keep warm",
+                self.airplay_player.display_name,
+            )
+            return
+        self.logger.debug(
+            "Sendspin stream ended for %s; keeping the CLI warm for %.0fs",
+            self.airplay_player.display_name,
+            BRIDGE_WARM_GRACE_SECONDS,
+        )
         self.mass.call_later(
             BRIDGE_WARM_GRACE_SECONDS, self._deferred_cleanup, task_id=self._teardown_timer_id
+        )
+
+    def _on_bridge_explicit_stop(self) -> None:
+        """
+        Tear the transport down at once for a stop the user asked for.
+
+        The stream end preceding this callback armed the warm grace window,
+        which exists for a next track to ride the connected binary. Nothing
+        follows an explicit stop, and the device holds seconds of buffered
+        audio, so waiting the window out would play out what the user asked to
+        end. The bridge stays registered in its group, so a later play includes
+        this speaker again.
+        """
+        self.mass.cancel_timer(self._teardown_timer_id)
+        if self._is_streaming:
+            # A new stream already took the bridge over; the transport belongs to it now.
+            return
+        if self._transport_state_empty():
+            return
+        self.logger.debug(
+            "Explicit stop for %s: tearing the transport down without the warm grace",
+            self.airplay_player.display_name,
+        )
+        self._schedule_cleanup()
+
+    def _transport_state_empty(self) -> bool:
+        """Return whether the bridge holds no transport, writer or pending start."""
+        return (
+            self._airplay_stream is None
+            and self._writer_task is None
+            and self._airplay_stream_start_task is None
         )
 
     def _deferred_cleanup(self) -> None:

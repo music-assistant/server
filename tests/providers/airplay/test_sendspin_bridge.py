@@ -2898,6 +2898,91 @@ async def test_a_stop_never_reaches_a_player_without_a_bridge() -> None:
     assert _bridge_manager_for(bridge).stop_streaming("apother") is False
 
 
+# --- A stop on the Sendspin side skips the warm grace (support#6195) -----------
+
+
+def test_a_sendspin_stop_skips_the_grace_and_tears_the_transport_down() -> None:
+    """
+    A stop reaching the bridge through its role kills the CLI at once.
+
+    The stream end that precedes it arms the warm grace window, during which
+    the device plays out the seconds it holds buffered. The explicit-stop
+    signal cancels that window and hands the transport straight to the
+    cleanup path.
+    """
+    bridge, stream = _make_anchored_bridge(running=True)
+    writer_task = MagicMock()
+    bridge._writer_task = writer_task
+    start_task = bridge._airplay_stream_start_task
+
+    with patch.object(bridge, "_cleanup_old_stream", MagicMock()) as cleanup:
+        bridge._on_bridge_stream_end()
+        bridge._on_bridge_explicit_stop()
+
+    cast("MagicMock", bridge.mass).cancel_timer.assert_called_with(bridge._teardown_timer_id)
+    assert cleanup.call_args.args[:3] == (stream, writer_task, start_task)
+    assert bridge._airplay_stream is None
+
+
+def test_a_sendspin_stop_keeps_the_bridges_seat_in_the_group() -> None:
+    """
+    A group-wide stop leaves the membership alone.
+
+    The group's own STOPPED state is what the visible player reports, and the
+    next play on the group must include this speaker -- unlike a stop aimed at
+    the AirPlay player itself, there is no session to leave here.
+    """
+    bridge, _ = _make_anchored_bridge(running=True)
+
+    with (
+        patch.object(bridge, "_cleanup_old_stream", MagicMock()),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        bridge._on_bridge_stream_end()
+        bridge._on_bridge_explicit_stop()
+
+    leave.assert_not_called()
+
+
+def test_an_explicit_stop_spares_a_stream_that_already_took_over() -> None:
+    """A play racing the stop owns the transport; the stop must not kill it."""
+    bridge, stream = _make_anchored_bridge(running=True)
+    bridge._is_streaming = True
+
+    with patch.object(bridge, "_schedule_cleanup", MagicMock()) as schedule:
+        bridge._on_bridge_explicit_stop()
+
+    schedule.assert_not_called()
+    assert bridge._airplay_stream is stream
+
+
+def test_an_explicit_stop_with_nothing_held_is_a_no_op() -> None:
+    """The ungroup that follows a stop finds the transport already gone."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._is_streaming = False
+
+    with patch.object(bridge, "_schedule_cleanup", MagicMock()) as schedule:
+        bridge._on_bridge_explicit_stop()
+
+    schedule.assert_not_called()
+
+
+def test_a_stream_end_with_no_transport_arms_no_grace_timer() -> None:
+    """
+    A stream end that left nothing behind has nothing to keep warm or defer.
+
+    Removing the member from its Sendspin group ends the stream for its roles
+    a second time after the stop already tore the transport down; re-arming
+    the timer there would only reschedule an empty teardown.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+
+    bridge._on_bridge_stream_end()
+
+    cast("MagicMock", bridge.mass).call_later.assert_not_called()
+    assert bridge._is_streaming is False
+
+
 # --- One shared-PTP decision per Sendspin group --------------------------------
 
 
