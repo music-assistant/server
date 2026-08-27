@@ -347,8 +347,8 @@ _LEGACY_ICON_MAP: dict[str, str] = {
 # - plex_connect's "plex_provider_id"/"mass_player_id" are not secrets, but its setup flow
 #   collects them (the options are only known from live server state), so they live in
 #   setup_data like any other flow-collected value.
-# - spotify is deliberately absent: its own _migrate_legacy_token still reads the legacy
-#   "refresh_token" and "client_id" from `values`, so this migration must not move them.
+# - spotify's deprecated "refresh_token" stays in `values`: _migrate_legacy_token reads it
+#   from there to split it into the global/dev keys.
 # TODO: remove after 2.13 release
 PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
@@ -421,6 +421,13 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "qqmusic": ("uin", "musicid", "musickey", "login_type", "credential_json"),
     "siriusxm": ("sxm_email_address", "sxm_password", "sxm_region"),
     "soundcloud": ("client_id", "authorization"),
+    "spotify": (
+        "refresh_token_global",
+        "refresh_token_dev",
+        "librespot_credentials",
+        "client_id",
+        "account_id",
+    ),
     "spotify_connect": ("mass_player_id", "publish_name"),
     "teddycloud": ("url",),
     "tidal": ("auth_token", "refresh_token", "expiry_time", "user_id"),
