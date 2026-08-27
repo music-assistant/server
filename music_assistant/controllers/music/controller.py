@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
+from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -107,7 +108,10 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import (
@@ -135,7 +139,7 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook
+    from music_assistant_models.media_items import Audiobook, AudioSource
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
@@ -684,9 +688,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
-        self, path: str | None = None
+        self, path: str | None = None, *, player_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Music providers."""
+        """
+        Browse Music providers.
+
+        :param path: The path to browse; None or "root" for the root level.
+        :param player_id: Scope audio-source listings to the sources bound to this
+            player (sources of player-unbound plugins are always included).
+        """
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[MediaItemType | BrowseFolder] = []
@@ -713,7 +723,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if not isinstance(prov, PluginProvider):
                     continue
                 initiable = [
-                    source for source in await prov.get_audio_sources() if source.can_initiate
+                    source
+                    for source in await self._get_plugin_audio_sources(prov, player_id)
+                    if source.can_initiate
                 ]
                 if not initiable:
                     continue
@@ -758,7 +770,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source for source in await browse_prov.get_audio_sources() if source.can_initiate
+                source
+                for source in await self._get_plugin_audio_sources(browse_prov, player_id)
+                if source.can_initiate
             ]
             return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
@@ -1569,6 +1583,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 params["userid"] = user_id
                 await self._upsert_playlog(params)
+            self._signal_playlog_updated(
+                reference,
+                fully_played=fully_played,
+                seconds_played=seconds_played or 0,
+                userid=user.user_id if user else None,
+            )
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1695,6 +1715,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
                 counted_play_removed = counted_play_removed or bool(row["fully_played"])
             await self.database.delete(DB_TABLE_PLAYLOG, params)
+        self._signal_playlog_updated(
+            reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
+        )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -2388,6 +2411,39 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         return await self._handle_verify_item_uri(uri)
 
+    async def _get_plugin_audio_sources(
+        self, provider: PluginProvider, player_id: str | None
+    ) -> list[AudioSource]:
+        """
+        Return the AudioSources of a plugin to list, scoped to a player when given.
+
+        Player-bound plugins yield only the sources bound to the given player;
+        without a player scope all their sources bound to a player the calling
+        user may see are yielded. Player-unbound plugins always yield all sources.
+        """
+        # probing with the (possibly empty) scope tells bound and unbound apart:
+        # a player-bound plugin returns a list for any player id, unbound returns None
+        if provider.get_player_audio_sources(player_id or "") is None:
+            return await provider.get_audio_sources()
+        # bound sources honor the calling user's player access filter, so a
+        # restricted user cannot discover sources of players hidden from them
+        current_user = get_current_user()
+        player_filter = (
+            current_user.player_filter
+            if current_user and not has_scope(current_user, Scope.ALL)
+            else None
+        )
+        if player_id is not None:
+            if player_filter and player_id not in player_filter:
+                return []
+            return provider.get_player_audio_sources(player_id) or []
+        if not player_filter:
+            return await provider.get_audio_sources()
+        sources: list[AudioSource] = []
+        for allowed_player_id in player_filter:
+            sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
+        return sources
+
     def _apply_user_provider_filter(
         self,
         providers: Iterable[ProviderInstanceType],
@@ -3032,6 +3088,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             entry,
         )
 
+    def _signal_playlog_updated(
+        self,
+        item: MediaItemType | ItemMapping,
+        *,
+        fully_played: bool,
+        seconds_played: int,
+        userid: str | None,
+    ) -> None:
+        """
+        Signal that the playlog entry of the given item changed.
+
+        :param item: The item as it is keyed in the playlog.
+        :param fully_played: The new fully played state of the item.
+        :param seconds_played: The new resume position of the item.
+        :param userid: The user the change applies to, or None for all users.
+        """
+        assert item.uri is not None
+        self.mass.signal_event(
+            EventType.PLAYLOG_UPDATED,
+            object_id=item.uri,
+            data=PlaylogUpdate(
+                uri=item.uri,
+                media_type=item.media_type,
+                fully_played=fully_played,
+                seconds_played=seconds_played,
+                userid=userid,
+            ),
+        )
+
     async def _credit_artist_plays(
         self,
         artists: Iterable[Artist | ItemMapping],
@@ -3071,6 +3156,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self._upsert_playlog(playlog_entry)
+            self._signal_playlog_updated(
+                db_artist,
+                fully_played=True,
+                seconds_played=0,
+                userid=user_ids[0] if len(user_ids) == 1 else None,
+            )
 
     async def _credit_podcast_play(
         self,
@@ -3105,6 +3196,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for user_id in user_ids:
             playlog_entry["userid"] = user_id
             await self._upsert_playlog(playlog_entry)
+        self._signal_playlog_updated(
+            credited_podcast,
+            fully_played=True,
+            seconds_played=0,
+            userid=user_ids[0] if len(user_ids) == 1 else None,
+        )
 
     async def _get_item_by_name(
         self,

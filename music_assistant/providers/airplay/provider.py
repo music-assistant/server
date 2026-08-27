@@ -25,6 +25,11 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.config_entries import (
+    CONF_CONNECTED_PLAYERS,
+    CONF_PUBLISH_NAME_TEMPLATE,
+    resolve_publish_name,
+)
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess
@@ -583,9 +588,7 @@ class AirPlayProvider(PlayerProvider):
         :param discovery_info: The mdns service info that triggered the discovery.
         """
         from music_assistant.providers.airplay_receiver import (  # noqa: PLC0415
-            CONF_AIRPLAY_NAME,
-            DEFAULT_AIRPLAY_NAME,
-            airplay_receiver_port,
+            airplay_receiver_ports,
         )
 
         # Collect the advertised names and ports of all configured AirPlay Receiver
@@ -598,18 +601,27 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
-            setup_name = self.mass.config.get_provider_setup_value(
-                str(instance_id), CONF_AIRPLAY_NAME
-            )
             values = raw_conf.get("values")
-            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
-            airplay_name = setup_name or legacy_name
-            receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
-            receiver_ports.add(airplay_receiver_port(str(instance_id)))
+            values = values if isinstance(values, dict) else {}
+            player_ids = [str(player_id) for player_id in values.get(CONF_CONNECTED_PLAYERS) or []]
+            receiver_ports.update(airplay_receiver_ports(str(instance_id), player_ids).values())
+            template = values.get(CONF_PUBLISH_NAME_TEMPLATE)
+            for player_id in player_ids:
+                # best effort: a registered player's live name, else its stored config
+                # name; when neither resolves the port match stays the strong signal
+                if player := self.mass.players.get_player(player_id):
+                    player_name: str | None = player.display_name
+                else:
+                    stored_name = self.mass.config.get_raw_player_config_value(
+                        player_id, "name"
+                    ) or self.mass.config.get_raw_player_config_value(player_id, "default_name")
+                    player_name = str(stored_name) if stored_name else None
+                if player_name:
+                    receiver_names.add(resolve_publish_name(template, player_name))
         # running instances are authoritative for the actual daemon ports
         for prov in self.mass.get_provider_instances("airplay_receiver"):
-            if (port := getattr(prov, "airplay_port", None)) is not None:
-                receiver_ports.add(port)
+            if ports := getattr(prov, "airplay_ports", None):
+                receiver_ports.update(ports)
         if not receiver_names and not receiver_ports:
             return False
 

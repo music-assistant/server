@@ -27,7 +27,13 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
@@ -66,6 +72,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.helpers.util import html_to_markdown
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
@@ -3107,6 +3114,30 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
+        # standing entries for the audio sources plugins bound to this player, so they
+        # are selectable from the source menu without a session being active first;
+        # an already listed uri is skipped: the live session entry above carries the
+        # live shuffle/repeat state and must win
+        present_ids = {x.id for x in sources}
+        for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+            if not isinstance(prov, PluginProvider):
+                continue
+            for source in prov.get_player_audio_sources(self.player_id) or ():
+                if not (uri := source.uri) or uri in present_ids:
+                    continue
+                present_ids.add(uri)
+                sources.append(
+                    PlayerSource(
+                        id=uri,
+                        name=source.name,
+                        passive=not source.can_initiate,
+                        can_play_pause=source.can_play_pause,
+                        can_seek=source.can_seek,
+                        can_next_previous=source.can_next_previous,
+                        can_shuffle=source.can_shuffle,
+                        can_repeat=source.can_repeat,
+                    )
+                )
         return sources
 
     @cached_property
@@ -3432,7 +3463,7 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                if player.type != PlayerType.UNKNOWN:
+                if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                     result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -3442,7 +3473,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if player.type != PlayerType.UNKNOWN:
+                    if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                         result.add(player)
         return result
 
