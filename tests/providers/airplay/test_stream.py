@@ -18,6 +18,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -3860,3 +3861,28 @@ async def test_password_preflight_skipped_for_raop() -> None:
     player.get_setup_value = MagicMock(return_value=None)
 
     AirPlayStream(player)._check_password_preflight()
+
+
+@pytest.mark.asyncio
+async def test_accepts_audio_ends_with_the_audio_eof() -> None:
+    """
+    A stream that was sent its audio EOF keeps running but takes no more audio.
+
+    The EOF closes the binary's stdin for good while the process itself plays out
+    and exits, so a warm refill has to read this rather than the process state.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    cli_proc = AsyncProcess(["cat"], stdin=True, stdout=True)
+    await cli_proc.start()
+    stream._cli_proc = cli_proc
+    try:
+        assert stream.running
+        assert stream.accepts_audio
+
+        await stream.write_audio_eof()
+
+        assert stream.running
+        assert not stream.accepts_audio
+    finally:
+        await cli_proc.close()

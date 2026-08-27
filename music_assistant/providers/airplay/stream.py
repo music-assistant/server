@@ -278,6 +278,17 @@ class AirPlayStream:
         )
 
     @property
+    def accepts_audio(self) -> bool:
+        """
+        Return boolean if this stream can still be fed audio.
+
+        The binary treats a closed stdin as the end of the stream and there is no
+        reopening it, so a stream that has been sent its audio EOF stays running
+        (playing out what it holds) while no longer taking anything new.
+        """
+        return self.running and self._cli_proc is not None and not self._cli_proc.stdin_closed
+
+    @property
     def connected(self) -> bool:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
