@@ -20,7 +20,7 @@
   },
   "errors": {
     "model_assets_downloading": "Sonic Analysis is still downloading its machine-learning model (about 700 MB). The download only happens once and keeps running in the background — add Sonic Analysis again once it has finished, and it will start straight away.",
-    "model_assets_download_failed": "Sonic Analysis could not download its machine-learning model. Check this server's internet connection and available disk space; the download will be retried automatically.",
+    "model_assets_download_failed": "Sonic Analysis could not download its machine-learning model. Check this server's internet connection and available disk space, then add Sonic Analysis again to retry the download.",
     "prompt_embeddings_unavailable": "Sonic Analysis is missing the precomputed prompt data it needs to score tracks, which means this installation is incomplete."
   },
   "manifest": {
