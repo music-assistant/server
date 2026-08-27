@@ -1153,10 +1153,10 @@ class AirPlayStreamSession:
         Wait until every member's binary reports the new audio flowing.
 
         A binary can only report audio once it has been handed some, and a seek
-        may land seconds ahead of what the source has produced — a realtime one
-        covers that in real time. So the feed is waited out first and the
-        per-member budget below measures the binary alone; giving up on the
-        source here would only restart the session into the very same wait.
+        may land seconds ahead of what the source has produced. So the feed is
+        waited out first and the per-member budget below measures the binary
+        alone; giving up on the source here would only restart the session into
+        the very same wait.
         """
         await self._wait_feed_settled()
         members = [(p, p.stream) for p in self.sync_clients if p.stream]
