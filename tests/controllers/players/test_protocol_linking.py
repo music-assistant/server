@@ -3727,6 +3727,62 @@ class TestProtocolSwitchingDuringPlayback:
             controller.cmd_resume.assert_not_awaited()
         controller._handle_set_members.assert_not_awaited()
 
+    async def test_idle_native_members_migrate_without_stopping_the_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        An idle parent hands its native members over too, with no session to stop.
+
+        A native group outlives the session it was formed for, so the members are still
+        attached to the parent when it switches protocol. Leaving them behind would keep
+        them listed as grouped while nothing feeds them on the next play.
+        """
+        controller, players = self._build_session_bound_group(mock_mass, PlaybackState.IDLE)
+        leader = players["speaker_leader"]
+        bridge_leader = players["bridge_leader"]
+
+        calls: list[tuple[str, Any]] = []
+        leader_set_members = leader.set_members
+        bridge_set_members = bridge_leader.set_members
+
+        async def record_leader_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("leader_set_members", player_ids_to_remove))
+            await leader_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_bridge_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("bridge_set_members", player_ids_to_add))
+            await bridge_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_leader_stop() -> None:
+            calls.append(("leader_stop", None))
+
+        leader.set_members = record_leader_set_members  # type: ignore[method-assign]
+        leader.stop = record_leader_stop  # type: ignore[method-assign]
+        bridge_leader.set_members = record_bridge_set_members  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=bridge_leader,
+            protocol_members_to_add=["bridge_only"],
+            protocol_members_to_remove=[],
+        )
+
+        # the native member joins the protocol group and is released from the parent,
+        # but an idle parent has no session to stop and nothing to resume
+        assert calls == [
+            ("bridge_set_members", ["bridge_only", "bridge_member"]),
+            ("leader_set_members", ["speaker_member"]),
+        ]
+        assert leader.active_output_protocol == "bridge_leader"
+        controller.cmd_resume.assert_not_awaited()
+
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock
     ) -> None:
