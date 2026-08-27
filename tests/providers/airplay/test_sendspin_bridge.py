@@ -213,6 +213,9 @@ def _make_bridge(
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
     airplay_player.protocol = protocol
+    # A real None: the start path stops whatever stream the player already holds
+    # before it spawns a process, and a bare MagicMock reads as a live session.
+    airplay_player.stream = None
     # A real int: the anchor math guards sync_adjust with isinstance(..., int), so
     # a MagicMock would silently read as 0 and pass the test for the wrong reason.
     airplay_player.config.get_value = MagicMock(return_value=sync_adjust)
@@ -789,6 +792,200 @@ async def test_superseded_cold_stream_teardown_spares_the_newer_owner() -> None:
     newer_stream.stop.assert_not_awaited()
     assert bridge._airplay_stream is newer_stream
     assert bridge.airplay_player.stream is newer_stream
+
+
+# --- Displacing a native session the bridge does not own ---
+
+
+def _make_native_stream(session: MagicMock | None = None) -> MagicMock:
+    """Build a live native AirPlayStream mock the bridge has to displace."""
+    stream = MagicMock()
+    stream.stop = AsyncMock()
+    stream.session = session
+    return stream
+
+
+async def test_cold_start_stops_a_native_session_before_it_spawns_a_process() -> None:
+    """
+    A native session on the same player is released before the bridge connects.
+
+    Two cliairplay processes on one receiver reset each other's control
+    channel, so the displaced transport has to be gone before the new
+    pair-setup; the session bookkeeping follows it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    session = MagicMock()
+    order: list[str] = []
+    session.remove_client = AsyncMock(side_effect=lambda *_a, **_kw: order.append("remove_client"))
+    native_stream = _make_native_stream(session)
+    native_stream.stop = AsyncMock(side_effect=lambda **_kw: order.append("stop"))
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+    stream.connect = AsyncMock(side_effect=lambda *_a, **_kw: order.append("connect"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert order == ["stop", "remove_client", "connect"]
+    assert session.remove_client.await_args.args[0] is bridge.airplay_player
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> None:
+    """
+    A transport the bridge cannot release stops it from spawning a second process.
+
+    Carrying on would put the new cli process on a receiver that is still
+    serving the old one, which is the collision this guard exists to prevent.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    native_stream = _make_native_stream()
+    native_stream.stop = AsyncMock(side_effect=RuntimeError("device unreachable"))
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_not_awaited()
+    # the session we could not stop stays published, so it is not lost track of
+    assert bridge.airplay_player.stream is native_stream
+
+
+async def test_failed_session_bookkeeping_still_lets_the_start_proceed() -> None:
+    """The transport is what matters: a failed client removal does not block the start."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    session = MagicMock()
+    session.remove_client = AsyncMock(side_effect=RuntimeError("session already gone"))
+    bridge.airplay_player.stream = _make_native_stream(session)
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_awaited_once()
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_deferred_teardown_spares_a_native_stream_that_replaced_the_bridge() -> None:
+    """
+    A teardown that fires after the native path took the speaker leaves it alone.
+
+    The grace window between a Sendspin stream ending and its cleanup is long
+    enough for native playback to start, and unpublishing its stream here would
+    strand the process behind it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge_stream = MagicMock()
+    bridge_stream.stop = AsyncMock()
+    bridge._airplay_stream = bridge_stream
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+
+    await bridge._stop_streaming()
+
+    assert bridge.airplay_player.stream is native_stream
+    native_stream.stop.assert_not_awaited()
+    cast("MagicMock", bridge.airplay_player).set_state_from_stream.assert_not_called()
+
+
+async def test_cold_start_stops_a_sessionless_native_stream_directly() -> None:
+    """A displaced stream with no session behind it is stopped on its own."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+    stream = _make_anchor_stream()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    native_stream.stop.assert_awaited_once_with(force=True)
+    assert bridge.airplay_player.stream is stream
+
+
+async def test_warm_reuse_never_displaces_the_stream_it_reuses() -> None:
+    """The stream a warm handover rides is the bridge's own, so it is not stopped."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + WARM_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream(ack=UNIX_NOW_MS + WARM_LEAD_MS)
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    kept_stream.stop.assert_not_awaited()
+    kept_stream.flush.assert_awaited_once()
+    assert bridge.airplay_player.stream is kept_stream
+
+
+@pytest.mark.parametrize("server_side", [False, True])
+def test_stream_start_callbacks_leave_a_native_session_published(server_side: bool) -> None:
+    """
+    Both Sendspin stream-start callbacks leave a native stream on the player.
+
+    Dropping the reference there would strand its cli process: the start task
+    stops what the player still points at, and only that.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    native_stream = _make_native_stream()
+    bridge.airplay_player.stream = native_stream
+
+    if server_side:
+        bridge._on_stream_start(MagicMock())
+    else:
+        bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is None
+    assert bridge.airplay_player.stream is native_stream
 
 
 # --- Teardown player state reset ---
