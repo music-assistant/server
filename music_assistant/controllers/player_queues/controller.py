@@ -115,9 +115,7 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
     }
 )
 
-# How many times play_index will try to LOAD an item before giving up. Skipping an item
-# already known unreachable is free and does not count, otherwise a queue whose head holds
-# more dead items than this could never reach a live track behind them.
+# how many times play_index will try to load an item before giving up
 _MAX_LOAD_ATTEMPTS: Final = 5
 
 
@@ -1038,116 +1036,71 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     queue_item.extra_attributes["playback_speed"] = stored_speed
 
             # try to load the item, retry with next item if it fails
-            attempts = 0
-            refill_used = False
-            started = False
-            # the seek position and fade-in belong to the item the caller asked for, so they are
-            # keyed on its index and not on the attempt counter, which resets on a refill
             requested_index = index
-
-            async def _next_index_or_refill(from_index: int) -> tuple[int | None, bool]:
-                """
-                Return the next index, topping a dynamic queue up once if it has run out.
-
-                :param from_index: The index to advance from.
-                :return: The next index (None when the queue is genuinely out), and whether a
-                    refill produced it.
-                """
-                nonlocal refill_used
-                next_index = self._get_next_index(queue_id, from_index, allow_repeat=False)
-                if next_index is not None or not queue.is_dynamic or refill_used:
-                    return next_index, False
-                # A dynamic queue can always produce more, so running out of playable items is
-                # not the end of it. This matters when playback fails from an idle queue:
-                # _handle_end_of_queue only refills on a playing/paused -> idle transition,
-                # which never happens here. Providers whose items expire (e.g. signed stream
-                # URLs) hit that after a long pause. One refill per call, so a station whose
-                # every track is dead cannot spin.
-                refill_used = True
-                await self._fill_dynamic_tracks(queue_id)
-                return self._get_next_index(queue_id, from_index, allow_repeat=False), True
-
+            attempts = 0
+            refilled = False
+            loaded_item: QueueItem | None = None
             while attempts < _MAX_LOAD_ATTEMPTS:
                 queue_item = self.get_item(queue_id, index)
                 if not queue_item:
                     break
-                if not queue_item.available:
-                    # Already known unreachable: _load_item rejects an unavailable item outright.
-                    # Skipping a known-dead item is free, so a live track behind a long dead head
-                    # is still reachable. Still logged, because a silent skip leaves nothing to
-                    # diagnose a stuck queue from.
-                    self.logger.warning(
-                        "Skipping unplayable item %s",
-                        queue_item.name,
-                    )
-                    next_index, refilled = await _next_index_or_refill(index)
-                    if next_index is None:
-                        # a queue that is dead to its end reports the item it gave up on
+                err: MediaNotFoundError | AudioError | None = None
+                if queue_item.available:
+                    try:
+                        await self._load_item(
+                            queue_item,
+                            is_start=True,
+                            seek_position=seek_position if index == requested_index else 0,
+                            fade_in=fade_in if index == requested_index else False,
+                        )
+                        queue.current_index = index
+                        queue.current_item = queue_item
+                        # playback is under way, so the queue is no longer sitting at its end
+                        queue.ended = False
+                        # reset the elapsed clock together with the item switch (like
+                        # next/previous do), so queue updates signaled before the player
+                        # reports position don't carry the previous item's elapsed_time
+                        queue.elapsed_time = seek_position if index == requested_index else 0
+                        queue.elapsed_time_last_updated = time.time()
+                        loaded_item = queue_item
+                        break
+                    except (MediaNotFoundError, AudioError) as load_err:
+                        if isinstance(load_err, ProviderStreamLimitError):
+                            # the requested item is playable, its provider is just at capacity:
+                            # report that instead of silently advancing to another item
+                            self.logger.error("%s", load_err)
+                            await self.stop(queue_id)
+                            raise
+                        err = load_err
+                        attempts += 1
+                        # Only MediaNotFoundError (item unreachable) is persistent;
+                        # keep AudioError items available so a retry can resurface
+                        # the same actionable error.
+                        if isinstance(err, MediaNotFoundError):
+                            queue_item.available = False
+                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                if next_index is None and queue.is_dynamic and not refilled:
+                    refilled = True
+                    await self._fill_dynamic_tracks(queue_id)
+                    next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                    # the refilled items get their own budget
+                    attempts = 0
+                if next_index is None:
+                    # Surface an AudioError's own (actionable) message;
+                    # MediaNotFoundError gets the generic wording.
+                    if isinstance(err, AudioError) and str(err):
+                        msg = str(err)
+                    else:
                         msg = f"Playback failed for {queue_item.name} - no more tracks available"
-                        self.logger.error(msg)
-                        await self.stop(queue_id)
-                        raise MediaNotFoundError(msg)
-                    if refilled:
-                        attempts = 0
-                    index = next_index
-                    continue
-                try:
-                    await self._load_item(
-                        queue_item,
-                        is_start=True,
-                        seek_position=seek_position if index == requested_index else 0,
-                        fade_in=fade_in if index == requested_index else False,
-                    )
-                    # if we reach this point, loading the item succeeded
-                    queue.current_index = index
-                    queue.current_item = queue_item
-                    # playback is under way, so the queue is no longer sitting at its end
-                    queue.ended = False
-                    # reset the elapsed clock together with the item switch (like
-                    # next/previous do), so queue updates signaled before the player
-                    # reports position don't carry the previous item's elapsed_time
-                    queue.elapsed_time = seek_position if index == requested_index else 0
-                    queue.elapsed_time_last_updated = time.time()
-                    started = True
-                    break
-                except (MediaNotFoundError, AudioError) as err:
-                    item_name = queue_item.name
-                    if isinstance(err, ProviderStreamLimitError):
-                        # the requested item is playable, its provider is just at capacity:
-                        # report that instead of silently advancing to another item
-                        self.logger.error("%s", err)
-                        await self.stop(queue_id)
-                        raise
-                    attempts += 1
-                    # Only MediaNotFoundError (item unreachable) is persistent;
-                    # keep AudioError items available so a retry can resurface
-                    # the same actionable error.
-                    if isinstance(err, MediaNotFoundError):
-                        queue_item.available = False
-                    next_index, refilled = await _next_index_or_refill(index)
-                    if next_index is None:
-                        # Surface an AudioError's own (actionable) message;
-                        # MediaNotFoundError gets the generic wording.
-                        if isinstance(err, AudioError) and str(err):
-                            msg = str(err)
-                        else:
-                            msg = f"Playback failed for {item_name} - no more tracks available"
-                        self.logger.error(msg)
-                        await self.stop(queue_id)
-                        raise MediaNotFoundError(msg) from err
-                    if refilled:
-                        # the refill produced fresh candidates, which deserve their own budget
-                        attempts = 0
-                    self.logger.warning(
-                        "Skipping unplayable item %s",
-                        item_name,
-                    )
-                    index = next_index
-            if not started or queue_item is None:
-                # all attempts to find a playable item failed; the None check is unreachable
-                # when started is True, but it is what narrows queue_item for everything below
+                    self.logger.error(msg)
+                    await self.stop(queue_id)
+                    raise MediaNotFoundError(msg) from err
+                self.logger.warning("Skipping unplayable item %s", queue_item.name)
+                index = next_index
+            if loaded_item is None:
                 await self.stop(queue_id)
                 raise MediaNotFoundError("No playable item found to start playback")
+            queue_item = loaded_item
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
