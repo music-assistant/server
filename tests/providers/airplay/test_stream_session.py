@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -954,6 +954,44 @@ async def test_audio_confirmation_waits_for_the_source_to_feed() -> None:
     player.stream.wait_audio_present.assert_awaited_once()
     feeding.set()
     await session._audio_source_task
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_dies_settles_the_feed_question() -> None:
+    """A source that fails never leaves a start waiting for audio it will not get."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id=None, queue_session_id=None)
+    no_chunks: list[bytes] = []
+
+    async def failing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise AudioError("source died")
+
+    await session._audio_streamer(failing_source())
+
+    assert session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_warm_replace_rearms_the_feed_question() -> None:
+    """The new source answers for its own feed; what the old one delivered does not count."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.config.get_value = MagicMock(return_value=0)
+    player.stream.flush = AsyncMock(return_value=True)
+    session._feed_settled.set()
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+    assert not session._feed_settled.is_set()
 
 
 @pytest.mark.asyncio

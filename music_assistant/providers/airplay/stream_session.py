@@ -19,6 +19,7 @@ from .constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    AIRPLAY_FEED_START_TIMEOUT,
     AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
@@ -1172,15 +1173,22 @@ class AirPlayStreamSession:
         raise PlayerCommandFailed(f"audio feed was not confirmed by {', '.join(silent)}")
 
     async def _wait_feed_settled(self) -> None:
-        """Wait for the first audio to reach the members, or the source to end without any."""
+        """Wait for the source to hand over its first audio, or to end without any."""
         task = self._audio_source_task
         if task is None or self._feed_settled.is_set():
             return
-        settled = asyncio.ensure_future(self._feed_settled.wait())
+        settled = asyncio.create_task(self._feed_settled.wait())
         try:
-            # the streamer settles the event itself, but watching the task too
-            # means a feed that never even starts cannot hold this open
-            await asyncio.wait({settled, task}, return_when=asyncio.FIRST_COMPLETED)
+            # The streamer settles the event itself, but watching the task too
+            # means a feed that never even starts cannot hold this open. The
+            # timeout is the backstop for a producer that neither delivers nor
+            # gives up: this runs under the player lock, where every route that
+            # could stop the session waits behind it.
+            await asyncio.wait(
+                {settled, task},
+                timeout=AIRPLAY_FEED_START_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         finally:
             settled.cancel()
 
