@@ -113,6 +113,14 @@ class AirPlayPlayer(Player):
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
+        # Serializes the two paths that can put a cliairplay process on this
+        # receiver (the native stream session and the Sendspin bridge), from the
+        # moment either decides to displace what is published until it publishes
+        # its own stream. Two processes on one receiver reset each other's RTSP
+        # channel and both sessions die. Always taken INSIDE self._lock, never
+        # around it: play_media holds self._lock across the whole session start,
+        # which takes this lock for every member.
+        self.stream_spawn_lock = asyncio.Lock()
         self.last_command_sent = 0.0
         self._volume_reports_ignored_until = 0.0
         self._lock = asyncio.Lock()
@@ -329,7 +337,11 @@ class AirPlayPlayer(Player):
         """Return True if the player is rendering audio an announcement can mix into."""
         if self.playback_state != PlaybackState.PLAYING:
             return False
-        return self.stream is not None and self.stream.running and self.stream.connected
+        if self.stream is None or self.stream.superseded:
+            # A stream handed to a teardown stays published until its process is
+            # off the receiver, and a clip mixed into it dies with it.
+            return False
+        return self.stream.running and self.stream.connected
 
     @property
     def applies_announcement_volume(self) -> bool:
@@ -605,8 +617,14 @@ class AirPlayPlayer(Player):
             if self.stream and self.stream.running and self.stream.session:
                 # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
                 self._transitioning = True
+                stopped_stream = self.stream
                 await self.stream.session.stop()
-                self.stream = None
+                # Only drop what this call stopped: tearing a group session down
+                # awaits every member, and a bridge can publish its own stream
+                # here. Erasing that would leave the start below with nothing to
+                # displace and a live process still on the speaker.
+                if self.stream is stopped_stream:
+                    self.stream = None
 
             # select audio source
             audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)

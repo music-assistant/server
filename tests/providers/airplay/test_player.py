@@ -91,6 +91,66 @@ def airplay_player() -> AirPlayPlayer:
     )
 
 
+async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A cold restart only drops the stream it stopped, not one published meanwhile.
+
+    Tearing a group session down awaits every member, which is long enough for a
+    Sendspin bridge to take the speaker and publish its own stream. Dropping that
+    reference would leave the start that follows with nothing to displace and a
+    live process still on the speaker.
+    """
+    old_session = MagicMock()
+    old_stream = MagicMock(running=True, superseded=False)
+    old_stream.session = old_session
+    old_session.can_replace = MagicMock(return_value=False)
+    bridge_stream = MagicMock(running=True, superseded=False, session=None)
+
+    async def _stop_session() -> None:
+        # the bridge takes the speaker while the group teardown is still running
+        airplay_player.stream = bridge_stream
+
+    old_session.stop = AsyncMock(side_effect=_stop_session)
+    airplay_player.stream = old_stream
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock()),
+        ),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player.stream is bridge_stream
+
+
+def test_has_live_audio_ignores_a_stream_being_torn_down(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A clip cannot be mixed into a stream whose process is on its way out.
+
+    The stream stays published until its teardown has the process off the
+    receiver, so a clip armed against it would die with it instead of playing.
+    """
+    airplay_player._attr_playback_state = PlaybackState.PLAYING
+    stream = MagicMock()
+    stream.running = True
+    stream.connected = True
+    stream.superseded = False
+    airplay_player.stream = stream
+    assert airplay_player.has_live_audio is True
+
+    stream.superseded = True
+
+    assert airplay_player.has_live_audio is False
+
+
 @pytest.mark.parametrize(
     ("manufacturer", "model", "expected"),
     [
@@ -1049,9 +1109,11 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert airplay_player.stream is None
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
     # a stream that is up but not yet connected renders nothing
-    airplay_player.stream = MagicMock(running=True, connected=False)
+    airplay_player.stream = MagicMock(running=True, connected=False, superseded=False)
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
-    airplay_player.stream = MagicMock(running=True, connected=True)
+    # A real bool for superseded: a bare MagicMock reads as a stream already handed
+    # to a teardown, which renders nothing either.
+    airplay_player.stream = MagicMock(running=True, connected=True, superseded=False)
     assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
     # the bridge's own stream is a regular AirPlayStream the clip mixes into, so a
     # Sendspin-bridged player streaming through it keeps the feature
