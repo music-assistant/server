@@ -1075,6 +1075,8 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "chromecast",
     # bluetooth (bluesound, musiccast)
     "bluetooth",
+    "bluetooth audio",
+    "bluetooth_audio",
     # physical/analog inputs (sonos, heos, musiccast, demo)
     "line-in",
     "linein",
