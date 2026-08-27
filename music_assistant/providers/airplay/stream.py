@@ -1400,6 +1400,15 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
+                    if player.stream is not self:
+                        # A newer session (native or Sendspin bridge) owns this
+                        # player, so this process's death says nothing about the
+                        # device: ungrouping or scheduling a re-join over it
+                        # would tear down the session that replaced it.
+                        logger.debug(
+                            "superseded cliairplay process stopped for %s", player.display_name
+                        )
+                        return
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
@@ -1912,6 +1921,13 @@ class AirPlayStream:
         """Switch an automatic native AirPlay 2 route to compatibility mode."""
         if self._native_control_failure_handled:
             return
+        if self.player.stream is not self:
+            # Not evidence about the device: either a newer session reset the
+            # control channel on the receiver, or this stream is still coming up
+            # and has not been published yet. The binary keeps reporting while
+            # the failure lasts, so leaving the once-only latch unset here keeps
+            # a genuine failure actionable once the stream does own the player.
+            return
         self._native_control_failure_handled = True
         if self.player.streaming_mode != STREAMING_MODE_AUTO:
             return
@@ -2076,7 +2092,11 @@ class AirPlayStream:
             # keeps reporting until one exists.
             return
         stalled = state == "stalled" and mode != "ntp"
-        if stalled and not self._clock_stall_warned:
+        # A superseded stream is judging a receiver a newer session has already
+        # taken over: neither its verdict nor its advice describes what the user
+        # is hearing. The clock-ready wait below is still resolved, so its own
+        # start path is not left hanging on evidence that will not arrive.
+        if stalled and not self._clock_stall_warned and self.player.stream is self:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
