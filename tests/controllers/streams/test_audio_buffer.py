@@ -124,6 +124,37 @@ def test_init_defaults() -> None:
     assert not buf.ready.is_set()
 
 
+@pytest.mark.asyncio
+async def test_realtime_buffer_refuses_a_seek_past_what_it_produced() -> None:
+    """
+    A realtime source is re-seeked rather than waited for on a forward seek.
+
+    Such a source hands its audio over at playback pace, so covering the gap
+    costs exactly the gap; a fresh producer starts at the position right away.
+    """
+    live = AudioBuffer(TEST_PCM_FORMAT, is_realtime=True)
+    recorded = AudioBuffer(TEST_PCM_FORMAT)
+    for buf in (live, recorded):
+        await buf._put(ONE_SECOND_CHUNK)
+
+    # already produced, so both serve it from what they hold
+    assert live.is_valid(0)
+    assert recorded.is_valid(0)
+
+    # a second past the head: the recorded source catches up, the live one cannot
+    assert not live.is_valid(2000)
+    assert recorded.is_valid(2000)
+    assert not recorded.is_valid((SEEK_WAIT_THRESHOLD + 2) * 1000)
+
+
+@pytest.mark.asyncio
+async def test_realtime_buffer_stays_valid_before_it_holds_anything() -> None:
+    """A buffer that has not produced its first second yet is still the right one."""
+    live = AudioBuffer(TEST_PCM_FORMAT, is_realtime=True)
+
+    assert live.is_valid(0)
+
+
 def test_init_minimal_buffer() -> None:
     """AudioBuffer with MINIMAL preset has correct max size."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
