@@ -618,9 +618,30 @@ class TestAdHocLeadershipTransfer:
         """Without an active protocol to match, fall back to the first remaining member."""
         leader = MagicMock()
         leader.active_output_protocol = None
-        controller._players = {"a": MagicMock(), "b": MagicMock()}
+        member_a = MagicMock()
+        member_a.state.type = PlayerType.PLAYER
+        member_b = MagicMock()
+        member_b.state.type = PlayerType.PLAYER
+        controller._players = {"a": member_a, "b": member_b}
 
         assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
+
+    def test_select_ad_hoc_leader_never_picks_non_audio_member(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A visualizer listed before an audio member must never inherit the queue."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        visualizer = MockPlayer(provider, "viz", "Visualizer", player_type=PlayerType.VISUALIZER)
+        member_b = MockPlayer(provider, "b", "Member B")
+        controller._players = {"viz": visualizer, "b": member_b}
+        # refresh each player's state snapshot so it reflects the mocked player type
+        for player in (visualizer, member_b):
+            player.update_state(signal_event=False)
+
+        leader = MagicMock()
+        leader.active_output_protocol = None
+
+        assert controller._select_ad_hoc_leader(leader, ["viz", "b"]) == "b"
 
     async def test_handle_set_members_transfers_leader_when_playing(
         self, mock_mass: MagicMock
@@ -652,10 +673,10 @@ class TestAdHocLeadershipTransfer:
         assert called_leader is leader
         assert set(called_remaining) == {"member_a", "member_b"}
 
-    async def test_handle_set_members_never_transfers_to_non_audio_member(
+    async def test_handle_set_members_keeps_non_audio_member_as_follower(
         self, mock_mass: MagicMock
     ) -> None:
-        """A visualizer/light/display member is never offered as the new leader."""
+        """A non-audio member does not block the transfer and stays in the regroup set."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
 
@@ -687,7 +708,9 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_awaited_once()
         _, called_remaining = controller._transfer_ad_hoc_leadership.call_args.args
-        assert called_remaining == ["member_a"]
+        # the visualizer stays a group member (it follows the new leader), the
+        # heir itself is picked from the audio-capable members only
+        assert set(called_remaining) == {"member_a", "visualizer"}
 
     async def test_handle_set_members_dissolves_when_only_non_audio_members_remain(
         self, mock_mass: MagicMock

@@ -3383,8 +3383,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # to a remaining member (keeping playback alive) or dissolve the group entirely
         should_stop = False
         if player_ids_to_remove and target_player in player_ids_to_remove:
-            # only audio-capable members qualify as a new leader: a display, visualizer or
-            # lighting member can be grouped along but must never inherit the queue
             remaining_members = [
                 m
                 for m in parent_player.state.group_members
@@ -3392,10 +3390,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 and m not in player_ids_to_remove
                 and (member := self.get_player(m))
                 and member.state.available
-                and member.state.type in PLAYBACK_TARGET_TYPES
             ]
+            # a new leader must be able to render audio: a group with only display,
+            # visualizer or lighting members left has no playback heir and dissolves
+            has_playback_heir = any(
+                (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
+                for m in remaining_members
+            )
             active_queue = self.get_active_queue(parent_player)
-            if remaining_members and active_queue and active_queue.state != PlaybackState.IDLE:
+            if has_playback_heir and active_queue and active_queue.state != PlaybackState.IDLE:
                 # transfer leadership to a remaining member instead of dissolving
                 await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
                 return
@@ -3650,20 +3653,27 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
-            availability and playback capability. Must not be empty.
+            availability. Must contain at least one audio-capable member.
         """
+        # non-audio members (display/visualizer/lighting) stay in the group as followers
+        # but can never inherit the queue
+        candidates = [
+            m
+            for m in remaining_members
+            if (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
+        ]
         active_domain: str | None = None
         if leader.active_output_protocol and leader.active_output_protocol != "native":
             if protocol_player := self.get_player(leader.active_output_protocol):
                 active_domain = protocol_player.provider.domain
         if active_domain:
-            for member_id in remaining_members:
+            for member_id in candidates:
                 member = self.get_player(member_id)
                 if member is None:
                     continue
                 if active_domain in member.playback_domains:
                     return member_id
-        return remaining_members[0]
+        return candidates[0]
 
     def _clear_sleep_timer(self, player: Player) -> None:
         """
