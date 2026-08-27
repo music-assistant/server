@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
+from music_assistant.controllers.streams.constants import SEEK_WAIT_THRESHOLD
 
 DOMAIN = "airplay"
 
@@ -66,10 +67,15 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself writes away
-# from: a receiver that never answers PTP is switched to NTP, while one whose
-# native control channel conclusively fails is switched to compatibility mode.
+# capability; Automatic is the default and the setting is only ever written by
+# the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Provider marker that the compatibility-mode pins were reset once. Earlier
+# releases switched a player here themselves when its native control channel
+# failed (usually a network dropout), pinning it to a lane many devices reject
+# outright, so those machine-written values are returned to Automatic a single
+# time; a deliberate choice can simply be made again.
+CONF_COMPAT_PINS_REVIEWED: Final[str] = "compat_pins_reviewed"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
 STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
@@ -170,6 +176,15 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+
+# How long a start waits for the source to hand over its first audio before it
+# judges the members on what they never received. A seek may land up to
+# SEEK_WAIT_THRESHOLD seconds ahead of what the source has produced and a
+# realtime source covers that at playback pace, so the wait has to outlast it;
+# the margin covers the source's own spin-up. It is a backstop rather than a
+# budget: this runs under the player lock, so a producer that neither delivers
+# nor gives up would otherwise hold every command for the player behind it.
+AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
