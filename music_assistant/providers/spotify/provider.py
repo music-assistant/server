@@ -64,7 +64,12 @@ from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_OPTIONS,
 )
 
-from .backends import LibrespotBackend, SoloistBackend, SpotifyPlaybackBackend
+from .backends import (
+    LibrespotBackend,
+    SoloistBackend,
+    SpotifyPlaybackBackend,
+    StreamSupersededError,
+)
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
@@ -976,12 +981,19 @@ class SpotifyProvider(MusicProvider):
                 try:
                     chunk_count = 0
                     async for chunk in self.backend.stream_spotify_uri(
-                        chapter_uri, chapter_seek, streamdetails=streamdetails
+                        chapter_uri,
+                        chapter_seek,
+                        streamdetails=streamdetails,
+                        continuation=i > start_chapter,
                     ):
                         yield chunk
                         chunk_count += 1
                     if chunk_count > 0:
                         consecutive_failures = 0
+                except StreamSupersededError:
+                    # a new stream of this audiobook took over (a seek): the
+                    # chapters from here on are its to deliver, not this one's
+                    return
                 except ProviderStreamLimitError:
                     # capacity, not a broken chapter: skipping ahead would burn
                     # chapters and end as a plain error, which costs the item its
@@ -999,10 +1011,12 @@ class SpotifyProvider(MusicProvider):
                 "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
             )
             spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
-            async for chunk in self.backend.stream_spotify_uri(
-                spotify_uri, seek_position, streamdetails=streamdetails
-            ):
-                yield chunk
+            # a new stream of this item taking over (a seek) simply ends this one
+            with suppress(StreamSupersededError):
+                async for chunk in self.backend.stream_spotify_uri(
+                    spotify_uri, seek_position, streamdetails=streamdetails
+                ):
+                    yield chunk
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
