@@ -726,14 +726,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
-        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
                 f"{player.display_name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
-        if PlayerFeature.SEEK not in player.supported_features:
+        if PlayerFeature.SEEK not in player.state.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
@@ -3879,7 +3881,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             # wait for the stop command to process and prevent race conditions
             async with self.wait_for_player_update(player_id, timeout=5):
-                await self._handle_cmd_stop(player_id)
+                # end the queue itself when the player is playing its own, exactly as a
+                # stop command does: stopping only the player leaves the queue session
+                # open, so its preloading keeps pulling audio and a provider streaming a
+                # live session (Spotify) stays tethered for another track or two.
+                # Restricted to the player's own queue: get_active_queue resolves a
+                # protocol player to its parent, and stopping that parent's queue would
+                # come straight back here. The permission-free handler, because a power
+                # off is also issued internally for players the caller cannot address.
+                if (
+                    active_queue := self.get_active_queue(player)
+                ) and active_queue.queue_id == player_id:
+                    await self.mass.player_queues._handle_stop(player_id)
+                else:
+                    await self._handle_cmd_stop(player_id)
 
         # power off all synced childs when player is a sync leader
         elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:
