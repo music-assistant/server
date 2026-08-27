@@ -135,6 +135,10 @@ class AirPlayStreamSession:
         # counter — aligning lengths in isolation can still land mid-sample,
         # which a joiner renders as pure static.
         self._pcm_total_fed: int = 0
+        # Set once the first audio of a start cycle has been handed to the
+        # members, and also when the source ends without ever handing any over,
+        # so a waiter is never left holding on for a feed that is not coming.
+        self._feed_settled = asyncio.Event()
 
     @property
     def effective_start_time(self) -> float:
@@ -286,6 +290,7 @@ class AirPlayStreamSession:
             # describe the OLD timeline; restart them before the new source pumps.
             self.seconds_streamed = 0
             self._pcm_total_fed = 0
+            self._feed_settled.clear()
             self._pcm_buffer.clear()
             # The shared START below re-establishes start_time, so the per-client
             # late-join skip counters and every member's accumulated starvation
@@ -348,6 +353,7 @@ class AirPlayStreamSession:
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
         self._pcm_total_fed = 0
+        self._feed_settled.clear()
         self._pcm_buffer.clear()
         self._client_skip_bytes.clear()
         self._reset_member_shifts()
@@ -886,6 +892,9 @@ class AirPlayStreamSession:
                 exc_info=err,
             )
         finally:
+            # a source that ends - or is cancelled - without handing anything
+            # over settles the question for a start still waiting on the feed
+            self._feed_settled.set()
             if stream_error:
                 self.prov.logger.warning(
                     "Stream ended prematurely due to error - notifying players"
@@ -923,6 +932,7 @@ class AirPlayStreamSession:
             # add_client always reads consistent values.
             self.seconds_streamed += len(chunk) / self._pcm_byte_rate
             self._pcm_total_fed += len(chunk)
+            self._feed_settled.set()
             self._observe_write_head_lead()
             self._pcm_buffer.extend(chunk)
             overflow = len(self._pcm_buffer) - self._pcm_buffer_max
@@ -1138,7 +1148,16 @@ class AirPlayStreamSession:
         return anchor
 
     async def _wait_members_audio_present(self) -> None:
-        """Wait until every member's binary reports the new audio flowing."""
+        """
+        Wait until every member's binary reports the new audio flowing.
+
+        A binary can only report audio once it has been handed some, and a seek
+        may land seconds ahead of what the source has produced — a realtime one
+        covers that in real time. So the feed is waited out first and the
+        per-member budget below measures the binary alone; giving up on the
+        source here would only restart the session into the very same wait.
+        """
+        await self._wait_feed_settled()
         members = [(p, p.stream) for p in self.sync_clients if p.stream]
         results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
         if all(results):
@@ -1151,6 +1170,19 @@ class AirPlayStreamSession:
             if not present
         ]
         raise PlayerCommandFailed(f"audio feed was not confirmed by {', '.join(silent)}")
+
+    async def _wait_feed_settled(self) -> None:
+        """Wait for the first audio to reach the members, or the source to end without any."""
+        task = self._audio_source_task
+        if task is None or self._feed_settled.is_set():
+            return
+        settled = asyncio.ensure_future(self._feed_settled.wait())
+        try:
+            # the streamer settles the event itself, but watching the task too
+            # means a feed that never even starts cannot hold this open
+            await asyncio.wait({settled, task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            settled.cancel()
 
     async def _wait_members_clock_ready(self) -> int:
         """
