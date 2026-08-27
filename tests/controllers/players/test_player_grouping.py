@@ -749,6 +749,23 @@ class TestSessionBoundLeaderJoinsAnotherGroup:
         leader.set_members.assert_not_awaited()
         assert target.group_members == ["target", "leader"]
 
+    async def test_a_group_that_cannot_be_dissolved_keeps_the_player_out(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A leader that could not give its group up stays out instead of joining on top of it.
+
+        Joining anyway leaves it leading a group it can no longer serve, and a player that
+        is synced refuses every later member change, so the state cannot be cleaned up.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader.set_members = AsyncMock(side_effect=RuntimeError("speaker unreachable"))  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert target.group_members == []
+        assert member.synced_to == "leader"
+
     async def test_a_group_that_survives_the_join_is_left_alone(self, mock_mass: MagicMock) -> None:
         """A provider whose members do not ride the leader's own stream keeps its group."""
         controller, leader, member, target = self._build(mock_mass, MockPlayer)
