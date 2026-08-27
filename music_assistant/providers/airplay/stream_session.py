@@ -1080,13 +1080,26 @@ class AirPlayStreamSession:
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
         airplay_player.release_foreign_mute_latch()
-        if airplay_player.stream and airplay_player.stream.running:
-            await airplay_player.stream.stop()
-        stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
-        airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
-        airplay_player.stream.session = self
-        await airplay_player.stream.connect(use_shared_ptp)
-        await self._start_player_ffmpeg(airplay_player, self.media)
+        # Held from the decision to displace whatever is published until the new
+        # process is connected and published, so a Sendspin bridge start cannot
+        # put a second cli process on the same receiver in between.
+        async with airplay_player.stream_spawn_lock:
+            if airplay_player.stream:
+                # Stopped unconditionally, not just while it reads as running: a
+                # stream stops reporting that the moment its own stop() starts,
+                # while its process can still be on the receiver. stop() is
+                # idempotent, so this joins a teardown already under way and
+                # returns at once for one that finished.
+                await airplay_player.stream.stop()
+            stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
+            airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
+            airplay_player.stream.session = self
+            await airplay_player.stream.connect(use_shared_ptp)
+            # Wiring the audio producer to the cli stdin belongs to the same
+            # claim: a displacement landing between the connect and this would
+            # leave an ffmpeg feeding a process that is already gone, with
+            # nothing tracking it to clean up.
+            await self._start_player_ffmpeg(airplay_player, self.media)
 
     def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """
