@@ -25,6 +25,7 @@ from .constants import (
     AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
+    AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
     ClockReadiness,
@@ -917,6 +918,8 @@ class AirPlayStreamSession:
                 ],
                 return_exceptions=True,
             )
+        if not end_of_stream:
+            await self._end_stream_if_no_replacement_lands()
 
     async def _write_chunk_to_all_players(self, chunk: bytes) -> bool:
         """
@@ -1040,6 +1043,36 @@ class AirPlayStreamSession:
         await ffmpeg.wait_with_timeout(30)
         if airplay_player.stream:
             await airplay_player.stream.write_audio_eof()
+
+    async def _end_stream_if_no_replacement_lands(self) -> None:
+        """
+        Deliver a withheld end of stream once no replacement is coming for it.
+
+        This runs on the audio streamer's own task, which every route that takes
+        the session over - a warm replace, a park, a stop - cancels before it
+        touches the members, so reaching the end of the wait means the transition
+        the EOF was held for never arrived. The queue clears that transition on
+        any failure between rotating its stream session and the play_media that
+        carries the replacement, and nothing else can end this stream: without
+        the EOF the binary never plays out, never reports eof, and the player
+        keeps reporting playback until the user commands something else.
+        """
+        await asyncio.sleep(AIRPLAY_REPLACEMENT_EOF_TIMEOUT)
+        self.prov.logger.warning(
+            "No replacement stream claimed the AirPlay session of %s within %.0fs; "
+            "ending it so the player can report idle",
+            self.media.source_id,
+            AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
+        )
+        async with self._lock:
+            await asyncio.gather(
+                *[
+                    stream.write_audio_eof()
+                    for player in self.sync_clients
+                    if (stream := player.stream) and stream.accepts_audio
+                ],
+                return_exceptions=True,
+            )
 
     async def _member_start_step(
         self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
@@ -1193,10 +1226,11 @@ class AirPlayStreamSession:
         settled = asyncio.create_task(self._feed_settled.wait())
         try:
             # The streamer settles the event itself, but watching the task too
-            # means a feed that never even starts cannot hold this open. The
-            # timeout is the backstop for a producer that neither delivers nor
-            # gives up: this runs under the player lock, where every route that
-            # could stop the session waits behind it.
+            # means a feed that never even starts cannot hold this open: a task
+            # cancelled before its first step never runs the finally that
+            # settles the event. The timeout is the backstop for a producer that
+            # neither delivers nor gives up: this runs under the player lock,
+            # where every route that could stop the session waits behind it.
             await asyncio.wait(
                 {settled, task},
                 timeout=AIRPLAY_FEED_START_TIMEOUT,

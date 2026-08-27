@@ -188,6 +188,16 @@ AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
 # lock, so a producer that neither delivers nor gives up would otherwise hold
 # every command for the player behind it.
 AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
+# How long the stdin EOF withheld for a predicted replacement stream is held
+# before it is delivered anyway. The prediction reads a queue mid-transition,
+# and a transition can end without ever reaching the play_media that claims the
+# session (an item that fails to load, a provider error), which leaves nothing
+# else to end the stream: the EOF is what makes the binary play out, report eof
+# and the player report idle. Sized well past a normal item load (library
+# lookups plus the streamdetails fetch, sub-second in practice) so a slow but
+# real replacement is never cut short into a cold restart, and short enough that
+# a session nothing will claim stops reporting playback while the user watches.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 10.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
