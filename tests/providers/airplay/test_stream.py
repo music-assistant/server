@@ -2092,18 +2092,22 @@ def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
     player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
 
-def test_clock_stall_on_a_stream_being_torn_down_stays_silent() -> None:
+@pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
+def test_clock_stall_on_a_stream_being_torn_down_stays_silent(teardown_flag: str) -> None:
     """
-    A stream handed to a teardown does not report its stalled clock.
+    A stream being torn down does not report its stalled clock.
 
     It stays published until the teardown has its process off the receiver, so a
     clock that stops answering there describes the session going away, not the
     device. Reporting it would send the user after a speaker that is fine.
+
+    :param teardown_flag: How the stream is on its way out - handed to the
+        bridge's teardown, or already inside its own stop().
     """
     player = _make_player()
     stream = AirPlayStream(player)
     player.stream = stream
-    stream.superseded = True
+    setattr(stream, teardown_flag, True)
 
     stream._handle_status_line(
         "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
@@ -2114,18 +2118,24 @@ def test_clock_stall_on_a_stream_being_torn_down_stays_silent() -> None:
     assert stream._clock_stall_warned is False
 
 
-def test_native_control_failure_on_a_stream_being_torn_down_stays_silent() -> None:
+@pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
+def test_native_control_failure_on_a_stream_being_torn_down_stays_silent(
+    teardown_flag: str,
+) -> None:
     """
-    A stream handed to a teardown does not report its lost control channel.
+    A stream being torn down does not report its lost control channel.
 
     It stays published until the teardown has its process off the receiver, so
     owning the player no longer means the failure describes the device: the
     channel is going away because the session is.
+
+    :param teardown_flag: How the stream is on its way out - handed to the
+        bridge's teardown, or already inside its own stop().
     """
     player = _make_player()
     stream = AirPlayStream(player)
     player.stream = stream
-    stream.superseded = True
+    setattr(stream, teardown_flag, True)
 
     stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
