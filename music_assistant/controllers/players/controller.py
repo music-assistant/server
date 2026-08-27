@@ -3297,7 +3297,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - None (=autodetect, no source explicitly set by player)
         - The player's own ID (MA queue)
         - Any active queue ID
-        - Any plugin source ID
+        - Any live AudioSource session
 
         :param player: The player to check.
         :param source: The source ID to check.
@@ -3308,6 +3308,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Player's own ID means MA queue is active
         if source == player.player_id:
+            return True
+
+        # A live AudioSource (e.g. Spotify Connect) is streamed by MA itself, so it is
+        # MA that put it on the player rather than something taking the player over
+        if self.is_live_audio_source(source):
             return True
 
         # Check if it's a known queue ID
