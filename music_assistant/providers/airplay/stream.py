@@ -371,8 +371,10 @@ class AirPlayStream:
         # can keep them silent past the commanded start. Artwork rides the
         # budgeted bundle so the device rewrites its now-playing once, instead
         # of a bare replace followed by an artwork replace moments later —
-        # that back-to-back pair intermittently wedges the Apple TV screen.
-        await self._send_current_metadata()
+        # that back-to-back pair intermittently wedges the Apple TV screen. A
+        # render that misses the budget must not hold up the START behind this
+        # connect, so its delivery continues on a background task.
+        await self._send_current_metadata(defer_artwork_followup=True)
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
@@ -765,6 +767,7 @@ class AirPlayStream:
         progress: int | None,
         metadata: PlayerMedia | None,
         send_artwork: bool = True,
+        defer_artwork_followup: bool = False,
     ) -> None:
         """
         Send metadata to player.
@@ -772,6 +775,8 @@ class AirPlayStream:
         :param progress: Current playback position in seconds.
         :param metadata: Media metadata to send.
         :param send_artwork: Whether artwork should be rendered and sent.
+        :param defer_artwork_followup: Deliver artwork that missed the bundle
+            budget from a background task instead of awaiting it here.
         """
         metadata_checksum: str | None = None
         text_checksum: str | None = None
@@ -890,7 +895,18 @@ class AirPlayStream:
                     self._last_progress_sent = progress
 
         if artwork_url is not None:
-            await self._render_and_send_artwork(artwork_url, metadata_generation, artwork_render)
+            if defer_artwork_followup:
+                # The caller sits on the time-critical connect path: the START
+                # must not wait out a render that missed the bundle budget, so
+                # the ARTWORK delivery continues on its own task (superseding
+                # and teardown are handled by the generation and send gates).
+                self.mass.create_task(
+                    self._render_and_send_artwork(artwork_url, metadata_generation, artwork_render)
+                )
+            else:
+                await self._render_and_send_artwork(
+                    artwork_url, metadata_generation, artwork_render
+                )
 
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
@@ -1694,17 +1710,26 @@ class AirPlayStream:
             return state_media
         return metadata
 
-    async def _send_current_metadata(self, send_artwork: bool = True) -> None:
+    async def _send_current_metadata(
+        self, send_artwork: bool = True, defer_artwork_followup: bool = False
+    ) -> None:
         """
         Send metadata for the media owned by the active stream.
 
         :param send_artwork: Whether artwork should be rendered and sent.
+        :param defer_artwork_followup: Deliver artwork that missed the bundle
+            budget from a background task instead of awaiting it here.
         """
         metadata = self._current_metadata()
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
-        await self.send_metadata(progress, metadata, send_artwork=send_artwork)
+        await self.send_metadata(
+            progress,
+            metadata,
+            send_artwork=send_artwork,
+            defer_artwork_followup=defer_artwork_followup,
+        )
 
     async def _send_current_metadata_without_progress(self) -> None:
         """
