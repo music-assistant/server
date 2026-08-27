@@ -9,7 +9,7 @@ import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -2092,6 +2092,57 @@ def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
     player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
 
+@pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
+def test_clock_stall_on_a_stream_being_torn_down_stays_silent(teardown_flag: str) -> None:
+    """
+    A stream being torn down does not report its stalled clock.
+
+    It stays published until the teardown has its process off the receiver, so a
+    clock that stops answering there describes the session going away, not the
+    device. Reporting it would send the user after a speaker that is fine.
+
+    :param teardown_flag: How the stream is on its way out - handed to the
+        bridge's teardown, or already inside its own stop().
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    setattr(stream, teardown_flag, True)
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+
+    # the one-shot is still there for a stall that does describe the device
+    assert stream._clock_stall_warned is False
+
+
+@pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
+def test_native_control_failure_on_a_stream_being_torn_down_stays_silent(
+    teardown_flag: str,
+) -> None:
+    """
+    A stream being torn down does not report its lost control channel.
+
+    It stays published until the teardown has its process off the receiver, so
+    owning the player no longer means the failure describes the device: the
+    channel is going away because the session is.
+
+    :param teardown_flag: How the stream is on its way out - handed to the
+        bridge's teardown, or already inside its own stop().
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    setattr(stream, teardown_flag, True)
+
+    stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    # the one-shot is still there for a failure that does describe the device
+    assert stream._native_control_failure_warned is False
+
+
 def test_native_control_failure_before_publication_stays_reportable(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -2427,8 +2478,11 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
         operation_order.append("reader")
         return True
 
-    async def send_current_metadata(**_kwargs: Any) -> None:
+    metadata_push_kwargs: list[dict[str, Any]] = []
+
+    async def send_current_metadata(**kwargs: Any) -> None:
         operation_order.append("metadata")
+        metadata_push_kwargs.append(kwargs)
 
     with (
         patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
@@ -2440,6 +2494,12 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
     # Nothing is written before the binary has a reader on the command pipe.
     assert operation_order == ["reader", "metadata"]
+    # The connect push rides the budgeted artwork bundle (one now-playing
+    # rewrite on the device) instead of a bare replace with the artwork
+    # chasing it in a second replace moments later — while a render that
+    # misses the budget delivers from a background task instead of holding
+    # up the START behind this connect.
+    assert metadata_push_kwargs == [{"defer_artwork_followup": True}]
     # Metadata pushed synchronously on connect...
     player.on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
@@ -2781,6 +2841,15 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
 
     stream = await _run_unexpected_process_death(player)
 
+    # the member is dropped from its native sync leader directly: cmd_ungroup
+    # would resolve a linked protocol player to its visible parent and act at
+    # the group level, removing the member from its (sync)group over one dead
+    # transport
+    players_controller = player.provider.mass.players
+    players_controller.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
@@ -3012,6 +3081,100 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
     assert resends == ["ARTWORK=/cache/thumb.jpg\n"]
     assert prepare_artwork.await_count == 2
     assert stream._metadata_artwork_checksum == other_image_id
+
+
+def test_current_metadata_prefers_state_composition_for_the_same_item() -> None:
+    """
+    The pushes use core's composed media when it describes the session's item.
+
+    The session media carries the plain queue-item text while the media-updated
+    pushes send the state composition (title with version, album fallbacks);
+    sending one composition from every path keeps the metadata identity stable.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-1", title="Track")
+    state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = state_media
+
+    assert stream._current_metadata() is state_media
+
+
+def test_current_metadata_keeps_session_media_when_state_describes_another_item() -> None:
+    """A player state that has not settled on the started item yet cannot leak stale text."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-2", title="Next track")
+    stream.session = MagicMock(media=session_media)
+
+    player.state.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
+    assert stream._current_metadata() is session_media
+
+    player.state.current_media = None
+    assert stream._current_metadata() is session_media
+
+
+def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
+    """Media outside an MA queue (no queue item id) is pushed exactly as handed over."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id=None, title="Announcement")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = MagicMock(queue_item_id=None, title="Something else")
+
+    assert stream._current_metadata() is session_media
+
+
+@pytest.mark.asyncio
+async def test_deferred_artwork_followup_does_not_block_the_metadata_push() -> None:
+    """
+    A render that misses the bundle budget cannot hold up the connect-time push.
+
+    The identity goes out bare right after the budget, and the ARTWORK delivery
+    continues on a background task — the START waiting behind the connect must
+    never sit out a slow or stuck image fetch.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    release_render = asyncio.Event()
+
+    async def _slow_prepare(*_args: Any, **_kwargs: Any) -> str:
+        await release_render.wait()
+        return "/cache/thumb.jpg"
+
+    metadata = MagicMock(
+        corrected_elapsed_time=0,
+        queue_item_id="item-1",
+        title="Track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url=f"http://192.168.1.5:8095/imageproxy/{'ab' * 32}?size=512",
+    )
+
+    with (
+        patch.object(
+            stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True
+        ) as write_command,
+        patch.object(stream, "_prepare_artwork", side_effect=_slow_prepare),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_ARTWORK_RENDER_TIMEOUT", 0.05),
+    ):
+        async with asyncio.timeout(5):
+            await stream.send_metadata(0, metadata, defer_artwork_followup=True)
+
+        # the identity went out bare, without waiting for the render
+        commands = [call.args[0].decode() for call in write_command.await_args_list]
+        assert any("ACTION=SENDMETA" in command for command in commands)
+        assert not any("ARTWORKFILE=" in command for command in commands)
+        # the delivery was handed to a background task; run it to completion
+        create_task_mock = cast("MagicMock", stream.mass.create_task)
+        followup = create_task_mock.call_args.args[0]
+        release_render.set()
+        await followup
+        commands = [call.args[0].decode() for call in write_command.await_args_list]
+        assert "ARTWORK=/cache/thumb.jpg\n" in commands
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
     TaskManager,
@@ -725,14 +726,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
-        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
                 f"{player.display_name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
-        if PlayerFeature.SEEK not in player.supported_features:
+        if PlayerFeature.SEEK not in player.state.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
@@ -3296,7 +3299,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - None (=autodetect, no source explicitly set by player)
         - The player's own ID (MA queue)
         - Any active queue ID
-        - Any plugin source ID
+        - Any live AudioSource session
 
         :param player: The player to check.
         :param source: The source ID to check.
@@ -3307,6 +3310,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Player's own ID means MA queue is active
         if source == player.player_id:
+            return True
+
+        # A live AudioSource (e.g. Spotify Connect) is streamed by MA itself, so it is
+        # MA that put it on the player rather than something taking the player over
+        if self.is_live_audio_source(source):
             return True
 
         # Check if it's a known queue ID
@@ -3443,8 +3451,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 and (member := self.get_player(m))
                 and member.state.available
             ]
+            # a new leader must be able to render audio: a group with only display,
+            # visualizer or lighting members left has no playback heir and dissolves
+            has_playback_heir = any(
+                (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
+                for m in remaining_members
+            )
             active_queue = self.get_active_queue(parent_player)
-            if remaining_members and active_queue and active_queue.state != PlaybackState.IDLE:
+            if has_playback_heir and active_queue and active_queue.state != PlaybackState.IDLE:
                 # transfer leadership to a remaining member instead of dissolving
                 await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
                 return
@@ -3528,9 +3542,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     continue
                 # also accept the removal if the child player itself reports
                 # being synced to this parent - handles race conditions where the
-                # parent's group_members state is stale/not yet updated
+                # parent's group_members state is stale/not yet updated. The
+                # native synced_to is checked as well: a protocol child's state
+                # value is translated to the visible parent, which would reject
+                # a removal correctly addressed at its native sync leader.
                 child_player = self.get_player(child_player_id)
-                if child_player and child_player.state.synced_to == target_player:
+                if child_player and target_player in (
+                    child_player.state.synced_to,
+                    child_player.synced_to,
+                ):
                     final_player_ids_to_remove.append(child_player_id)
                     continue
 
@@ -3704,20 +3724,27 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
-            availability. Must not be empty.
+            availability. Must contain at least one audio-capable member.
         """
+        # non-audio members (display/visualizer/lighting) stay in the group as followers
+        # but can never inherit the queue
+        candidates = [
+            m
+            for m in remaining_members
+            if (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
+        ]
         active_domain: str | None = None
         if leader.active_output_protocol and leader.active_output_protocol != "native":
             if protocol_player := self.get_player(leader.active_output_protocol):
                 active_domain = protocol_player.provider.domain
         if active_domain:
-            for member_id in remaining_members:
+            for member_id in candidates:
                 member = self.get_player(member_id)
                 if member is None:
                     continue
                 if active_domain in member.playback_domains:
                     return member_id
-        return remaining_members[0]
+        return candidates[0]
 
     def _clear_sleep_timer(self, player: Player) -> None:
         """

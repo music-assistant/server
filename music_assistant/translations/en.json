@@ -924,6 +924,8 @@
   "provider.airplay.config_entries.buffer_depth.options.500": "500 ms",
   "provider.airplay.config_entries.buffer_depth.options.750": "750 ms",
   "provider.airplay.config_entries.companion_pairing_pin.label": "Enter the 4-digit pairing code shown on the device",
+  "provider.airplay.config_entries.enable_hires.description": "Stream 24-bit (hi-res) audio to this device when the source provides it. \nOn some devices this can cause intermittent crackling or static noises during playback, especially on wireless connections; disable this option if you hear such noises.",
+  "provider.airplay.config_entries.enable_hires.label": "24-bit audio (hi-res)",
   "provider.airplay.config_entries.encryption.description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled.",
   "provider.airplay.config_entries.encryption.label": "Enable encryption",
   "provider.airplay.config_entries.ignore_volume.description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports.",
