@@ -66,10 +66,15 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself writes away
-# from: a receiver that never answers PTP is switched to NTP, while one whose
-# native control channel conclusively fails is switched to compatibility mode.
+# capability; Automatic is the default and the setting is only ever written by
+# the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Provider marker that the compatibility-mode pins were reset once. Earlier
+# releases switched a player here themselves when its native control channel
+# failed (usually a network dropout), pinning it to a lane many devices reject
+# outright, so those machine-written values are returned to Automatic a single
+# time; a deliberate choice can simply be made again.
+CONF_COMPAT_PINS_REVIEWED: Final[str] = "compat_pins_reviewed"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
 STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
