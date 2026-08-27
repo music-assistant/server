@@ -3535,9 +3535,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     continue
                 # also accept the removal if the child player itself reports
                 # being synced to this parent - handles race conditions where the
-                # parent's group_members state is stale/not yet updated
+                # parent's group_members state is stale/not yet updated. The
+                # native synced_to is checked as well: a protocol child's state
+                # value is translated to the visible parent, which would reject
+                # a removal correctly addressed at its native sync leader.
                 child_player = self.get_player(child_player_id)
-                if child_player and child_player.state.synced_to == target_player:
+                if child_player and target_player in (
+                    child_player.state.synced_to,
+                    child_player.synced_to,
+                ):
                     final_player_ids_to_remove.append(child_player_id)
                     continue
 
