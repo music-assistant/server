@@ -512,7 +512,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             "Filling dynamic tracks for queue %s",
             queue_id,
         )
-        queue_data = self._queue_data[queue_id]
+        if (queue_data := self._queue_data.get(queue_id)) is None:
+            # the delayed refill timer can fire after the queue was removed
+            return
         queue = queue_data.queue
         # restore the queue owner's user context so provider filters are respected during this
         # background refill (dynamic-playlist generation honours the current user)
@@ -527,9 +529,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
         # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while tracks were fetched
+            return
         # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
         played = 0 if queue.current_index is None else queue.current_index + 1
-        unplayed = max(len(self._queue_data[queue_id].items) - played, 0)
+        unplayed = max(len(queue_data.items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
         queue_items = [build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if x.available]
         if not queue_items:
@@ -537,7 +542,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_data[queue_id].items) + 1,
+            insert_at_index=len(queue_data.items) + 1,
         )
 
     async def _fill_autoplay_tracks(self, queue_id: str) -> None:
@@ -565,6 +570,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while the user context was restored
+            return
         if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
             await self._fill_autoplay_next_in_series(queue_id, last_item)
             return
@@ -606,6 +614,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             item.media_item and item.media_item.uri == next_item.uri for item in queue_data.items
         ):
             # already queued (e.g. the user added it themselves), so there is nothing to do
+            return
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while the successor was fetched
             return
         await self.load(
             queue_id,
@@ -667,10 +678,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while tracks were fetched
+            return
         await self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_data[queue_id].items) + 1,
+            insert_at_index=len(queue_data.items) + 1,
         )
 
     @handle_play_action

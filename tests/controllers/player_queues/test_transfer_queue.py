@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import AlbumType, PlaybackState
+import pytest
+from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Track
 from music_assistant_models.player_queue import PlayerQueue
 
@@ -61,6 +63,7 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     recurse back into transfer_queue, so only the target may be ungrouped.
     """
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = "leaderA"
     target_player.state.active_group = None
     fake = _fake_controller("src", target_player)
@@ -72,9 +75,31 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     fake.mass.players.cmd_ungroup.assert_awaited_once_with("memberB")
 
 
+async def test_transfer_queue_refuses_non_audio_target() -> None:
+    """
+    A target that can never render audio is refused before anything is touched.
+
+    The source queue must survive intact: no stop, no clear, no item handover.
+    """
+    target_player = MagicMock()
+    target_player.state.type = PlayerType.VISUALIZER
+    fake = _fake_controller("src", target_player)
+
+    with pytest.raises(PlayerCommandFailed):
+        await PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "viz", auto_play=False
+        )
+
+    fake.stop.assert_not_awaited()
+    fake._clear.assert_not_called()
+    fake.load.assert_not_awaited()
+    fake.mass.players.cmd_ungroup.assert_not_awaited()
+
+
 async def test_transfer_queue_group_member_ungroups_group() -> None:
     """Transferring onto a virtual-group member releases the group player itself."""
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
     target_player.state.active_group = "groupP"
     fake = _fake_controller("src", target_player)
@@ -134,6 +159,7 @@ def _shuffle_controller(
     fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
     target_player.state.active_group = None
     fake.mass.players.get_player = MagicMock(return_value=target_player)
