@@ -38,6 +38,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
@@ -1985,8 +1986,8 @@ class TestExternalPowerOffUnsync:
 
         controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
 
-    def test_power_off_ungrouped_player_is_noop(self, mock_mass: MagicMock) -> None:
-        """Powering off a player that is not in any group does nothing."""
+    def test_power_off_ungrouped_player_is_not_ungrouped(self, mock_mass: MagicMock) -> None:
+        """Powering off a player that is not in any group has nothing to ungroup."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "p1", "Player")
@@ -2001,6 +2002,176 @@ class TestExternalPowerOffUnsync:
         controller.signal_player_state_update(player, {"powered": (True, False)})
 
         controller.cmd_ungroup.assert_not_called()
+        # it was not playing either, so there is no queue to end
+        assert _scheduled_queue_stops(mock_mass) == []
+
+
+def _scheduled_queue_stops(mock_mass: MagicMock) -> list[Any]:
+    """Return the ``call_later`` calls that scheduled an external power off queue stop."""
+    return [
+        scheduled
+        for scheduled in mock_mass.call_later.call_args_list
+        if str(scheduled.kwargs.get("task_id", "")).startswith("external_power_off_stop_")
+    ]
+
+
+class TestExternalPowerOffEndsTheQueue:
+    """
+    Tests for ending the queue when a player is powered off outside of MA.
+
+    Switching a speaker off with its own remote or flipping its linked power control
+    directly never reaches the MA power command, so the queue session it was playing
+    survived: its preloading kept pulling audio and a provider serving a live session
+    (Spotify) stayed tethered for another track or two.
+    """
+
+    @staticmethod
+    def _standalone_playing_player(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
+        """
+        Build an ungrouped player that is powered on and playing its own queue.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :return: The controller, the player and the stubbed queue stop.
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "p1", "Player")
+        # advertise POWER so the player resolves to native power control and its
+        # reported power state is the one that flips
+        player._attr_supported_features.add(PlayerFeature.POWER)
+        player._attr_powered = True
+        player._attr_playback_state = PlaybackState.PLAYING
+        controller._players = {"p1": player}
+        mock_mass.players = controller
+        player.set_initialized()
+        player._cache.clear()
+        player.update_state(signal_event=False)
+        assert player.state.powered is True
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+        mock_mass.player_queues.get = MagicMock(return_value=_stub_queue("p1"))
+        queue_stop = AsyncMock()
+        mock_mass.player_queues._handle_stop = queue_stop
+        return controller, player, queue_stop
+
+    def test_power_off_schedules_the_queue_stop(self, mock_mass: MagicMock) -> None:
+        """An on->off power transition on a playing player ends its queue."""
+        controller, player, _queue_stop = self._standalone_playing_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        assert len(scheduled := _scheduled_queue_stops(mock_mass)) == 1
+        assert scheduled[0].args == (
+            players_controller.EXTERNAL_POWER_OFF_STOP_DELAY,
+            controller._stop_queue_on_external_power_off,
+            "p1",
+        )
+
+    def test_a_device_reporting_its_stop_along_with_the_power_off_is_covered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that powers itself off reports idle in the same update."""
+        controller, player, _queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_playback_state = PlaybackState.IDLE
+        player.update_state(signal_event=False)
+
+        controller.signal_player_state_update(
+            player,
+            {
+                "powered": (True, False),
+                "playback_state": (PlaybackState.PLAYING, PlaybackState.IDLE),
+            },
+        )
+
+        assert len(_scheduled_queue_stops(mock_mass)) == 1
+
+    def test_power_off_of_an_idle_player_is_ignored(self, mock_mass: MagicMock) -> None:
+        """
+        A player that was already idle has no queue to end.
+
+        This is also what keeps an MA power off from ending the queue twice: it stops
+        the player before it powers it off, so the power change finds it idle.
+        """
+        controller, player, _queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_playback_state = PlaybackState.IDLE
+        player.update_state(signal_event=False)
+
+        controller.signal_player_state_update(player, {"powered": (True, False)})
+
+        assert _scheduled_queue_stops(mock_mass) == []
+
+    def test_power_on_does_not_end_the_queue(self, mock_mass: MagicMock) -> None:
+        """An off->on power transition leaves the queue alone."""
+        controller, player, _queue_stop = self._standalone_playing_player(mock_mass)
+
+        controller.signal_player_state_update(player, {"powered": (False, True)})
+
+        assert _scheduled_queue_stops(mock_mass) == []
+
+    def test_a_grouped_player_is_ungrouped_instead(self, mock_mass: MagicMock) -> None:
+        """A member of a group is detached from it, which ends the group's queue."""
+        controller, _group_player, member = _group_with_member(mock_mass)
+        member._attr_playback_state = PlaybackState.PLAYING
+        member.update_state(signal_event=False, force_update=True)
+        assert member.state.active_group == "group"
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+
+        controller.signal_player_state_update(member, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_called_once_with("member")
+        assert _scheduled_queue_stops(mock_mass) == []
+
+    @pytest.mark.asyncio
+    async def test_the_scheduled_stop_ends_the_players_own_queue(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The player is still off when the wait is over, so its queue is ended."""
+        controller, player, queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_powered = False
+        player.update_state(signal_event=False)
+
+        await controller._stop_queue_on_external_power_off("p1")
+
+        queue_stop.assert_awaited_once_with("p1")
+
+    @pytest.mark.asyncio
+    async def test_power_that_comes_straight_back_leaves_the_queue_playing(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A power control reporting its entity as briefly unavailable must not stop the music."""
+        controller, _player, queue_stop = self._standalone_playing_player(mock_mass)
+
+        await controller._stop_queue_on_external_power_off("p1")
+
+        queue_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_another_players_queue_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player hearing someone else's audio must not end that queue."""
+        controller, player, queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_powered = False
+        player._attr_active_source = "other_player"
+        player.update_state(signal_event=False)
+        mock_mass.player_queues.get = MagicMock(return_value=_stub_queue("other_player"))
+
+        await controller._stop_queue_on_external_power_off("p1")
+
+        queue_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_player_is_handled_quietly(self, mock_mass: MagicMock) -> None:
+        """A player that went unavailable along with its power is not worth a warning."""
+        controller, player, queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_powered = False
+        player.update_state(signal_event=False)
+        queue_stop.side_effect = PlayerUnavailableError("Player p1 is not available")
+
+        await controller._stop_queue_on_external_power_off("p1")
+
+        queue_stop.assert_awaited_once_with("p1")
 
 
 class TestPlayMediaOverride:
