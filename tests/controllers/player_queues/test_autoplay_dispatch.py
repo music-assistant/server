@@ -341,13 +341,20 @@ async def test_autoplay_disabled_appends_nothing() -> None:
     loader._fill_autoplay_next_in_series.assert_not_awaited()
 
 
-async def test_autoplay_dispatch_bails_when_the_queue_is_removed_mid_lookup() -> None:
-    """A queue removed while the owner's user context is restored gets no refill."""
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_autoplay_dispatch_bails_when_the_queue_is_removed_mid_lookup(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered fresh) mid-lookup gets no refill."""
     loader = _loader(_queue_item(_track()), seeds=[_track()])
     loader._queue_data["q1"].userid = "u1"
 
     async def _lookup_and_remove_queue(*_args: Any, **_kwargs: Any) -> Any:
         loader._queue_data.pop("q1")
+        if reregistered:
+            loader._queue_data["q1"] = SimpleNamespace(
+                items=[], enqueued_media_items=[], userid="u1"
+            )
         return MagicMock()
 
     loader.mass.webserver.auth.get_user = AsyncMock(side_effect=_lookup_and_remove_queue)
@@ -356,6 +363,34 @@ async def test_autoplay_dispatch_bails_when_the_queue_is_removed_mid_lookup() ->
 
     loader._fill_autoplay_music_tracks.assert_not_awaited()
     loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_dynamic_refill_bails_when_the_queue_is_removed(reregistered: bool) -> None:
+    """A dynamic refill firing for a removed (or re-registered) queue loads nothing."""
+    loader = MagicMock()
+    loader.load = AsyncMock()
+    if reregistered:
+        loader._queue_data = {
+            "q1": SimpleNamespace(userid=None, queue=SimpleNamespace(current_index=None))
+        }
+
+        async def _fill_and_replace_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+            loader._queue_data["q1"] = SimpleNamespace(
+                userid=None, queue=SimpleNamespace(current_index=None), items=[]
+            )
+            return [_track()]
+
+        loader._managed_pool.fill = AsyncMock(side_effect=_fill_and_replace_queue)
+    else:
+        # the delayed refill timer fires after the queue was already removed
+        loader._queue_data = {}
+
+    await QueueLoaderMixin._fill_dynamic_tracks(loader, "q1")
+
+    loader.load.assert_not_called()
+    if not reregistered:
+        loader._managed_pool.fill.assert_not_called()
 
 
 async def test_music_refill_without_seeds_appends_nothing() -> None:
@@ -504,3 +539,29 @@ def test_finished_track_queue_is_settled_on_stop() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _stopped_queue(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_settle_task_bails_when_the_queue_is_removed_while_waiting(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered) during the settle delay is left alone entirely."""
+    tracker = _tracker()
+    prev_state, new_state = _stop_states(
+        SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
+    )
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _stopped_queue(), prev_state, new_state)
+    settle_coro = tracker.mass.create_task.call_args.args[0]
+
+    tracker._queue_data.pop("q1")
+    if reregistered:
+        tracker._queue_data["q1"] = SimpleNamespace(flow_mode_stream_log=[])
+    with patch(
+        "music_assistant.controllers.player_queues.playback_tracker.asyncio.sleep",
+        AsyncMock(),
+    ):
+        await settle_coro
+
+    tracker.play_index.assert_not_called()
+    tracker.load.assert_not_called()
+    tracker._finish_queue.assert_not_called()
