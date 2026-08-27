@@ -341,6 +341,23 @@ async def test_autoplay_disabled_appends_nothing() -> None:
     loader._fill_autoplay_next_in_series.assert_not_awaited()
 
 
+async def test_autoplay_dispatch_bails_when_the_queue_is_removed_mid_lookup() -> None:
+    """A queue removed while the owner's user context is restored gets no refill."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._queue_data["q1"].userid = "u1"
+
+    async def _lookup_and_remove_queue(*_args: Any, **_kwargs: Any) -> Any:
+        loader._queue_data.pop("q1")
+        return MagicMock()
+
+    loader.mass.webserver.auth.get_user = AsyncMock(side_effect=_lookup_and_remove_queue)
+
+    await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+
+    loader._fill_autoplay_music_tracks.assert_not_awaited()
+    loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
 async def test_music_refill_without_seeds_appends_nothing() -> None:
     """The music refill needs an enqueued item as its seed."""
     loader = _loader(_queue_item(_track()))
