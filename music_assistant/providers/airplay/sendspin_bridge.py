@@ -1303,20 +1303,33 @@ class SendspinAirPlayBridge:
             with suppress(Exception):
                 await prev_cleanup
 
+        # Cancelled before the spawn lock is taken: a start task holding it only
+        # lets go once it unwinds, so waiting for the lock first would leave
+        # nobody to ask it to. Neither cancel awaits, so the lock is claimed
+        # ahead of any start that arrives from here on.
         if stream_start_task and not stream_start_task.done():
             stream_start_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await stream_start_task
         if writer_task and not writer_task.done():
             writer_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await writer_task
-        if stream:
-            with suppress(Exception):
-                await stream.stop(force=True)
-            # Restore the IDLE reset that stop() dropped because the stream was detached first
-            if self.airplay_player.stream is None:
-                self.airplay_player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
+        # The player's stream reference was dropped when this teardown was
+        # detached, but the process is still on the receiver until stop() below
+        # returns. Held so a native start cannot read that empty reference and
+        # pair a second cli process with a receiver this one has not let go of.
+        async with self.airplay_player.stream_spawn_lock:
+            if stream_start_task:
+                with suppress(asyncio.CancelledError, Exception):
+                    await stream_start_task
+            if writer_task:
+                with suppress(asyncio.CancelledError, Exception):
+                    await writer_task
+            if stream:
+                with suppress(Exception):
+                    await stream.stop(force=True)
+                # Restore the IDLE reset that stop() dropped because the stream was detached first
+                if self.airplay_player.stream is None:
+                    self.airplay_player.set_state_from_stream(
+                        state=PlaybackState.IDLE, elapsed_time=0
+                    )
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""

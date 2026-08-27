@@ -118,8 +118,8 @@ class AirPlayPlayer(Player):
         # moment either decides to displace what is published until it publishes
         # its own stream. Two processes on one receiver reset each other's RTSP
         # channel and both sessions die. Always taken INSIDE self._lock, never
-        # around it: an explicit stop holds self._lock while it tears a stream
-        # down, and the reverse order would deadlock against it.
+        # around it: play_media holds self._lock across the whole session start,
+        # which takes this lock for every member.
         self.stream_spawn_lock = asyncio.Lock()
         self.last_command_sent = 0.0
         self._volume_reports_ignored_until = 0.0
