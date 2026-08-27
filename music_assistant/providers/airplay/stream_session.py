@@ -235,8 +235,8 @@ class AirPlayStreamSession:
         Return whether this live session can absorb a new play_media warm.
 
         A warm replacement needs the same member set, the same session PCM
-        format and a connected stream on every member; anything else takes the
-        cold path.
+        format and a connected stream still taking audio on every member;
+        anything else takes the cold path.
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
@@ -245,7 +245,7 @@ class AirPlayStreamSession:
         if pcm_format != self.pcm_format:
             return False
         return all(
-            p.stream is not None and p.stream.running and p.stream.connected
+            p.stream is not None and p.stream.accepts_audio and p.stream.connected
             for p in self.sync_clients
         )
 
@@ -313,12 +313,12 @@ class AirPlayStreamSession:
 
         The next play_media (resume or seek) replaces the media warm over the
         live connections — the same coordinated flush-refill as seek/next.
-        Returns False when any member lacks a running, connected stream or its
-        standby command cannot be delivered so the caller can fall back to a
-        full stop.
+        Returns False when any member lacks a connected stream that still takes
+        audio, or its standby command cannot be delivered, so the caller can fall
+        back to a full stop.
         """
         if not all(
-            p.stream is not None and p.stream.running and p.stream.connected
+            p.stream is not None and p.stream.accepts_audio and p.stream.connected
             for p in self.sync_clients
         ):
             return False
@@ -890,10 +890,18 @@ class AirPlayStreamSession:
                 self.prov.logger.warning(
                     "Stream ended prematurely due to error - notifying players"
                 )
+        # A source that ends is not the same thing as a stream that is over: a
+        # seek or a next-track ends this one while the queue is already loading
+        # the stream that takes over. Closing the binary's stdin there would end
+        # the stream for good - it cannot be reopened - and cost that replacement
+        # a full cold restart. Everywhere else the EOF is what ends playback: the
+        # binary plays out, reports eof and exits, and only that makes the player
+        # report idle, which a queue waiting to restart its flow depends on.
+        end_of_stream = not self._replacement_expected()
         async with self._lock:
             await asyncio.gather(
                 *[
-                    self._write_eof_to_player(x)
+                    self._retire_player_ffmpeg(x, end_of_stream=end_of_stream)
                     for x in self.sync_clients
                     if x.stream and x.stream.running
                 ],
@@ -976,13 +984,51 @@ class AirPlayStreamSession:
                 return
             await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
 
-    async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
-        """Write EOF to a specific player."""
-        if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
-            await ffmpeg.write_eof()
-            await ffmpeg.wait_with_timeout(30)
-            if airplay_player.stream:
-                await airplay_player.stream.write_audio_eof()
+    def _replacement_expected(self) -> bool:
+        """
+        Return whether the queue is loading a stream that takes this session over.
+
+        A seek or a next-track starts the new stream while the old one is still
+        playing: the queue rotates its stream session at the beginning of that,
+        well before the play_media carrying it arrives, and the flow stream it
+        supersedes ends as soon as it notices. A flow that ends on its own -
+        the queue played out, the source failed, or it broke off to be restarted
+        once the player reports idle - leaves the queue between transitions.
+        """
+        queue_id = self.media.source_id
+        session_id = get_media_session_id(self.media)
+        if not queue_id or not session_id:
+            return False
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        return (
+            queue_data is not None
+            and queue_data.transitioning
+            and queue_data.session_id != session_id
+        )
+
+    async def _retire_player_ffmpeg(
+        self, airplay_player: AirPlayPlayer, *, end_of_stream: bool
+    ) -> None:
+        """
+        Retire a member's ffmpeg now that the source feeding it has ended.
+
+        :param airplay_player: The member whose ffmpeg is retired.
+        :param end_of_stream: Whether this ends the stream for good. The audio the
+            ffmpeg still holds is then handed over and the binary's stdin closed
+            behind it, which makes it play out, report eof and exit. A session a
+            replacement is coming for drops that audio instead: the flush the
+            replacement opens with discards it anyway, and no byte may reach the
+            binary between the old ffmpeg dying and that flush.
+        """
+        if not (ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None)):
+            return
+        if not end_of_stream:
+            await ffmpeg.kill()
+            return
+        await ffmpeg.write_eof()
+        await ffmpeg.wait_with_timeout(30)
+        if airplay_player.stream:
+            await airplay_player.stream.write_audio_eof()
 
     async def _member_start_step(
         self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
