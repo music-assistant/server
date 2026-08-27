@@ -58,20 +58,30 @@ async def test_stop_notifies_bridges_between_group_stop_and_session_cancel() -> 
 
     await SendspinPlayer.stop(mock)
 
-    assert order == ["group_stop", "notify", "cancel"]
-    mock._notify_bridges_explicit_stop.assert_called_once_with(mock.api.group.clients)
+    # the trailing notify only exists for the failed-stop path; here it is a no-op
+    assert order == ["group_stop", "notify", "cancel", "notify"]
+    mock._notify_bridges_explicit_stop.assert_called_with(mock.api.group.clients)
 
 
 async def test_stop_notifies_bridges_even_when_the_group_stop_fails() -> None:
-    """A failing group stop must not leave a bridge playing out its buffer."""
+    """
+    A failing group stop must not leave a bridge playing out its buffer.
+
+    A group stop that raises before ending the stream leaves the bridges still
+    streaming, so the notify preceding the cancel does not reach them. The
+    session cancel is what ends the stream on that path, and the notify that
+    matters is the one delivered after it.
+    """
     mock = _player_mock()
+    order: list[str] = []
     mock.api.group.stop = AsyncMock(side_effect=RuntimeError("transport gone"))
+    mock._notify_bridges_explicit_stop = MagicMock(side_effect=lambda _: order.append("notify"))
+    mock.playback_session.cancel.side_effect = lambda _reason: order.append("cancel")
 
     with pytest.raises(RuntimeError):
         await SendspinPlayer.stop(mock)
 
-    mock._notify_bridges_explicit_stop.assert_called_once()
-    mock.playback_session.cancel.assert_awaited_once_with("stop command")
+    assert order == ["notify", "cancel", "notify"]
 
 
 async def test_removing_a_member_notifies_its_bridge_after_the_removal() -> None:

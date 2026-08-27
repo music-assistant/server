@@ -1406,6 +1406,11 @@ class SendspinPlayer(SendspinBasePlayer):
             # buffer. Synchronous, so nothing suspends before the cancel below.
             self._notify_bridges_explicit_stop(self.api.group.clients)
             await self.playback_session.cancel("stop command")
+            # A group stop that raised before ending the stream left the notify
+            # above without effect (the bridges still saw themselves streaming).
+            # The cancel is what ends the stream on that path, so deliver the
+            # notify again; bridges already torn down ignore it.
+            self._notify_bridges_explicit_stop(self.api.group.clients)
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
