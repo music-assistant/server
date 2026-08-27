@@ -20,7 +20,6 @@ import numpy as np
 import torch
 import torchaudio.transforms as T
 import yaml
-from huggingface_hub import try_to_load_from_cache
 from huggingface_hub.file_download import hf_hub_download
 from transformers import AutoTokenizer, logging
 
@@ -73,33 +72,12 @@ class CLAPWrapper:
 
         # Automatically download model if not provided
         if not model_fp:
-            model_fp = self.download_weights(version)
+            model_fp = hf_hub_download(self.model_repo, self.model_name[version])
 
         self.model_fp = model_fp
         self.use_cuda = use_cuda
         # MA MOD: removed clapcap branch — only the 2023 audio model is supported.
         self.clap, self.tokenizer, self.args = self.load_clap()
-
-    # MA MOD: the checkpoint fetch is exposed on its own so the provider can download
-    # the weights without building a model — that download is unbounded and must not
-    # run inside handle_async_init's timeout. __init__ routes through it too, so the
-    # repo/filename live in one place; a call for an already-cached file is a cache hit.
-    @classmethod
-    def download_weights(cls, version: str = "2023") -> str:
-        r"""Download the CLAP checkpoint into the HuggingFace cache and return its path"""
-        return hf_hub_download(cls.model_repo, cls.model_name[version])
-
-    # MA MOD: purely local lookup, so a checkpoint that is already on disk costs nothing
-    # and needs no network. hf_hub_download revalidates the entry tag over the network
-    # even on a cache hit, which would otherwise put a request on the setup path every
-    # time the provider loads. The weights file is a fixed release artifact, so pinning
-    # whatever revision is cached is what we want.
-    @classmethod
-    def cached_weights(cls, version: str = "2023") -> str | None:
-        r"""Return the cached CLAP checkpoint path, or None when it is not cached"""
-        # returns a _CACHED_NO_EXIST sentinel (not a str) for a known-missing file
-        cached = try_to_load_from_cache(cls.model_repo, cls.model_name[version])
-        return cached if isinstance(cached, str) else None
 
     def read_config_as_args(self, config_path, args=None, is_config_str=False):
         return_dict = {}

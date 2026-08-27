@@ -86,16 +86,11 @@ RECOMMENDED_CPU_CORES: int = 4
 
 MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
 
-# How long setup waits for the model to be ready before it hands back to MA.
-# Generous, because adding a provider has no retry behind it: add_provider_config drops
-# the config again when the load raises, so an expiring grace costs the user a second
-# attempt. It does not have to cover the whole job — the preparation runs as one tracked,
-# deduplicated task that outlives the attempt, so whatever it does not cover is picked up
-# by the next attempt joining that same task rather than starting over.
+# How long setup waits for the model before handing back to MA. Generous, because
+# adding a provider has no retry behind it — add_provider_config drops the config again
+# when the load raises — but it does not have to cover the whole first-run download: the
+# load outlives the attempt, so the next one joins it rather than starting over.
 MODEL_SETUP_GRACE_SECONDS: int = 200
-
-# The CLAP model, its text embeddings, and the scalar order the embeddings are in.
-type _ClapModels = tuple[Any, Any, list[tuple[str, tuple[str, str]]]]
 
 
 @dataclass
@@ -321,10 +316,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-        # Checkpoint path resolved once by _fetch_model_assets. Passing it to CLAPWrapper
-        # keeps every later (re)load local: hf_hub_download revalidates the entry tag over
-        # the network even on a cache hit, and models are reloaded after each idle unload.
-        self._clap_model_fp: str | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -359,10 +350,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         AudioAnalysisController honors when scheduling work. While idle the model is
         later unloaded and reloaded on demand.
 
-        :raises SetupFailedError: When the checkpoint is still downloading, or the fetch
-            failed. The download survives either way, so a reload (which MA retries on its
-            own) or a fresh setup picks up where this attempt left off rather than
-            starting the transfer again.
+        :raises SetupFailedError: When the model is not ready within the grace period, or
+            loading it failed. The load carries on either way, so the next attempt joins
+            it rather than downloading the checkpoint again.
         """
         await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -372,7 +362,28 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        await self._ensure_models_ready()
+        # The first load downloads a ~690MB checkpoint, which is what blows the setup
+        # bound. Run it as a tracked task so it outlives an attempt that gives up:
+        # cancelling would not stop it anyway (it sits in a worker thread), and the
+        # task_id makes the next attempt join the same load rather than start a second
+        # download and a second model build alongside it.
+        task = self.mass.create_task(
+            asyncio.to_thread(self._load_clap),
+            task_id=f"sonic_analysis.model_setup.{self.instance_id}",
+        )
+        try:
+            # The result has to come back through the task: MA builds a fresh provider
+            # instance per load attempt, so whoever joins here is not who started it.
+            models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
+        except TimeoutError:
+            raise SetupFailedError(
+                "The Sonic Analysis model is still downloading. "
+                "It keeps running in the background; Sonic Analysis starts as soon as "
+                "it is ready.",
+                translation_key="model_assets_downloading",
+                translation_owner=self.translation_owner,
+            ) from None
+        self._clap_model, self._clap_text_embeddings, self._clap_prompt_order = models
         self._models_loaded = True
 
     async def cancel(self, session_id: str) -> None:
@@ -422,118 +433,32 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
 
-    async def _ensure_models_ready(self) -> None:
-        """
-        Bring the CLAP model into memory, waiting no longer than the grace period.
-
-        :raises SetupFailedError: When the model is not ready in time, or preparing it
-            failed. The preparation is deliberately left running in both cases, so a
-            later attempt joins it instead of starting over.
-        """
-        # The preparation has to survive this coroutine: it is the 300s setup bound that
-        # it blows, so cancelling it on our way out would redo the whole job on every
-        # retry. Cancelling would not even work — the download and the model build both
-        # sit in worker threads. mass.create_task tracks it for shutdown and retrieves
-        # its exception; the task_id makes a later setup attempt re-attach instead.
-        # Keep _prepare_models a named coroutine: a failed task is logged by its target,
-        # and "_prepare_models" beats a bare to_thread coroutine object.
-        task = self.mass.create_task(
-            self._prepare_models(),
-            task_id=f"sonic_analysis.model_setup.{self.instance_id}",
-            abort_existing=False,
-        )
-        try:
-            # The result has to come back through the task: MA builds a fresh provider
-            # instance per load attempt, so an attempt that re-attaches here is not the
-            # instance that started the work and cannot be handed anything directly.
-            model_fp, models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
-        except TimeoutError:
-            if task.done():
-                # A timeout the preparation itself raised, not our grace running out.
-                # Only reachable if one ever escapes the conversion in the fetch, but
-                # relabelling it as "still downloading" would bury a real failure.
-                raise
-            raise SetupFailedError(
-                "The Sonic Analysis model is still downloading. "
-                "It keeps running in the background; Sonic Analysis starts as soon as "
-                "it is ready.",
-                translation_key="model_assets_downloading",
-                translation_owner=self.translation_owner,
-            ) from None
-        self._clap_model_fp = model_fp
-        self._clap_model, self._clap_text_embeddings, self._clap_prompt_order = models
-
-    async def _prepare_models(self) -> tuple[str, _ClapModels]:
-        """
-        Download the CLAP checkpoint if it is missing, then build the model around it.
-
-        Both halves belong to one task so a setup attempt that gives up cannot leave a
-        later one free to start a second download — or a second model build, which is
-        the part that costs a full model's worth of memory on a host that has little.
-
-        :returns: The checkpoint path, and the loaded model, text embeddings and
-            prompt ordering.
-        :raises SetupFailedError: When the checkpoint could not be fetched, or the
-            shipped prompt embeddings are unusable.
-        """
-        model_fp: str = await asyncio.to_thread(self._download_clap_weights)
-        self.logger.debug("CLAP checkpoint ready at %s", model_fp)
-        return model_fp, await asyncio.to_thread(self._load_clap, model_fp)
-
     async def _load_models(self) -> None:
         """Load the CLAP model and prompt embeddings into memory."""
         (
             self._clap_model,
             self._clap_text_embeddings,
             self._clap_prompt_order,
-        ) = await asyncio.to_thread(self._load_clap, self._clap_model_fp)
-
-    def _download_clap_weights(self) -> str:
-        """
-        Fetch the CLAP checkpoint into the HuggingFace cache and return its path.
-
-        Only ever call this off the event loop: importing the vendored wrapper pulls in
-        torch and transformers, and the download itself is long and uninterruptible.
-
-        :raises SetupFailedError: When the checkpoint could not be downloaded.
-        """
-        import httpx  # noqa: PLC0415
-        from huggingface_hub.errors import XetDownloadError  # noqa: PLC0415
-
-        from .vendored_clap import CLAP  # noqa: PLC0415
-
-        try:
-            # A checkpoint already on disk resolves without touching the network, so a
-            # setup attempt that follows a completed download costs nothing and works
-            # offline. Only a genuinely absent checkpoint reaches the transfer.
-            return CLAP.cached_weights() or CLAP.download_weights()
-        except (OSError, httpx.HTTPError, XetDownloadError) as err:
-            # The hub reports most transport, HTTP and disk failures as OSError, but it
-            # streams the body through httpx and re-raises its transport errors verbatim
-            # once its own retries are spent. XetDownloadError is defensive: the pinned
-            # hub never raises it, and its Xet backend surfaces failures from a Rust
-            # extension whose exception types are not ours to name.
-            # Only a typed MA error marks the failure retryable, so a flaky link recovers.
-            raise SetupFailedError(
-                f"Failed to download the Sonic Analysis model: {err}",
-                translation_key="model_assets_download_failed",
-                translation_owner=self.translation_owner,
-            ) from err
+        ) = await asyncio.to_thread(self._load_clap)
 
     def _free_models(self) -> None:
         """Release the CLAP model and prompt embeddings."""
         self._clap_model = None
         self._clap_text_embeddings = None
 
-    def _load_clap(self, model_fp: str | None) -> _ClapModels:
+    def _load_clap(
+        self,
+    ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
         """
         Load and return the CLAP model, text embeddings, and prompt ordering.
 
-        :param model_fp: Path of the checkpoint to load. None makes the wrapper resolve
-            it itself, which costs a network round trip.
-        :raises SetupFailedError: When the shipped prompt embeddings are missing or no
-            longer match the prompts they were computed from.
+        Downloads the checkpoint on first use, so only ever call this off the event loop.
+
+        :raises SetupFailedError: When the checkpoint could not be downloaded, or the
+            shipped prompt embeddings are missing or no longer match the prompts they
+            were computed from.
         """
+        import httpx  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
         from .vendored_clap import CLAP  # noqa: PLC0415
@@ -550,7 +475,18 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 translation_key="prompt_embeddings_unavailable",
                 translation_owner=self.translation_owner,
             )
-        model = CLAP(model_fp=model_fp, version="2023", use_cuda=False, text_enabled=False)
+        try:
+            model = CLAP(version="2023", use_cuda=False, text_enabled=False)
+        except (OSError, httpx.HTTPError) as err:
+            # The hub reports most transport, HTTP and disk failures as OSError, but it
+            # streams the body through httpx and re-raises its transport errors verbatim
+            # once its own retries are spent. Only a typed MA error is retried, so
+            # without this a flaky link leaves the provider dead until a manual reload.
+            raise SetupFailedError(
+                f"Failed to download the Sonic Analysis model: {err}",
+                translation_key="model_assets_download_failed",
+                translation_owner=self.translation_owner,
+            ) from err
         self.logger.info("CLAP model loaded; %d prompt pairs ready", len(prompt_order))
         return model, torch.from_numpy(cached), prompt_order
 
