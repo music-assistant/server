@@ -1,4 +1,4 @@
-
+"""Tests for Linn/OpenHome Media helpers."""
 import defusedxml.ElementTree as DefusedET
 import pytest
 from async_upnp_client.profiles.ohmedia import TransportStateAllowedValues
@@ -11,7 +11,7 @@ class TestIsValidUuid:
     """Test UUID validation."""
 
     @pytest.mark.parametrize(
-        "uuid, expected",
+        ("uuid, expected"),
         [
             ("uuid:00000000-1234-4321-ABCD-56789ABCDEF0", True),
             ("00000000-1234-4321-ABCD-56789ABCDEF0", True),
@@ -22,7 +22,7 @@ class TestIsValidUuid:
             (None, False),
         ],
     )
-    def test_is_valid_uuid(self, uuid, expected):
+    def test_is_valid_uuid(self, uuid, expected) -> None:
         """Test valid UUID detection."""
         actual = OpenHomePlayer.is_valid_uuid(uuid)
         assert actual is expected
@@ -32,13 +32,13 @@ class TestMacFromUuid:
     """Test MAC address extraction from UUID."""
 
     @pytest.mark.parametrize(
-        "uuid, expected",
+        ("uuid, expected"),
         [
             ("uuid:00000000-1234-4321-ABCD-56789ABCDEF0", "12:34:43:21:AB:CD"),
             ("00000000-1234-4321-ABCD-56789ABCDEF0", "12:34:43:21:AB:CD"),
         ],
     )
-    def test_get_mac_from_uuid(self, uuid, expected):
+    def test_get_mac_from_uuid(self, uuid, expected) -> None:
         """Test MAC extraction from valid UUID format."""
         actual = OpenHomePlayer.get_mac_from_uuid(uuid)
         assert actual == expected
@@ -48,7 +48,7 @@ class TestTransportStateConversion:
     """Test transport state to playback state mapping."""
 
     @pytest.mark.parametrize(
-        "transport_state,expected_playback",
+        ("transport_state,expected_playback"),
         [
             (TransportStateAllowedValues.PLAYING, PlaybackState.PLAYING),
             (TransportStateAllowedValues.PAUSED, PlaybackState.PAUSED),
@@ -59,7 +59,7 @@ class TestTransportStateConversion:
             ("UnknownState", PlaybackState.UNKNOWN),
         ],
     )
-    def test_transport_state_to_playback_state(self, transport_state, expected_playback):
+    def test_transport_state_to_playback_state(self, transport_state, expected_playback) -> None:
         """Test conversion from device transport state to MA playback state."""
         result = OpenHomePlayer._transport_state_to_playback_state(transport_state)
         assert result == expected_playback
@@ -68,15 +68,15 @@ class TestTransportStateConversion:
 class TestSourceList:
     """Tests for _source_list_from_source_xml() XML parsing and filtering."""
 
-    def test_none(self):
+    def test_none(self) -> None:
         """Test None returns empty list."""
         assert OpenHomePlayer._source_list_from_source_xml(None) == []
 
-    def test_string(self):
+    def test_string(self) -> None:
         """Test string returns empty list."""
         assert OpenHomePlayer._source_list_from_source_xml("<Any>String including XML</Any>") == []
 
-    def test_single_visible_source(self):
+    def test_single_visible_source(self) -> None:
         """Test single visible source extraction."""
         xml = """<Sources>
             <Source>
@@ -94,7 +94,7 @@ class TestSourceList:
         assert result[0].name == "CD"
 
 
-    def test_multiple_sources(self):
+    def test_multiple_sources(self) -> None:
         """Test multiple visible sources extraction."""
         xml = """<Sources>
             <Source>
@@ -125,7 +125,7 @@ class TestSourceList:
         assert result[1].name == "Radio"
         assert result[2].name == "Local Music"
 
-    def test_hidden_sources_excluded(self):
+    def test_hidden_sources_excluded(self) -> None:
         """Test that hidden sources are filtered out."""
         xml = """<Sources>
             <Source>
@@ -149,7 +149,7 @@ class TestSourceList:
         assert result[0].name == "Visible Source"
 
     @pytest.mark.parametrize("visibility_value", ["true", "True", "TRUE", "1", " true "])
-    def test_visibility_true_variations(self, visibility_value):
+    def test_visibility_true_variations(self, visibility_value) -> None:
         """Test various reasonable 'true' value representations are recognized as visible."""
         xml = f"""<Sources>
             <Source>
@@ -167,7 +167,7 @@ class TestSourceList:
         assert result[0].name == "Test Source"
 
     @pytest.mark.parametrize("visibility_value", ["false", "False", "0", "", "unknown"])
-    def test_visibility_false_variations(self, visibility_value):
+    def test_visibility_false_variations(self, visibility_value) -> None:
         """Test various non-visible values filter out sources."""
         xml = f"""<Sources>
             <Source>
@@ -184,7 +184,7 @@ class TestSourceList:
         # Should return empty list since none are visible
         assert result == []
 
-    def test_missing_visible_element_defaults_to_hidden(self):
+    def test_missing_visible_element_defaults_to_hidden(self) -> None:
         """Test source without Visible element is treated as hidden."""
         xml = """<Sources>
             <Source>
@@ -200,7 +200,7 @@ class TestSourceList:
         # findtext returns None when element missing, which is not "true" or "1"
         assert result == []
 
-    def test_missing_optional_elements_handled_gracefully(self):
+    def test_missing_optional_elements_handled_gracefully(self) -> None:
         """Test sources missing optional elements are still processed."""
         xml = """<Sources>
             <Source>
@@ -216,7 +216,7 @@ class TestSourceList:
         assert len(result) == 1
         assert result[0].name == "Minimal Source"
 
-    def test_special_characters_in_names(self):
+    def test_special_characters_in_names(self) -> None:
         """Test special characters in source names are preserved."""
         xml = """<Sources>
             <Source>
@@ -234,7 +234,7 @@ class TestSourceList:
         # XML entities should be decoded
         assert "&" in result[0].name or "&amp;" in result[0].name
 
-    def test_unicode_characters_in_names(self):
+    def test_unicode_characters_in_names(self) -> None:
         """Test Unicode characters in source names."""
         xml = """<Sources>
             <Source>
@@ -252,7 +252,7 @@ class TestSourceList:
         assert "🎵" in result[0].name
         assert "é" in result[0].name
 
-    def test_whitespace_handling_in_values(self):
+    def test_whitespace_handling_in_values(self) -> None:
         """Test whitespace in Name is NOT trimmed by XML parser."""
         xml = """<Sources>
             <Source>
@@ -270,7 +270,7 @@ class TestSourceList:
         # ElementTree typically preserves whitespace in text content
         assert result[0].name == "  Spaced Name  "
 
-    def test_nested_sources_ignored(self):
+    def test_nested_sources_ignored(self) -> None:
         """Test that nested Source elements are only counted once."""
         xml = """<Sources>
             <Source>
@@ -293,7 +293,7 @@ class TestSourceList:
         assert len(result) == 1
         assert result[0].name == "Outer"
 
-    def test_large_number_of_sources(self):
+    def test_large_number_of_sources(self) -> None:
         """Test handling of many sources."""
         sources = "".join([f"""
             <Source>
@@ -312,7 +312,7 @@ class TestSourceList:
         assert len(result) == 50
         assert result[49].name == "Source 49"
 
-    def test_index_ordering_preserved(self):
+    def test_index_ordering_preserved(self) -> None:
         """Test that source indices match enumeration order."""
         xml = """<Sources>
             <Source>
@@ -342,7 +342,7 @@ class TestSourceList:
         assert result[1].id == "1"
         assert result[2].id == "2"
 
-    def test_mixed_visibility_preserves_order(self):
+    def test_mixed_visibility_preserves_order(self) -> None:
         """Test that visible sources maintain their relative order."""
         xml = """<Sources>
             <Source>
@@ -389,7 +389,7 @@ class TestSourceList:
         assert result[1].id == "3"
         assert result[2].id == "4"
 
-    def test_case_sensitive_type_values_preserved(self):
+    def test_case_sensitive_type_values_preserved(self) -> None:
         """Test that Type values preserve case."""
         xml = """<Sources>
             <Source>
@@ -406,14 +406,14 @@ class TestSourceList:
         # Should preserve exact case
         assert result[0].name == "Test"
 
-    def test_empty_sources_root(self):
+    def test_empty_sources_root(self) -> None:
         """Test empty Sources element."""
         xml = "<Sources/>"
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
         assert result == []
 
-    def test_complex_xml_with_attributes(self):
+    def test_complex_xml_with_attributes(self) -> None:
         """Test XML with attributes on elements."""
         xml = """<Sources>
             <Source id="1" version="2">
@@ -430,7 +430,7 @@ class TestSourceList:
         assert len(result) == 1
         assert result[0].name == "Attributed Source"
 
-    def test_return_type_is_list_of_player_source(self):
+    def test_return_type_is_list_of_player_source(self) -> None:
         """Test return type structure."""
         xml = """<Sources>
             <Source>
