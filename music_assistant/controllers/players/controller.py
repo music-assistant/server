@@ -726,14 +726,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
-        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        active_source = next(
+            (x for x in player.state.source_list if x.id == player.state.active_source), None
+        )
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
                 f"{player.display_name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
-        if PlayerFeature.SEEK not in player.supported_features:
+        if PlayerFeature.SEEK not in player.state.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
