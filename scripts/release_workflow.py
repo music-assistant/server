@@ -187,6 +187,15 @@ def determine_auto_release(
     latest_nightly = _first(nightly_tags)
 
     if channel == "stable":
+        # during an RC window the stable branch already carries next-minor content
+        if latest_rc is not None and (
+            latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
+        ):
+            msg = (
+                f"An RC newer than the latest stable release exists ({latest_rc}); "
+                "create the next stable release manually via the Create Release workflow"
+            )
+            raise ReleaseWorkflowError(msg)
         previous_tag = latest_stable
         commits_since = repository.commits_since(previous_tag, source_sha, allow_diverged=True)
         version = _next_stable(latest_stable)
