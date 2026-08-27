@@ -3319,8 +3319,9 @@ class Player(ABC):
                 result.add(player.player_id)
 
         # Scenario 2: External source is active - don't include protocol-based grouping
-        # When an external source (e.g., Spotify Connect, TV) is active, grouping via
-        # protocols (AirPlay, Sendspin, etc.) wouldn't work - only native grouping is available.
+        # When the device plays something MA does not produce (a TV input, line-in, its own
+        # streaming endpoint), grouping via protocols (AirPlay, Sendspin, etc.) wouldn't
+        # work - only native grouping is available.
         if self._has_external_source_active():
             return result
 
@@ -3368,7 +3369,7 @@ class Player(ABC):
         # a live external source playing on this player is what it is playing, and MA
         # put it there, so it outranks whatever the device reports about itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
-            return session.source_uri or session.player_id
+            return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input, we use an explicit list here
@@ -3432,8 +3433,9 @@ class Player(ABC):
         """
         Check if an external (non-MA-managed) source is currently active.
 
-        External sources include things like Spotify Connect, TV input, etc.
-        When an external source is active, protocol-based grouping is not available.
+        External sources are the ones MA does not produce itself, such as a TV input,
+        line-in, or the device's own streaming endpoint. When one is active,
+        protocol-based grouping is not available.
 
         :return: True if an external source is active, False otherwise.
         """
@@ -3443,6 +3445,11 @@ class Player(ABC):
 
         # Player's own ID means MA queue is (or was) active
         if active_source == self.player_id:
+            return False
+
+        # A live AudioSource (e.g. Spotify Connect) is audio MA produces itself, unlike
+        # the device's own streaming endpoint or a line-in it switched to
+        if self.mass.players.is_live_audio_source(active_source):
             return False
 
         # If it's a known queue ID it's MA-managed; anything else is external
