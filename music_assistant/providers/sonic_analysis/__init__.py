@@ -12,9 +12,11 @@ import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
+    join_task,
     system_meets_requirements,
     verify_system_meets_requirements,
 )
@@ -83,6 +85,14 @@ RECOMMENDED_RAM_GB: float = 6.0
 RECOMMENDED_CPU_CORES: int = 4
 
 MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
+
+# How long setup waits for the first-run checkpoint download before giving up on it.
+# Long enough to cover a realistic download, because adding a provider has no retry
+# behind it: add_provider_config drops the config again when the load raises, so a
+# grace that expires costs the user a second attempt. Capped well inside
+# PROVIDER_ASYNC_INIT_TIMEOUT so the torch.load that follows still fits and setup fails
+# with the message below rather than the generic "did not initialize" timeout.
+MODEL_FETCH_GRACE_SECONDS: int = 200
 
 
 @dataclass
@@ -308,6 +318,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
+        # Checkpoint path resolved once by _fetch_model_assets. Passing it to CLAPWrapper
+        # keeps every later (re)load local: hf_hub_download revalidates the entry tag over
+        # the network even on a cache hit, and models are reloaded after each idle unload.
+        self._clap_model_fp: str | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -336,12 +350,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """
-        Load the CLAP model synchronously so provider.available gates analysis until ready.
+        Load the CLAP model so provider.available only goes True once analysis can run.
 
-        Blocks the provider's setup until the model is loaded (first-run downloads
-        ~500MB). On failure the exception propagates and the provider stays
-        available=False, which the AudioAnalysisController already honors when
-        scheduling work. While idle the model is later unloaded and reloaded on demand.
+        Setup completes only when the model is resident, which is what the
+        AudioAnalysisController honors when scheduling work. While idle the model is
+        later unloaded and reloaded on demand.
+
+        :raises SetupFailedError: When the checkpoint is still downloading, or the fetch
+            failed. The download survives either way, so a reload (which MA retries on its
+            own) or a fresh setup picks up where this attempt left off rather than
+            starting the transfer again.
         """
         await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -351,6 +369,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
+        await self._ensure_model_assets()
         await self._load_models()
         self._models_loaded = True
 
@@ -401,6 +420,56 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             if bf is not None:
                 merge_block_features(session.accumulated, bf)
 
+    async def _ensure_model_assets(self) -> None:
+        """
+        Wait for the CLAP checkpoint to be on disk, bounded by the grace period.
+
+        :raises SetupFailedError: When the fetch is still running once the grace period
+            expires, or when it failed. The fetch task is deliberately left running in
+            both cases, so a later attempt joins it instead of starting over.
+        """
+        # The fetch has to survive this coroutine: it is the 300s setup bound that the
+        # download blows, so cancelling it on our way out would restart the transfer on
+        # every retry. Cancelling would not even work — the download sits in a worker
+        # thread. mass.create_task tracks it for shutdown and retrieves its exception;
+        # the task_id makes a later setup attempt re-attach rather than fetch twice.
+        # Keep _fetch_model_assets a named coroutine: a failed task is logged by its
+        # target, and "_fetch_model_assets" beats a bare to_thread coroutine object.
+        task = self.mass.create_task(
+            self._fetch_model_assets(),
+            task_id=f"sonic_analysis.model_assets.{self.instance_id}",
+            abort_existing=False,
+        )
+        try:
+            # The path has to come back through the task's result: MA builds a fresh
+            # provider instance per load attempt, so an attempt that re-attaches here is
+            # not the instance that started the fetch and cannot be handed the path.
+            self._clap_model_fp = await join_task(task, timeout=MODEL_FETCH_GRACE_SECONDS)
+        except TimeoutError:
+            if task.done():
+                # A timeout the fetch itself raised, not our grace period running out.
+                # Only reachable if one ever escapes the conversion in the fetch, but
+                # relabelling it as "still downloading" would bury a real failure.
+                raise
+            raise SetupFailedError(
+                "The Sonic Analysis model is still downloading. "
+                "It keeps running in the background; set the provider up again "
+                "once it has finished.",
+                translation_key="model_assets_downloading",
+                translation_owner=self.translation_owner,
+            ) from None
+
+    async def _fetch_model_assets(self) -> str:
+        """
+        Download the CLAP checkpoint, without building the model around it.
+
+        :returns: Path of the checkpoint within the HuggingFace cache.
+        :raises SetupFailedError: When the checkpoint could not be fetched.
+        """
+        model_fp: str = await asyncio.to_thread(self._download_clap_weights)
+        self.logger.debug("CLAP checkpoint ready at %s", model_fp)
+        return model_fp
+
     async def _load_models(self) -> None:
         """Load the CLAP model and prompt embeddings into memory."""
         (
@@ -413,6 +482,38 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             len(self._clap_prompt_order),
         )
 
+    def _download_clap_weights(self) -> str:
+        """
+        Fetch the CLAP checkpoint into the HuggingFace cache and return its path.
+
+        Only ever call this off the event loop: importing the vendored wrapper pulls in
+        torch and transformers, and the download itself is long and uninterruptible.
+
+        :raises SetupFailedError: When the checkpoint could not be downloaded.
+        """
+        import httpx  # noqa: PLC0415
+        from huggingface_hub.errors import XetDownloadError  # noqa: PLC0415
+
+        from .vendored_clap import CLAP  # noqa: PLC0415
+
+        try:
+            # A checkpoint already on disk resolves without touching the network, so a
+            # setup attempt that follows a completed download costs nothing and works
+            # offline. Only a genuinely absent checkpoint reaches the transfer.
+            return CLAP.cached_weights() or CLAP.download_weights()
+        except (OSError, httpx.HTTPError, XetDownloadError) as err:
+            # The hub reports most transport, HTTP and disk failures as OSError, but it
+            # streams the body through httpx and re-raises its transport errors verbatim
+            # once its own retries are spent. XetDownloadError is defensive: the pinned
+            # hub never raises it, and its Xet backend surfaces failures from a Rust
+            # extension whose exception types are not ours to name.
+            # Only a typed MA error marks the failure retryable, so a flaky link recovers.
+            raise SetupFailedError(
+                f"Failed to download the Sonic Analysis model: {err}",
+                translation_key="model_assets_download_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+
     def _free_models(self) -> None:
         """Release the CLAP model and prompt embeddings."""
         self._clap_model = None
@@ -421,7 +522,12 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
-        """Load and return the CLAP model, text embeddings, and prompt ordering."""
+        """
+        Load and return the CLAP model, text embeddings, and prompt ordering.
+
+        :raises SetupFailedError: When the shipped prompt embeddings are missing or no
+            longer match the prompts they were computed from.
+        """
         import torch  # noqa: PLC0415
 
         from .vendored_clap import CLAP  # noqa: PLC0415
@@ -429,16 +535,19 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
 
         cached = self._try_load_cached_prompt_embeddings()
-        if cached is not None:
-            model = CLAP(version="2023", use_cuda=False, text_enabled=False)
-            return model, torch.from_numpy(cached), prompt_order
-
-        model = CLAP(version="2023", use_cuda=False, text_enabled=True)
-        flat_prompts: list[str] = []
-        for _scalar, (pos, neg) in prompt_order:
-            flat_prompts.extend([pos, neg])
-        text_embeddings = model.get_text_embeddings(flat_prompts)  # type: ignore[no-untyped-call]
-        return model, text_embeddings, prompt_order
+        if cached is None:
+            # Building a text-enabled model here would download the GPT2 text encoder,
+            # putting a second unbounded fetch inside a step that must stay local.
+            raise SetupFailedError(
+                "The precomputed CLAP prompt embeddings are missing or out of date. "
+                "Re-run scripts/precompute_clap_prompt_embeddings.py to regenerate them.",
+                translation_key="prompt_embeddings_unavailable",
+                translation_owner=self.translation_owner,
+            )
+        model = CLAP(
+            model_fp=self._clap_model_fp, version="2023", use_cuda=False, text_enabled=False
+        )
+        return model, torch.from_numpy(cached), prompt_order
 
     def _try_load_cached_prompt_embeddings(self) -> np.ndarray | None:
         """Return shipped prompt embeddings if present and hash-current, else None."""
@@ -448,7 +557,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
         except FileNotFoundError:
             self.logger.warning(
-                "Precomputed CLAP prompt embeddings missing at %s; loading full text encoder",
+                "Precomputed CLAP prompt embeddings missing at %s; "
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 PRECOMPUTED_EMBEDDINGS_PATH,
             )
             return None
@@ -456,7 +566,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if cached_hash != expected_hash:
             self.logger.warning(
                 "Precomputed CLAP prompt embeddings hash mismatch (%s != %s); "
-                "loading full text encoder. Re-run scripts/precompute_clap_prompt_embeddings.py.",
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 cached_hash[:12],
                 expected_hash[:12],
             )

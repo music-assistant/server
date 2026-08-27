@@ -50,6 +50,19 @@ divergence point.
 - `clap_wrapper.py::preprocess_text` — raises `RuntimeError` early when
   text encoder is disabled, with a clear actionable message.
 
+**Standalone checkpoint fetch (keeps the download out of provider setup):**
+- `clap_wrapper.py::CLAPWrapper.download_weights` — new classmethod wrapping the
+  `hf_hub_download` call. The provider fetches the checkpoint through it ahead of
+  time, so building a `CLAPWrapper` afterwards is a local `torch.load` rather than
+  an unbounded network transfer inside `handle_async_init`'s timeout.
+- `clap_wrapper.py::CLAPWrapper.__init__` — its own `if not model_fp` fetch now
+  calls `download_weights` instead of `hf_hub_download` directly, keeping the repo
+  and filename in one place.
+- `clap_wrapper.py::CLAPWrapper.cached_weights` — new classmethod wrapping
+  `try_to_load_from_cache`. Resolves an already-downloaded checkpoint without any
+  network call, so a provider load that follows a completed download does not
+  re-run `hf_hub_download`'s entry-tag revalidation and works offline.
+
 **Tensor-input audio path (avoids re-loading audio for live playback):**
 - `clap_wrapper.py::preprocess_audio_from_tensor` and
   `get_audio_embeddings_from_tensor` — accept pre-loaded tensors so the
