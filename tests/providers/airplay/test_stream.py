@@ -82,6 +82,9 @@ def _make_player() -> MagicMock:
     ]
     player.synced_to = None
     player.group_members = []
+    # A real None: a stream only speaks for the player while it is the published
+    # one, and a bare MagicMock reads as some other stream having taken over.
+    player.stream = None
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -2031,7 +2034,8 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
     assert mass.create_task.called
 
     # A superseded stream's stalled clock is the newer session resetting it on
-    # the receiver, not a verdict about the device.
+    # the receiver, not a verdict about the device: it neither switches the
+    # player nor reports a speaker that is playing fine as silent.
     superseded_player = _make_player()
     superseded = AirPlayStream(superseded_player)
     superseded_player.stream = AirPlayStream(superseded_player)
@@ -2040,6 +2044,7 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     superseded_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    assert superseded._clock_stall_warned is False
 
     # A grouped member is reported, never moved: restarting one member of a
     # live sync group would desync it.
@@ -2194,6 +2199,7 @@ async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFix
     grouped_player = _make_player()
     grouped_player.synced_to = "apleader"
     stream = AirPlayStream(grouped_player)
+    grouped_player.stream = stream
 
     with caplog.at_level(logging.DEBUG):
         ended = stream._handle_status_line(

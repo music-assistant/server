@@ -2089,7 +2089,11 @@ class AirPlayStream:
             # keeps reporting until one exists.
             return
         stalled = state == "stalled" and mode != "ntp"
-        if stalled and not self._clock_stall_warned:
+        # A superseded stream is judging a receiver a newer session has already
+        # taken over: neither its verdict nor its advice describes what the user
+        # is hearing. The clock-ready wait below is still resolved, so its own
+        # start path is not left hanging on evidence that will not arrive.
+        if stalled and not self._clock_stall_warned and self.player.stream is self:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
@@ -2100,7 +2104,6 @@ class AirPlayStream:
             if (
                 self.player.streaming_mode == STREAMING_MODE_AUTO
                 and ntp_offered
-                and self.player.stream is self
                 and not self.player.synced_to
                 and not self.player.group_members
             ):
