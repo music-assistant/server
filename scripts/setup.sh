@@ -89,13 +89,12 @@ check_native_lib() {
   warn_missing "'$module' is installed but cannot load its native library." "$brew_pkg" "$apt_pkg"
 }
 
-# Both providers import these bindings lazily, so a missing native library never breaks the
-# test run: acoustid_lookup refuses to load and local_audio finds no output devices. Check
-# here so that shows up during setup instead of at first use.
+# acoustid_lookup imports its bindings lazily, so a missing native library never breaks the
+# test run: the provider just refuses to load. Check here so that shows up during setup
+# instead of at first use.
 echo "Checking OS-level dependencies..."
 command -v ffmpeg &>/dev/null || warn_missing "ffmpeg not found in PATH (6.1 minimum, 7.x recommended)." ffmpeg ffmpeg
 check_native_lib chromaprint chromaprint libchromaprint1
-check_native_lib sounddevice portaudio libportaudio2
 
 if [[ "$missing_prereqs" -eq 1 ]]; then
   echo "⚠️  Some tests and providers may not work until the above is resolved (see DEVELOPMENT.md)."

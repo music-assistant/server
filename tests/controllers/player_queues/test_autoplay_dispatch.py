@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
     Audiobook,
     MediaCollection,
@@ -25,6 +26,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.metadata import MediaItemCollection, MediaItemMetadata
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 
+from music_assistant.controllers.player_queues.autoplay import AutoplayMode
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
@@ -345,6 +347,22 @@ async def test_music_refill_without_seeds_appends_nothing() -> None:
     await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
 
     loader.load.assert_not_awaited()
+
+
+async def test_auto_music_refill_falls_back_to_library_after_provider_failure() -> None:
+    """AUTO mode falls back to library tracks when similar-track providers fail."""
+    loader = _loader(_queue_item(_track()), seeds=[_track()])
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.AUTO
+    loader._autoplay.get_library_tracks = AsyncMock(return_value=[])
+    loader._get_similar_tracks = AsyncMock(side_effect=ProviderUnavailableError("offline"))
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with patch(
+        "music_assistant.controllers.player_queues.queue_loader.gate_tracks", return_value=[]
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    loader._autoplay.get_library_tracks.assert_awaited_once()
 
 
 # --- appending the resolved successor ---

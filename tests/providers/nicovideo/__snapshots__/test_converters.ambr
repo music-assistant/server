@@ -22,6 +22,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -37,6 +38,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '',
         'position': None,
@@ -84,6 +87,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -104,6 +108,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -159,6 +165,7 @@
             'explicit': None,
             'genres': None,
             'grouping': None,
+            'has_transcript': None,
             'images': None,
             'label': None,
             'languages': None,
@@ -174,6 +181,8 @@
             'release_date': None,
             'review': None,
             'style': None,
+            'transcript': None,
+            'transcript_cues': None,
           }),
           'name': 'ゲスト',
           'position': None,
@@ -221,6 +230,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': None,
         'label': None,
         'languages': None,
@@ -241,6 +251,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストシリーズ68461151-527007',
       'position': None,
@@ -294,6 +306,7 @@
               'explicit': None,
               'genres': None,
               'grouping': None,
+              'has_transcript': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -322,6 +335,8 @@
               'release_date': None,
               'review': None,
               'style': None,
+              'transcript': None,
+              'transcript_cues': None,
             }),
             'name': 'ゲスト',
             'position': None,
@@ -373,6 +388,7 @@
           'explicit': False,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -408,6 +424,8 @@
           'release_date': '2025-01-01T00:00:00+09:00',
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'APIテスト用',
         'position': None,
@@ -464,6 +482,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -479,6 +498,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '',
         'position': None,
@@ -526,6 +547,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -546,6 +568,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -597,6 +621,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -625,6 +650,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '中の',
     'position': None,
@@ -675,6 +702,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -703,6 +731,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'ゲスト',
     'position': None,
@@ -756,6 +786,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -784,6 +815,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -835,6 +868,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -870,6 +904,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -924,6 +960,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -952,6 +989,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1003,6 +1042,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1038,6 +1078,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -1090,6 +1132,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1118,6 +1161,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1175,6 +1220,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1203,6 +1249,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1261,6 +1309,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1289,6 +1338,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストマイリスト68461151-78597499',
       'owner': '68461151',
@@ -1347,6 +1398,7 @@
               'explicit': None,
               'genres': None,
               'grouping': None,
+              'has_transcript': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1375,6 +1427,8 @@
               'release_date': None,
               'review': None,
               'style': None,
+              'transcript': None,
+              'transcript_cues': None,
             }),
             'name': 'ゲスト',
             'position': None,
@@ -1426,6 +1480,7 @@
           'explicit': False,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1461,6 +1516,8 @@
           'release_date': '2025-01-01T00:00:00+09:00',
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'APIテスト用',
         'position': None,
@@ -1515,6 +1572,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1543,6 +1601,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストマイリスト68461151-78597499',
     'owner': '68461151',
@@ -1602,6 +1662,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1617,6 +1678,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1664,6 +1727,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1684,6 +1748,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'テストシリーズ68461151-527007',
     'position': None,
@@ -1738,6 +1804,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1766,6 +1833,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1817,6 +1886,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1852,6 +1922,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -1906,6 +1978,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1934,6 +2007,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -1985,6 +2060,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2020,6 +2096,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2112,6 +2190,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2140,6 +2219,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2191,6 +2272,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2226,6 +2308,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2280,6 +2364,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2308,6 +2393,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2359,6 +2446,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2394,6 +2482,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,
@@ -2449,6 +2539,7 @@
             'explicit': None,
             'genres': None,
             'grouping': None,
+            'has_transcript': None,
             'images': list([
               dict({
                 'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2477,6 +2568,8 @@
             'release_date': None,
             'review': None,
             'style': None,
+            'transcript': None,
+            'transcript_cues': None,
           }),
           'name': 'ゲスト',
           'position': None,
@@ -2524,6 +2617,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': None,
         'label': None,
         'languages': None,
@@ -2544,6 +2638,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'テストシリーズ68461151-527007',
       'position': None,
@@ -2594,6 +2690,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2622,6 +2719,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'ゲスト',
         'position': None,
@@ -2677,6 +2776,7 @@
         'テスト動画',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
@@ -2719,6 +2819,8 @@
       'release_date': '2025-01-01T00:00:00+09:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'APIテスト用',
     'position': None,

@@ -4,6 +4,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -218,6 +219,58 @@ async def test_different_categories_isolated(cache_controller: CacheController) 
     assert await cache_controller.get("key", provider="test", category=2) == "cat_2"
 
 
+# --- get_all bulk load ---
+
+
+async def test_get_all_returns_every_key_for_provider_and_category(
+    cache_controller: CacheController,
+) -> None:
+    """get_all returns a key -> data mapping for every entry under a provider/category."""
+    await cache_controller.set("a", "1", provider="prov", category=9)
+    await cache_controller.set("b", "2", provider="prov", category=9)
+    result = await cache_controller.get_all(provider="prov", category=9)
+    assert result == {"a": "1", "b": "2"}
+
+
+async def test_get_all_filters_by_provider(cache_controller: CacheController) -> None:
+    """get_all only returns entries for the requested provider."""
+    await cache_controller.set("shared_key", "from_a", provider="prov_a", category=1)
+    await cache_controller.set("shared_key", "from_b", provider="prov_b", category=1)
+    assert await cache_controller.get_all(provider="prov_a", category=1) == {"shared_key": "from_a"}
+    assert await cache_controller.get_all(provider="prov_b", category=1) == {"shared_key": "from_b"}
+
+
+async def test_get_all_filters_by_category(cache_controller: CacheController) -> None:
+    """get_all only returns entries for the requested category."""
+    await cache_controller.set("shared_key", "cat_1", provider="prov", category=1)
+    await cache_controller.set("shared_key", "cat_2", provider="prov", category=2)
+    assert await cache_controller.get_all(provider="prov", category=1) == {"shared_key": "cat_1"}
+    assert await cache_controller.get_all(provider="prov", category=2) == {"shared_key": "cat_2"}
+
+
+async def test_get_all_excludes_expired_entries(cache_controller: CacheController) -> None:
+    """get_all omits an entry once its expiration has passed, like get() does."""
+    await cache_controller.set("fresh", "keep", provider="prov", category=1, expiration=500)
+    await cache_controller.set("stale", "gone", provider="prov", category=1, expiration=-1)
+    assert await cache_controller.get_all(provider="prov", category=1) == {"fresh": "keep"}
+
+
+async def test_get_all_reconstructs_with_base_class(cache_controller: CacheController) -> None:
+    """get_all reconstructs each entry via base_class.from_dict(), like get() does."""
+    await cache_controller.set("m1", {"name": "a", "value": 1}, provider="prov", category=1)
+    await cache_controller.set("m2", {"name": "b", "value": 2}, provider="prov", category=1)
+    result = await cache_controller.get_all(provider="prov", category=1, base_class=_FakeModel)
+    assert set(result) == {"m1", "m2"}
+    assert all(isinstance(item, _FakeModel) for item in result.values())
+    assert result["m1"].name == "a"
+    assert result["m2"].value == 2
+
+
+async def test_get_all_empty_when_nothing_stored(cache_controller: CacheController) -> None:
+    """get_all returns an empty mapping for a provider/category with no entries."""
+    assert await cache_controller.get_all(provider="unknown", category=1) == {}
+
+
 # --- Delete and clear ---
 
 
@@ -318,7 +371,7 @@ async def test_cache_warns_when_exceeding_limit(
 
     assert "exceeds recommended maximum" in caplog.text
     for path in db_files:
-        assert os.path.exists(path)
+        assert Path(path).exists()
 
 
 async def test_cache_does_not_warn_when_under_limit(
@@ -341,7 +394,7 @@ async def test_cache_does_not_warn_when_under_limit(
 
     assert "exceeds recommended maximum" not in caplog.text
     for path in db_files:
-        assert os.path.exists(path)
+        assert Path(path).exists()
 
 
 async def test_all_three_db_files_included_in_size(
@@ -364,7 +417,7 @@ async def test_all_three_db_files_included_in_size(
 
     assert "exceeds recommended maximum" in caplog.text
     for suffix in ("", "-wal", "-shm"):
-        assert os.path.exists(db_path + suffix)
+        assert Path(db_path + suffix).exists()
 
 
 # --- allow_expired_cache flag ---

@@ -161,6 +161,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook]: ...
 
@@ -178,6 +179,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: Literal[True],
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
@@ -195,10 +197,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             *,
             summary: bool = True,
             collapse_collections: bool,
+            reachable_via: list[str] | None = None,
             **kwargs: Any,
         ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]: ...
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
@@ -211,6 +214,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         *,
         summary: bool = True,
         collapse_collections: bool = False,
+        reachable_via: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
@@ -227,7 +231,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
             be returned individually.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids (OR semantics). See
+            `MediaControllerBase.library_items` for the full semantics.
         """
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         result = await self.get_library_items_by_query(
@@ -237,13 +247,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
             collapse_collections=collapse_collections,
+            reachable_via=reachable_via,
         )
         if search and len(result) < 25 and not offset:
             # append author items to result
@@ -257,12 +268,15 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._provider_filter_considering_reachability(
+                    provider, reachable_via
+                ),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,
                 summary=summary,
                 collapse_collections=collapse_collections,
+                reachable_via=reachable_via,
             )
         return result
 
@@ -279,7 +293,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
+            if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
@@ -345,7 +359,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
+            if MediaType.AUDIOBOOK not in provider.supported_media_types:
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
@@ -467,7 +481,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         return ItemMapping.from_item(db_artist)
 
     async def _update_library_item(
-        self, item_id: str | int, update: Audiobook, overwrite: bool = False
+        self,
+        item_id: str | int,
+        update: Audiobook,
+        overwrite: bool = False,
+        *,
+        set_playlog: bool = True,
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
@@ -521,8 +540,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-        await self._set_playlog(db_id, update)
+        if set_playlog:
+            await self._set_playlog(db_id, update)
         await self._set_artist_mappings(update, db_id)
+
+    async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
+        """Merge audiobook model state without applying a source resume position."""
+        await self._update_library_item(item_id, update, set_playlog=False)
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""

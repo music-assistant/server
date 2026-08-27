@@ -20,6 +20,22 @@ def _load_doc(name: str) -> JsonApiDocument:
         return JsonApiDocument(json.load(f))
 
 
+def _load_raw(name: str) -> dict[str, Any]:
+    with open(FIXTURES_DIR / name) as f:
+        data: dict[str, Any] = json.load(f)
+        return data
+
+
+def _break_resource(raw: dict[str, Any], resource_id: str) -> dict[str, Any]:
+    """Blank the name or title of one included resource so its parser rejects it."""
+    for resource in raw["included"]:
+        if resource["id"] == resource_id:
+            attributes = resource["attributes"]
+            attributes["name" if "name" in attributes else "title"] = None
+            return raw
+    raise AssertionError(f"resource {resource_id} not in fixture")
+
+
 @pytest.fixture
 def library_manager(provider_mock: Mock) -> TidalLibraryManager:
     """Return a TidalLibraryManager instance."""
@@ -89,6 +105,312 @@ async def test_get_playlists(library_manager: TidalLibraryManager, provider_mock
     # mixes come through the same collection with the "mix_" item id prefix
     assert any(p.item_id.startswith("mix_") for p in playlists)
     assert any(not p.item_id.startswith("mix_") for p in playlists[:-1])
+
+
+_LIBRARY_READ_CASES = [
+    ("get_artists", "lib_artists.json", MediaType.ARTIST, 19),
+    ("get_albums", "lib_albums.json", MediaType.ALBUM, 19),
+    ("get_tracks", "lib_tracks.json", MediaType.TRACK, 19),
+    ("get_playlists", "lib_playlists.json", MediaType.PLAYLIST, 19),
+]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "media_type", "expected_count"), _LIBRARY_READ_CASES
+)
+async def test_library_listing_skips_unparsable_item(
+    method_name: str,
+    fixture_name: str,
+    media_type: MediaType,
+    expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test one unusable item does not prevent later library items from being yielded."""
+    raw = _load_raw(fixture_name)
+    broken_id = raw["data"][0]["id"]
+    doc = JsonApiDocument(_break_resource(raw, broken_id))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    assert all(item.item_id != broken_id for item in items)
+    provider_mock.logger.warning.assert_not_called()
+    skipped_media_type, skipped_id, err = next(
+        call.args
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+        if call.args[1] == broken_id
+    )
+    assert skipped_media_type == media_type
+    assert skipped_id == broken_id
+    assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
+
+
+async def test_library_playlists_report_unparsable_mix_id(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test an unusable mix is protected under its prefixed library item ID."""
+    raw = _load_raw("lib_playlists.json")
+    mix = next(
+        resource
+        for resource in raw["included"]
+        if resource["type"] == "playlists" and resource["attributes"].get("playlistType") == "MIX"
+    )
+    broken_id = mix["id"]
+    doc = JsonApiDocument(_break_resource(raw, broken_id))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    playlists = [item async for item in library_manager.get_playlists()]
+
+    assert all(item.item_id != f"mix_{broken_id}" for item in playlists)
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.PLAYLIST
+    assert skipped_id == f"mix_{broken_id}"
+    assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
+
+
+async def test_library_playlists_hold_cleanup_when_item_type_is_unreadable(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test an unidentifiable playlist item holds cleanup without ending the listing."""
+    raw = _load_raw("lib_playlists.json")
+    playlist = next(resource for resource in raw["included"] if resource["type"] == "playlists")
+    playlist["attributes"] = None
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    playlists = [item async for item in library_manager.get_playlists()]
+
+    assert len(playlists) == 19
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.PLAYLIST
+    assert skipped_id is None
+    assert isinstance(err, AttributeError)
+
+
+async def test_library_tracks_hold_cleanup_for_unparsable_replacement(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test an unusable replacement track holds cleanup when its stored ID is ambiguous."""
+    raw = _load_raw("lib_tracks.json")
+    broken_id = raw["data"][0]["id"]
+    raw["data"][0]["meta"]["replacement"] = {
+        "status": "REPLACED",
+        "original": {"type": "tracks", "id": "stale_track_id"},
+    }
+    doc = JsonApiDocument(_break_resource(raw, broken_id))
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = [item async for item in library_manager.get_tracks()]
+
+    assert len(tracks) == 19
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.TRACK
+    assert skipped_id is None
+    assert isinstance(err, (AttributeError, KeyError, TypeError, ValueError))
+
+
+async def test_library_tracks_hold_cleanup_for_invalid_replacement_metadata(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test invalid replacement metadata cannot abort a track listing."""
+    raw = _load_raw("lib_tracks.json")
+    raw["data"][0]["meta"]["replacement"] = {
+        "status": "REPLACED",
+        "original": "invalid",
+    }
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+    provider_mock.note_replaced_track.side_effect = [
+        AttributeError("invalid replacement"),
+        *([None] * 19),
+    ]
+
+    tracks = [track async for track in library_manager.get_tracks()]
+
+    assert len(tracks) == 20
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == MediaType.TRACK
+    assert skipped_id is None
+    assert isinstance(err, AttributeError)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "media_type", "expected_count", "protect_exact_id"),
+    [
+        ("get_artists", "lib_artists.json", MediaType.ARTIST, 19, True),
+        ("get_albums", "lib_albums.json", MediaType.ALBUM, 19, True),
+        ("get_tracks", "lib_tracks.json", MediaType.TRACK, 19, True),
+        ("get_playlists", "lib_playlists.json", MediaType.PLAYLIST, 19, False),
+    ],
+)
+async def test_library_listing_reports_missing_resource(
+    method_name: str,
+    fixture_name: str,
+    media_type: MediaType,
+    expected_count: int,
+    protect_exact_id: bool,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test a missing included resource does not look like a library deletion."""
+    raw = _load_raw(fixture_name)
+    broken_id = raw["data"][0]["id"]
+    raw["included"] = [
+        resource
+        for resource in raw["included"]
+        if not (resource["type"] == raw["data"][0]["type"] and resource["id"] == broken_id)
+    ]
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == media_type
+    assert skipped_id == (broken_id if protect_exact_id else None)
+    assert isinstance(err, ValueError)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "media_type", "expected_count"), _LIBRARY_READ_CASES[:3]
+)
+async def test_library_listing_holds_cleanup_for_invalid_resource_id(
+    method_name: str,
+    fixture_name: str,
+    media_type: MediaType,
+    expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test an invalid resource ID holds cleanup when its identity is unknown."""
+    raw = _load_raw(fixture_name)
+    original_id = raw["data"][0]["id"]
+    raw["data"][0]["id"] = 123
+    next(resource for resource in raw["included"] if resource["id"] == original_id)["id"] = 123
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == expected_count
+    skipped_media_type, skipped_id, err = provider_mock.report_skipped_sync_item.call_args.args
+    assert skipped_media_type == media_type
+    assert skipped_id is None
+    assert isinstance(err, (TypeError, ValueError))
+
+
+async def test_library_playlists_hold_cleanup_for_invalid_resource_id(
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test an invalid resolved playlist ID holds cleanup."""
+    raw = _load_raw("lib_playlists.json")
+    original_id = raw["data"][0]["id"]
+    raw["data"][0]["id"] = 123
+    next(resource for resource in raw["included"] if resource["id"] == original_id)["id"] = 123
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in library_manager.get_playlists()]
+
+    assert len(items) == 19
+    skipped_media_type, skipped_id, err = next(
+        call.args
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+        if isinstance(call.args[2], TypeError)
+    )
+    assert skipped_media_type == MediaType.PLAYLIST
+    assert skipped_id is None
+    assert isinstance(err, TypeError)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
+)
+async def test_library_listing_ignores_invalid_date_added(
+    method_name: str,
+    fixture_name: str,
+    _media_type: MediaType,
+    _expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test invalid optional date metadata does not abort a library listing."""
+    raw = _load_raw(fixture_name)
+    raw["data"][0]["meta"]["addedAt"] = ["invalid"]
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    items = [item async for item in getattr(library_manager, method_name)()]
+
+    assert len(items) == 20
+    assert items[0].date_added is None
+
+
+@pytest.mark.parametrize(
+    ("method_name", "fixture_name", "_media_type", "_expected_count"), _LIBRARY_READ_CASES
+)
+async def test_library_listing_fetch_failure_propagates(
+    method_name: str,
+    fixture_name: str,
+    _media_type: MediaType,
+    _expected_count: int,
+    library_manager: TidalLibraryManager,
+    provider_mock: Mock,
+) -> None:
+    """Test a later page failure aborts the listing instead of returning partial results."""
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield _load_doc(fixture_name)
+        raise ClientError("connection lost")
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    with pytest.raises(ClientError):
+        [item async for item in getattr(library_manager, method_name)()]
+    assert all(
+        not isinstance(call.args[2], ClientError)
+        for call in provider_mock.report_skipped_sync_item.call_args_list
+    )
 
 
 _COLLECTION_CASES = [

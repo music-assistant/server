@@ -338,6 +338,46 @@ class TestProviderInstanceIdExpansion:
         assert "player_b" in can_group
         assert "player_c" in can_group
 
+    def test_provider_instance_id_excludes_unknown_players(self, mock_mass: MagicMock) -> None:
+        """Test that players without an output type are not offered as grouping targets."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.get_provider = MagicMock(return_value=provider)
+
+        leader = MockPlayer(
+            provider,
+            "leader",
+            "Leader",
+            player_type=PlayerType.PROTOCOL,
+        )
+        leader._attr_can_group_with = {"test"}
+        public_player = MockPlayer(provider, "public", "Public Player")
+        unknown_player = MockPlayer(
+            provider,
+            "unknown",
+            "Unknown Player",
+            player_type=PlayerType.UNKNOWN,
+        )
+        controller._players = {
+            "leader": leader,
+            "public": public_player,
+            "unknown": unknown_player,
+        }
+        mock_mass.players = controller
+
+        for player in controller._players.values():
+            player.set_initialized()
+        for player in controller._players.values():
+            player.update_state(signal_event=False)
+
+        assert "public" in leader.state.can_group_with
+        assert "unknown" not in leader.state.can_group_with
+
+        leader._attr_can_group_with = {"unknown"}
+        leader.update_state(signal_event=False, force_update=True)
+
+        assert leader.state.can_group_with == set()
+
 
 class TestFinalActiveGroupNewModel:
     """

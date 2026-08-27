@@ -9,8 +9,10 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.helpers.datetime import utc
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.sonic_analysis import (
+    MODEL_FAILURE_RETRY_DELAY,
     SonicAnalysisProvider,
     SonicSessionData,
 )
@@ -60,14 +62,19 @@ async def test_no_targets_short_circuits_silently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_completions_logs_warning() -> None:
-    """Targets planned but zero windows completed → warning, no scalar updates."""
+async def test_no_completions_raises_retryable() -> None:
+    """Targets planned but zero windows completed → retryable failure, no scalar updates."""
     p, fake_logger = _make_provider()
     session = _make_session(target_starts=[0, 100, 200])
     # No tasks added, no completed_count incremented
     analysis = AudioAnalysisData()
 
-    await p._run_live_clap_if_eligible(session, analysis)
+    before = utc()
+    with pytest.raises(AudioAnalysisError) as excinfo:
+        await p._run_live_clap_if_eligible(session, analysis)
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + MODEL_FAILURE_RETRY_DELAY
 
     assert analysis.danceability is None
     assert analysis.valence is None
@@ -75,6 +82,27 @@ async def test_no_completions_logs_warning() -> None:
     assert analysis.instrumentalness is None
     assert analysis.acousticness is None
     assert analysis.speechiness is None
+    assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
+    fake_logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_partial_completions_raises_retryable() -> None:
+    """Some but not all planned windows completed → retryable failure, nothing written."""
+    p, fake_logger = _make_provider()
+    session = _make_session(target_starts=[0, 100, 200])
+
+    n_pairs = len(SCALAR_PROMPT_PAIRS)
+    session.clap_completed_count = 2
+    session.clap_sum_embedding = np.ones(1024, dtype=np.float32)
+    session.clap_sum_similarities = np.zeros(2 * n_pairs, dtype=np.float32)
+
+    analysis = AudioAnalysisData()
+
+    with pytest.raises(AudioAnalysisError, match="2 of 3"):
+        await p._run_live_clap_if_eligible(session, analysis)
+
+    assert analysis.danceability is None
     assert analysis.extra_data is None or "clap_embedding" not in (analysis.extra_data or {})
     fake_logger.warning.assert_called_once()
 

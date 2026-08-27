@@ -139,7 +139,6 @@ DEFAULT_SENDSPIN_CLIENT_PORT = 8928
 DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
 VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
-VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
 WEB_PLAYER_CONNECT_TIMEOUT = 10.0
 # Grace period so a network blip keeps the pairing record.
 SESSION_PAIRING_EVICTION_GRACE = 120.0
@@ -406,6 +405,7 @@ class SendspinProvider(PlayerProvider):
                 key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
+                hidden=True,
             ),
             ConfigEntry(
                 key=CONF_MIN_PIN_LENGTH,
@@ -462,7 +462,7 @@ class SendspinProvider(PlayerProvider):
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
-            "Music Assistant",
+            self.mass.webserver.server_name,
             self.mass.http_session,
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
@@ -641,6 +641,7 @@ class SendspinProvider(PlayerProvider):
         # (hidden). Restore protocol semantics so UI links it under its native peer.
         player.is_web_player = False
         player._attr_hidden_by_default = False
+        player._attr_private = False
         player._attr_expose_to_ha_by_default = True
         player._attr_type = PlayerType.PROTOCOL
         self.logger.info(
@@ -1246,7 +1247,7 @@ class SendspinProvider(PlayerProvider):
             player = viz_player
         elif "source" in negotiated_families:
             # Capture-only device: a SendspinPlayer here would advertise playback it
-            # cannot do. It only needs a settings page.
+            # cannot do. It registers as an audio input instead.
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
@@ -1744,8 +1745,16 @@ class SendspinProvider(PlayerProvider):
             if delay:
                 await asyncio.sleep(delay)
             try:
-                async with asyncio.timeout(VIRTUAL_PLAYER_CLEANUP_TIMEOUT):
-                    await self.remove_virtual_player(player_id)
+                # another teardown won the race; a config it left behind is not ours
+                # to delete - it is kept for the owner to reclaim, and swept at
+                # startup once that owner is gone
+                if not self.is_virtual_player(player_id):
+                    return
+                # awaited to completion on purpose: a timeout is no reliable bound on
+                # the teardown - parts of it swallow the cancellation (see
+                # AsyncProcess.close), and one that does land leaves the player
+                # half torn down for the next attempt to trip over
+                await self.remove_virtual_player(player_id)
                 return
             except Exception as err:
                 last_error = err

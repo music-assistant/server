@@ -145,6 +145,13 @@ class TidalStreamingManager:
             )
         )
 
+        self.provider.play_reporting.register_stream(
+            item_id=track.item_id,
+            quality=stream_data.get("audioQuality", "LOSSLESS"),
+            asset_presentation=stream_data.get("assetPresentation", "FULL"),
+            audio_mode=stream_data.get("audioMode", "STEREO"),
+        )
+
         return StreamDetails(
             item_id=track.item_id,
             provider=self.provider.instance_id,

@@ -359,13 +359,8 @@ class AirPlayStream:
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
-        # set to. A latched mute would start the stream silent, and a volume explicitly
-        # requested for this session (an announcement) is not an unsolicited push.
-        if (
-            self.player.owns_volume
-            or self.player.volume_muted
-            or (self.session is not None and self.session.requested_volume is not None)
-        ):
+        # set to. A latched mute would start the stream silent, so it does travel along.
+        if self.player.owns_volume or self.player.volume_muted:
             # Repeat after 2 seconds because some players ignore the first volume command
             # (https://github.com/music-assistant/support/issues/3330). The repeat reads
             # the level when it fires, so it never replays a value that changed since.
@@ -841,11 +836,12 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
-                    # the push resets a changed track to position zero (a
-                    # same-item refinement carries the current position), so
-                    # the correction below only follows when playback is
-                    # actually elsewhere (mid-track start, tag refinement)
-                    self._last_progress_sent = 0
+                    # every identity push is followed by one explicit progress
+                    # anchor, even at position zero: some receivers (WiiM Amp)
+                    # mute a flushed-and-restarted session mid-track when no
+                    # PROGRESS ever follows the SENDMETA, and un-mute on the
+                    # first one that arrives
+                    self._last_progress_sent = None
                     if artwork_file:
                         # the bundle delivered the artwork: settle it and stand
                         # down the ARTWORK follow-up
@@ -1404,6 +1400,15 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
+                    if player.stream is not self:
+                        # A newer session (native or Sendspin bridge) owns this
+                        # player, so this process's death says nothing about the
+                        # device: ungrouping or scheduling a re-join over it
+                        # would tear down the session that replaced it.
+                        logger.debug(
+                            "superseded cliairplay process stopped for %s", player.display_name
+                        )
+                        return
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
@@ -1769,6 +1774,9 @@ class AirPlayStream:
         command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
         if command_delivered:
             self.player.last_command_sent = time.time()
+            if command.startswith("VOLUME="):
+                # the receiver echoes every level it is handed back over DACP
+                self.player.suppress_volume_reports()
         return command_delivered
 
     def _check_password_preflight(self) -> None:
@@ -1912,6 +1920,13 @@ class AirPlayStream:
     def _handle_native_control_failure(self) -> None:
         """Switch an automatic native AirPlay 2 route to compatibility mode."""
         if self._native_control_failure_handled:
+            return
+        if self.player.stream is not self:
+            # Not evidence about the device: either a newer session reset the
+            # control channel on the receiver, or this stream is still coming up
+            # and has not been published yet. The binary keeps reporting while
+            # the failure lasts, so leaving the once-only latch unset here keeps
+            # a genuine failure actionable once the stream does own the player.
             return
         self._native_control_failure_handled = True
         if self.player.streaming_mode != STREAMING_MODE_AUTO:
@@ -2077,7 +2092,11 @@ class AirPlayStream:
             # keeps reporting until one exists.
             return
         stalled = state == "stalled" and mode != "ntp"
-        if stalled and not self._clock_stall_warned:
+        # A superseded stream is judging a receiver a newer session has already
+        # taken over: neither its verdict nor its advice describes what the user
+        # is hearing. The clock-ready wait below is still resolved, so its own
+        # start path is not left hanging on evidence that will not arrive.
+        if stalled and not self._clock_stall_warned and self.player.stream is self:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True

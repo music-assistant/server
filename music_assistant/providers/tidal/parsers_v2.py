@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from contextlib import suppress
@@ -31,7 +32,11 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
+from .constants import SKIPPABLE_ITEM_ERRORS
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ._openapi_models import (
         AlbumsAttributes,
         ArtistsAttributes,
@@ -291,6 +296,67 @@ def parse_playlist(
     if image := _resolve_image(provider, doc, resource, "coverArt"):
         playlist.metadata.images = UniqueList([image])
     return playlist
+
+
+def _parse_items[ItemT](
+    parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+    provider: TidalProvider,
+    doc: JsonApiDocument,
+) -> list[ItemT]:
+    """
+    Parse the document's primary collection, leaving out items that cannot be parsed.
+
+    Only use this for a collection of a single resource type.
+
+    :param parser: The parser to apply to each resolved resource.
+    :param provider: The Tidal provider instance.
+    :param doc: The JSON:API document holding the collection.
+    """
+    items: list[ItemT] = []
+    for identifier in doc.data_list:
+        if not (resource := doc.resolve(identifier)):
+            continue
+        if (item := _parse_or_skip(parser, provider, doc, resource)) is not None:
+            items.append(item)
+    return items
+
+
+def _parse_or_skip[ItemT](
+    parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+    provider: TidalProvider,
+    doc: JsonApiDocument,
+    resource: dict[str, Any],
+    sync_media_type: MediaType | None = None,
+    sync_item_id: str | None = None,
+) -> ItemT | None:
+    """
+    Parse a resource into a media item, or return None if it cannot be parsed.
+
+    :param parser: The parser to apply to the resource.
+    :param provider: The Tidal provider instance.
+    :param doc: The JSON:API document holding the resource.
+    :param resource: The resource object to parse.
+    :param sync_media_type: The library media type to protect from sync cleanup.
+    :param sync_item_id: The provider item ID to protect from sync cleanup.
+    """
+    try:
+        return parser(provider, doc, resource)
+    except SKIPPABLE_ITEM_ERRORS as err:
+        if sync_media_type is not None:
+            provider.report_skipped_sync_item(
+                sync_media_type,
+                sync_item_id,
+                err,
+            )
+        else:
+            provider.logger.warning(
+                "Skipping Tidal %s %s: %s",
+                resource.get("type", "item"),
+                resource.get("id", "[no id]"),
+                err,
+                exc_info=err if provider.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+        return None
 
 
 def _split_title_version(title: str, version: str | None) -> tuple[str, str]:

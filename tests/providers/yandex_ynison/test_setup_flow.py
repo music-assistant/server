@@ -7,15 +7,15 @@ import time
 from typing import Any
 from unittest import mock
 
+import pytest
 from music_assistant_models.enums import FlowStepType
 from ya_passport_auth import Credentials, QrSession, SecretStr
 
-from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.yandex_ynison import setup_flow as yn_flow
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ACCOUNT_LOGIN,
     CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
     CONF_REMEMBER_SESSION,
     CONF_TOKEN,
     CONF_X_TOKEN,
@@ -99,7 +99,6 @@ async def test_borrow_mode_finishes_with_instance_only() -> None:
             CONF_YM_INSTANCE: "ym-a",
             CONF_REMEMBER_SESSION: True,
             CONF_MASS_PLAYER_ID: "kitchen",
-            CONF_PUBLISH_NAME: "Kitchen Yandex",
         }
     )
     await _wait_for(lambda: session.finished)
@@ -108,7 +107,6 @@ async def test_borrow_mode_finishes_with_instance_only() -> None:
     assert collected == {
         CONF_YM_INSTANCE: "ym-a",
         CONF_MASS_PLAYER_ID: "kitchen",
-        CONF_PUBLISH_NAME: "Kitchen Yandex",
     }
 
 
@@ -132,7 +130,6 @@ async def test_own_mode_qr_persists_tokens_and_login() -> None:
                 CONF_YM_INSTANCE: YM_INSTANCE_OWN,
                 CONF_REMEMBER_SESSION: True,
                 CONF_MASS_PLAYER_ID: "kitchen",
-                CONF_PUBLISH_NAME: "Kitchen Yandex",
             }
         )
         await _wait_for(lambda: session.finished)
@@ -144,7 +141,6 @@ async def test_own_mode_qr_persists_tokens_and_login() -> None:
         CONF_X_TOKEN: "XT",
         CONF_ACCOUNT_LOGIN: "alice",
         CONF_MASS_PLAYER_ID: "kitchen",
-        CONF_PUBLISH_NAME: "Kitchen Yandex",
     }
     scan_steps = [s for s in _published_steps(mass) if s.step_id == "scan_qr"]
     assert scan_steps
@@ -171,7 +167,6 @@ async def test_own_mode_without_remember_clears_x_token() -> None:
                 CONF_YM_INSTANCE: YM_INSTANCE_OWN,
                 CONF_REMEMBER_SESSION: False,
                 CONF_MASS_PLAYER_ID: "kitchen",
-                CONF_PUBLISH_NAME: "Kitchen Yandex",
             }
         )
         await _wait_for(lambda: session.finished)
@@ -179,3 +174,17 @@ async def test_own_mode_without_remember_clears_x_token() -> None:
 
     assert collected[CONF_TOKEN] == "MT"
     assert collected[CONF_X_TOKEN] is None
+
+
+async def test_aborts_without_players() -> None:
+    """With no players registered the flow aborts with the no_players reason."""
+
+    async def finish(_s: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        raise AssertionError("finish must not be reached")
+
+    session, mass = _make_session(finish)
+    mass.players.all_players.return_value = []
+
+    with pytest.raises(AbortFlow) as excinfo:
+        await yn_flow.run_setup(session)
+    assert excinfo.value.reason == "no_players"
