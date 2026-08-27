@@ -155,6 +155,24 @@ async def test_realtime_buffer_stays_valid_before_it_holds_anything() -> None:
     assert live.is_valid(0)
 
 
+@pytest.mark.asyncio
+async def test_realtime_buffer_serves_the_position_it_was_seeded_at() -> None:
+    """A buffer built for a seek answers for that position before it holds anything."""
+    live = AudioBuffer(TEST_PCM_FORMAT, is_realtime=True)
+    live._discarded_chunks = 65
+
+    assert live.is_valid(65000)
+    assert live.is_valid(65999)
+    # before its own start, and past the second it is about to produce
+    assert not live.is_valid(64000)
+    assert not live.is_valid(66000)
+
+    await live._put(ONE_SECOND_CHUNK)
+
+    assert live.is_valid(66000)
+    assert not live.is_valid(67000)
+
+
 def test_init_minimal_buffer() -> None:
     """AudioBuffer with MINIMAL preset has correct max size."""
     buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
@@ -590,6 +608,42 @@ async def test_get_buffer_releases_a_slot_limited_producer_before_replacing_it(
     assert stale_buffer.is_buffering is not expect_released
     blocked.set()
     await stale_buffer.clear()
+    await replacement.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_replaces_a_live_buffer_on_a_short_forward_seek() -> None:
+    """A live source is restarted at the position rather than waited out."""
+    mass, _start_analysis, _scheduled_tasks = _make_mass_for_get_buffer()
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = None
+    provider.has_available_stream_slot = True
+    mass.get_provider.return_value = provider
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=True)
+    streamdetails.is_realtime = True
+    blocked = asyncio.Event()
+
+    async def _never_ending_source() -> AsyncGenerator[bytes]:
+        yield _make_chunk(0)
+        await blocked.wait()
+
+    live_buffer = AudioBuffer(TEST_PCM_FORMAT, is_realtime=True)
+    live_buffer.fill(_never_ending_source())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    streamdetails.buffer = live_buffer
+
+    # well inside the span a recorded source would have been waited out for
+    replacement = await AudioBuffer.get_buffer(
+        mass, streamdetails, seek_position_ms=5000, reason="test"
+    )
+
+    assert replacement is not live_buffer
+    # the replacement carries the flag on, and starts at the position asked for
+    assert replacement.is_realtime
+    assert replacement._discarded_chunks == 5
+    blocked.set()
+    await live_buffer.clear()
     await replacement.clear()
 
 
