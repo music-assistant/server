@@ -239,17 +239,22 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts.append(
                 search_name_match_clause("albums", title_str, "search_title", extra_query_params)
             )
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", artist_str, "search_artist", extra_query_params
-            )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
-            artist_table_joined = True
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
+                artist_table_joined = True
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -273,15 +278,19 @@ class AlbumsController(MediaControllerBase[Album]):
         if search and len(result) < 25 and not offset and remaining_limit > 0:
             # append artist items to result
             search = create_safe_string(search, True, True)
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", search, "search_artist", extra_query_params
-            )
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", search, "search_artist", extra_query_params
+                    )
+                )
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause("artists", search, "search_artist", extra_query_params)
+                )
             existing_uris = {item.uri for item in result}
 
             for album in await self.get_library_items_by_query(

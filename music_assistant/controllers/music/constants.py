@@ -104,6 +104,10 @@ LEGACY_SORT_KEYS = {
     "position_desc": (SortField.POSITION, SortDirection.DESC),
     "artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
     "artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "album_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "album_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "track_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
     "random": (SortField.RANDOM, None),
     "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
 }
