@@ -1261,10 +1261,14 @@ class SendspinAirPlayBridge:
     def _cancel_rejoin(self) -> None:
         """Drop any pending attempt to re-join the Sendspin group."""
         rejoin_task = self._rejoin_task
-        self._rejoin_task = None
         # never self-cancel: a re-join announces itself through the same
-        # stream-start path that clears stale schedules
-        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+        # stream-start path that clears stale schedules. The handle also
+        # survives such a call, so a later user action can still cancel the
+        # retry loop between attempts.
+        if rejoin_task is None or rejoin_task is asyncio.current_task():
+            return
+        self._rejoin_task = None
+        if not rejoin_task.done():
             rejoin_task.cancel()
 
     async def _cleanup_old_stream(

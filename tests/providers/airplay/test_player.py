@@ -1,6 +1,7 @@
 """Unit tests for AirPlay player."""
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Coroutine
@@ -1583,6 +1584,52 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
 
     session.add_client.assert_awaited_once()
     leader.set_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_stays_cancellable_after_failed_attempt() -> None:
+    """A user action still cancels the retry loop after a join cleared the schedule."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    joins: list[int] = []
+
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
+        joins.append(1)
+        # the join flows through the session start paths, which clear stale
+        # re-join schedules on the joining player
+        player.cancel_group_rejoin()
+        raise PlayerCommandFailed("device unreachable")
+
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (0, 60)):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        # let the first attempt run, fail and park in the next backoff
+        for _ in range(50):
+            if joins:
+                break
+            await asyncio.sleep(0)
+        assert joins == [1]
+        # the schedule survived its own join's cancel call
+        assert player._rejoin_task is rejoin_task
+        # the user stops the player during the backoff: the loop must die
+        player.cancel_group_rejoin()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rejoin_task
+        assert rejoin_task.cancelled()
+        assert joins == [1]
 
 
 @pytest.mark.asyncio

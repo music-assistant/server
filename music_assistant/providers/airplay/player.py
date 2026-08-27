@@ -983,10 +983,14 @@ class AirPlayPlayer(Player):
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
         rejoin_task = self._rejoin_task
-        self._rejoin_task = None
         # never self-cancel: the re-join attempt itself flows through the same
-        # session (re)start paths that call this to clear stale schedules
-        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+        # session (re)start paths that call this to clear stale schedules. The
+        # handle also survives such a call, so a later user action can still
+        # cancel the retry loop between attempts.
+        if rejoin_task is None or rejoin_task is asyncio.current_task():
+            return
+        self._rejoin_task = None
+        if not rejoin_task.done():
             rejoin_task.cancel()
 
     def on_player_media_updated(self) -> None:
