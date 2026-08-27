@@ -224,7 +224,7 @@ async def test_slow_load_fails_setup_but_keeps_running() -> None:
     ):
         await provider.handle_async_init()
 
-    assert exc_info.value.translation_key == "model_assets_downloading"
+    assert exc_info.value.translation_key == "model_setup_pending"
     assert exc_info.value.translation_owner == "provider.sonic_analysis"
     assert provider._models_loaded is False
     assert not mass.tracked[SETUP_TASK_ID].done(), "the load must survive the timeout"

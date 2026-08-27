@@ -377,10 +377,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
         except TimeoutError:
             raise SetupFailedError(
-                "The Sonic Analysis model is still downloading. "
-                "It keeps running in the background; Sonic Analysis starts as soon as "
-                "it is ready.",
-                translation_key="model_assets_downloading",
+                "The Sonic Analysis model is still being prepared. "
+                "It keeps running in the background; reload the provider once it has "
+                "had time to finish.",
+                translation_key="model_setup_pending",
                 translation_owner=self.translation_owner,
             ) from None
         self._clap_model, self._clap_text_embeddings, self._clap_prompt_order = models
