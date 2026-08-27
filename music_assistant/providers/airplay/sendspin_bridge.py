@@ -763,15 +763,18 @@ class SendspinAirPlayBridge:
         """
         Release the speaker from a session the bridge is taking it away from.
 
-        Raises when the transport cannot be released, so the caller never adds a
-        second cli process to a receiver that is still serving one.
+        Lets a failure to release the transport propagate, so the caller never
+        adds a second cli process to a receiver that is still serving one.
 
         :param stream: The stream currently published on the AirPlay player.
         """
-        self.logger.debug(
-            "Stopping the session already running on %s before bridging it to Sendspin",
-            self.airplay_player.display_name,
-        )
+        if stream.running:
+            # An idle player keeps its last stream published, so only a live one
+            # is worth reporting as displaced.
+            self.logger.debug(
+                "Stopping the session already running on %s before bridging it to Sendspin",
+                self.airplay_player.display_name,
+            )
         await stream.stop(force=True)
         if stream.session is None:
             return

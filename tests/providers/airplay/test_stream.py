@@ -2051,21 +2051,26 @@ async def test_clock_stall_switches_solo_auto_player_to_ntp() -> None:
     grouped_player = _make_player()
     grouped_player.synced_to = "apleader"
     grouped = AirPlayStream(grouped_player)
+    grouped_player.stream = grouped
     grouped._handle_status_line(
         "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     grouped_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    # the warn-only path was taken, rather than the block being skipped entirely
+    assert grouped._clock_stall_warned is True
 
     # An explicitly pinned mode is the user's choice: warn only.
     pinned_player = _make_player()
     pinned_player.streaming_mode = STREAMING_MODE_AP2_PTP
     pinned = AirPlayStream(pinned_player)
+    pinned_player.stream = pinned
     pinned._handle_status_line(
         "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    assert pinned._clock_stall_warned is True
 
 
 def test_native_control_failure_switches_automatic_player_to_compatibility() -> None:
