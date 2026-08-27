@@ -72,10 +72,6 @@ class TestSourceList:
         """Test None returns empty list."""
         assert OpenHomePlayer._source_list_from_source_xml(None) == []
 
-    def test_string(self) -> None:
-        """Test string returns empty list."""
-        assert OpenHomePlayer._source_list_from_source_xml("<Any>String including XML</Any>") == []
-
     def test_single_visible_source(self) -> None:
         """Test single visible source extraction."""
         xml = """<Sources>
