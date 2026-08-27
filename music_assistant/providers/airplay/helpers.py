@@ -170,6 +170,19 @@ def is_apple_tv(manufacturer: str, model: str) -> bool:
     return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
 
 
+def default_hires_enabled(manufacturer: str, model: str) -> bool:
+    """
+    Return whether 24-bit playback should be enabled by default for a device.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    """
+    # HomePods are WiFi-only receivers on the realtime (UDP) stream, whose
+    # 24-bit audio packets regularly exceed the network MTU; on a lossy WiFi
+    # link that surfaces as intermittent crackling, so they default to 16-bit.
+    return not (manufacturer.lower().startswith("apple") and "homepod" in model.lower())
+
+
 def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
     """
     Return the default receiver buffer depth in ms for a device, 0 for automatic.
