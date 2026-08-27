@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from ipaddress import IPv4Address
 from typing import TYPE_CHECKING
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
-from async_upnp_client.client import UpnpRequester
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.search import async_search
-from async_upnp_client.utils import CaseInsensitiveDict
+from ipaddress import IPv4Address
 from music_assistant_models.player import DeviceInfo
 from zeroconf import ServiceStateChange
 
@@ -22,11 +20,17 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CALLBACK_URL
+from .constants import CALLBACK_URL, CONF_NETWORK_SCAN
 from .helpers import OpenHomeNotifyServer
 from .player import OpenHomePlayer
 
+from ... import MusicAssistant
+
 if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpRequester
+    from async_upnp_client.utils import CaseInsensitiveDict
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -70,7 +74,6 @@ class OpenHomePlayerProvider(PlayerProvider):
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
-
     async def on_mdns_service_state_change(
             self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
@@ -83,7 +86,6 @@ class OpenHomePlayerProvider(PlayerProvider):
         player_id = info.decoded_properties["uuid"]  # this is just an example!
         if not player_id:
             return  # guard, we need a player_id to work with
-
 
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
