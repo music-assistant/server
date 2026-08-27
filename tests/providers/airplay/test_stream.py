@@ -2478,8 +2478,11 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
         operation_order.append("reader")
         return True
 
-    async def send_current_metadata(**_kwargs: Any) -> None:
+    metadata_push_kwargs: list[dict[str, Any]] = []
+
+    async def send_current_metadata(**kwargs: Any) -> None:
         operation_order.append("metadata")
+        metadata_push_kwargs.append(kwargs)
 
     with (
         patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
@@ -2491,6 +2494,10 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
     # Nothing is written before the binary has a reader on the command pipe.
     assert operation_order == ["reader", "metadata"]
+    # The connect push rides the budgeted artwork bundle (one now-playing
+    # rewrite on the device) instead of a bare replace with the artwork
+    # chasing it in a second replace moments later.
+    assert metadata_push_kwargs == [{}]
     # Metadata pushed synchronously on connect...
     player.on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
