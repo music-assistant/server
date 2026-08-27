@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -365,14 +366,21 @@ async def test_auto_music_refill_falls_back_to_library_after_provider_failure() 
     loader._autoplay.get_library_tracks.assert_awaited_once()
 
 
-async def test_music_refill_bails_when_the_queue_is_removed_mid_fetch() -> None:
-    """A queue removed while the refill fetches tracks is left alone instead of crashing."""
+@pytest.mark.parametrize("reregistered", [False, True])
+async def test_music_refill_bails_when_the_queue_is_removed_mid_fetch(
+    reregistered: bool,
+) -> None:
+    """A queue removed (or re-registered fresh) mid-fetch must not receive the stale batch."""
     track = _track()
     loader = _loader(_queue_item(track), seeds=[track])
     loader._autoplay.resolve_mode.return_value = AutoplayMode.LIBRARY
 
     async def _fetch_and_remove_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
         loader._queue_data.pop("q1")
+        if reregistered:
+            loader._queue_data["q1"] = SimpleNamespace(
+                items=[], enqueued_media_items=[], userid=None
+            )
         return [track]
 
     loader._autoplay.get_library_tracks = AsyncMock(side_effect=_fetch_and_remove_queue)

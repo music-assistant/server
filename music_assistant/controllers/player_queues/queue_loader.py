@@ -527,8 +527,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
         # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
-        if queue_id not in self._queue_data:
-            # the queue was removed (player deleted or ungrouped) while tracks were fetched
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while tracks were fetched
             return
         # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
         played = 0 if queue.current_index is None else queue.current_index + 1
@@ -610,6 +610,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         ):
             # already queued (e.g. the user added it themselves), so there is nothing to do
             return
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while the successor was fetched
+            return
         await self.load(
             queue_id,
             [build_queue_item(queue_id, next_item)],
@@ -670,8 +673,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
             return
-        if queue_id not in self._queue_data:
-            # the queue was removed (player deleted or ungrouped) while tracks were fetched
+        if self._queue_data.get(queue_id) is not queue_data:
+            # the queue was removed or re-registered while tracks were fetched
             return
         await self.load(
             queue_id,
