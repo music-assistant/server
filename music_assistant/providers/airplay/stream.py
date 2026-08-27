@@ -264,10 +264,10 @@ class AirPlayStream:
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
         self._native_control_failure_warned: bool = False
-        # Set when the owner hands this stream to a teardown. It stays published
-        # until that teardown has the process off the receiver, so ownership
-        # alone no longer tells the reporting guards below that the stream is on
-        # its way out.
+        # Set when the Sendspin bridge hands this stream to a teardown, which
+        # leaves it published until that teardown has the process off the
+        # receiver. Native teardowns need no flag: they stop the stream first,
+        # and stop() marks it before it touches the receiver.
         self.superseded: bool = False
 
     @property
@@ -1419,7 +1419,9 @@ class AirPlayStream:
                         # (native or Sendspin bridge) owns the player, so this
                         # process's death says nothing about the device:
                         # ungrouping or scheduling a re-join over it would tear
-                        # down the session that replaced it.
+                        # down the session that replaced it. The teardown flags
+                        # are not consulted here: this branch runs from the
+                        # reader that sets them.
                         logger.debug(
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
@@ -1905,16 +1907,30 @@ class AirPlayStream:
             # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
 
+    def _describes_the_device(self) -> bool:
+        """
+        Return whether what this stream reports is evidence about the receiver.
+
+        False while the stream is coming up, on its way out, or already replaced
+        on the player: a control channel that drops because the session is going
+        away says nothing about the device, so reporting it would tell the user
+        to go and fix a speaker that is fine.
+        """
+        return (
+            not self.superseded
+            and not self._stopping
+            and not self._stopped
+            and self.player.stream is self
+        )
+
     def _handle_native_control_failure(self) -> None:
         """Warn once that the receiver dropped the native AirPlay 2 control channel."""
         if self._native_control_failure_warned:
             return
-        if self.superseded or self.player.stream is not self:
-            # Not evidence about the device: either a newer session reset the
-            # control channel on the receiver, this stream is on its way out, or
-            # it is still coming up and has not been published yet. The binary keeps reporting while
-            # the failure lasts, so leaving the once-only latch unset here keeps
-            # a genuine failure reportable once the stream does own the player.
+        if not self._describes_the_device():
+            # The binary keeps reporting while the failure lasts, so leaving the
+            # once-only latch unset here keeps a genuine failure reportable once
+            # the stream does own the player.
             return
         self._native_control_failure_warned = True
         # Deliberately no automatic streaming-mode change here: the usual cause
@@ -2085,7 +2101,7 @@ class AirPlayStream:
         # taken over: neither its verdict nor its advice describes what the user
         # is hearing. The clock-ready wait below is still resolved, so its own
         # start path is not left hanging on evidence that will not arrive.
-        if stalled and not self._clock_stall_warned and self.player.stream is self:
+        if stalled and not self._clock_stall_warned and self._describes_the_device():
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             # Deliberately no automatic streaming-mode change: the streaming

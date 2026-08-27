@@ -1315,10 +1315,10 @@ class SendspinAirPlayBridge:
             stream_start_task.cancel()
         if writer_task and not writer_task.done():
             writer_task.cancel()
-        # The player's stream reference was dropped when this teardown was
-        # detached, but the process is still on the receiver until stop() below
-        # returns. Held so a native start cannot read that empty reference and
-        # pair a second cli process with a receiver this one has not let go of.
+        # The player still points at this stream: that reference is what tells a
+        # start there is a process to displace, so it is only dropped below,
+        # together with the release itself. Held so no start can land between
+        # the two and read the speaker as free.
         async with self.airplay_player.stream_spawn_lock:
             if stream_start_task:
                 with suppress(asyncio.CancelledError, Exception):
