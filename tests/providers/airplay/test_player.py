@@ -25,6 +25,7 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
     CONF_PASSWORD,
@@ -610,6 +611,75 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
     )
     assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
+
+
+def _make_hires_player(
+    manufacturer: str, model: str, stored_toggle: bool | None = None
+) -> AirPlayPlayer:
+    """Create a 24-bit capable AirPlay 2 player with the given device identity."""
+    provider = MagicMock()
+    _stub_raw_config(provider)
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer=manufacturer,
+        model=model,
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    player.advertised_audio_formats = ALAC_44100_24
+    values: dict[str, object] = {CONF_STREAMING_MODE: STREAMING_MODE_AUTO}
+    if stored_toggle is not None:
+        values[CONF_ENABLE_HIRES] = stored_toggle
+    _configure_player(player, values)
+    return player
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "expected"),
+    [
+        ("Apple", "HomePod 2", False),
+        ("Apple", "HomePod", False),
+        ("Apple", "Apple TV 4K Gen2", True),
+        ("Sonos", "Era 300", True),
+    ],
+)
+def test_hires_toggle_default_per_device(manufacturer: str, model: str, expected: bool) -> None:
+    """The 24-bit toggle defaults off for HomePods and on for everything else."""
+    player = _make_hires_player(manufacturer, model)
+    assert player.hires_playback_enabled is expected
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "stored", "expected"),
+    [
+        ("Apple", "HomePod 2", True, True),
+        ("Apple", "Apple TV 4K Gen2", False, False),
+    ],
+)
+def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expected: bool) -> None:
+    """A user-set 24-bit toggle overrides the per-device default."""
+    player = _make_hires_player(manufacturer, model, stored_toggle=stored)
+    assert player.hires_playback_enabled is expected
+
+
+@pytest.mark.asyncio
+async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlayer) -> None:
+    """The 24-bit entry is only offered when the device advertises 24-bit support."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+
+    airplay_player.advertised_audio_formats = ALAC_44100_16
+    entries = await airplay_player.get_config_entries()
+    assert not any(entry.key == CONF_ENABLE_HIRES for entry in entries)
+
+    airplay_player.advertised_audio_formats = ALAC_44100_24
+    entries = await airplay_player.get_config_entries()
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.default_value is True
 
 
 @pytest.mark.asyncio

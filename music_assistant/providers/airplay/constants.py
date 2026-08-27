@@ -70,6 +70,9 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 # capability; Automatic is the default and the setting is only ever written by
 # the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Per-device 24-bit toggle, only offered for devices that advertise 24-bit
+# support. Defaults per device family (see default_hires_enabled).
+CONF_ENABLE_HIRES: Final[str] = "enable_hires"
 # Provider marker that the compatibility-mode pins were reset once. Earlier
 # releases switched a player here themselves when its native control channel
 # failed (usually a network dropout), pinning it to a lane many devices reject
