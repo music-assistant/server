@@ -1978,11 +1978,23 @@ class AuthenticationManager:
         """Drop user access filter entries for providers or players that no longer exist."""
         known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
         known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
+
+        # one-off: the connected-player plugins collapsed their instances into a single
+        # instance keyed by the bare domain; filter entries naming a collapsed instance
+        # follow it instead of being pruned (which would lift the user's restriction).
+        # TODO: remove after 2.12 release
+        def _map_collapsed_plugin(entry: str) -> str:
+            for domain in ("spotify_connect", "airplay_receiver"):
+                if entry.startswith(f"{domain}--") and domain in known_providers:
+                    return domain
+            return entry
+
         # an empty config section means nothing is configured yet, which must not be
         # mistaken for everything having been removed
         await self._rewrite_user_filters(
             keep_provider=(lambda x: x in known_providers) if known_providers else None,
             keep_player=(lambda x: x in known_players) if known_players else None,
+            map_provider=_map_collapsed_plugin if known_providers else None,
         )
 
     async def _rewrite_user_filters(
@@ -1990,6 +2002,7 @@ class AuthenticationManager:
         keep_provider: Callable[[str], bool] | None,
         keep_player: Callable[[str], bool] | None,
         map_player: Callable[[str], str] | None = None,
+        map_provider: Callable[[str], str] | None = None,
     ) -> None:
         """
         Rewrite the access filters of all users.
@@ -1997,6 +2010,8 @@ class AuthenticationManager:
         :param keep_provider: Returns False for the provider entries that must be dropped.
         :param keep_player: Returns False for the player entries that must be dropped.
         :param map_player: Maps a player entry onto its replacement, applied before keep_player.
+        :param map_provider: Maps a provider entry onto its replacement, applied before
+            keep_provider.
         """
         if keep_provider is None and keep_player is None and map_player is None:
             return
@@ -2006,7 +2021,7 @@ class AuthenticationManager:
             for row in await self.database.get_rows("users", limit=0):
                 changed: dict[str, list[str]] = {}
                 for column, keep_func, map_func in (
-                    ("provider_filter", keep_provider, None),
+                    ("provider_filter", keep_provider, map_provider),
                     ("player_filter", keep_player, map_player),
                 ):
                     if keep_func is None and map_func is None:

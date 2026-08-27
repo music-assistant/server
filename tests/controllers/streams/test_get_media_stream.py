@@ -29,6 +29,8 @@ class _FakeFFMpeg:
     """FFMpeg test double that records the arguments it was constructed with."""
 
     last_instance: _FakeFFMpeg | None = None
+    # exit code the process is reaped with; None while it is still running
+    exit_code: int = 0
 
     def __init__(
         self,
@@ -46,10 +48,14 @@ class _FakeFFMpeg:
         self.input_format = input_format
         self._probed_codec_type = ContentType.FLAC  # arbitrary, distinct from PCM/OGG
         self.parsed_duration: int | None = None
-        self.returncode: int | None = 0
+        # mirrors the real FFMpeg: unset while the process runs, filled in on reap
+        self.returncode: int | None = None
         self.log_history: list[str] = []
         self.proc = MagicMock(pid=1234)
         self.stdin_feeder_exception: Exception | None = None
+        # records which teardown the stream picked: a clean end drains, anything
+        # else kills outright
+        self.torn_down_via: str | None = None
         type(self).last_instance = self
 
     async def start(self) -> None:
@@ -61,10 +67,15 @@ class _FakeFFMpeg:
         yield b"\x00\x01" * 256
 
     async def wait_with_timeout(self, _timeout: float) -> None:
-        return None
+        self.returncode = self.exit_code
 
     async def close(self) -> None:
-        return None
+        self.torn_down_via = "close"
+        self.returncode = self.exit_code
+
+    async def kill(self) -> None:
+        self.torn_down_via = "kill"
+        self.returncode = -9
 
 
 @pytest.fixture
@@ -202,6 +213,12 @@ class _TwoMinuteFFMpeg(_FakeFFMpeg):
             yield b"\x00" * _PCM_SAMPLE_SIZE
 
 
+class _AlreadyExitedFFMpeg(_FakeFFMpeg):
+    """FFMpeg double whose process exited with an error code before teardown."""
+
+    exit_code = 1
+
+
 class _FailingStartFFMpeg(_FakeFFMpeg):
     """FFMpeg double that fails while opening its source."""
 
@@ -330,6 +347,66 @@ async def test_get_media_stream_raises_when_source_stalls(
     audio = _make_audio_controller()
     with pytest.raises(AudioError):
         await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_kills_ffmpeg_when_source_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled source kills ffmpeg outright instead of waiting out the pipe drains."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _StallingFFMpeg)
+    monkeypatch.setattr(audio_mod, "STREAM_START_TIMEOUT", 0.1)
+    monkeypatch.setattr(audio_mod, "STREAM_STALL_TIMEOUT", 0.1)
+    monkeypatch.setattr(_StallingFFMpeg, "last_instance", None)
+
+    audio = _make_audio_controller()
+    with pytest.raises(AudioError):
+        await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+    assert _StallingFFMpeg.last_instance is not None
+    assert _StallingFFMpeg.last_instance.torn_down_via == "kill"
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_kills_ffmpeg_when_cancelled(
+    patch_ffmpeg: type[_FakeFFMpeg],
+) -> None:
+    """A consumer that walks away mid-stream kills ffmpeg rather than draining it."""
+    audio = _make_audio_controller()
+    stream = audio.get_media_stream(_flac_streamdetails(), _make_pcm_format())
+    await anext(stream)
+    await stream.aclose()
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.torn_down_via == "kill"
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_closes_ffmpeg_that_already_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ffmpeg that already exited is closed, so its stdin feeder is still cancelled."""
+    monkeypatch.setattr(audio_mod, "FFMpeg", _AlreadyExitedFFMpeg)
+    monkeypatch.setattr(_AlreadyExitedFFMpeg, "last_instance", None)
+
+    audio = _make_audio_controller()
+    with pytest.raises(AudioError):
+        await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+    assert _AlreadyExitedFFMpeg.last_instance is not None
+    assert _AlreadyExitedFFMpeg.last_instance.torn_down_via == "close"
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_closes_ffmpeg_on_clean_end(
+    patch_ffmpeg: type[_FakeFFMpeg],
+) -> None:
+    """A stream that reaches its end still drains ffmpeg, so no trailing audio is lost."""
+    audio = _make_audio_controller()
+    await _drain(audio.get_media_stream(_flac_streamdetails(), _make_pcm_format()))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.torn_down_via == "close"
 
 
 @pytest.mark.asyncio

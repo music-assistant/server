@@ -60,11 +60,6 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             bit_rate=320,
         )
 
-    @property
-    def max_concurrent_streams(self) -> int:
-        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
-        return 2
-
     async def setup(self) -> None:
         """
         Validate the librespot binary and install the stored playback credential.
@@ -140,7 +135,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             provider = self.provider
 
             async def log_librespot_output() -> None:
-                """Log librespot output if verbose logging is enabled."""
+                """Log librespot's output, and end the process when it reports a fatal error."""
                 async for line in librespot_proc.iter_stderr():
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:

@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 57
+API_SCHEMA_VERSION: Final[int] = 63
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -99,6 +99,7 @@ CONF_SERVER_ID: Final[str] = "server_id"
 CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
+CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -185,6 +186,7 @@ CONF_ZEROCONF_INTERFACES: Final[str] = "zeroconf_interfaces"
 CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
+CONF_PLUGIN_KEY_SPLITTER: Final[str] = "||plugin||"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
 CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 

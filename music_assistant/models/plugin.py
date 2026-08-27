@@ -93,6 +93,22 @@ class PluginProvider(Provider):
             raise NotImplementedError
         return []
 
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource] | None:
+        """
+        Return the AudioSources this plugin has bound to the given player.
+
+        Plugins that expose one source per (connected) player override this so
+        consumers can scope source listings to a single player: return the
+        player's own sources, or an empty list when the player has none on this
+        plugin. The default of None means the plugin's sources are not
+        player-bound and apply to every player.
+
+        Sync on purpose: called from the player's (sync) state calculation.
+
+        :param player_id: The player to return the bound AudioSources for.
+        """
+        return None
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for a streamable item owned by this plugin.
@@ -163,6 +179,22 @@ class PluginProvider(Provider):
         # so an unimplemented provider fails deterministically without emitting
         # a stray empty chunk to the downstream consumer first.
         yield b""  # type: ignore[unreachable]
+
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin normalizes the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
+
+    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
+        """
+        Return whether this plugin crossfades the live audio it delivers, if known.
+
+        :param streamdetails: Stream details of the active AudioSource.
+        """
+        return None
 
     async def on_source_control(
         self,

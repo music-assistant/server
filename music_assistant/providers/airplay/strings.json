@@ -36,16 +36,16 @@
       "description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync."
     },
     "pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "pairing_password": {
       "label": "Enter the device password"
     },
     "companion_pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "mrp_pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "pair_now": {
       "label": "Set up now"
@@ -58,7 +58,7 @@
   "setup_flow": {
     "pair_pin": {
       "title": "Pair with your device",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to complete pairing."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to complete pairing."
     },
     "pair_password": {
       "title": "Enter the device password",
@@ -74,7 +74,7 @@
     },
     "pair_companion": {
       "title": "Pair remote control",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to pair the remote controls."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to pair the remote controls."
     },
     "mrp_offer": {
       "title": "Set up playback monitoring (optional)",
@@ -82,20 +82,21 @@
     },
     "pair_mrp": {
       "title": "Pair playback monitoring",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to pair playback monitoring."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to pair playback monitoring."
     },
     "abort": {
       "pairing_failed": "Could not start pairing with the device. Make sure the device is reachable on the network and try again."
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "invalid_pin": "Enter the numeric pairing code shown on the screen of your device.",
+    "invalid_value": "Enter the complete pairing code exactly as shown on the device.",
     "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
     "connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
     "show_dashboard_failed": "Failed to show the dashboard on {0}.",
-    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the PIN.",
+    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the pairing code.",
     "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
-    "pairing_wrong_pin": "The device rejected the PIN. Start pairing again and enter the new code shown on its screen."
+    "pairing_wrong_pin": "The device rejected the pairing code. Start pairing again and enter the new code shown on its screen."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."

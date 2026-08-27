@@ -132,7 +132,7 @@ class SoloistBackend(SpotifyConnectBackend):
         self,
         mass: MusicAssistant,
         *,
-        instance_id: str,
+        identity_key: str,
         publish_name: str,
         name: str,
         logger: logging.Logger,
@@ -148,8 +148,8 @@ class SoloistBackend(SpotifyConnectBackend):
         Initialize the backend (cheap; the daemon is launched in ``start``).
 
         :param mass: The MusicAssistant instance.
-        :param instance_id: The owning provider's instance id; keys the
-            data/cache dirs and the capture sink name.
+        :param identity_key: Unique identity of this daemon (one per connected
+            player); keys the data/cache dirs and the capture sink name.
         :param publish_name: Device name advertised to the Spotify app.
         :param name: Display name of the owning provider instance (log messages).
         :param logger: Logger to use for diagnostics.
@@ -180,10 +180,10 @@ class SoloistBackend(SpotifyConnectBackend):
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
         self._audio_quality = audio_quality
-        self._data_dir = Path(mass.storage_path) / "spotify_connect" / instance_id / "soloist-data"
-        self._cache_dir = Path(mass.cache_path) / instance_id / "soloist-cache"
+        self._data_dir = Path(mass.storage_path) / "spotify_connect" / identity_key / "soloist-data"
+        self._cache_dir = Path(mass.cache_path) / identity_key / "soloist-cache"
         # PA sink names end up in space-delimited module arguments and env vars
-        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", instance_id)
+        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", identity_key)
         self._binary: Path | None = None
         # digest of the build the running daemon was spawned from; the shared
         # install can move ahead of it when a sibling instance updates first
@@ -212,9 +212,6 @@ class SoloistBackend(SpotifyConnectBackend):
         self._spotify_volume: int | None = None
         # guards the player_only 100%-pin so overlapping resets are not issued
         self._pin_in_flight: bool = False
-        # whether an auth_state ever reported a completed login; a fresh daemon
-        # reports logged_in=False while advertising for pairing, which is normal
-        self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
         # the capture sink delivers fixed s32le/44.1kHz/2ch PCM — that is what
@@ -257,7 +254,10 @@ class SoloistBackend(SpotifyConnectBackend):
 
     @property
     def stream_ends_on_pause(self) -> bool:
-        """The pipe sink delivers silence on pause; the provider stops the player."""
+        """The pipe sink never signals end of stream; the provider stops the player."""
+        # the sink renders only while a client is connected: silence while the daemon
+        # holds its stream open, nothing at all once the daemon drops it. A reader
+        # therefore sees neither audio nor EOF, so MA has to end the stream itself.
         return False
 
     @property
@@ -667,6 +667,10 @@ class SoloistBackend(SpotifyConnectBackend):
                         # fatal errors are plain (non-localized) strings for now,
                         # matching the go-librespot backend
                         error="soloist daemon failed to start multiple times.",
+                        # repeated soloist exits are dominated by engine-level
+                        # problems (e.g. a bad or revoked API key) that hit every
+                        # daemon alike
+                        provider_wide=True,
                     )
                 )
                 return
@@ -771,6 +775,8 @@ class SoloistBackend(SpotifyConnectBackend):
                         "installed. Check the server's internet connection and reload "
                         "this provider."
                     ),
+                    # the binary (and its expiry) is shared by every daemon
+                    provider_wide=True,
                 )
             )
             return False
@@ -925,18 +931,12 @@ class SoloistBackend(SpotifyConnectBackend):
         """Map a raw soloist event onto the normalized BackendEvent model."""
         data = event.data
         if isinstance(data, SoloistAuthState):
-            if not data.logged_in:
-                if self._was_logged_in:
-                    # an established login was lost mid-session: real auth loss
-                    self._was_logged_in = False
-                    return self._make_event(BackendEventType.AUTH_REQUIRED)
-                # a fresh daemon reports logged_in=False while advertising for
-                # pairing; that is the normal pre-pairing state, not an auth loss
-                return self._make_event(BackendEventType.SESSION_INACTIVE)
-            self._was_logged_in = True
+            # a logged-out daemon keeps advertising itself for Connect, so being
+            # signed out is just a session that ended: awaiting a first pairing,
+            # the user signing out, or another account taking the device over
             return self._make_event(
                 BackendEventType.SESSION_ACTIVE
-                if data.is_active
+                if data.logged_in and data.is_active
                 else BackendEventType.SESSION_INACTIVE
             )
         if isinstance(data, SoloistDeviceChanged):

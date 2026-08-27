@@ -9,7 +9,7 @@ changes — at the cost of a managed binary download and a per-user API key.
    Spotify app  (mobile / desktop / web)
         │   Connect protocol: mDNS discovery + audio
         ▼
-   soloist daemon  (one per instance, spawned with PULSE_SINK=<capture sink>)
+   soloist daemon  (one per connected player, spawned with PULSE_SINK=<capture sink>)
         │   plays decoded PCM into a PulseAudio pipe-sink
         ▼
    PulseAudio module-pipe-sink ──▶ FIFO (s32le / 44.1 kHz / 2ch)
@@ -27,14 +27,17 @@ changes — at the cost of a managed binary download and a per-user API key.
   volume modes, event translation.
 - **`runtime.py`** — everything needed to run the daemon: `SoloistBinaryManager` (managed
   binary install), `SoloistClient` (local WebSocket API) and the typed wire models. Also
-  the import surface for other providers (e.g. a future Spotify music provider).
+  the import surface for other providers — the Spotify music provider's own soloist
+  playback backend reuses it rather than shipping a second copy.
+- **`prefs.py`** — `write_audio_prefs`: the classic desktop-client prefs stores the engine
+  reads at startup (crossfade, normalization, quality tier).
 
 ## Binary management (`SoloistBinaryManager`)
 
 Spotify does not distribute Soloist through package managers; the manager downloads the
 tarball for the host architecture from Spotify's CDN — **only after explicit user consent**
 recorded in the setup flow — validates it (tar structure, ELF magic and architecture),
-and installs it atomically (write-aside + rename, with rollback). All instances share one
+and installs it atomically (write-aside + rename, with rollback). All daemons share one
 install under the MA storage dir, serialized by a module-level lock.
 
 Soloist builds **expire 90 days after their build date** (the daemon then exits with code
@@ -43,19 +46,20 @@ Soloist builds **expire 90 days after their build date** (the daemon then exits 
 1. **Install-time**: `ensure_fresh()` replaces a build nearing/at expiry (metadata
    timestamp parsed from `--version`), keeping a still-valid binary on download failure.
 2. **Daily refresh loop**: replaces the build ahead of expiry and respawns the daemon.
-   The comparison baseline is the digest of the build *this* instance's daemon runs, so an
-   update installed by a sibling instance is picked up too.
+   The comparison baseline is the digest of the build *this* daemon runs, so an update
+   installed by a sibling daemon is picked up too.
 3. **Exit-code-10 recovery**: a forced re-verification (bypassing the short verify cache)
    before the supervisor respawns.
 
-A recently-verified cache (60 s) keeps concurrent instance startups from re-checking; the
-API key is only ever passed on the daemon's argv and redacted from logged stderr.
+A recently-verified cache (60 s) keeps concurrent daemon startups from re-checking; the
+API key is only ever passed on the daemon's argv and redacted from its captured
+output (stderr is merged into stdout, which the log reader redacts).
 
 ## Audio capture (PulseAudio pipe-sink)
 
 Soloist has no pipe/stdout output of its own — it plays into an audio server. The backend
 uses the shared `helpers/pulse_capture.py` infrastructure: a private per-MA PulseAudio
-daemon hosting one `module-pipe-sink` per instance, delivering s32le/44.1kHz/2ch PCM into
+daemon hosting one `module-pipe-sink` per daemon, delivering s32le/44.1kHz/2ch PCM into
 a FIFO. The daemon is spawned with `PULSE_SERVER`/`PULSE_SINK` pointing at its sink.
 
 - `get_stream_source()` is a **pure read** (it also runs from queue preload): it returns
@@ -65,9 +69,12 @@ a FIFO. The daemon is spawned with `PULSE_SERVER`/`PULSE_SINK` pointing at its s
   recreation always respawns the soloist daemon (it holds the sink name in its spawn env).
 - Failed sink volume operations **fail closed**: sink and daemon are torn down and rebuilt
   rather than risking audio through a sink with an unknown gain.
-- The pipe-sink emits **silence when paused** (no EOF), so `stream_ends_on_pause` is
-  False: the provider actively stops the MA player on a `PAUSED` event (bounded, replaced
-  by a quick resume).
+- The pipe-sink **never signals end of stream**, so `stream_ends_on_pause` is False: the
+  provider actively stops the MA player on a `PAUSED` event (bounded, replaced by a quick
+  resume). The sink renders only while a client is connected — it emits silence while the
+  daemon holds its stream open and nothing at all once the daemon drops it, and suspending
+  the sink does not produce an EOF either. A reader that outlives the pause blocks until
+  the stall timeout, so MA must end the stream itself.
 
 ## Volume modes
 
@@ -94,9 +101,10 @@ acknowledged FIFO per command type. `play()` claims active device status first
 (`activate`) — a bare play would start local playback without a Connect transfer, leaving
 the Spotify apps unaware.
 
-An `auth_state` reporting `logged_in: false` after a previously seen login raises
-`AUTH_REQUIRED` (→ provider unloads with a login error routing the user through setup);
-a fresh daemon reporting `logged_in: false` while awaiting pairing is normal.
+An `auth_state` reporting `logged_in: false` is always a `SESSION_INACTIVE`, never an
+error: the daemon keeps advertising itself for Connect while logged out, so awaiting a
+first pairing, the user signing out and another account taking the device over all leave
+it usable. MA never signs the daemon in — any Spotify account may claim it from its app.
 
 ## Audio behavior settings
 
@@ -108,9 +116,10 @@ loudness normalization and crossfade settings are applied: the backend rewrites
 silently disable crossfade) and `audio.normalize_v2` before every daemon spawn, in both
 the global `settings/prefs` and every per-user `settings/Users/*/prefs` (per-user values
 override global ones per key; the engine scrubs foreign keys from the global store when
-it rewrites it, hence the refresh on every spawn). Crossfade applies to playlist/queue
-transitions; consecutive album tracks keep playing gapless and manual skips stay hard
-cuts (engine behavior, matching desktop Spotify).
+it rewrites it, hence the refresh on every spawn). Crossfade only reaches boundaries fed
+through the engine's queue: a real album or playlist context is never crossfaded
+(measured), and that path is not gapless either — the outgoing file's trailing silence
+is left in place.
 
 The streaming quality setting travels the same way, as `audio.play_bitrate_enumeration`,
 `audio.play_bitrate_non_metered_enumeration` and the `audio.play_bitrate_non_metered_migrated`

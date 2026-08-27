@@ -737,3 +737,110 @@ async def test_heal_track_mapping_swallows_errors(provider: TidalProvider) -> No
 
         # Should not raise.
         await provider._heal_track_mapping(1, "stale_123", "NEW")
+
+
+@pytest.fixture
+def track_mock() -> Mock:
+    """Return a mock track with a duration, for on_played tests."""
+    track = Mock(spec=Track)
+    track.duration = 200
+    return track
+
+
+def _capture_create_task(provider: TidalProvider) -> list[Any]:
+    """Replace mass.create_task with one that captures the coroutine instead of running it."""
+    captured: list[Any] = []
+    provider.mass.create_task = captured.append  # type: ignore[method-assign,assignment]
+    return captured
+
+
+async def test_on_played_ignores_non_track_media_type(provider: TidalProvider) -> None:
+    """Test on_played schedules nothing for a non-TRACK media type."""
+    captured = _capture_create_task(provider)
+
+    await provider.on_played(
+        media_type=MediaType.ALBUM,
+        prov_item_id="123",
+        fully_played=True,
+        position=200,
+        media_item=Mock(spec=Album),
+        is_playing=False,
+    )
+
+    assert captured == []
+
+
+async def test_on_played_ignores_progress_pings(provider: TidalProvider, track_mock: Mock) -> None:
+    """Test on_played schedules nothing for the periodic is_playing=True progress pings."""
+    captured = _capture_create_task(provider)
+
+    await provider.on_played(
+        media_type=MediaType.TRACK,
+        prov_item_id="123",
+        fully_played=False,
+        position=30,
+        media_item=track_mock,
+        is_playing=True,
+    )
+
+    assert captured == []
+
+
+async def test_on_played_ignores_non_track_media_item(provider: TidalProvider) -> None:
+    """Test the isinstance guard: a non-Track media_item is never reported."""
+    captured = _capture_create_task(provider)
+
+    await provider.on_played(
+        media_type=MediaType.TRACK,
+        prov_item_id="123",
+        fully_played=True,
+        position=200,
+        media_item=Mock(spec=Album),
+        is_playing=False,
+    )
+
+    assert captured == []
+
+
+async def test_on_played_schedules_report_for_terminal_calls(
+    provider: TidalProvider, track_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test a terminal TRACK call schedules report_played with matching positional args."""
+    report_played_mock = AsyncMock()
+    monkeypatch.setattr(provider.play_reporting, "report_played", report_played_mock)
+    captured = _capture_create_task(provider)
+
+    await provider.on_played(
+        media_type=MediaType.TRACK,
+        prov_item_id="123",
+        fully_played=True,
+        position=195,
+        media_item=track_mock,
+        is_playing=False,
+    )
+
+    assert len(captured) == 1
+    await captured[0]
+    report_played_mock.assert_awaited_once_with("123", 200, 195, True)
+
+
+async def test_on_played_schedules_report_for_stop_or_skip_too(
+    provider: TidalProvider, track_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test a stop/skip still reaches report_played, which decides itself whether to send."""
+    report_played_mock = AsyncMock()
+    monkeypatch.setattr(provider.play_reporting, "report_played", report_played_mock)
+    captured = _capture_create_task(provider)
+
+    await provider.on_played(
+        media_type=MediaType.TRACK,
+        prov_item_id="123",
+        fully_played=False,
+        position=30,
+        media_item=track_mock,
+        is_playing=False,
+    )
+
+    assert len(captured) == 1
+    await captured[0]
+    report_played_mock.assert_awaited_once_with("123", 200, 30, False)

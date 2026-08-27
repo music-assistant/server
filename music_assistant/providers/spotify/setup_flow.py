@@ -216,9 +216,9 @@ async def _verify_account(session: SetupSession, access_token: str) -> str | Non
     """
     Check the just-authenticated Spotify account and return its id.
 
-    Turns the user away when the account has no Spotify Premium (librespot, which
-    streams this provider's audio, refuses to play for a free account) or when it is
-    already set up on another provider instance. A lookup Spotify does not answer is
+    Turns the user away when the account has no Spotify Premium (neither playback
+    backend can stream for a free account) or when it is already set up on another
+    provider instance. A lookup Spotify does not answer is
     not held against the user: the setup simply continues and None is returned.
 
     :param session: The setup session driving the flow.
@@ -569,11 +569,11 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
     """
     Obtain librespot's playback credential and return it as stored-credential JSON.
 
-    Offers pairing through the Spotify app first and falls back to a browser sign-in for
-    setups where the Spotify app cannot discover Music Assistant. The credential has to
-    belong to the account that signed in: authorizing playback from a Spotify app that
-    is logged in as someone else would leave the library and the audio on different
-    accounts.
+    Lets the user pick between pairing through the Spotify app (the default) and a
+    browser sign-in, for setups where the Spotify app cannot discover Music Assistant.
+    The credential has to belong to the account that signed in: authorizing playback
+    from a Spotify app logged in as someone else would leave the library and the audio
+    on different accounts.
 
     :param session: The setup session driving the flow.
     :param account_id: The signed-in Spotify user id to match the credential against;
@@ -651,8 +651,9 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
     """
     Run the keymaster sign-in and return librespot's stored credential.
 
-    Spotify only accepts a loopback redirect for this client id, so the browser cannot report
-    back to Music Assistant: the user copies the URL their browser ended up on instead.
+    Spotify only accepts a loopback redirect for this client id, which Music Assistant
+    serves itself: the step completes on its own when the browser runs on this host, and
+    everyone else pastes back the URL their browser ended up on.
 
     :param session: The setup session driving the flow.
     :param librespot_bin: Path to the librespot binary.
