@@ -326,6 +326,9 @@ class SendspinAirPlayBridge:
         # teardown across that gap lets the next stream reuse the connected
         # binary via flush-refill instead of a cold reconnect.
         self._teardown_timer_id = f"bridge_teardown_{airplay_player.player_id}"
+        # Guards the bridge's own registration teardown. Held across the stream
+        # teardown, which takes the player's stream_spawn_lock, so a start path
+        # must never be wrapped in this one: that would invert the two.
         self._lock = asyncio.Lock()
 
     @property
@@ -692,7 +695,9 @@ class SendspinAirPlayBridge:
         try:
             # Ensure the old CLI process is fully stopped before starting a new one.
             # Without this, both old and new processes could try to connect to the
-            # same AirPlay device simultaneously.
+            # same AirPlay device simultaneously. Awaited BEFORE the spawn lock
+            # below and never under it: the cleanup takes that same lock, so the
+            # two orders cannot be swapped.
             cleanup = self._cleanup_task
             if cleanup and not cleanup.done():
                 await cleanup
@@ -1301,8 +1306,7 @@ class SendspinAirPlayBridge:
 
         # Cancelled before the spawn lock is taken: a start task holding it only
         # lets go once it unwinds, so waiting for the lock first would leave
-        # nobody to ask it to. Neither cancel awaits, so the lock is claimed
-        # ahead of any start that arrives from here on.
+        # nobody to ask it to.
         if stream_start_task and not stream_start_task.done():
             stream_start_task.cancel()
         if writer_task and not writer_task.done():

@@ -1016,8 +1016,10 @@ async def test_a_bridge_start_cannot_slip_into_a_native_start() -> None:
         displaced_stream.running = False
         processes.kill()
         if bridge_task is not None:
-            # the bridge displaces this same stream once it gets the lock; only
-            # the native path's own stop is the interleaving under test
+            # Only the first call is the interleaving under test. Without the
+            # spawn lock the bridge start finds this same stream still published
+            # and re-enters here; starting another bridge task would supersede
+            # the one under test and the race would go unnoticed.
             return
         bridge_task = asyncio.create_task(bridge._start_protocol_from_chunk())
         # published before the task runs: the start path compares itself against
@@ -1087,10 +1089,10 @@ async def test_a_native_start_waits_for_the_bridge_to_let_go_of_the_receiver() -
     """
     A native start after a stop waits for the bridge process to actually be gone.
 
-    A stop hands the transport to the cleanup path, which unpublishes it at once
-    but only kills the process a few awaits later. A play arriving in between
-    reads no published stream, so it has nothing to displace and would otherwise
-    pair its own process with a receiver the old one is still holding.
+    A stop (stop_streaming, or a give-up through _abandon_streaming) hands the
+    transport to the cleanup path, which only kills the process a few awaits
+    later. A play arriving in between would otherwise pair its own process with
+    a receiver the old one is still holding.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     player = bridge.airplay_player
