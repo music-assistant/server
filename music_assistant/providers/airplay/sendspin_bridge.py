@@ -1331,11 +1331,15 @@ class SendspinAirPlayBridge:
                 # can fire after the native path already replaced the player's
                 # stream, and dropping that reference would strand a session the
                 # bridge never owned.
+                # Cleared ahead of the release rather than after it so stop()
+                # reports through the reset below instead of its own, which the
+                # clear would drop anyway. Both sit under the lock, so no start
+                # can read the speaker as free in between.
                 if self.airplay_player.stream is stream:
                     self.airplay_player.stream = None
                 with suppress(Exception):
                     await stream.stop(force=True)
-                # Restore the IDLE reset that stop() dropped because the stream was detached first
+                # Restore the IDLE reset that stop() dropped over the clear above
                 if self.airplay_player.stream is None:
                     self.airplay_player.set_state_from_stream(
                         state=PlaybackState.IDLE, elapsed_time=0
