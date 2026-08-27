@@ -706,44 +706,53 @@ class SendspinAirPlayBridge:
                 # neither the kept stream nor the receiver is this task's to touch.
                 return
 
-            # A player stream the bridge does not own is a live native session
-            # being displaced by this start. Stop it before the new process
-            # pairs with the receiver: two cli processes on one receiver reset
-            # each other's RTSP channel and both sessions die.
-            displaced_stream = self.airplay_player.stream
-            if displaced_stream is not None and displaced_stream is not self._airplay_stream:
-                await self._stop_displaced_stream(displaced_stream)
-                if self.airplay_player.stream is displaced_stream:
-                    self.airplay_player.stream = None
+            # The native start path takes the same lock around its own displace-
+            # connect-publish sequence, so the two can no longer interleave into
+            # two cli processes on one receiver.
+            async with self.airplay_player.stream_spawn_lock:
                 if asyncio.current_task() is not self._airplay_stream_start_task:
-                    # A newer stream start took the bridge over while the
-                    # displaced session was being stopped.
+                    # A newer stream start took the bridge over while this one
+                    # waited for the spawn lock.
                     return
 
-            # A kept, still-connected stream (see _stream_is_warm_eligible,
-            # checked by the stream-start callbacks) absorbs the new media via a
-            # flush-refill on the SAME cli stdin instead of a cold reconnect.
-            kept_stream = self._airplay_stream
-            if kept_stream is not None:
-                if await self._start_warm_stream(kept_stream):
-                    return
-                if asyncio.current_task() is not self._airplay_stream_start_task:
-                    # Not a failure: a newer stream start owns the bridge and the
-                    # kept stream, so neither is this task's to tear down.
-                    return
-                # Warm handover failed - tear down the kept stream and fall through
-                # to the cold path below, which spawns a fresh process.
-                with suppress(Exception):
-                    await kept_stream.stop(force=True)
-                self._airplay_stream = None
-                if self.airplay_player.stream is kept_stream:
-                    self.airplay_player.stream = None
-                self._use_shared_ptp = None
+                # A player stream the bridge does not own is a live native session
+                # being displaced by this start. Stop it before the new process
+                # pairs with the receiver: two cli processes on one receiver reset
+                # each other's RTSP channel and both sessions die.
+                displaced_stream = self.airplay_player.stream
+                if displaced_stream is not None and displaced_stream is not self._airplay_stream:
+                    await self._stop_displaced_stream(displaced_stream)
+                    if self.airplay_player.stream is displaced_stream:
+                        self.airplay_player.stream = None
+                    if asyncio.current_task() is not self._airplay_stream_start_task:
+                        # A newer stream start took the bridge over while the
+                        # displaced session was being stopped.
+                        return
 
-            # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
-            # for cleanup. If we assigned it earlier, the new stream would be missed
-            # and leaked. Only publish once connect() succeeds and this task is current.
-            await self._start_cold_stream(AirPlayStream(self.airplay_player))
+                # A kept, still-connected stream (see _stream_is_warm_eligible,
+                # checked by the stream-start callbacks) absorbs the new media via a
+                # flush-refill on the SAME cli stdin instead of a cold reconnect.
+                kept_stream = self._airplay_stream
+                if kept_stream is not None:
+                    if await self._start_warm_stream(kept_stream):
+                        return
+                    if asyncio.current_task() is not self._airplay_stream_start_task:
+                        # Not a failure: a newer stream start owns the bridge and the
+                        # kept stream, so neither is this task's to tear down.
+                        return
+                    # Warm handover failed - tear down the kept stream and fall through
+                    # to the cold path below, which spawns a fresh process.
+                    with suppress(Exception):
+                        await kept_stream.stop(force=True)
+                    self._airplay_stream = None
+                    if self.airplay_player.stream is kept_stream:
+                        self.airplay_player.stream = None
+                    self._use_shared_ptp = None
+
+                # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
+                # for cleanup. If we assigned it earlier, the new stream would be missed
+                # and leaked. Only publish once connect() succeeds and this task is current.
+                await self._start_cold_stream(AirPlayStream(self.airplay_player))
         except Exception as err:
             self.logger.error(
                 "Failed to start AirPlay protocol for %s: %s",

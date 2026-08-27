@@ -48,6 +48,7 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.sendspin_bridge import (
     BRIDGE_COLD_START_LEAD_MS,
     BRIDGE_MIN_BUFFER_MS,
@@ -64,6 +65,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     sendspin_audible_instant_to_unix_ms,
     unix_ms_to_sendspin_audible_instant,
 )
+from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BYTES_PER_SAMPLE,
     BRIDGE_CHANNELS,
@@ -216,6 +218,9 @@ def _make_bridge(
     # A real None: the start path stops whatever stream the player already holds
     # before it spawns a process, and a bare MagicMock reads as a live session.
     airplay_player.stream = None
+    # A real lock: it is what keeps the bridge and native spawn paths off the
+    # same receiver, and `async with` on a MagicMock does not even work.
+    airplay_player.stream_spawn_lock = asyncio.Lock()
     # A real int: the anchor math guards sync_adjust with isinstance(..., int), so
     # a MagicMock would silently read as 0 and pass the test for the wrong reason.
     airplay_player.config.get_value = MagicMock(return_value=sync_adjust)
@@ -840,6 +845,141 @@ async def test_cold_start_stops_a_native_session_before_it_spawns_a_process() ->
     assert order == ["stop", "remove_client", "connect"]
     assert session.remove_client.await_args.args[0] is bridge.airplay_player
     assert bridge.airplay_player.stream is stream
+
+
+class _ReceiverProcesses:
+    """
+    Counts the cli processes live on one receiver.
+
+    Two of them reset each other's RTSP channel and both sessions die, so
+    ``peak`` is the value the collision tests assert on.
+    """
+
+    def __init__(self) -> None:
+        self.live = 0
+        self.peak = 0
+
+    def spawn(self, *_args: object, **_kwargs: object) -> None:
+        """Record a cli process pairing with the receiver."""
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+
+    def kill(self, *_args: object, **_kwargs: object) -> None:
+        """Record a cli process letting go of the receiver."""
+        self.live = max(0, self.live - 1)
+
+
+async def _run_native_start(player: AirPlayPlayer, stream: MagicMock) -> None:
+    """Run the real native start path for a player against a throwaway session."""
+    pcm_format = MagicMock(sample_rate=44100, bit_depth=16, channels=2)
+    session = AirPlayStreamSession(MagicMock(), [player], pcm_format, MagicMock(elapsed_time=0))
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.AirPlayStream",
+            return_value=stream,
+        ),
+    ):
+        await session._start_client(player, False)
+
+
+async def _bridge_start_racing_a_native_start(
+    interleave_at: str,
+) -> tuple[SendspinAirPlayBridge, _ReceiverProcesses, MagicMock, asyncio.Task[None]]:
+    """
+    Drive a bridge start and let a native start in at one of its awaits.
+
+    :param interleave_at: "displacement" starts the native path while the bridge
+        releases the session it is displacing, "connect" starts it while the
+        bridge's own cold connect is in flight.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    player = bridge.airplay_player
+    processes = _ReceiverProcesses()
+    native_task: asyncio.Task[None] | None = None
+
+    native_stream = _make_native_stream()
+    native_stream.running = False
+    native_stream.connect = AsyncMock(side_effect=processes.spawn)
+    native_stream.stop = AsyncMock(side_effect=processes.kill)
+
+    async def _start_native() -> None:
+        """Fire the native start and let it run until it can get no further."""
+        nonlocal native_task
+        native_task = asyncio.create_task(_run_native_start(player, native_stream))
+        # Three passes through the loop: enough for the native start to reach
+        # the spawn lock and, without one, to spawn its process outright.
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    displaced_stream = _make_native_stream(MagicMock(remove_client=AsyncMock()))
+    displaced_stream.running = True
+    processes.spawn()
+
+    async def _stop_displaced(**_kwargs: object) -> None:
+        displaced_stream.running = False
+        processes.kill()
+        if interleave_at == "displacement":
+            await _start_native()
+
+    displaced_stream.stop = AsyncMock(side_effect=_stop_displaced)
+    player.stream = displaced_stream
+
+    bridge_stream = _make_anchor_stream()
+    bridge_stream.stop = AsyncMock(side_effect=processes.kill)
+
+    async def _connect(*_args: object, **_kwargs: object) -> None:
+        processes.spawn()
+        if interleave_at == "connect":
+            await _start_native()
+
+    bridge_stream.connect = AsyncMock(side_effect=_connect)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=bridge_stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert native_task is not None
+    return bridge, processes, bridge_stream, native_task
+
+
+@pytest.mark.parametrize("interleave_at", ["displacement", "connect"])
+async def test_a_native_start_cannot_slip_into_a_bridge_start(interleave_at: str) -> None:
+    """
+    A native start racing a bridge start waits for it instead of joining it.
+
+    Both paths spawn a cli process for the same receiver, and neither the
+    displacement nor the cold connect is instant. Without the shared spawn lock
+    the native start publishes its own stream inside one of those awaits and the
+    bridge then connects a second process over it - two sessions on one receiver,
+    with the native one orphaned by the bridge's later publication.
+    """
+    bridge, processes, bridge_stream, native_task = await _bridge_start_racing_a_native_start(
+        interleave_at
+    )
+
+    # the bridge start finished on its own process, with the native one still
+    # queued behind the lock rather than paired with the same receiver
+    assert processes.peak == 1
+    assert not native_task.done()
+    assert bridge.airplay_player.stream is bridge_stream
+
+    await native_task
+
+    # the native start then displaces the bridge in turn, still one at a time
+    assert processes.peak == 1
+    assert processes.live == 1
+    bridge_stream.stop.assert_awaited()
 
 
 async def test_a_displaced_stream_that_cannot_be_stopped_blocks_the_start() -> None:
