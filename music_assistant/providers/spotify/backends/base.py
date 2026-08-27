@@ -23,8 +23,9 @@ class StreamSupersededError(AudioError):
     Raised when Music Assistant replaced the stream that was delivering an item.
 
     A backend that serves a queue from one session cuts the stream of an item it
-    is asked to serve from a new one - a seek - so nothing beyond the cut belongs
-    to the stream that was replaced, whichever part of the item it asks for.
+    is asked to serve from a new one - a seek - and refuses it the session again,
+    whichever part of the item it comes back for: nothing beyond the cut is that
+    stream's to deliver.
     """
 
 

@@ -973,6 +973,24 @@ async def test_a_chapter_rolled_into_after_a_seek_does_not_take_the_session_back
     assert live.claimed is True
 
 
+async def test_a_chapter_boundary_that_finds_another_player_reports_capacity(
+    tmp_path: Path,
+) -> None:
+    """Another player taking the session in that gap is capacity, not a supersede."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player2")
+    backend._session = session
+    # the other player started something of its own while this book was between
+    # chapters, which is what its stream has to be told
+    _streamed(session, TRACK_A, media_key=_streamdetails_for(queue_id="player2").uri)
+    book = _streamdetails_for(queue_id="player1", uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await backend._acquire(CHAPTER_B, 0, book, continuation=True)
+    assert err.value.translation_key == "soloist_session_busy"
+
+
 async def test_the_next_chapter_still_gets_the_session_its_stream_released(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

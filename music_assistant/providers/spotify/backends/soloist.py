@@ -545,7 +545,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         this queue — playing it, fed it, or able to be sent to it — and seeks it
         in place when it is the one the engine is on; anything else — another
         queue, a session that is gone — starts a fresh session. A session another
-        stream is reading is only taken over for a seek of the very item it is
+        stream is reading is only restarted for a seek of the very item it is
         delivering.
 
         :param spotify_uri: Canonical Spotify URI of the item to stream.
@@ -562,11 +562,16 @@ class SoloistBackend(SpotifyPlaybackBackend):
             queue_id = streamdetails.queue_id if streamdetails is not None else None
             media_key = streamdetails.uri if streamdetails is not None else None
             session = self._session
-            if continuation and session is not None and session.in_use:
+            if (
+                continuation
+                and session is not None
+                and session.queue_id == queue_id
+                and session.serves_only(media_key)
+            ):
                 # This stream released its own channel before asking for the part
-                # that follows it, so a session anything else is reading is one
-                # that superseded it - a seek it must not take back, however much
-                # the item or the URI it asks for still matches.
+                # that follows it, so a session still being read for this very
+                # item is the one that superseded it - a seek it must not take
+                # back, however much the URI it asks for still matches.
                 raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
             if session is not None and session.usable and session.queue_id == queue_id:
                 if not seek_position and (item := session.item_for(spotify_uri)) is not None:
@@ -636,10 +641,11 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # softly and the real request, made once the other item has
                     # been released, gets the session.
                     raise SoloistSessionBusyError(self.provider)
-                # this queue's own seek of the item the session is delivering,
-                # which it could not take: a fresh session serves it at the
-                # target instead. An audiobook's chapters are separate Spotify
-                # URIs, so such a seek can land on one the engine is not on.
+                # nothing else is reading it, so it is replaced: an audiobook's
+                # next chapter (never stitched), or this queue's own seek of the
+                # item it is delivering that could not be taken in place - its
+                # chapters are separate Spotify URIs, so such a seek can land on
+                # one the engine is not on.
                 await session.stop()
                 self._session = None
             # cheap thanks to the shared verify cache; swaps in a fresh build when
