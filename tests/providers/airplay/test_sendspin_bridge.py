@@ -2392,7 +2392,7 @@ def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
     only visible on the stream itself. The chunk that exposes it is also the one
     the fresh transport anchors to, which is where the group is playing now.
     """
-    bridge, _ = _make_anchored_bridge(running=False)
+    bridge, dead_stream = _make_anchored_bridge(running=False)
     chunk_ts = SENDSPIN_EPOCH_US + 30_000_000
 
     bridge._on_audio_chunk(_pcm_chunk(chunk_ts))
@@ -2400,7 +2400,8 @@ def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
     assert bridge._airplay_stream is None
     # released from the bridge, but still published until the teardown that owns
     # it has the dead process cleared
-    assert bridge.airplay_player.stream is not None
+    assert bridge.airplay_player.stream is dead_stream
+    assert dead_stream.superseded is True
     assert bridge._started is False
     assert bridge._anchor_settled is False
     # a fresh start is armed and anchored where the group is playing right now

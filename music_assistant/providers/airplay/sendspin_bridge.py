@@ -600,6 +600,8 @@ class SendspinAirPlayBridge:
         old_stream_start_task = self._airplay_stream_start_task
 
         if not keep_stream:
+            if old_stream is not None:
+                old_stream.superseded = True
             self._airplay_stream = None
             # The player's reference is left in place either way: a native
             # session is the start task's to stop before it spawns, and the
@@ -657,6 +659,8 @@ class SendspinAirPlayBridge:
         old_stream_start_task = self._airplay_stream_start_task
 
         if not keep_stream:
+            if old_stream is not None:
+                old_stream.superseded = True
             self._airplay_stream = None
             # Left published for the start task or the cleanup to clear, exactly
             # as in _on_stream_start.
@@ -1653,6 +1657,8 @@ class SendspinAirPlayBridge:
         stream = self._airplay_stream
         writer_task = self._writer_task
         start_task = self._airplay_stream_start_task
+        if stream is not None:
+            stream.superseded = True
         self._airplay_stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None

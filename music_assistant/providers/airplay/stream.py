@@ -264,6 +264,11 @@ class AirPlayStream:
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
         self._native_control_failure_warned: bool = False
+        # Set when the owner hands this stream to a teardown. It stays published
+        # until that teardown has the process off the receiver, so ownership
+        # alone no longer tells the reporting guards below that the stream is on
+        # its way out.
+        self.superseded: bool = False
 
     @property
     def running(self) -> bool:
@@ -1409,11 +1414,12 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
-                    if player.stream is not self:
-                        # A newer session (native or Sendspin bridge) owns this
-                        # player, so this process's death says nothing about the
-                        # device: ungrouping or scheduling a re-join over it
-                        # would tear down the session that replaced it.
+                    if self.superseded or player.stream is not self:
+                        # This stream is on its way out, or a newer session
+                        # (native or Sendspin bridge) owns the player, so this
+                        # process's death says nothing about the device:
+                        # ungrouping or scheduling a re-join over it would tear
+                        # down the session that replaced it.
                         logger.debug(
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
@@ -1903,10 +1909,10 @@ class AirPlayStream:
         """Warn once that the receiver dropped the native AirPlay 2 control channel."""
         if self._native_control_failure_warned:
             return
-        if self.player.stream is not self:
+        if self.superseded or self.player.stream is not self:
             # Not evidence about the device: either a newer session reset the
-            # control channel on the receiver, or this stream is still coming up
-            # and has not been published yet. The binary keeps reporting while
+            # control channel on the receiver, this stream is on its way out, or
+            # it is still coming up and has not been published yet. The binary keeps reporting while
             # the failure lasts, so leaving the once-only latch unset here keeps
             # a genuine failure reportable once the stream does own the player.
             return
