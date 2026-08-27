@@ -24,7 +24,7 @@ class StreamSupersededError(AudioError):
 
     A backend that serves a queue from one session cuts the stream of an item it
     is asked to serve from a new one - a seek - so nothing beyond the cut belongs
-    to the stream that was replaced.
+    to the stream that was replaced, whichever part of the item it asks for.
     """
 
 
@@ -106,8 +106,8 @@ class SpotifyPlaybackBackend(ABC):
         :param continuation: Whether this URI continues an item stream already
             under way - a later chapter of the audiobook being streamed - rather
             than starting one.
-        :raises StreamSupersededError: When Music Assistant replaced this stream
-            with a new one for the same item, leaving it nothing to deliver.
+        :raises StreamSupersededError: When Music Assistant took the item off
+            this stream, leaving it nothing to deliver.
         """
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:

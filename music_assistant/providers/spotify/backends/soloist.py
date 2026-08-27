@@ -420,7 +420,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         """
         if self._server is None or self._binary is None:
             raise AudioError("Spotify Soloist backend is not started")
-        session, item = await self._acquire(spotify_uri, seek_position, streamdetails, continuation)
+        session, item = await self._acquire(
+            spotify_uri, seek_position, streamdetails, continuation=continuation
+        )
         try:
             # Feed before the first byte is handed over: the item's own stream
             # must not be able to reach its end before the next one is queued.
@@ -533,6 +535,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         spotify_uri: str,
         seek_position: int,
         streamdetails: StreamDetails | None,
+        *,
         continuation: bool = False,
     ) -> tuple[_SoloistSession, _ItemAudio]:
         """
@@ -541,7 +544,9 @@ class SoloistBackend(SpotifyPlaybackBackend):
         Continues the running session when it can still reach this item for
         this queue — playing it, fed it, or able to be sent to it — and seeks it
         in place when it is the one the engine is on; anything else — another
-        queue, a session that is gone — starts a fresh session.
+        queue, a session that is gone — starts a fresh session. A session another
+        stream is reading is only taken over for a seek of the very item it is
+        delivering.
 
         :param spotify_uri: Canonical Spotify URI of the item to stream.
         :param seek_position: Position in seconds to start from.
@@ -549,12 +554,20 @@ class SoloistBackend(SpotifyPlaybackBackend):
             say which queue and which Music Assistant item it belongs to.
         :param continuation: Whether this URI continues an item stream already
             under way.
+        :raises StreamSupersededError: When a continuation finds the session
+            being read by the stream that replaced it.
         """
         async with self._session_lock:
             self._raise_if_app_controlled()
             queue_id = streamdetails.queue_id if streamdetails is not None else None
             media_key = streamdetails.uri if streamdetails is not None else None
             session = self._session
+            if continuation and session is not None and session.in_use:
+                # This stream released its own channel before asking for the part
+                # that follows it, so a session anything else is reading is one
+                # that superseded it - a seek it must not take back, however much
+                # the item or the URI it asks for still matches.
+                raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
             if session is not None and session.usable and session.queue_id == queue_id:
                 if not seek_position and (item := session.item_for(spotify_uri)) is not None:
                     item.claim(media_key)
@@ -610,15 +623,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     item.claim(media_key)
                     return session, item
             if session is not None:
-                # A request that continues an item stream already under way is
-                # never the one to restart the session: it asks for the part
-                # after the one it just streamed, so a session delivering that
-                # same item to something else is one that superseded it - and
-                # taking it back would undo whatever did.
-                own_seek = session.is_playing(spotify_uri) or (
-                    not continuation and session.serves_only(media_key)
-                )
-                if session.in_use and (session.queue_id != queue_id or not own_seek):
+                if session.in_use and (
+                    session.queue_id != queue_id
+                    or not (session.is_playing(spotify_uri) or session.serves_only(media_key))
+                ):
                     # Restarting the session here would cut short whatever it is
                     # still delivering: another player's item, or an early fetch
                     # across a boundary this session does not drive - the item

@@ -933,11 +933,23 @@ async def test_a_seek_across_an_audiobook_chapter_supersedes_the_session(
     assert playing.superseded is True
 
 
+@pytest.mark.parametrize(
+    "rolled_into",
+    [
+        # the chapter after the one it streamed, wherever the seek went
+        CHAPTER_C,
+        # or the very chapter the seek landed on, which a forward seek makes the
+        # likely one: the session is playing it, and seeking it in place would
+        # hand this stale stream the live stream's channel
+        CHAPTER_B,
+    ],
+    ids=["another_chapter", "the_seeked_chapter"],
+)
 async def test_a_chapter_rolled_into_after_a_seek_does_not_take_the_session_back(
-    tmp_path: Path,
+    tmp_path: Path, rolled_into: str
 ) -> None:
     """
-    The stream a seek replaced must not restart the session for its next chapter.
+    The stream a seek replaced must not take the session back for its next chapter.
 
     A chapter boundary is a fresh session, so the stream that was replaced can
     arrive at one having released its own channel - by which point the session
@@ -947,14 +959,43 @@ async def test_a_chapter_rolled_into_after_a_seek_does_not_take_the_session_back
     backend._server = MagicMock()
     backend._binary = Path("/nonexistent/soloist")
     session = _SoloistSession(backend, "player1")
+    session._client = AsyncMock()
     backend._session = session
     book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
     # the session the seek started, reading the chapter it landed on
-    _streamed(session, CHAPTER_B, media_key=book.uri)
-    with pytest.raises(ProviderStreamLimitError):
-        await backend._acquire(CHAPTER_C, 0, book, continuation=True)
+    live = _streamed(session, CHAPTER_B, media_key=book.uri)
+    with pytest.raises(StreamSupersededError):
+        await backend._acquire(rolled_into, 0, book, continuation=True)
+    # the seek stands, and the stream serving it still has its audio
     assert backend._session is session
     assert session.usable is True
+    assert live.superseded is False
+    assert live.claimed is True
+
+
+async def test_the_next_chapter_still_gets_the_session_its_stream_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary chapter boundary reads as nobody else's, so it is served as before."""
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    session._client = AsyncMock()
+    backend._session = session
+    book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
+    # the chapter this stream just finished, whose channel it has let go
+    _streamed(session, CHAPTER_A, media_key=book.uri).release()
+    stopped = AsyncMock()
+    monkeypatch.setattr(session, "stop", stopped)
+    _install_fake_binary_manager(monkeypatch)
+    # chapters are never fed ahead, so the next one is a fresh session either way
+    monkeypatch.setattr(
+        soloist_backend._SoloistSession, "start", AsyncMock(side_effect=AudioError("spawn"))
+    )
+    with pytest.raises(AudioError, match="spawn"):
+        await backend._acquire(CHAPTER_B, 0, book, continuation=True)
+    stopped.assert_awaited_once()
 
 
 async def test_a_seek_of_another_queues_audiobook_is_still_refused(tmp_path: Path) -> None:
@@ -1064,6 +1105,32 @@ async def test_a_superseded_audiobook_stream_stops_instead_of_stitching_on(
     chunks = [chunk async for chunk in provider.get_audio_stream(streamdetails)]
     assert chunks == [b"audio"]
     assert calls == [CHAPTER_A]
+
+
+async def test_only_the_chapter_a_stream_starts_on_may_take_the_session(
+    tmp_path: Path,
+) -> None:
+    """The chapter a seek lands on starts the stream; the ones after it continue it."""
+    provider = _make_provider(tmp_path)
+    calls: list[tuple[str, bool]] = []
+
+    async def _stream(
+        uri: str, _seek: int = 0, *, continuation: bool = False, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        calls.append((uri, continuation))
+        yield b"audio"
+
+    provider.backend = MagicMock(stream_spotify_uri=_stream)
+    streamdetails = MagicMock(
+        media_type=MediaType.AUDIOBOOK,
+        data={
+            "chapters": [CHAPTER_A, CHAPTER_B, CHAPTER_C],
+            "chapters_data": [{"duration_ms": 60_000}] * 3,
+        },
+    )
+    async for _ in provider.get_audio_stream(streamdetails, seek_position=70):
+        pass
+    assert calls == [(CHAPTER_B, False), (CHAPTER_C, True)]
 
 
 async def test_a_superseded_track_stream_ends_without_an_error(tmp_path: Path) -> None:

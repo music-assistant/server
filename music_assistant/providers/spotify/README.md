@@ -105,9 +105,11 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   boundaries rather than a warm buffer. The queue's own seek of the item being
   delivered is the exception: the engine is seeked in place where it can be, and
   otherwise the session restarts at the target — an audiobook's chapters are separate
-  URIs, so a seek across one asks for a URI the engine is not on. The stream that was
-  cut then ends with `StreamSupersededError` instead of stitching the item's next
-  chapter on, which would take the session straight back off the seek.
+  URIs, so a seek across one asks for a URI the engine is not on. Only a request that
+  *starts* an item stream may take the session over: a chapter boundary is a fresh
+  session, so a stream the seek replaced can arrive at one having released its own
+  channel, and taking the session back there would undo the seek. Such a stream ends
+  with `StreamSupersededError` instead, rather than stitching its next chapter on.
 - **The Spotify app can reach in, and that ends the session.** The engine always
   advertises itself as a Connect device and offers no way to suppress that, so the
   device is listed in the user's Spotify apps for as long as Music Assistant is
