@@ -134,6 +134,21 @@ class AudioSourceMixin:
         """
         return self._source_sessions.get(player_id)
 
+    def is_live_source(self, source: str) -> bool:
+        """
+        Return whether the given source string names a live AudioSource session.
+
+        MA pulls a live source's audio from its plugin and streams it out itself, so
+        such a source is MA-managed exactly like a queue is: it can be distributed to
+        a group, and a player playing one has not been taken over by anything.
+
+        :param source: The source string to check.
+        """
+        return any(
+            (session.source_uri or session.player_id) == source
+            for session in self._source_sessions.values()
+        )
+
     def get_player_audio_source(self, player_id: str) -> tuple[AudioSource, PluginProvider] | None:
         """
         Return the AudioSource playing on the given player and its owning PluginProvider.
