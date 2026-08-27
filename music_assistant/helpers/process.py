@@ -90,12 +90,24 @@ class AsyncProcess:
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
         self._close_called = False
+        self._stdin_eof = False
         self._returncode: int | None = None
 
     @property
     def closed(self) -> bool:
         """Return if the process was closed."""
         return self._close_called or self.returncode is not None
+
+    @property
+    def stdin_closed(self) -> bool:
+        """
+        Return if stdin can no longer be written to.
+
+        True once end of file was written: that closes the pipe for good while the
+        process itself lives on, so a caller that means to keep feeding it has to
+        read this rather than :attr:`closed`.
+        """
+        return self._stdin_eof or self.closed
 
     @property
     def returncode(self) -> int | None:
@@ -190,6 +202,10 @@ class AsyncProcess:
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
+            # checked under the lock: a write that waited here while end of file
+            # was written has missed its pipe, which the transport closed behind it
+            if self._stdin_eof:
+                return
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
 
@@ -214,7 +230,7 @@ class AsyncProcess:
 
         :param timeout: Seconds to wait for the buffer to empty.
         """
-        if self._close_called or self.proc is None or self.proc.stdin is None:
+        if self._close_called or self._stdin_eof or self.proc is None or self.proc.stdin is None:
             yield True
             return
         async with self._stdin_lock:
@@ -222,14 +238,18 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called or self.proc is None:
+        if self._close_called or self._stdin_eof or self.proc is None:
             return
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
+            if not self.proc.stdin.can_write_eof():
+                return
+            # whatever the write below does, stdin is spent: the transport closes
+            # the pipe on eof, and every error it raises is a pipe already gone
+            self._stdin_eof = True
             try:
-                if self.proc.stdin.can_write_eof():
-                    self.proc.stdin.write_eof()
+                self.proc.stdin.write_eof()
                 await self.proc.stdin.drain()
             except (
                 AttributeError,

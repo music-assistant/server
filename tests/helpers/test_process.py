@@ -190,6 +190,30 @@ async def test_iter_stdout_drains_lines_buffered_after_exit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_eof_marks_stdin_closed_while_the_process_lives() -> None:
+    """
+    A process that was sent EOF keeps running but can no longer be fed.
+
+    Writing EOF closes the pipe for good, so a caller that hands the write end to
+    someone else (or means to keep feeding it) has to be able to tell.
+    """
+    proc = AsyncProcess(["cat"], stdin=True, stdout=True)
+    await proc.start()
+    await proc.write(b"hello\n")
+
+    await proc.write_eof()
+
+    assert proc.stdin_closed
+    assert not proc.closed
+    assert proc.returncode is None
+    # neither a further write nor a second EOF may reach the closed pipe
+    await proc.write(b"more\n")
+    await proc.write_eof()
+    assert await proc.read_stdout() == b"hello\n"
+    await proc.close()
+
+
+@pytest.mark.asyncio
 async def test_read_stdout_stops_once_the_process_is_closed() -> None:
     """A closed process reports EOF instead of waiting on a stream it no longer owns."""
     proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=asyncio.subprocess.STDOUT)
