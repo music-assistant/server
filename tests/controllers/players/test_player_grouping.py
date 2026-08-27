@@ -743,6 +743,10 @@ class TestAdHocLeadershipTransfer:
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
+        # the dissolve removes the visualizer from the group and stops the leader
+        controller._handle_set_members_with_protocols.assert_awaited_once_with(
+            leader, [], ["visualizer"]
+        )
         controller._handle_cmd_stop.assert_awaited_once_with("leader")
 
     async def test_handle_set_members_dissolves_leader_when_idle(

@@ -365,6 +365,28 @@ async def test_auto_music_refill_falls_back_to_library_after_provider_failure() 
     loader._autoplay.get_library_tracks.assert_awaited_once()
 
 
+async def test_music_refill_bails_when_the_queue_is_removed_mid_fetch() -> None:
+    """A queue removed while the refill fetches tracks is left alone instead of crashing."""
+    track = _track()
+    loader = _loader(_queue_item(track), seeds=[track])
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.LIBRARY
+
+    async def _fetch_and_remove_queue(*_args: Any, **_kwargs: Any) -> list[Track]:
+        loader._queue_data.pop("q1")
+        return [track]
+
+    loader._autoplay.get_library_tracks = AsyncMock(side_effect=_fetch_and_remove_queue)
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
+
+    with patch(
+        "music_assistant.controllers.player_queues.queue_loader.gate_tracks",
+        return_value=[track],
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, "q1")
+
+    loader.load.assert_not_awaited()
+
+
 # --- appending the resolved successor ---
 
 

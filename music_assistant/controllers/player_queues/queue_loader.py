@@ -527,9 +527,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
         # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+        if queue_id not in self._queue_data:
+            # the queue was removed (player deleted or ungrouped) while tracks were fetched
+            return
         # keep the unplayed tail within the bounded pool size (no current_index => nothing played yet)
         played = 0 if queue.current_index is None else queue.current_index + 1
-        unplayed = max(len(self._queue_data[queue_id].items) - played, 0)
+        unplayed = max(len(queue_data.items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
         queue_items = [build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if x.available]
         if not queue_items:
@@ -537,7 +540,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         await self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_data[queue_id].items) + 1,
+            insert_at_index=len(queue_data.items) + 1,
         )
 
     async def _fill_autoplay_tracks(self, queue_id: str) -> None:
