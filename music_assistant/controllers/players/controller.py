@@ -3362,6 +3362,41 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     synced_to,
                 )
 
+    async def _dissolve_own_native_group(self, player: Player, log_context: str) -> None:
+        """
+        Dissolve the native group a player leads before it joins another group.
+
+        Only a player whose native members ride its own stream has a group to give up: it
+        stops rendering that stream the moment it joins the other group, which would leave
+        its members silent while they still show up as grouped.
+
+        :param player: The player about to join another group.
+        :param log_context: Additional context for the log message (e.g. target player name).
+        """
+        if not player.native_grouping_requires_own_stream:
+            return
+        members = [
+            member_id for member_id in player.state.group_members if member_id != player.player_id
+        ]
+        if not members:
+            return
+        self.logger.info(
+            "Player %s leads a group of its own, dissolving it before %s",
+            player.name,
+            log_context,
+        )
+        # Removing the members rather than the leader keeps this out of the leadership
+        # transfer path, and the internal handler avoids deadlocking on the play lock
+        # (we're already inside a cmd_set_members chain that holds it).
+        try:
+            await self._handle_set_members(player, player_ids_to_remove=members)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.warning(
+                "Failed to dissolve the group of %s, proceeding anyway", player.name
+            )
+
     async def _handle_set_members(
         self,
         parent_player: Player,
@@ -3451,6 +3486,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 child_player.state.active_group,
             }:
                 await self._auto_ungroup_if_synced(child_player, f"joining {parent_player.name}")
+
+            # handle edge case: the child leads a native group of its own, which it cannot
+            # keep serving from inside this one
+            await self._dissolve_own_native_group(child_player, f"joining {parent_player.name}")
 
             # power on the player if needed
             if (

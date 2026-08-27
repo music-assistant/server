@@ -54,6 +54,15 @@ def controller(mock_mass: MagicMock) -> PlayerController:
     return PlayerController(mock_mass)
 
 
+class SessionBoundMockPlayer(MockPlayer):
+    """Mock player whose native members ride its own stream session (e.g. AirPlay)."""
+
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: native members are attached to this player's own stream session."""
+        return True
+
+
 class TestCanGroupWithBasics:
     """Test basic can_group_with filtering logic."""
 
@@ -680,6 +689,74 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         controller._handle_cmd_stop.assert_awaited_once_with("leader")
+
+
+class TestSessionBoundLeaderJoinsAnotherGroup:
+    """A leader whose members ride its own stream gives that group up when it joins another."""
+
+    def _build(
+        self, mock_mass: MagicMock, leader_class: type[MockPlayer]
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer, MockPlayer]:
+        """Build an idle leader with one native member, plus the group it is about to join."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
+
+        leader = leader_class(provider, "leader", "Living Room")
+        leader._attr_supported_features |= {PlayerFeature.SET_MEMBERS, PlayerFeature.PLAY_MEDIA}
+        leader._attr_can_group_with = {"member", "target"}
+        leader._attr_group_members = ["leader", "member"]
+
+        member = MockPlayer(provider, "member", "Kitchen")
+        member._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+
+        target = MockPlayer(provider, "target", "Study")
+        target._attr_supported_features |= {PlayerFeature.SET_MEMBERS, PlayerFeature.PLAY_MEDIA}
+        target._attr_can_group_with = {"leader", "member"}
+
+        controller._players = {p.player_id: p for p in (leader, member, target)}
+        mock_mass.players = controller
+        for player in controller._players.values():
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        assert member.synced_to == "leader"
+        return controller, leader, member, target
+
+    async def test_own_group_is_dissolved_before_it_joins(self, mock_mass: MagicMock) -> None:
+        """
+        The members are released before the leader becomes a member itself.
+
+        A native group outlives its session, so a leader that stopped still lists its
+        members. Joining another group leaves it unable to serve them, and they would be
+        silent while the UI still shows them grouped.
+        """
+        controller, leader, member, target = self._build(mock_mass, SessionBoundMockPlayer)
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert "member" not in leader.group_members
+        assert member.synced_to is None
+        assert target.group_members == ["target", "leader"]
+
+    async def test_a_leader_without_members_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A player that leads nothing has no group to give up."""
+        controller, leader, _member, target = self._build(mock_mass, SessionBoundMockPlayer)
+        leader._attr_group_members = []
+        leader.update_state(signal_event=False)
+        leader.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        leader.set_members.assert_not_awaited()
+        assert target.group_members == ["target", "leader"]
+
+    async def test_a_group_that_survives_the_join_is_left_alone(self, mock_mass: MagicMock) -> None:
+        """A provider whose members do not ride the leader's own stream keeps its group."""
+        controller, leader, member, target = self._build(mock_mass, MockPlayer)
+
+        await controller._handle_set_members(target, player_ids_to_add=["leader"])
+
+        assert leader.group_members == ["leader", "member"]
+        assert member.synced_to == "leader"
 
 
 if __name__ == "__main__":

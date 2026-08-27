@@ -769,6 +769,9 @@ class SendspinAirPlayBridge:
 
         :param stream: The stream currently published on the AirPlay player.
         """
+        # Only the transport and its session are this method's: native group membership
+        # belongs to the player controller, which releases it in the grouping command that
+        # hands the speaker over long before any audio reaches the bridge.
         if stream.running:
             # An idle player keeps its last stream published, so only a live one
             # is worth reporting as displaced.
