@@ -402,6 +402,7 @@ class SoloistBackend(SpotifyPlaybackBackend):
         seek_position: int = 0,
         *,
         streamdetails: StreamDetails | None = None,
+        continuation: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the PCM audio for one Spotify URI out of the continuous session.
@@ -414,10 +415,12 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param streamdetails: The StreamDetails this audio is requested for.
             They tell the session which queue it serves and which item of it is
             being streamed, so it can feed the engine the following track.
+        :param continuation: Whether this URI continues an item stream already
+            under way, which never takes the session off another stream.
         """
         if self._server is None or self._binary is None:
             raise AudioError("Spotify Soloist backend is not started")
-        session, item = await self._acquire(spotify_uri, seek_position, streamdetails)
+        session, item = await self._acquire(spotify_uri, seek_position, streamdetails, continuation)
         try:
             # Feed before the first byte is handed over: the item's own stream
             # must not be able to reach its end before the next one is queued.
@@ -437,13 +440,11 @@ class SoloistBackend(SpotifyPlaybackBackend):
                 yield chunk
         finally:
             item.release()
-        if item.superseded:
-            # A new stream of this item took the session over (a seek): whatever
-            # follows here is that stream's to deliver, not this one's. Answered
-            # before the audio is judged: a channel Music Assistant cut stops
-            # short by construction, whatever the engine had reported about it.
-            raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
         await session.validate_item(item)
+        if item.superseded:
+            # a new stream of this item took the session over (a seek): whatever
+            # follows here is that stream's to deliver, not this one's
+            raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
 
     async def discard_session(self, session: _SoloistSession) -> None:
         """
@@ -528,7 +529,11 @@ class SoloistBackend(SpotifyPlaybackBackend):
         return session
 
     async def _acquire(
-        self, spotify_uri: str, seek_position: int, streamdetails: StreamDetails | None
+        self,
+        spotify_uri: str,
+        seek_position: int,
+        streamdetails: StreamDetails | None,
+        continuation: bool = False,
     ) -> tuple[_SoloistSession, _ItemAudio]:
         """
         Return the session and audio channel to stream this item from.
@@ -542,6 +547,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
         :param seek_position: Position in seconds to start from.
         :param streamdetails: The StreamDetails the audio is requested for, which
             say which queue and which Music Assistant item it belongs to.
+        :param continuation: Whether this URI continues an item stream already
+            under way.
         """
         async with self._session_lock:
             self._raise_if_app_controlled()
@@ -603,14 +610,20 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     item.claim(media_key)
                     return session, item
             if session is not None:
-                if session.in_use and (
-                    session.queue_id != queue_id
-                    or not (session.is_playing(spotify_uri) or session.serves_only(media_key))
-                ):
+                # A request that continues an item stream already under way is
+                # never the one to restart the session: it asks for the part
+                # after the one it just streamed, so a session delivering that
+                # same item to something else is one that superseded it - and
+                # taking it back would undo whatever did.
+                own_seek = session.is_playing(spotify_uri) or (
+                    not continuation and session.serves_only(media_key)
+                )
+                if session.in_use and (session.queue_id != queue_id or not own_seek):
                     # Restarting the session here would cut short whatever it is
                     # still delivering: another player's item, or an early fetch
-                    # across a boundary this session does not drive (a podcast
-                    # episode or audiobook chapter, which are never stitched).
+                    # across a boundary this session does not drive - the item
+                    # after a podcast episode or an audiobook, neither of which
+                    # is ever stitched.
                     # Reported as capacity so a speculative prepare gives up
                     # softly and the real request, made once the other item has
                     # been released, gets the session.
@@ -843,11 +856,12 @@ class _SoloistSession:
         audiobook's chapters are separate URIs of one item.
 
         :param media_key: Identity of the Music Assistant item asking (the uri of
-            its StreamDetails), or None when the caller has none.
+            its StreamDetails). None (a caller with no details) matches nothing.
         """
         if media_key is None:
             return False
-        return all(item.media_key == media_key for item in self._channels if item.claimed)
+        claimed = [item for item in self._channels if item.claimed]
+        return bool(claimed) and all(item.media_key == media_key for item in claimed)
 
     def pending_item(self, spotify_uri: str) -> _ItemAudio | None:
         """
@@ -1170,11 +1184,17 @@ class _SoloistSession:
         :param item: The item whose stream just finished.
         :raises AudioError: When the item was cut short.
         """
+        if item.superseded:
+            # Answered before anything else the session might have to say: a
+            # second seek can cut a channel before the engine ever reaches it,
+            # and that is still a channel that was replaced rather than an item
+            # that failed to play.
+            return
         if self._error:
             raise self._session_error()
         if not item.playing_seen:
             raise AudioError(f"Spotify Soloist never started playing {item.uri}")
-        if item.superseded or item.duration_ms is None:
+        if item.duration_ms is None:
             return
         tolerance_ms = min(_INCOMPLETE_TOLERANCE_MS, item.duration_ms // 2)
         if item.last_position_ms is None or item.last_position_ms + tolerance_ms < item.duration_ms:

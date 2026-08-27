@@ -981,7 +981,10 @@ class SpotifyProvider(MusicProvider):
                 try:
                     chunk_count = 0
                     async for chunk in self.backend.stream_spotify_uri(
-                        chapter_uri, chapter_seek, streamdetails=streamdetails
+                        chapter_uri,
+                        chapter_seek,
+                        streamdetails=streamdetails,
+                        continuation=i > start_chapter,
                     ):
                         yield chunk
                         chunk_count += 1

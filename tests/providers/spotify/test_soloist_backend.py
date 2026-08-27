@@ -33,8 +33,8 @@ from music_assistant.helpers.config_entries import (
 )
 from music_assistant.helpers.pulse_capture import CAPTURE_SAMPLE_RATE
 from music_assistant.models.music_provider import ProviderStreamLimitError
+from music_assistant.providers.spotify.backends import StreamSupersededError
 from music_assistant.providers.spotify.backends import soloist as soloist_backend
-from music_assistant.providers.spotify.backends.base import StreamSupersededError
 from music_assistant.providers.spotify.backends.soloist import (
     _BYTES_PER_SECOND,
     _FRAME_BYTES,
@@ -85,6 +85,7 @@ TRACK_C = "spotify:track:ccc"
 AUDIOBOOK = "spotify:show:book"
 CHAPTER_A = "spotify:episode:ch1"
 CHAPTER_B = "spotify:episode:ch2"
+CHAPTER_C = "spotify:episode:ch3"
 
 
 def test_trim_drops_an_all_zero_chunk_within_the_bound() -> None:
@@ -918,9 +919,7 @@ async def test_a_seek_across_an_audiobook_chapter_supersedes_the_session(
     backend._session = session
     book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
     # the engine is on the first chapter, whose stream is still attached
-    _streamed(session, CHAPTER_A, media_key=book.uri)
-    stopped = AsyncMock()
-    monkeypatch.setattr(session, "stop", stopped)
+    playing = _streamed(session, CHAPTER_A, media_key=book.uri)
     _install_fake_binary_manager(monkeypatch)
     # the replacement spawn is out of scope here; only the takeover decision is
     monkeypatch.setattr(
@@ -928,7 +927,34 @@ async def test_a_seek_across_an_audiobook_chapter_supersedes_the_session(
     )
     with pytest.raises(AudioError, match="spawn"):
         await backend._acquire(CHAPTER_B, 90, book)
-    stopped.assert_awaited_once()
+    # the session really was torn down, and the stream it was feeding is told
+    # so rather than stitching the chapter after this one on
+    assert session._stopped is True
+    assert playing.superseded is True
+
+
+async def test_a_chapter_rolled_into_after_a_seek_does_not_take_the_session_back(
+    tmp_path: Path,
+) -> None:
+    """
+    The stream a seek replaced must not restart the session for its next chapter.
+
+    A chapter boundary is a fresh session, so the stream that was replaced can
+    arrive at one having released its own channel - by which point the session
+    delivering this audiobook is the one that superseded it.
+    """
+    backend = _make_backend(tmp_path)
+    backend._server = MagicMock()
+    backend._binary = Path("/nonexistent/soloist")
+    session = _SoloistSession(backend, "player1")
+    backend._session = session
+    book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK)
+    # the session the seek started, reading the chapter it landed on
+    _streamed(session, CHAPTER_B, media_key=book.uri)
+    with pytest.raises(ProviderStreamLimitError):
+        await backend._acquire(CHAPTER_C, 0, book, continuation=True)
+    assert backend._session is session
+    assert session.usable is True
 
 
 async def test_a_seek_of_another_queues_audiobook_is_still_refused(tmp_path: Path) -> None:
@@ -950,13 +976,33 @@ async def test_a_seek_of_another_queues_audiobook_is_still_refused(tmp_path: Pat
     assert session.usable is True
 
 
+def test_a_session_reading_two_items_is_not_delivering_only_one(tmp_path: Path) -> None:
+    """A seek may only restart a session whose every stream is that item's own."""
+    session = _make_session(tmp_path)
+    book = _streamdetails_for(uri=AUDIOBOOK, media_type=MediaType.AUDIOBOOK).uri
+    _streamed(session, CHAPTER_A, media_key=book)
+    assert session.serves_only(book) is True
+    # the previous item's channel is still being drained alongside it
+    tail = session._open_channel(TRACK_A)
+    tail.claim(_streamdetails_for(uri=TRACK_A).uri)
+    assert session.serves_only(book) is False
+
+
+def test_a_caller_without_details_never_matches_what_a_session_delivers(tmp_path: Path) -> None:
+    """StreamDetails are the only way to tell a seek of the item being delivered."""
+    session = _make_session(tmp_path)
+    # a channel nothing attributed to a Music Assistant item
+    _streamed(session, CHAPTER_A)
+    assert session.serves_only(None) is False
+
+
 @pytest.mark.parametrize(
     "playing_seen",
     [
         True,
         # a second seek cuts the first one's channel before the engine reports
-        # it playing, which must not read as an item that failed - the caller
-        # answers that by stitching the next part on
+        # it playing; the stream must still stop rather than be counted a
+        # failure, which its caller answers by stitching the next part on
         False,
     ],
     ids=["was_playing", "never_started"],
@@ -2312,25 +2358,25 @@ async def test_a_duration_less_item_is_not_judged(tmp_path: Path) -> None:
     await session.validate_item(item)
 
 
-async def test_a_superseded_item_is_not_judged_incomplete(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "playing_seen",
+    [
+        True,
+        # a second seek cuts a channel before the engine gets to it, which is
+        # still a channel that was replaced rather than an item that failed
+        False,
+    ],
+    ids=["was_playing", "never_started"],
+)
+async def test_a_superseded_item_is_not_judged(tmp_path: Path, playing_seen: bool) -> None:
     """A channel cut part-way is short on purpose, so it is no evidence of starving."""
     session = _make_session(tmp_path)
     item = _ItemAudio(TRACK_A, session)
-    item.playing_seen = True
+    item.playing_seen = playing_seen
     item.duration_ms = 200_000
     item.last_position_ms = 30_000
     item.close(superseded=True)
     await session.validate_item(item)
-
-
-async def test_a_superseded_item_that_never_played_is_still_rejected(tmp_path: Path) -> None:
-    """Cutting a channel excuses a short delivery, not one that carried nothing."""
-    session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
-    item.duration_ms = 200_000
-    item.close(superseded=True)
-    with pytest.raises(AudioError, match="never started playing"):
-        await session.validate_item(item)
 
 
 async def test_an_item_the_engine_moved_on_from_keeps_its_verdict(tmp_path: Path) -> None:

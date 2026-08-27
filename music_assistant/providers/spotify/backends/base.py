@@ -91,6 +91,7 @@ class SpotifyPlaybackBackend(ABC):
         seek_position: int = 0,
         *,
         streamdetails: StreamDetails | None = None,
+        continuation: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the audio for one Spotify URI in this backend's audio format.
@@ -102,6 +103,9 @@ class SpotifyPlaybackBackend(ABC):
             Backends that fetch each item on its own ignore these; a backend
             that keeps one session needs them to know which queue and which
             item of it this audio belongs to.
+        :param continuation: Whether this URI continues an item stream already
+            under way - a later chapter of the audiobook being streamed - rather
+            than starting one.
         :raises StreamSupersededError: When Music Assistant replaced this stream
             with a new one for the same item, leaving it nothing to deliver.
         """
