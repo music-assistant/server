@@ -3887,11 +3887,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # live session (Spotify) stays tethered for another track or two.
                 # Restricted to the player's own queue: get_active_queue resolves a
                 # protocol player to its parent, and stopping that parent's queue would
-                # come straight back here.
+                # come straight back here. The permission-free handler, because a power
+                # off is also issued internally for players the caller cannot address.
                 if (
                     active_queue := self.get_active_queue(player)
                 ) and active_queue.queue_id == player_id:
-                    await self.mass.player_queues.stop(player_id)
+                    await self.mass.player_queues._handle_stop(player_id)
                 else:
                     await self._handle_cmd_stop(player_id)
 
