@@ -3074,6 +3074,49 @@ async def test_artwork_url_form_change_does_not_resend_artwork() -> None:
     assert stream._metadata_artwork_checksum == other_image_id
 
 
+def test_current_metadata_prefers_state_composition_for_the_same_item() -> None:
+    """
+    The pushes use core's composed media when it describes the session's item.
+
+    The session media carries the plain queue-item text while the media-updated
+    pushes send the state composition (title with version, album fallbacks);
+    sending one composition from every path keeps the metadata identity stable.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-1", title="Track")
+    state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = state_media
+
+    assert stream._current_metadata() is state_media
+
+
+def test_current_metadata_keeps_session_media_when_state_describes_another_item() -> None:
+    """A player state that has not settled on the started item yet cannot leak stale text."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id="item-2", title="Next track")
+    stream.session = MagicMock(media=session_media)
+
+    player.state.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
+    assert stream._current_metadata() is session_media
+
+    player.state.current_media = None
+    assert stream._current_metadata() is session_media
+
+
+def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
+    """Media outside an MA queue (no queue item id) is pushed exactly as handed over."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    session_media = MagicMock(queue_item_id=None, title="Announcement")
+    stream.session = MagicMock(media=session_media)
+    player.state.current_media = MagicMock(queue_item_id=None, title="Something else")
+
+    assert stream._current_metadata() is session_media
+
+
 @pytest.mark.asyncio
 async def test_metadata_revert_resends_text_after_superseded_artwork() -> None:
     """Reverting while artwork renders restores the previously displayed track text."""

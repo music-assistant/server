@@ -368,8 +368,11 @@ class AirPlayStream:
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
-        # can keep them silent past the commanded start.
-        await self._send_current_metadata(send_artwork=False)
+        # can keep them silent past the commanded start. Artwork rides the
+        # budgeted bundle so the device rewrites its now-playing once, instead
+        # of a bare replace followed by an artwork replace moments later —
+        # that back-to-back pair intermittently wedges the Apple TV screen.
+        await self._send_current_metadata()
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
@@ -380,7 +383,8 @@ class AirPlayStream:
             # the level when it fires, so it never replays a value that changed since.
             await self._send_current_volume()
             self.mass.call_later(2, self._send_current_volume)
-        # settle artwork and the position on top of the identity push above
+        # settle the position and any artwork that missed the bundle budget
+        # on top of the identity push above
         self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -1669,13 +1673,34 @@ class AirPlayStream:
             self.player.logger.debug("Could not prepare artwork: %s", err)
             return None
 
+    def _current_metadata(self) -> PlayerMedia | None:
+        """Return the media the active stream should push to the device."""
+        metadata = self.session.media if self.session else self.player.current_media
+        # Prefer the state-composed media when it describes the same queue
+        # item: core composes the canonical display text there (title with
+        # version, album fallbacks, live radio tags), while the session media
+        # carries the plain queue-item text. The media-updated pushes send the
+        # state composition, so pushing anything else here flips the metadata
+        # identity checksum back and forth — and every flip is a full
+        # now-playing replace that makes an Apple TV degrade its Now Playing
+        # screen on the next track change.
+        state_media = self.player.state.current_media
+        if (
+            metadata is not None
+            and state_media is not None
+            and state_media.queue_item_id
+            and state_media.queue_item_id == metadata.queue_item_id
+        ):
+            return state_media
+        return metadata
+
     async def _send_current_metadata(self, send_artwork: bool = True) -> None:
         """
         Send metadata for the media owned by the active stream.
 
         :param send_artwork: Whether artwork should be rendered and sent.
         """
-        metadata = self.session.media if self.session else self.player.current_media
+        metadata = self._current_metadata()
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
@@ -1689,7 +1714,7 @@ class AirPlayStream:
         so the position correction is left to the post-anchor media-updated
         nudge — one settled now-playing refresh on the device instead of two.
         """
-        metadata = self.session.media if self.session else self.player.current_media
+        metadata = self._current_metadata()
         if not metadata:
             return
         await self.send_metadata(None, metadata)
