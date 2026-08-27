@@ -27,7 +27,7 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import IdentifierType, PlaybackState
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.util import is_valid_mac_address
@@ -1170,6 +1170,8 @@ class SendspinAirPlayBridge:
         """
         Clean up captured resources from a previous stream.
 
+        Leaves the player idle at position 0 unless a newer stream owns it.
+
         Unlike _stop_streaming(), this operates on explicitly captured references
         rather than instance variables. This prevents a race condition where the
         async cleanup runs after a new stream has already reused the instance
@@ -1196,6 +1198,9 @@ class SendspinAirPlayBridge:
         if stream:
             with suppress(Exception):
                 await stream.stop(force=True)
+            # Restore the IDLE reset that stop() dropped because the stream was detached first
+            if self.airplay_player.stream is None:
+                self.airplay_player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle audio chunk from Sendspin PushStream."""

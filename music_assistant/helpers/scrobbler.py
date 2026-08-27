@@ -13,6 +13,8 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
+
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
@@ -112,15 +114,15 @@ class ScrobblerHelper:
                 await self._update_now_playing(report)
                 self.logger.debug(f"track {report.uri} marked as 'now playing'")
                 self.currently_playing = report.uri
-            except self.scrobble_exceptions as err:
-                self.logger.exception(err)
+            except self.scrobble_exceptions:
+                self.logger.exception("Error while marking track as 'now playing'")
 
         async def scrobble() -> None:
             try:
                 await self._scrobble(report)
                 self.last_scrobbled = report.uri
-            except self.scrobble_exceptions as err:
-                self.logger.exception(err)
+            except self.scrobble_exceptions:
+                self.logger.exception("Error while scrobbling track")
 
         # update now playing if needed
         if report.is_playing and (
@@ -205,7 +207,9 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
         key=lambda player: player.display_name.lower(),
     )
     player_options = [
-        ConfigValueOption(player.player_id, title=player.display_name) for player in ma_player_list
+        ConfigValueOption(player.player_id, title=player.display_name)
+        for player in ma_player_list
+        if player.type in PLAYBACK_TARGET_TYPES
     ]
     return ConfigEntry(
         key=CONF_SCROBBLE_PLAYERS,

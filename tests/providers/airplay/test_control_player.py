@@ -666,6 +666,68 @@ def test_mrp_idle_update_clears_external_media() -> None:
     assert player.current_media is None
 
 
+def test_mrp_loading_snapshot_without_playback_stays_idle() -> None:
+    """A Loading snapshot on an idle player maps to idle, not playing."""
+    # HomePods can hold a stale Loading session (with the cached metadata of a
+    # long-dead AirPlay sender) for days; trusting it would show an eternal
+    # "playing" at position 0.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    playing = Playing(
+        media_type=PyatvMediaType.Music,
+        device_state=DeviceState.Loading,
+        title="King of Spain",
+        total_time=209,
+        position=0,
+    )
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(playing)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_mrp_loading_update_during_playback_stays_playing() -> None:
+    """A Loading update while already playing means buffering, so keep playing."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(Playing(device_state=DeviceState.Loading, title="Next track"))
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "com.apple.Music"
+    assert player.current_media is not None
+    assert player.current_media.title == "Next track"
+
+
+async def test_disconnect_control_services_clears_external_state() -> None:
+    """A forced teardown drops the external snapshot owned by the closed MRP link."""
+    # _handle_connection_closed ignores the late close callback for a device
+    # that was already detached, so the teardown itself must clear the snapshot.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+    player._attr_current_media = MagicMock()
+
+    with patch.object(player, "update_state"):
+        await player._disconnect_control_services()
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
 def test_lost_mrp_connection_clears_external_state() -> None:
     """Losing MRP playback monitoring clears the last external snapshot."""
     player = _make_control_player()

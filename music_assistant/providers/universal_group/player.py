@@ -31,6 +31,7 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
@@ -207,7 +208,7 @@ class UniversalGroupPlayer(Player):
                 options=[
                     ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
-                    if x.type != PlayerType.GROUP
+                    if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN, PlayerType.SOURCE)
                 ],
             ),
             ConfigEntry(
@@ -333,7 +334,7 @@ class UniversalGroupPlayer(Player):
             for member in self.mass.players.iter_group_members(self, only_powered=True):
                 # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(
-                    self.mass.players._handle_play_media(
+                    self._play_media_on_member(
                         member.player_id,
                         PlayerMedia(
                             uri=f"{base_url}?player_id={member.player_id}",
@@ -388,7 +389,7 @@ class UniversalGroupPlayer(Player):
                 )
                 base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
                 # Use internal handler to get protocol selection and avoid redirect
-                await self.mass.players._handle_play_media(
+                await self._play_media_on_member(
                     player_id,
                     PlayerMedia(
                         uri=f"{base_url}?player_id={player_id}",
@@ -437,6 +438,11 @@ class UniversalGroupPlayer(Player):
             # tear down any in-flight session before unloading
             await self.stop()
             self._attr_powered = False
+
+    async def _play_media_on_member(self, player_id: str, media: PlayerMedia) -> None:
+        """Play media directly on a group member under its playback lock."""
+        async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self.mass.players._handle_play_media(player_id, media)
 
     async def _capture_members(self) -> None:
         """

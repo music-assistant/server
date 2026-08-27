@@ -41,6 +41,7 @@ from .constants import (
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     CONF_TTS_LOUDNESS_BOOST,
@@ -49,12 +50,14 @@ from .constants import (
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_WEATHER_DATA_INSTRUCTION,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
     TTS_SPEECHNORM_FILTER,
+    WEATHER_PLACEHOLDER_TOKENS,
 )
-from .helpers import coerce_int, soft_limit_text
+from .helpers import coerce_int, format_ai_radio_timestamp, soft_limit_text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -295,6 +298,22 @@ class AIRadioRenderMixin:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
         deferred = await self._resolve_deferred_placeholders(prompt)
+        empty_weather_tokens = [
+            token
+            for token in WEATHER_PLACEHOLDER_TOKENS
+            if token in prompt and not deferred.get(token)
+        ]
+        if empty_weather_tokens:
+            if attributes.get(ATTR_WEATHER_REQUIRED):
+                error = "weather data unavailable for a weather-required clip"
+                self.logger.warning(
+                    "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
+                )
+                self._record_skip(queue_item, error)
+                raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
+            # weather is optional in this clip, so the LLM must skip it rather than invent it
+            for token in empty_weather_tokens:
+                deferred[token] = NO_WEATHER_DATA_INSTRUCTION
         resolved = prompt
         for key, value in deferred.items():
             resolved = resolved.replace(key, value)
@@ -329,11 +348,10 @@ class AIRadioRenderMixin:
     async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
-        values["<timestamp>"] = self._configured_now().strftime("%Y-%m-%d %H:%M %Z")
+        values["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         # weather is the only deferred placeholder that costs a network round-trip, so it is
         # only fetched when the prompt actually references it
-        weather_tokens = ("<weather_hourly>", "<weather_daily>")
-        if any(token in prompt for token in weather_tokens):
+        if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
         return values
 
@@ -440,8 +458,10 @@ class AIRadioRenderMixin:
                 # the engine reports no reason of its own (Home Assistant answers a failed
                 # render with an empty 500), so the probe's message is the only clue there is
                 raise MusicAssistantError(
-                    f"{err}. Does your TTS provider have enough credit? "
-                    "Check the logs of your TTS provider for the reason."
+                    f"{err}. The TTS engine failed to generate the audio it handed out. "
+                    "Check the logs of the TTS engine for the reason (for a Home Assistant "
+                    "engine that is the Home Assistant core log). A cloud engine may be "
+                    "out of credit or having an outage."
                 ) from err
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None

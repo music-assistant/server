@@ -275,6 +275,29 @@ AirPlay uses **flow mode** streaming, which means:
 - Supports crossfade between tracks
 - Once started, the stream continues until explicitly stopped
 
+### Announcements
+
+An announcement is mixed into the audio the player is already rendering: the binary
+overlays the clip on the outgoing stream with the music ducked underneath, without a
+flush or a re-anchor, so the group timeline is untouched. Native announcement support
+is therefore only offered while there is live playback to mix into — an idle player
+gets the generic announcement handling from the players controller instead.
+
+The clip file is wrapped in ducked silence, because the binary holds the duck for the
+whole file:
+
+| Part | What happens |
+|---|---|
+| lead-in | music already ducked, nothing said yet — the announcement volume is raised here |
+| clip | the announcement itself, at the announcement volume |
+| tail | music still ducked — the volume is put back here |
+
+Both volume changes are timed on the audible instant the binary acks, and they travel
+through the players controller so they land on whichever control owns the output (see
+[Volume Ownership](#volume-ownership)). Neither is ever heard as the music changing
+level. The duck is deepened by exactly the size of the volume bump, so the music keeps
+the same perceived level underneath while the clip gets louder.
+
 
 ## Multi-Room Synchronization
 
@@ -350,11 +373,13 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 
 An AirPlay volume command sets the receiver's own volume, and that level stays behind on the device after the session ends. Music Assistant therefore only sends one when nothing else owns the volume of this output: on a device that is also reachable through a native provider or another protocol (a Sonos speaker, an AV receiver), the stream simply plays at the level the device is already set to, and volume stays with that provider.
 
-A volume is still sent when the AirPlay output itself is the resolved volume control, when a mute has to travel with the stream, and when a session asks for a specific level (an announcement).
+A volume is still sent when the AirPlay output itself is the resolved volume control, and when a mute has to travel with the stream.
 
 ### Volume Feedback
 
 Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+
+A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
 **Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
 - Useful when device volume reports are unreliable

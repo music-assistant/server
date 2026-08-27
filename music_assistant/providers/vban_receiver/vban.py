@@ -22,7 +22,7 @@ class VBANListenerProtocolMod(VBANListenerProtocol):  # type: ignore[misc]
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle received datagram."""
         # No need to process the datagram if no queue is currently streaming us
-        if self.controller and not self.controller._in_use_by_queue:
+        if self.controller and not self.controller._in_use_by_player:
             return
         super().datagram_received(data, addr)
 

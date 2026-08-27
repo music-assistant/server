@@ -18,6 +18,7 @@ from music_assistant.constants import EXTERNAL_SOURCES
 from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
+    from music_assistant_models.enums import RepeatMode
     from music_assistant_models.player import PlayerMedia, PlayerSource
 
 # Protocol domains where an external source (e.g. Spotify Connect) can play
@@ -156,6 +157,16 @@ class ProtocolBackedPlayer(Player):
         if ext_player := self._get_protocol_player_with_external_source():
             await ext_player.seek(position)
             self.mass.players.trigger_player_update(ext_player.player_id, debounce_delay=2)
+
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """Handle SET SHUFFLE command on the player."""
+        if ext_player := self._get_protocol_player_with_external_source():
+            await ext_player.set_shuffle(shuffle_enabled)
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """Handle SET REPEAT command on the player."""
+        if ext_player := self._get_protocol_player_with_external_source():
+            await ext_player.set_repeat(repeat_mode)
 
     def _backing_protocol_player_ids(self) -> list[str]:
         """Return the ids of the protocol players backing this player."""

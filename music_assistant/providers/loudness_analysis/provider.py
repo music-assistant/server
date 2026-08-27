@@ -124,9 +124,14 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         audio_format: AudioFormat,
     ) -> bool:
         """Prepare provider state for a new analysis session."""
-        # skip when the requesting player has explicitly opted out of normalization;
-        # the nightly background job will pick up the measurement if ever needed
-        if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DISABLED:
+        # skip when nothing here normalizes on our side: the player opted out, or the
+        # source levelled the audio itself and measuring its output would store that
+        # level as the track's own. The nightly background job picks the measurement
+        # up if it is ever needed
+        if streamdetails.volume_normalization_mode in (
+            VolumeNormalizationMode.DISABLED,
+            VolumeNormalizationMode.SOURCE,
+        ):
             return False
         ffmpeg = FFMpeg(
             audio_input="-",
