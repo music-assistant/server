@@ -38,6 +38,7 @@ from .constants import (
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
+    CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_IGNORE_VOLUME,
@@ -64,6 +65,7 @@ from .constants import (
 )
 from .helpers import (
     default_buffer_depth,
+    default_hires_enabled,
     get_decoded_property,
     is_apple_device,
     is_macos_device,
@@ -204,7 +206,7 @@ class AirPlayPlayer(Player):
 
     @property
     def hires_playback_enabled(self) -> bool:
-        """Return if 24-bit hi-res playback is possible for this player."""
+        """Return if 24-bit hi-res playback is possible and enabled for this player."""
         # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
         # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
         # base whatever it advertises.
@@ -213,6 +215,7 @@ class AirPlayPlayer(Player):
             and self.protocol == StreamingProtocol.AIRPLAY2
             # the compat lane is 16-bit only, so hi-res stands down while the pin is active
             and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
+            and bool(self.config.get_value(CONF_ENABLE_HIRES, self._hires_default_enabled))
         )
 
     @property
@@ -387,6 +390,22 @@ class AirPlayPlayer(Player):
                     advanced=True,
                 )
             )
+
+        # 24-bit toggle, shown only when the device advertises 24-bit support
+        # (per-device default: see default_hires_enabled). Hidden rather than
+        # omitted when it does not: the formats are probed async after
+        # registration, and an entry absent from the registration-time config
+        # parse would drop the user's stored value until the next config save.
+        base_entries.append(
+            ConfigEntry(
+                key=CONF_ENABLE_HIRES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=self._hires_default_enabled,
+                hidden=not self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS,
+                category="protocol_generic",
+                requires_reload=True,
+            )
+        )
 
         # Regular AirPlay config entries
         base_entries += [
@@ -1460,6 +1479,13 @@ class AirPlayPlayer(Player):
         # a freshly entered password deserves a clean slate: the reject marker
         # would otherwise keep the player in "needs setup" until the next connect
         self.set_password_invalid(False)
+
+    @property
+    def _hires_default_enabled(self) -> bool:
+        """Return the per-device default for the 24-bit toggle."""
+        return default_hires_enabled(
+            self.device_info.manufacturer or "", self.device_info.model or ""
+        )
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):
