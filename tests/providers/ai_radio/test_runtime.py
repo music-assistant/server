@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -25,18 +29,24 @@ from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio import runtime as runtime_module
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
+    ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
+    CONF_WEATHER_PROVIDER,
     TTS_PRONUNCIATION_INSTRUCTIONS,
 )
 from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
+from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
 class StubConfig:
@@ -58,6 +68,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
+        self._sections: dict[str, dict[str, Any]] = {}
         self.config = cast("Any", StubConfig())
         self.instance_id = "ai_radio_test"
         self.domain = "ai_radio"
@@ -66,6 +77,28 @@ class DummyRuntime(AIRadioRuntimeMixin):
     def get_setup_value(self, key: str, default: Any = None) -> Any:
         """Return the stubbed setup flow value for key, or default when absent."""
         return self._setup_values.get(key, default)
+
+    def _schedule_replan(self, queue_id: str) -> None:
+        """No-op stand-in for the queue DJ mixin's replan scheduling."""
+
+    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+        """No-op stand-in for the queue DJ mixin's set_queue_dj."""
+        return {}
+
+    def _materialize_sections(
+        self, section_ids: list[str], sections_map: dict[str, dict[str, Any]] | None = None
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Resolve section ids against self._sections, mirroring the storage mixin."""
+        source = self._sections if sections_map is None else sections_map
+        sections: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for section_id in section_ids:
+            section = source.get(section_id)
+            if section is None:
+                missing.append(section_id)
+                continue
+            sections.append(deepcopy(section))
+        return sections, missing
 
 
 class FailingRuntime(DummyRuntime):
@@ -210,6 +243,27 @@ async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> No
     assert any("AI Radio run cancelled" in message for message in caplog.messages)
 
 
+async def test_run_session_reschedules_a_replan_for_the_session_queue() -> None:
+    """Re-arm the queue DJ for the session's queue once its show session ends."""
+
+    class ReplanTrackingRuntime(FailingRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.replanned_queue_ids: list[str] = []
+
+        def _schedule_replan(self, queue_id: str) -> None:
+            self.replanned_queue_ids.append(queue_id)
+
+    runtime = ReplanTrackingRuntime()
+    session = SessionState(session_id="s4", station_id="station_d")
+    session.queue_id = "queue_1"
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "station_d"})
+
+    assert runtime.replanned_queue_ids == ["queue_1"]
+
+
 async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: Any) -> None:
     """Warn when weather placeholders are used with unsupported provider."""
     runtime = DummyRuntime()
@@ -222,15 +276,249 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "unsupported_provider"},
     }
-    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    runtime.config = cast(
+        "Any",
+        StubConfig(
+            {
+                "weather_city": "Berlin",
+                "weather_country": "DE",
+                CONF_WEATHER_PROVIDER: "unsupported_provider",
+            }
+        ),
+    )
 
     with caplog.at_level(logging.WARNING):
         tokens = await runtime._prepare_runtime_tokens(station)
 
     assert tokens == {}
     assert any("Unsupported weather provider" in message for message in caplog.messages)
+
+
+def _weather_program() -> dict[str, Any]:
+    """Return a program whose only section references the hourly weather token."""
+    return {
+        "sections": [
+            {
+                "id": "Weather_Short",
+                "type": "ai_text",
+                "prompt": "Forecast: <weather_hourly>",
+            }
+        ],
+        "section_order": [],
+    }
+
+
+def _count_weather_fetches(runtime: DummyRuntime) -> list[str]:
+    """Replace the forecast lookup with a stub and return the list it records into."""
+    fetches: list[str] = []
+
+    async def _fetch(city: str, **_kwargs: Any) -> tuple[str, str]:
+        fetches.append(city)
+        return "12 degrees", "mild"
+
+    runtime._fetch_open_meteo_weather = _fetch  # type: ignore[method-assign, assignment]
+    return fetches
+
+
+async def test_prepare_runtime_tokens_reuses_the_cached_weather_within_the_ttl() -> None:
+    """A second pass inside the cache window reuses the tokens instead of refetching."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    first = await runtime._prepare_runtime_tokens(_weather_program())
+    second = await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert first == {"<weather_hourly>": "12 degrees", "<weather_daily>": "mild"}
+    assert second == first
+    assert fetches == ["Berlin"]
+
+
+async def test_prepare_runtime_tokens_refetches_the_weather_once_the_ttl_expired() -> None:
+    """An expired cache entry is refetched rather than served stale forever."""
+    runtime = DummyRuntime()
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
+    fetches = _count_weather_fetches(runtime)
+
+    await runtime._prepare_runtime_tokens(_weather_program())
+    assert runtime._weather_tokens_cache is not None
+    fetched_at, tokens = runtime._weather_tokens_cache
+    runtime._weather_tokens_cache = (
+        fetched_at - runtime_module.WEATHER_TOKENS_CACHE_SECONDS - 1,
+        tokens,
+    )
+    await runtime._prepare_runtime_tokens(_weather_program())
+
+    assert fetches == ["Berlin", "Berlin"]
+
+
+def test_weather_strings_are_rounded_to_whole_numbers() -> None:
+    """A host reads the forecast out loud, so it says 19 degrees and never 19.2."""
+    runtime = DummyRuntime()
+    payload = {
+        "current": {
+            "time": "2026-08-10T09:00",
+            "temperature_2m": 19.2,
+            "apparent_temperature": 18.7,
+        },
+        "hourly": {
+            "time": ["2026-08-10T09:00", "2026-08-10T10:00"],
+            "temperature_2m": [19.2, 20.6],
+            "precipitation_probability": [12.4, 0],
+        },
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_min": [11.4],
+            "temperature_2m_max": [21.49],
+            "precipitation_probability_max": [30.6],
+        },
+    }
+
+    hourly, daily = runtime._format_weather_strings(payload)
+
+    assert hourly == (
+        "now 19C (feels 19C); 2026-08-10 09:00: 19C, rain 12%; 2026-08-10 10:00: 21C, rain 0%"
+    )
+    assert daily == "2026-08-10: 11-21C, rain 31%"
+
+
+def test_weather_strings_hourly_window_starts_at_the_first_upcoming_hour() -> None:
+    """current.time sits on a 15-minute grid; the hourly window starts at the first non-past hour."""
+    runtime = DummyRuntime()
+    hours = [f"2026-08-19T{hour:02d}:00" for hour in range(24)]
+    payload = {
+        "current": {
+            "time": "2026-08-19T15:45",
+            "temperature_2m": 20.0,
+            "apparent_temperature": 19.0,
+        },
+        "hourly": {
+            "time": hours,
+            "temperature_2m": [15.0] * 24,
+            "precipitation_probability": [0] * 24,
+        },
+        "daily": {
+            "time": [],
+            "temperature_2m_min": [],
+            "temperature_2m_max": [],
+            "precipitation_probability_max": [],
+        },
+    }
+
+    hourly, _daily = runtime._format_weather_strings(payload)
+
+    assert hourly.split("; ")[1].startswith("2026-08-19 16:00")
+    assert "2026-08-19 15:00" not in hourly
+    assert "2026-08-19 00:00" not in hourly
+
+
+def test_format_weather_strings_uses_the_requested_unit_suffix() -> None:
+    """The unit suffix passed in replaces the default C in every emitted string."""
+    runtime = DummyRuntime()
+    payload = {
+        "current": {
+            "time": "2026-08-10T09:00",
+            "temperature_2m": 70.0,
+            "apparent_temperature": 68.0,
+        },
+        "hourly": {
+            "time": ["2026-08-10T09:00"],
+            "temperature_2m": [70.0],
+            "precipitation_probability": [10],
+        },
+        "daily": {
+            "time": ["2026-08-10"],
+            "temperature_2m_min": [60.0],
+            "temperature_2m_max": [75.0],
+            "precipitation_probability_max": [20],
+        },
+    }
+
+    hourly, daily = runtime._format_weather_strings(payload, unit_suffix="F")
+
+    assert hourly == "now 70F (feels 68F); 2026-08-10 09:00: 70F, rain 10%"
+    assert daily == "2026-08-10: 60-75F, rain 20%"
+
+
+def _stub_open_meteo_responses(
+    calls: list[tuple[str, dict[str, Any]]],
+    country_code: str = "US",
+) -> Callable[[str, dict[str, Any], int], Awaitable[dict[str, Any]]]:
+    """Return an ``_open_meteo_get_json`` stand-in recording calls and faking both endpoints."""
+
+    async def _get_json(
+        base_url: str, params: dict[str, Any], _timeout_seconds: int
+    ) -> dict[str, Any]:
+        calls.append((base_url, params))
+        if "geocoding" in base_url:
+            return {
+                "results": [
+                    {
+                        "latitude": 40.71,
+                        "longitude": -74.01,
+                        "timezone": "America/New_York",
+                        "country": "",
+                        "country_code": country_code,
+                    }
+                ]
+            }
+        return {
+            "current": {
+                "time": "2026-08-10T09:00",
+                "temperature_2m": 70.0,
+                "apparent_temperature": 68.0,
+            },
+            "hourly": {
+                "time": ["2026-08-10T09:00"],
+                "temperature_2m": [70.0],
+                "precipitation_probability": [10],
+            },
+            "daily": {
+                "time": ["2026-08-10"],
+                "temperature_2m_min": [60.0],
+                "temperature_2m_max": [75.0],
+                "precipitation_probability_max": [20],
+            },
+        }
+
+    return _get_json
+
+
+async def test_fetch_open_meteo_weather_requests_fahrenheit_for_a_us_location() -> None:
+    """A US-configured location asks Open-Meteo for Fahrenheit and formats with an F suffix."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_responses(  # type: ignore[method-assign, assignment]
+        calls
+    )
+
+    hourly, daily = await runtime._fetch_open_meteo_weather(
+        city="New York", country="US", timeout_seconds=20
+    )
+
+    forecast_params = calls[1][1]
+    assert forecast_params["temperature_unit"] == "fahrenheit"
+    assert "70F" in hourly
+    assert daily.endswith("F, rain 20%")
+
+
+async def test_fetch_open_meteo_weather_omits_temperature_unit_for_a_nl_location() -> None:
+    """A non-Fahrenheit country sends no temperature_unit param and formats with a C suffix."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_responses(  # type: ignore[method-assign, assignment]
+        calls, country_code="NL"
+    )
+
+    hourly, daily = await runtime._fetch_open_meteo_weather(
+        city="Amsterdam", country="NL", timeout_seconds=20
+    )
+
+    forecast_params = calls[1][1]
+    assert "temperature_unit" not in forecast_params
+    assert "70C" in hourly
+    assert daily.endswith("C, rain 20%")
 
 
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
@@ -245,7 +533,6 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
             }
         ],
         "section_order": [],
-        "general": {"weather_provider": "open_meteo"},
     }
     runtime.config = cast("Any", StubConfig({"weather_city": "", "weather_country": "DE"}))
 
@@ -269,6 +556,67 @@ def test_extract_location_defaults_to_empty_when_unset() -> None:
     runtime = DummyRuntime()
 
     assert runtime._extract_location() == ("", "")
+
+
+def _stub_open_meteo_get_json(
+    calls: list[tuple[str, dict[str, Any]]],
+    geocode_results: list[dict[str, Any]],
+) -> Callable[..., Awaitable[dict[str, Any]]]:
+    """Stub _open_meteo_get_json, recording every call and answering the geocoding request."""
+
+    async def _fake(base_url: str, params: dict[str, Any], _timeout_seconds: int) -> dict[str, Any]:
+        calls.append((base_url, dict(params)))
+        if "geocoding-api" in base_url:
+            return {"results": geocode_results}
+        return {"hourly": {}, "daily": {}, "current": {}}
+
+    return _fake
+
+
+async def test_fetch_open_meteo_weather_sends_country_code_not_country() -> None:
+    """The geocoding request filters by countryCode, the API's real parameter name."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
+        calls,
+        [
+            {
+                "latitude": 52.37,
+                "longitude": 4.9,
+                "country": "Netherlands",
+                "country_code": "NL",
+                "timezone": "Europe/Amsterdam",
+            }
+        ],
+    )
+
+    await runtime._fetch_open_meteo_weather(city="Amsterdam", country="NL", timeout_seconds=10)
+
+    _geocode_url, geocode_params = next(call for call in calls if "geocoding-api" in call[0])
+    assert geocode_params["countryCode"] == "NL"
+    assert "country" not in geocode_params
+
+
+async def test_fetch_open_meteo_weather_raises_when_no_result_matches_the_country() -> None:
+    """A same-named city in the wrong country must raise, never silently pick results[0]."""
+    runtime = DummyRuntime()
+    calls: list[tuple[str, dict[str, Any]]] = []
+    # every candidate is a Cambridge, but none of them is in New Zealand
+    runtime._open_meteo_get_json = _stub_open_meteo_get_json(  # type: ignore[method-assign, assignment]
+        calls,
+        [
+            {
+                "latitude": 52.2,
+                "longitude": 0.12,
+                "country": "United Kingdom",
+                "country_code": "GB",
+                "timezone": "Europe/London",
+            }
+        ],
+    )
+
+    with pytest.raises(MusicAssistantError, match="Cambridge"):
+        await runtime._fetch_open_meteo_weather(city="Cambridge", country="NZ", timeout_seconds=10)
 
 
 @pytest.mark.parametrize("timezone_value", ["Asia/Tokyo", "  Asia/Tokyo  "])
@@ -331,7 +679,7 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=station,
+        program=station,
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -360,7 +708,7 @@ async def test_generate_text_wraps_not_connected_error() -> None:
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -390,7 +738,7 @@ async def test_generate_text_fails_the_section_when_the_engine_stalls(
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -411,7 +759,7 @@ async def test_generate_text_reports_an_engine_side_timeout_as_a_query_failure()
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
-            station={"general": {"instructions": "test"}},
+            instructions="test",
             prompt="test prompt",
             web_mode="disabled",
         )
@@ -431,13 +779,58 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
     )
 
     await runtime._generate_text(
-        station={"general": {"instructions": "test"}},
+        instructions="test",
         prompt="test prompt",
         web_mode="disabled",
     )
 
     assert "nl_NL" in plugin.ai_query.await_args.args[0]
     assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
+
+
+async def test_generate_text_prefers_the_hosts_language_over_the_system_locale() -> None:
+    """An explicit host language wins over the server locale in the AI query."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="fr_FR",
+    )
+
+    assert "fr_FR" in plugin.ai_query.await_args.args[0]
+    assert "nl_NL" not in plugin.ai_query.await_args.args[0]
+
+
+async def test_generate_text_falls_back_to_the_system_locale_when_language_is_empty() -> None:
+    """An unset host language keeps asking for the server locale, exactly as before."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
+
+    await runtime._generate_text(
+        instructions="test",
+        prompt="test prompt",
+        web_mode="disabled",
+        language="",
+    )
+
+    assert "nl_NL" in plugin.ai_query.await_args.args[0]
 
 
 @pytest.mark.parametrize("general", [{"instructions": "Host personality: minimal DJ."}, {}])
@@ -456,7 +849,7 @@ async def test_generate_text_always_states_the_pronunciation_rules(
     )
 
     await runtime._generate_text(
-        station={"general": general}, prompt="test prompt", web_mode="allow"
+        instructions=str(general.get("instructions", "")), prompt="test prompt", web_mode="allow"
     )
 
     assert TTS_PRONUNCIATION_INSTRUCTIONS in plugin.ai_query.await_args.args[0]
@@ -480,7 +873,7 @@ def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
     )
 
     static, deferred = runtime._resolve_placeholders(
-        station={},
+        program={},
         tracks=tracks,
         slot=slot,
         runtime_tokens={"<weather_hourly>": "12 degrees"},
@@ -492,6 +885,34 @@ def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
     assert "<weather_hourly>" not in static
     assert deferred["<weather_hourly>"] == "12 degrees"
     assert "<timestamp>" in deferred
+
+
+def test_resolve_placeholders_timestamp_spells_out_weekday() -> None:
+    """The deferred <timestamp> value names the weekday so the LLM never has to derive it."""
+    runtime = DummyRuntime()
+    moment = datetime.datetime(2026, 8, 22, 16, 20, tzinfo=datetime.UTC)
+    runtime._configured_now = lambda: moment  # type: ignore[method-assign]
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+    slot = Slot(
+        when="between_songs",
+        at_index=1,
+        prev_index=0,
+        next_index=1,
+        very_next_index=None,
+        minute_mark=3.3,
+    )
+
+    _static, deferred = runtime._resolve_placeholders(
+        program={},
+        tracks=tracks,
+        slot=slot,
+        runtime_tokens={},
+    )
+
+    assert deferred["<timestamp>"] == "Saturday 22 August 2026, 16:20 UTC"
 
 
 def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
@@ -518,7 +939,7 @@ def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=station,
+        program=station,
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -575,7 +996,7 @@ def test_plan_sections_suppresses_section_when_required_placeholder_is_missing()
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=_weather_guarded_station(),
+        program=_weather_guarded_station(),
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -598,7 +1019,7 @@ def test_plan_sections_includes_section_when_required_placeholder_is_present() -
     planned, _history = runtime._plan_sections(
         session_id="sess",
         tracks=tracks,
-        station=_weather_guarded_station(),
+        program=_weather_guarded_station(),
         track_index_offset=0,
         minute_offset=0.0,
         history_state={},
@@ -608,6 +1029,179 @@ def test_plan_sections_includes_section_when_required_placeholder_is_present() -
 
     assert len(planned) == 1
     assert planned[0].section_id == "Weather"
+
+
+def test_standalone_weather_section_is_weather_required() -> None:
+    """A section that only speaks weather is flagged so a failed fetch skips it, not fakes it."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_weather_guarded_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is True
+
+
+def _merge_weather_news_station() -> dict[str, Any]:
+    """Return a station whose between-songs slot merges a weather-guarded section with news."""
+    return {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            },
+            {
+                "id": "News",
+                "name": "News",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Give the headlines.",
+                "constraints": {"max_chars": 200},
+            },
+            {
+                "id": "Smoother",
+                "name": "Between Songs Mix",
+                "type": "ai_meta",
+                "prompt": "Combine these: <section_drafts>",
+            },
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Weather",
+                            "chance": 1.0,
+                            "guards": {"require_placeholders_present": ["<weather_hourly>"]},
+                        }
+                    },
+                    {"OPTIONAL": {"section": "News", "chance": 1.0, "guards": {}}},
+                ],
+            }
+        ],
+        "merge_section_id": "Smoother",
+    }
+
+
+def test_merged_weather_and_news_clip_is_not_weather_required() -> None:
+    """A merged clip must still carry the news half even when weather data is missing."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=_merge_weather_news_station(),
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_mixed_purpose_section_without_a_weather_guard_is_not_weather_required() -> None:
+    """A prompt that just mentions the weather must not skip the whole clip on a failed fetch."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Intro",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Introduce <next_songinfo> and mention the weather <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Intro"}]}],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
+
+
+def test_alternative_weather_section_is_not_weather_required() -> None:
+    """An ALTERNATIVE section carries no guards, so it never blocks a clip on weather data."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Weather",
+                "name": "Weather",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Current weather: <weather_hourly>.",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "between_songs",
+                "flow": [{"ALTERNATIVE": {"choices": [{"section": "Weather", "weight": 100}]}}],
+            }
+        ],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["between_songs"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+    )
+
+    assert len(planned) == 1
+    assert planned[0].weather_required is False
 
 
 def _stub_track(item_id: str) -> Track:
@@ -662,7 +1256,7 @@ def test_compose_queue_items_places_clips_at_planned_indices() -> None:
     items = runtime._compose_queue_items(
         queue_id="player_a",
         session=SessionState(session_id="sess", station_id="st"),
-        station={"id": "st"},
+        program={"id": "st"},
         tracks=tracks,
         sections=sections,
     )
@@ -686,6 +1280,93 @@ def test_compose_queue_items_places_clips_at_planned_indices() -> None:
     assert "ai_radio_section_name" not in intro.extra_attributes
     # track items carry no AI Radio state
     assert items[1].extra_attributes == {}
+
+
+def test_build_program_merges_host_into_station() -> None:
+    """The merged program carries the host's persona, sections and section_order."""
+    runtime = DummyRuntime()
+    runtime._sections = {
+        "Song_Transition": {
+            "id": "Song_Transition",
+            "name": "Song Transition",
+            "type": "ai_text",
+            "prompt": "Prompt",
+            "web_search": "disabled",
+        }
+    }
+    host = {
+        "id": "rick",
+        "name": "Rick",
+        "instructions": "Persona.",
+        "tts_engine": "engine-1",
+        "language": "fr_FR",
+        "section_ids": ["Song_Transition"],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]}],
+        "merge_section_id": "",
+    }
+    station = {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "p1",
+        "source_playlist_provider": "library",
+        "default_player_id": "",
+        "max_duration_minutes": 0.0,
+        "shuffle_source_tracks": True,
+        "host_id": "rick",
+    }
+
+    program = runtime._build_program(station, host)
+
+    assert program["instructions"] == "Persona."
+    assert program["tts_engine"] == "engine-1"
+    assert program["language"] == "fr_FR"
+    assert [s["id"] for s in program["sections"]] == ["Song_Transition"]
+    assert program["section_order"] == host["section_order"]
+    assert program["source_playlist_id"] == "p1"
+
+
+def test_clip_item_carries_host_id() -> None:
+    """A planned clip's queue item stamps both the station id and the host id."""
+    runtime = DummyRuntime()
+    section = PlannedSection(
+        order=0,
+        clip_id="sess_000",
+        section_id="Song_Transition",
+        section_name="Song Transition",
+        when="between_songs",
+        insert_at_index=1,
+        prompt="p",
+        max_chars=0,
+        web_search_mode="disabled",
+    )
+    program = {"id": "station_a", "host_id": "rick"}
+
+    item = runtime._section_to_clip_item("queue-1", "sess", program, section)
+
+    assert item.extra_attributes[ATTR_HOST_ID] == "rick"
+    assert item.extra_attributes[ATTR_SESSION_ID] == "sess"
+
+
+def test_clip_item_carries_weather_required_flag() -> None:
+    """A planned clip's weather_required flag travels onto the queue item's attributes."""
+    runtime = DummyRuntime()
+    section = PlannedSection(
+        order=0,
+        clip_id="sess_000",
+        section_id="Weather",
+        section_name="Weather",
+        when="between_songs",
+        insert_at_index=1,
+        prompt="Current weather: <weather_hourly>.",
+        max_chars=0,
+        web_search_mode="disabled",
+        weather_required=True,
+    )
+    program = {"id": "station_a", "host_id": "rick"}
+
+    item = runtime._section_to_clip_item("queue-1", "sess", program, section)
+
+    assert item.extra_attributes[ATTR_WEATHER_REQUIRED] is True
 
 
 async def test_get_ai_engine_requires_a_configured_selection() -> None:
@@ -743,6 +1424,22 @@ async def test_get_tts_engine_refuses_a_configured_engine_that_disappeared() -> 
 
     with pytest.raises(MusicAssistantError, match="No text-to-speech engine available"):
         await runtime._get_tts_engine()
+
+
+async def test_get_tts_engine_falls_back_to_provider_selection_when_host_uid_is_unresolvable(
+    caplog: Any,
+) -> None:
+    """A host engine_uid that no longer resolves falls back to the provider's TTS selection."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("aa_low", "engine"))
+    )
+
+    with caplog.at_level(logging.WARNING):
+        engine = await runtime._get_tts_engine("gone/engine")
+
+    assert engine.uid == "aa_low/engine"
+    assert any("unavailable" in message for message in caplog.messages)
 
 
 def _show_mass_stub(**handlers: Any) -> SimpleNamespace:
@@ -885,6 +1582,32 @@ class ShowRuntime(DummyRuntime):
         return {}
 
 
+class ShowRuntimeWithDJ(AIRadioQueueDJMixin, AIRadioStorageMixin, ShowRuntime):
+    """ShowRuntime harness that also carries sticky queue DJ state."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Initialize show runtime state plus queue DJ bookkeeping."""
+        super().__init__()
+        self._hosts: dict[str, dict[str, Any]] = {
+            "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
+        }
+        self._dj_queues: dict[str, Any] = {}
+        self._dj_file = tmp_path / "queue_dj.json"
+        self._dj_lock = asyncio.Lock()
+        self._unloading = False
+
+
+def _recording_create_task(scheduled: list[str]) -> Callable[..., None]:
+    """Return a create_task stub that records the task id and discards the coroutine."""
+
+    def _create_task(coro: Any, task_id: str | None = None, **_kwargs: Any) -> None:
+        if task_id:
+            scheduled.append(task_id)
+        coro.close()
+
+    return _create_task
+
+
 async def test_run_show_loads_the_whole_show_then_plays_index_zero() -> None:
     """The show is loaded in one call, fully stamped, before playback is started."""
     runtime = ShowRuntime()
@@ -958,6 +1681,64 @@ async def test_run_show_targets_active_group_queue() -> None:
     assert load_queue_ids == ["group_1"]
     assert play_index_queue_ids == ["group_1"]
     assert session.queue_id == "group_1"
+
+
+async def test_run_show_clears_the_queues_sticky_dj(tmp_path: Path) -> None:
+    """Starting a show drops that queue's existing sticky DJ assignment."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(runtime, _show_mass_stub())
+    await runtime.set_queue_dj("living_room", "rick")
+    assert "living_room" in runtime._dj_queues
+
+    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
+
+    assert "living_room" not in runtime._dj_queues
+    persisted = json.loads(runtime._dj_file.read_text())
+    assert persisted["queues"] == {}
+
+
+async def test_run_show_clears_the_dj_on_the_resolved_group_queue(tmp_path: Path) -> None:
+    """A grouped player's DJ is cleared on the active (group) queue, not the raw player id."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1")),
+    )
+    # a stale assignment on the raw player id must survive untouched: the show never
+    # played there, only on the resolved group queue
+    await runtime.set_queue_dj("living_room", "rick")
+    await runtime.set_queue_dj("group_1", "rick")
+
+    await runtime._run_show(SessionState(session_id="s1", station_id="st"), _show_station())
+
+    assert "group_1" not in runtime._dj_queues
+    assert "living_room" in runtime._dj_queues
+
+
+async def test_run_session_finally_replans_a_dj_armed_mid_show(tmp_path: Path) -> None:
+    """A DJ armed via the menu while a show plays still gets scheduled once the show ends."""
+    runtime = ShowRuntimeWithDJ(tmp_path)
+    scheduled: list[str] = []
+    _set_runtime_mass(runtime, _show_mass_stub(create_task=_recording_create_task(scheduled)))
+    session = SessionState(session_id="sess", station_id="st", queue_id="living_room")
+    runtime._sessions[session.session_id] = session
+
+    # arming mid-show already requested a pass; that pass would drain against the running-show
+    # guard in _replan_queue and clear replan_pending without planning anything, so reset it
+    # here to isolate the finally block's own request instead of piggybacking on this one
+    await runtime.set_queue_dj("living_room", "rick")
+    runtime._dj_queues["living_room"].replan_pending = False
+    scheduled.clear()
+
+    async def _run_show_stub(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("show over")
+
+    runtime._run_show = _run_show_stub  # type: ignore[method-assign]
+
+    await runtime._run_session(session.session_id, {"id": "st"})
+
+    assert scheduled == ["ai_radio_dj_replan_living_room"]
+    assert runtime._dj_queues["living_room"].ready is True
 
 
 async def test_run_show_ends_as_stopped_when_the_user_stops_the_queue() -> None:

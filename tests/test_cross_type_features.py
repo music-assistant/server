@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
-from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
+from music_assistant_models.media_items import (
+    Artist,
+    AudioSource,
+    BrowseFolder,
+    ProviderMapping,
+    SearchResults,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.artists import ArtistsController
@@ -115,6 +124,327 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     assert call_kwargs.get("limit") == 5
 
 
+async def test_similar_tracks_skips_failed_provider_mapping() -> None:
+    """A transport failure from one mapping does not prevent trying the next provider."""
+    mass = Mock()
+    failed_prov = Mock(spec=MusicProvider)
+    failed_prov.name = "Failed"
+    failed_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    failed_prov.get_similar_tracks = AsyncMock(side_effect=ClientConnectionError("offline"))
+    working_prov = Mock(spec=MusicProvider)
+    working_prov.name = "Working"
+    working_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    working_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    mass.get_provider.side_effect = lambda instance_id: {
+        "failed": failed_prov,
+        "working": working_prov,
+    }.get(instance_id)
+    mass.get_providers_supporting_feature.return_value = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="failed_track",
+            provider_domain="failed",
+            provider_instance="failed",
+        ),
+        ProviderMapping(
+            item_id="working_track",
+            provider_domain="working",
+            provider_instance="working",
+        ),
+    ]
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("seed", "library")
+
+    assert result == ["t1", "t2"]
+    failed_prov.get_similar_tracks.assert_awaited_once()
+    working_prov.get_similar_tracks.assert_awaited_once()
+
+
+async def test_similar_tracks_normalizes_provider_transport_failure() -> None:
+    """An all-provider transport failure is exposed as a typed MA provider error."""
+    mass = Mock()
+    provider = Mock(spec=MusicProvider)
+    provider.name = "Failed"
+    provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    client_error = ClientConnectionError("offline")
+    provider.get_similar_tracks = AsyncMock(side_effect=client_error)
+    mass.get_provider.return_value = provider
+    mass.get_providers_supporting_feature.return_value = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="failed_track",
+            provider_domain="failed",
+            provider_instance="failed",
+        )
+    ]
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "library")
+
+    assert raised.value.__cause__ is client_error
+
+
+async def test_similar_tracks_preserves_typed_provider_error() -> None:
+    """A typed provider failure is re-raised unchanged when no provider responds."""
+    mass = Mock()
+    provider = Mock(spec=MusicProvider)
+    provider.name = "Failed"
+    provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    provider_error = InvalidDataError("invalid response")
+    provider.get_similar_tracks = AsyncMock(side_effect=provider_error)
+    mass.get_provider.return_value = provider
+    mass.get_providers_supporting_feature.return_value = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = [
+        ProviderMapping(
+            item_id="failed_track",
+            provider_domain="failed",
+            provider_instance="failed",
+        )
+    ]
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    with pytest.raises(InvalidDataError) as raised:
+        await controller.similar_tracks("seed", "library")
+
+    assert raised.value is provider_error
+
+
+async def test_similar_tracks_lookup_failure_after_empty_response_returns_empty() -> None:
+    """A failed cross-provider lookup does not override an earlier valid empty response."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
+    lookup_provider = Mock(spec=MusicProvider)
+    lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
+    lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    lookup_provider.get_similar_tracks = AsyncMock(side_effect=ClientConnectionError("offline"))
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [lookup_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider = "mapped"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.match_provider = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            ProviderMapping(
+                item_id="lookup_track",
+                provider_domain="lookup",
+                provider_instance="lookup",
+            )
+        ]
+    )
+
+    result = await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert result == []
+    lookup_provider.get_similar_tracks.assert_awaited_once_with("lookup_track", limit=25)
+
+
+async def test_similar_tracks_normalizes_provider_matching_failure() -> None:
+    """A transport failure while matching a lookup provider is normalized."""
+    mass = Mock()
+    lookup_provider = Mock(spec=MusicProvider)
+    lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
+    lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [lookup_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = set()
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    client_error = ClientConnectionError("offline")
+    controller.match_provider = AsyncMock(  # type: ignore[method-assign]
+        side_effect=client_error
+    )
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "library", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
+async def test_similar_tracks_preserves_failure_when_lookup_is_not_implemented() -> None:
+    """An unsupported matched lookup does not discard an earlier provider failure."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    client_error = ClientConnectionError("offline")
+    mapped_provider.get_similar_tracks = AsyncMock(side_effect=client_error)
+    lookup_provider = Mock(spec=MusicProvider)
+    lookup_provider.name = "Lookup"
+    lookup_provider.instance_id = "lookup"
+    lookup_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    lookup_provider.get_similar_tracks = AsyncMock(side_effect=NotImplementedError)
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [lookup_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider = "mapped"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.match_provider = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            ProviderMapping(
+                item_id="lookup_track",
+                provider_domain="lookup",
+                provider_instance="lookup",
+            )
+        ]
+    )
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
+async def test_similar_tracks_lookup_skips_mapped_provider() -> None:
+    """Cross-provider lookup does not retry an instance already mapped to the track."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.instance_id = "mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = [mapped_provider]
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.match_provider = AsyncMock()  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert result == []
+    controller.match_provider.assert_not_awaited()
+
+
+async def test_similar_tracks_empty_response_wins_without_lookup_provider() -> None:
+    """A valid empty response is preserved when no lookup provider is available."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    mapped_provider.get_similar_tracks = AsyncMock(return_value=[])
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    result = await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert result == []
+
+
+async def test_similar_tracks_failure_wins_without_lookup_provider() -> None:
+    """A provider failure is preserved when no lookup provider is available."""
+    mass = Mock()
+    mapped_provider = Mock(spec=MusicProvider)
+    mapped_provider.name = "Mapped"
+    mapped_provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
+    client_error = ClientConnectionError("offline")
+    mapped_provider.get_similar_tracks = AsyncMock(side_effect=client_error)
+    mass.get_provider.return_value = mapped_provider
+    mass.get_providers_supporting_feature.return_value = []
+    mass.music.providers = []
+
+    ref_item = Mock()
+    ref_item.name = "Seed"
+    ref_item.provider_mappings = {
+        ProviderMapping(
+            item_id="mapped_track",
+            provider_domain="mapped",
+            provider_instance="mapped",
+        )
+    }
+    controller = TracksController.__new__(TracksController)
+    controller.mass = mass
+    controller.logger = Mock()
+    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError) as raised:
+        await controller.similar_tracks("seed", "mapped", allow_lookup=True)
+
+    assert raised.value.__cause__ is client_error
+
+
 def _artist(item_id: str, name: str, instance: str) -> Artist:
     """Build a minimal Artist for the given provider instance."""
     return Artist(
@@ -216,6 +546,160 @@ async def test_browse_root_includes_non_music_providers() -> None:
         for c in mass.get_providers_supporting_feature.call_args_list
     ]
     assert ProviderFeature.BROWSE in calls
+
+
+def _audio_source_item(provider: str, item_id: str, *, can_initiate: bool = True) -> AudioSource:
+    """Return an AudioSource as a plugin would declare it."""
+    return AudioSource(
+        item_id=item_id,
+        provider=provider,
+        name=f"Source {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+        can_initiate=can_initiate,
+    )
+
+
+class _AudioSourcePlugin(PluginProvider):
+    """Plugin stub exposing AudioSources, optionally bound per player."""
+
+    def __init__(
+        self,
+        instance_id: str,
+        sources: list[AudioSource],
+        bound_players: dict[str, list[AudioSource]] | None = None,
+    ) -> None:
+        self.manifest = Mock(type=ProviderType.PLUGIN)
+        self.manifest.domain = instance_id
+        self.config = Mock(instance_id=instance_id)
+        self.config.name = instance_id
+        self._supported_features = {ProviderFeature.AUDIO_SOURCE}
+        self._sources = sources
+        self._bound_players = bound_players
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return all sources this plugin exposes."""
+        return self._sources
+
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource] | None:
+        """Return the sources bound to the given player, or None when not player-bound."""
+        if self._bound_players is None:
+            return None
+        return self._bound_players.get(player_id, [])
+
+
+def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, PluginProvider]:
+    """Build a browse controller with one player-bound and one unbound audio source plugin."""
+    bound_plugin = _AudioSourcePlugin(
+        "connect",
+        [_audio_source_item("connect", "kitchen"), _audio_source_item("connect", "office")],
+        bound_players={
+            "kitchen": [_audio_source_item("connect", "kitchen")],
+            "office": [_audio_source_item("connect", "office")],
+        },
+    )
+    unbound_plugin = _AudioSourcePlugin("vban", [_audio_source_item("vban", "input1")])
+
+    mass = Mock()
+
+    def _supports(feature: ProviderFeature) -> list[PluginProvider]:
+        if feature == ProviderFeature.AUDIO_SOURCE:
+            return [bound_plugin, unbound_plugin]
+        return []
+
+    mass.get_providers_supporting_feature.side_effect = _supports
+    mass.get_provider.side_effect = lambda instance_id: {
+        "connect": bound_plugin,
+        "vban": unbound_plugin,
+    }.get(instance_id)
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+    return controller, bound_plugin, unbound_plugin
+
+
+async def test_browse_root_scopes_audio_sources_to_player() -> None:
+    """With a player scope, only that player's bound sources plus unbound plugins list."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None, player_id="kitchen")
+
+    # the bound plugin narrows to the player's single source (promoted to the
+    # source itself); the other player's source is not offered here
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") not in result
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_root_hides_bound_plugin_for_unbound_player() -> None:
+    """A player-bound plugin disappears entirely for a player it has no source for."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None, player_id="livingroom")
+
+    assert _audio_source_item("connect", "kitchen") not in result
+    assert _audio_source_item("connect", "office") not in result
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_root_without_player_scope_lists_all_sources() -> None:
+    """Without a player scope every plugin keeps its full source listing."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None)
+
+    # two initiable sources: the bound plugin lists as a folder holding both
+    folder_paths = [item.path for item in result if isinstance(item, BrowseFolder)]
+    assert "connect://" in folder_paths
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_provider_level_scopes_audio_sources_to_player() -> None:
+    """The provider-level source listing honors the player scope too."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path="connect://", player_id="kitchen")
+
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") not in result
+
+
+async def test_browse_provider_level_without_player_scope_lists_all_sources() -> None:
+    """Without a player scope the provider-level listing keeps every source."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path="connect://")
+
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") in result
+
+
+async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
+    """A restricted user only sees bound sources of players their filter allows."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+    restricted_user = Mock(player_filter=["office"])
+
+    with (
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=restricted_user,
+        ),
+        patch("music_assistant.controllers.music.controller.has_scope", return_value=False),
+    ):
+        unscoped = await controller.browse(path=None)
+        hidden_scope = await controller.browse(path=None, player_id="kitchen")
+
+    assert _audio_source_item("connect", "office") in unscoped
+    assert _audio_source_item("connect", "kitchen") not in unscoped
+    assert _audio_source_item("vban", "input1") in unscoped
+    # scoping to a player outside the filter yields no bound sources
+    assert _audio_source_item("connect", "kitchen") not in hidden_scope
+    assert _audio_source_item("vban", "input1") in hidden_scope
 
 
 async def test_global_search_includes_plugin_providers_with_search() -> None:

@@ -26,6 +26,7 @@ from scripts.release_workflow import (
     inspect_assets,
     is_current_release,
     select_release,
+    set_addon_version,
     update_addon_release,
     verify_oci_manifest,
 )
@@ -151,6 +152,51 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.previous_tag == "2.9.9"
     assert decision.commits_since == 1
     assert decision.should_release is True
+
+
+def test_stable_auto_release_fails_when_unreleased_rc_exists(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """An RC ahead of the latest stable tag blocks the automatic patch release."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc2")
+
+    with pytest.raises(ReleaseWorkflowError, match="Create Release"):
+        determine_auto_release(git_repository, "stable", "HEAD")
+
+
+def test_stable_auto_release_continues_after_rc_base_released(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Patch releases resume once the RC's base version has shipped as stable."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0rc2")
+    _commit(path, "release work")
+    _git(path, "tag", "2.10.0")
+    _commit(path, "patch work")
+
+    decision = determine_auto_release(git_repository, "stable", "HEAD")
+
+    assert decision.version == "2.10.1"
+    assert decision.previous_tag == "2.10.0"
+
+
+def test_rc_auto_release_ignores_the_stable_only_guard(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """The RC-window guard only blocks the stable channel, not the RC channel itself."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "beta work")
+    _git(path, "tag", "2.10.0b1")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc1")
+
+    decision = determine_auto_release(git_repository, "rc", "HEAD")
+
+    assert decision.version == "2.10.0rc2"
 
 
 def test_current_release_combines_beta_and_rc_channels(
@@ -379,6 +425,76 @@ def test_addon_update_replaces_duplicate_version_and_retains_three(tmp_path: Pat
     assert first_result.count("# [older]") == 1
     assert "# [older]" in first_result
     assert "# [oldest]" in first_result
+
+
+def test_addon_version_update_leaves_the_rest_of_the_config_alone(tmp_path: Path) -> None:
+    """The dev add-on follows the nightly version without gaining a changelog."""
+    config = tmp_path / "config.yaml"
+    original = (
+        "name: Music Assistant DEV SERVER\n"
+        "# tracks the nightly base image; bumped by the server release workflow\n"
+        "version: 1.6.0\n"
+        "slug: music_assistant_dev\n"
+    )
+    config.write_text(original, encoding="utf-8")
+
+    set_addon_version(config, "2.10.0.dev2026081303")
+
+    assert config.read_text(encoding="utf-8") == original.replace(
+        "version: 1.6.0", "version: 2.10.0.dev2026081303"
+    )
+    assert list(tmp_path.iterdir()) == [config]
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "name: Music Assistant DEV SERVER\n",
+        "name: Music Assistant DEV SERVER\nversion: 1.6.0\nslug: dev\nversion: 1.5.2\n",
+    ],
+    ids=["missing", "duplicate"],
+)
+def test_addon_version_update_requires_exactly_one_version_field(
+    tmp_path: Path,
+    config_text: str,
+) -> None:
+    """A missing or duplicated version field fails instead of writing a stale config."""
+    config = tmp_path / "config.yaml"
+    config.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ReleaseWorkflowError):
+        set_addon_version(config, "2.10.0.dev2026081303")
+
+    assert config.read_text(encoding="utf-8") == config_text
+
+
+def test_release_workflow_bumps_the_dev_addon_on_nightly_only() -> None:
+    """Nightly carries the locally built dev add-on along with the nightly add-on."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
+    channel_run = str(
+        _workflow_step(parsed_workflow, "update_addon", "Resolve add-on channel")["run"]
+    )
+
+    assert channel_run.index('dev_folder=""') < channel_run.index('case "$CHANNEL" in')
+    assert channel_run.count('dev_folder="music_assistant_dev"') == 1
+    nightly_arm = channel_run.split("nightly)")[1].split(";;", maxsplit=1)[0]
+    assert 'dev_folder="music_assistant_dev"' in nightly_arm
+    assert 'echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"' in channel_run
+
+    dev_step = _workflow_step(parsed_workflow, "update_addon", "Update dev add-on version")
+    assert dev_step["if"] == "steps.channel.outputs.dev_folder != ''"
+    dev_run = str(dev_step["run"])
+    assert "release_workflow.py set-addon-version" in dev_run
+    assert '--config "addon-repo/$DEV_FOLDER/config.yaml"' in dev_run
+
+    commit_step = _workflow_step(parsed_workflow, "update_addon", "Commit add-on update")
+    assert commit_step["env"]["DEV_FOLDER"] == "${{ steps.channel.outputs.dev_folder }}"
+    assert 'git add "$DEV_FOLDER/config.yaml"' in str(commit_step["run"])
+
+    # the bump is only committed if it happens first
+    step_names = [step.get("name") for step in parsed_workflow["jobs"]["update_addon"]["steps"]]
+    assert step_names.index("Update dev add-on version") < step_names.index("Commit add-on update")
 
 
 def test_automation_drops_legacy_credentials() -> None:

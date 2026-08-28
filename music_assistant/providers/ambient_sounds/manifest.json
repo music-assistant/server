@@ -3,7 +3,7 @@
   "domain": "ambient_sounds",
   "stage": "stable",
   "name": "Ambient Sounds",
-  "description": "Locally generated ambient sound loops (white, pink and brown noise, ocean waves) to play directly or use as audio overlay on a queue.",
+  "description": "Locally generated ambient sound loops (white, pink and brown noise, ocean waves) to play directly or use as audio overlay on a queue. Extendable with your own ambient sounds by adding a stream URL.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/ambient-sounds/",

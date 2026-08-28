@@ -175,6 +175,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _cookie: str
     _yt_dlp_module = None
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """YouTube Music serves one stream per account session."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
@@ -211,7 +216,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    # the checksum invalidates entries cached before the search was pinned to English
+    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -240,7 +246,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 # bit of an edge case but still good to handle
                 return parsed_results
         results = await search(
-            query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
+            query=search_query,
+            headers=self._headers,
+            ytm_filter=ytm_filter,
+            limit=limit,
+            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -273,6 +283,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         parsed_results.tracks = tracks
         parsed_results.podcasts = podcasts
         return parsed_results
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except LoginFailed as err:
+            # Every following sync fails the same way until the cookie is replaced,
+            # so hand the provider back to the user for re-authentication.
+            if self.available:
+                self.unload_with_error(err)
+            raise
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
@@ -491,10 +512,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
-        for index, episode_obj in enumerate(podcast_obj.get("episodes", []), start=1):
+        episodes = podcast_obj.get("episodes", [])
+        total = len(episodes)
+        # API lists newest-first; number down so bigger position = newer
+        for idx, episode_obj in enumerate(episodes):
             episode = self._parse_podcast_episode(episode_obj, podcast)
-            ep_index = episode_obj.get("index") or index
-            episode.position = ep_index
+            episode.position = total - idx
             yield episode
 
     @use_cache(3600 * 3)  # Cache for 3 hours
@@ -943,7 +966,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:

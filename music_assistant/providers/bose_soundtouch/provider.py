@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
+from music_assistant_models.errors import MusicAssistantError
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 
-from .client import SoundTouchClient
+from .client import SessionConfiguration, SoundtouchDevice
 from .config import (
     ACTION_ASSIGN,
     ACTION_SEARCH,
@@ -133,7 +134,11 @@ class BoseSoundTouchProvider(PlayerProvider):
 
     async def try_add_player(self, ip_address: str) -> None:
         """Try to add a Bose SoundTouch speaker as a player."""
-        client = SoundTouchClient(self.mass.http_session, ip_address)
+        client = SoundtouchDevice(
+            session_configuration=SessionConfiguration(
+                session=self.mass.http_session, ip=ip_address, logger=self.logger
+            )
+        )
         try:
             info = await client.get_info()
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
@@ -152,9 +157,9 @@ class BoseSoundTouchProvider(PlayerProvider):
 
         player = BoseSoundTouchPlayer(self, player_id, client, info)
         try:
-            await player.setup()
+            await player.setup(info)
             await self.mass.players.register_or_update(player)
-        except Exception:
+        except MusicAssistantError, aiohttp.ClientError, TimeoutError, OSError:
             self.logger.exception("Failed to register SoundTouch player %s", info.name)
             await player.on_unload()
             return

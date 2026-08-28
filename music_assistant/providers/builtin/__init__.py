@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
@@ -58,6 +59,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.helpers.playlists import (
     ImageInfo,
     IsHLSPlaylist,
@@ -298,7 +300,7 @@ class BuiltinProvider(MusicProvider):
             try:
                 yield await self.get_track(item["item_id"])
             except MediaNotFoundError as err:
-                self.logger.warning("Track %s not found: %s", item, err)
+                self.report_skipped_sync_item(MediaType.TRACK, item["item_id"], err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
@@ -309,8 +311,8 @@ class BuiltinProvider(MusicProvider):
             playlist_id = filename[:-4]  # strip .m3u extension
             try:
                 yield await self.get_playlist(playlist_id)
-            except MediaNotFoundError:
-                self.logger.warning("Playlist file %s not found", filename)
+            except MediaNotFoundError as err:
+                self.report_skipped_sync_item(MediaType.PLAYLIST, playlist_id, err)
         # return builtin playlists
         for item_id in BUILTIN_PLAYLISTS:
             if self.config.get_value(item_id) is False:
@@ -672,7 +674,13 @@ class BuiltinProvider(MusicProvider):
         force_radio: bool = False,
         requested_media_type: MediaType | None = None,
     ) -> Track | Radio | SoundEffect:
-        """Parse a plain URL to a Track, Radio, or SoundEffect item."""
+        """
+        Parse a plain URL to a Track, Radio, or SoundEffect item.
+
+        Without an explicitly requested media type, a URL carrying no music tags resolves to
+        a sound effect: a notification or TTS clip is a one-off, not music to build a queue
+        around.
+        """
         media_info = await self._get_media_info(url, force_refresh)
         is_radio = media_info.get("icyname") or not media_info.duration
         provider_mappings = {
@@ -689,7 +697,11 @@ class BuiltinProvider(MusicProvider):
             )
         }
         media_item: Track | Radio | SoundEffect
-        if requested_media_type == MediaType.SOUND_EFFECT:
+        if requested_media_type == MediaType.SOUND_EFFECT or (
+            requested_media_type == MediaType.UNKNOWN
+            and not is_radio
+            and not _has_music_tags(media_info)
+        ):
             media_item = SoundEffect(
                 item_id=url,
                 provider=self.domain,
@@ -896,11 +908,15 @@ class BuiltinProvider(MusicProvider):
         # exact ID matches (cross-provider definitive match)
         if isrc:
             candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
-            if candidate_isrc and candidate_isrc.upper() == isrc.upper():
+            if candidate_isrc and normalize_external_id(
+                ExternalID.ISRC, candidate_isrc
+            ) == normalize_external_id(ExternalID.ISRC, isrc):
                 return 10
         if mbid:
             candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
-            if candidate_mbid and candidate_mbid.lower() == mbid.lower():
+            if candidate_mbid and normalize_external_id(
+                ExternalID.MB_RECORDING, candidate_mbid
+            ) == normalize_external_id(ExternalID.MB_RECORDING, mbid):
                 return 10
 
         # media type gate
@@ -1462,7 +1478,12 @@ class BuiltinProvider(MusicProvider):
             for uri in uris:
                 try:
                     entries.append(await self._build_m3u_entry_from_uri(uri))
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    InvalidProviderURI,
+                    ProviderUnavailableError,
+                ):
                     # parse URI for minimal provider info so the entry is resolvable later
                     entry = PlaylistItem(path=uri)
                     if "://" in uri:
@@ -1505,7 +1526,20 @@ class BuiltinProvider(MusicProvider):
             update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
             all_items = parse_m3u(m3u_data)
             has_changes = False
-            for item in all_items:
+            orphaned: set[int] = set()
+            for index, item in enumerate(all_items):
+                if _is_orphaned_entry_path(item.path):
+                    # leftover text from a value that once contained a line break: it is no
+                    # reference to anything and never will be, so drop it instead of failing
+                    # this (and every future) migration run on it
+                    self.logger.warning(
+                        "Dropping unresolvable entry %s from playlist '%s'",
+                        item.path,
+                        playlist.name,
+                    )
+                    orphaned.add(index)
+                    has_changes = True
+                    continue
                 force_migration = item.metadata and item.metadata.get("album") and not item.album
                 unresolved = bool(force_migration) or not (
                     item.title and item.providers and item.metadata
@@ -1528,7 +1562,12 @@ class BuiltinProvider(MusicProvider):
                     item.album = enriched.album
                     item.artists = enriched.artists
                     item.podcast = enriched.podcast
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    InvalidProviderURI,
+                    ProviderUnavailableError,
+                ) as err:
                     if unresolved:
                         self.logger.warning(
                             "Could not enrich playlist entry %s during migration: %s",
@@ -1558,7 +1597,7 @@ class BuiltinProvider(MusicProvider):
                 await self._write_m3u_file(
                     playlist_id,
                     playlist.name,
-                    list(all_items),
+                    [item for idx, item in enumerate(all_items) if idx not in orphaned],
                     self._get_playlist_image_url(playlist),
                 )
                 self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
@@ -1569,3 +1608,20 @@ class BuiltinProvider(MusicProvider):
         if errors == 0 and (current_task_id := get_current_task_id()):
             # defer unregistering the scheduled task to avoid cancelling the current task
             self.mass.call_later(0, self.mass.tasks.unregister_scheduled_task, current_task_id)
+
+
+def _is_orphaned_entry_path(path: str) -> bool:
+    """Return True if the path is leftover text rather than a reference to a media item."""
+    # a URI, URL or file path always carries one of these separators, so a path without
+    # any of them cannot resolve to anything - not now and not on a later run either
+    return not any(sep in path for sep in ("/", "\\", ":"))
+
+
+def _has_music_tags(media_info: AudioTags) -> bool:
+    """Return True if the stream carries the tags a music file is expected to have."""
+    # notification and TTS clips are untagged, which is what tells them apart from a music
+    # file someone plays by URL. The artists/album properties fall back to the filename, so
+    # the raw tags are what has to be checked here.
+    return any(
+        media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
+    )

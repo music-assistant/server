@@ -43,7 +43,6 @@ if TYPE_CHECKING:
 SENDSPIN_DOMAIN = "sendspin"
 REMOTE_CREATION_CLEANUP_TIMEOUT = 15.0
 REMOTE_REMOVAL_CLEANUP_DELAYS = (0.0, 1.0, 5.0)
-REMOTE_REMOVAL_CLEANUP_TIMEOUT = 5.0
 
 LOGGER = logging.getLogger(__name__)
 
@@ -334,8 +333,11 @@ class SharedPlaybackSession:
             try:
                 if not sendspin.is_virtual_player(player_id):
                     return
-                async with asyncio.timeout(REMOTE_REMOVAL_CLEANUP_TIMEOUT):
-                    await sendspin.remove_virtual_player(player_id)
+                # awaited to completion on purpose: a timeout is no reliable bound on
+                # the teardown - parts of it swallow the cancellation (see
+                # AsyncProcess.close), and one that does land leaves the player
+                # half torn down for the next attempt to trip over
+                await sendspin.remove_virtual_player(player_id)
                 return
             except Exception as err:
                 last_error = err

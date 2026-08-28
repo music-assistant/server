@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Coroutine
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, PlaybackState
@@ -19,11 +19,14 @@ from .constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    AIRPLAY_FEED_START_TIMEOUT,
     AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
+    AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
+    AIRPLAY_REPLACEMENT_POLL_INTERVAL,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
     ClockReadiness,
@@ -40,17 +43,20 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor: only a projection moves
-# it, every other outcome leaves the join floor carrying it alone, so the note
-# says which of the two happened and why. STALLED has no note because it never
-# reaches an anchor - a stalled joiner is refused the join before that.
+# What each readiness outcome means for the join anchor: a projection only moves
+# it when it clears the join floor, which otherwise carries the anchor alone, so
+# the note says which bound the outcome set. STALLED has no note because it never
+# reaches a join anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
-    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring no earlier than that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
     "receiver that never answered); anchoring on the join floor",
 }
+# A locked clock projects an instant that has already passed - the common case,
+# since only a cold receiver is still probing - so its note reads back in time.
+_CLOCK_LOCKED_NOTE = "became usable {ago:.2f}s ago; anchoring on the join floor"
 
 
 class AirPlayStreamSession:
@@ -84,6 +90,11 @@ class AirPlayStreamSession:
         self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.seconds_streamed: float = 0
+        # Parked in standby: the members stay connected but nothing is fed and
+        # their binaries hold until a START, so only a re-anchor (play_media)
+        # revives them. It outlives the group that parked it, which is why the
+        # session - not the group membership - owns this.
+        self.parked: bool = False
         # Timing source for the whole session, decided once in start() and applied
         # identically to every native AirPlay 2 member (and any late joiner) so a
         # sync group can never mix shared-PTP and NTP members.
@@ -127,6 +138,10 @@ class AirPlayStreamSession:
         # counter — aligning lengths in isolation can still land mid-sample,
         # which a joiner renders as pure static.
         self._pcm_total_fed: int = 0
+        # Set once the first audio of a start cycle has been handed to the
+        # members, and also when the source ends without ever handing any over,
+        # so a waiter is never left holding on for a feed that is not coming.
+        self._feed_settled = asyncio.Event()
 
     @property
     def effective_start_time(self) -> float:
@@ -227,18 +242,17 @@ class AirPlayStreamSession:
         Return whether this live session can absorb a new play_media warm.
 
         A warm replacement needs the same member set, the same session PCM
-        format and a connected stream on every member; anything else takes the
-        cold path.
+        format and a connected stream still taking audio on every member;
+        anything else takes the cold path.
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
-        if (
-            pcm_format.sample_rate != self.pcm_format.sample_rate
-            or pcm_format.bit_depth != self.pcm_format.bit_depth
-        ):
+        # the encoding matters as much as the depth here (a 24-bit session carries
+        # PCM_S32LE): replace() wires the new source into the session's declared format
+        if pcm_format != self.pcm_format:
             return False
         return all(
-            p.stream is not None and p.stream.running and p.stream.connected
+            p.stream is not None and p.stream.accepts_audio and p.stream.connected
             for p in self.sync_clients
         )
 
@@ -279,6 +293,7 @@ class AirPlayStreamSession:
             # describe the OLD timeline; restart them before the new source pumps.
             self.seconds_streamed = 0
             self._pcm_total_fed = 0
+            self._feed_settled.clear()
             self._pcm_buffer.clear()
             # The shared START below re-establishes start_time, so the per-client
             # late-join skip counters and every member's accumulated starvation
@@ -306,12 +321,12 @@ class AirPlayStreamSession:
 
         The next play_media (resume or seek) replaces the media warm over the
         live connections — the same coordinated flush-refill as seek/next.
-        Returns False when any member lacks a running, connected stream or its
-        standby command cannot be delivered so the caller can fall back to a
-        full stop.
+        Returns False when any member lacks a connected stream that still takes
+        audio, or its standby command cannot be delivered, so the caller can fall
+        back to a full stop.
         """
         if not all(
-            p.stream is not None and p.stream.running and p.stream.connected
+            p.stream is not None and p.stream.accepts_audio and p.stream.connected
             for p in self.sync_clients
         ):
             return False
@@ -341,9 +356,11 @@ class AirPlayStreamSession:
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
         self._pcm_total_fed = 0
+        self._feed_settled.clear()
         self._pcm_buffer.clear()
         self._client_skip_bytes.clear()
         self._reset_member_shifts()
+        self.parked = True
         return True
 
     async def stop(self) -> None:
@@ -576,13 +593,18 @@ class AirPlayStreamSession:
             return anchor_at, due, prime_slice, skip
 
         now = time.time()
+        clock_out = ready_at_unix_ms / 1000 - now
+        if readiness is ClockReadiness.PROJECTED and clock_out <= 0:
+            clock_note = _CLOCK_LOCKED_NOTE.format(ago=abs(clock_out))
+        else:
+            clock_note = _CLOCK_READINESS_NOTES.get(readiness, "").format(
+                out=clock_out,
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
+            )
         self.prov.logger.debug(
             "Late joiner %s: receiver clock %s",
             airplay_player.player_id,
-            _CLOCK_READINESS_NOTES.get(readiness, "").format(
-                out=ready_at_unix_ms / 1000 - now,
-                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
-            ),
+            clock_note,
         )
         async with self._lock:
             if not self._session_is_live():
@@ -613,8 +635,8 @@ class AirPlayStreamSession:
             # the session lock, stall the whole group's feed. Anchored, the
             # binary drains the prime as it streams in. The START does not
             # re-anchor the session timeline (the group keeps playing). Its ack
-            # is awaited WITHOUT the session lock: the binary holds that ack
-            # until the receiver's clock readiness resolves, which would
+            # is awaited WITHOUT the session lock: the binary can hold that ack
+            # until its receiver clock verification resolves, which would
             # otherwise starve every other member's feed for that whole wait.
             actual = await stream.start(start_unix_ms + adjust_ms, position_ms, join=True)
         except asyncio.CancelledError:
@@ -756,7 +778,10 @@ class AirPlayStreamSession:
             return False
         reference = self.sync_clients[0]
         reference_stream = reference.stream
-        if reference_stream is None or not reference_stream.running:
+        # A stream that has been sent its audio EOF keeps running while it plays
+        # out, but it is on its way to exiting and can never be fed again, so a
+        # joiner would land in a session that is ending.
+        if reference_stream is None or not reference_stream.accepts_audio:
             return False
         # A parked (standby) session keeps every member's stream running while
         # its timeline is gone - the anchor is stale and nothing is being fed -
@@ -848,14 +873,19 @@ class AirPlayStreamSession:
         """Stream audio to all players."""
         stream_error: BaseException | None = None
         try:
-            async for chunk in audio_source:
-                if not self.sync_clients:
-                    break
+            # the loop below leaves early once the clients are gone; closing the source
+            # from here releases its decoders instead of waiting on the garbage collector
+            async with aclosing(audio_source):
+                async for chunk in audio_source:
+                    if not self.sync_clients:
+                        break
 
-                has_running_clients = await self._write_chunk_to_all_players(chunk)
-                if not has_running_clients:
-                    self.prov.logger.debug("No running clients remaining, stopping audio streamer")
-                    break
+                    has_running_clients = await self._write_chunk_to_all_players(chunk)
+                    if not has_running_clients:
+                        self.prov.logger.debug(
+                            "No running clients remaining, stopping audio streamer"
+                        )
+                        break
         except asyncio.CancelledError:
             self.prov.logger.debug("Audio streamer cancelled after %.1fs", self.seconds_streamed)
             raise
@@ -868,19 +898,32 @@ class AirPlayStreamSession:
                 exc_info=err,
             )
         finally:
+            # a source that ends - or is cancelled - without handing anything
+            # over settles the question for a start still waiting on the feed
+            self._feed_settled.set()
             if stream_error:
                 self.prov.logger.warning(
                     "Stream ended prematurely due to error - notifying players"
                 )
+        # A source that ends is not the same thing as a stream that is over: a
+        # seek or a next-track ends this one while the queue is already loading
+        # the stream that takes over. Closing the binary's stdin there would end
+        # the stream for good - it cannot be reopened - and cost that replacement
+        # a full cold restart. Everywhere else the EOF is what ends playback: the
+        # binary plays out, reports eof and exits, and only that makes the player
+        # report idle, which a queue waiting to restart its flow depends on.
+        end_of_stream = not self._replacement_expected()
         async with self._lock:
             await asyncio.gather(
                 *[
-                    self._write_eof_to_player(x)
+                    self._retire_player_ffmpeg(x, end_of_stream=end_of_stream)
                     for x in self.sync_clients
                     if x.stream and x.stream.running
                 ],
                 return_exceptions=True,
             )
+        if not end_of_stream:
+            await self._end_stream_if_no_replacement_lands()
 
     async def _write_chunk_to_all_players(self, chunk: bytes) -> bool:
         """
@@ -897,6 +940,7 @@ class AirPlayStreamSession:
             # add_client always reads consistent values.
             self.seconds_streamed += len(chunk) / self._pcm_byte_rate
             self._pcm_total_fed += len(chunk)
+            self._feed_settled.set()
             self._observe_write_head_lead()
             self._pcm_buffer.extend(chunk)
             overflow = len(self._pcm_buffer) - self._pcm_buffer_max
@@ -958,13 +1002,94 @@ class AirPlayStreamSession:
                 return
             await asyncio.wait_for(ffmpeg.write(chunk), timeout=35.0)
 
-    async def _write_eof_to_player(self, airplay_player: AirPlayPlayer) -> None:
-        """Write EOF to a specific player."""
-        if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
-            await ffmpeg.write_eof()
-            await ffmpeg.wait_with_timeout(30)
-            if airplay_player.stream:
-                await airplay_player.stream.write_audio_eof()
+    def _replacement_expected(self) -> bool:
+        """
+        Return whether the queue is loading a stream that takes this session over.
+
+        A seek or a next-track starts the new stream while the old one is still
+        playing: the queue rotates its stream session at the beginning of that,
+        well before the play_media carrying it arrives, and the flow stream it
+        supersedes ends as soon as it notices. A flow that ends on its own -
+        the queue played out, the source failed, or it broke off to be restarted
+        once the player reports idle - leaves the queue between transitions.
+        """
+        queue_id = self.media.source_id
+        session_id = get_media_session_id(self.media)
+        if not queue_id or not session_id:
+            return False
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        return (
+            queue_data is not None
+            and queue_data.transitioning
+            and queue_data.session_id != session_id
+        )
+
+    async def _retire_player_ffmpeg(
+        self, airplay_player: AirPlayPlayer, *, end_of_stream: bool
+    ) -> None:
+        """
+        Retire a member's ffmpeg now that the source feeding it has ended.
+
+        :param airplay_player: The member whose ffmpeg is retired.
+        :param end_of_stream: Whether this ends the stream for good. The audio the
+            ffmpeg still holds is then handed over and the binary's stdin closed
+            behind it, which makes it play out, report eof and exit. A session a
+            replacement is coming for drops that audio instead: the flush the
+            replacement opens with discards it anyway, and no byte may reach the
+            binary between the old ffmpeg dying and that flush.
+        """
+        if not (ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None)):
+            return
+        if not end_of_stream:
+            await ffmpeg.kill()
+            return
+        await ffmpeg.write_eof()
+        await ffmpeg.wait_with_timeout(30)
+        if airplay_player.stream:
+            await airplay_player.stream.write_audio_eof()
+
+    async def _end_stream_if_no_replacement_lands(self) -> None:
+        """
+        Deliver a withheld end of stream once no replacement is coming for it.
+
+        This runs on the audio streamer's own task, which every route that takes
+        the session over - a warm replace, a park, a stop - cancels before it
+        touches the members, so getting past the wait below means no replacement
+        ever claimed the session. The queue is watched rather than a fixed time
+        waited out: it clears its transition on any failure between rotating its
+        stream session and the play_media that carries the replacement, which
+        says one is never coming, while a slow load keeps it set and must not be
+        cut short. Nothing else can end this stream - without the EOF the binary
+        never plays out, never reports eof, and the player keeps reporting
+        playback until the user commands something else.
+        """
+        deadline = time.monotonic() + AIRPLAY_REPLACEMENT_EOF_TIMEOUT
+        while self._replacement_expected() and (left := deadline - time.monotonic()) > 0:
+            await asyncio.sleep(min(AIRPLAY_REPLACEMENT_POLL_INTERVAL, left))
+        self.prov.logger.warning(
+            "No replacement stream claimed the AirPlay session of %s - %s; "
+            "ending it so the player can report idle",
+            self.media.source_id,
+            f"it is still loading one after {AIRPLAY_REPLACEMENT_EOF_TIMEOUT:.0f}s"
+            if self._replacement_expected()
+            else "the queue ended that transition without one",
+        )
+        async with self._lock:
+            # A member that joined while the EOF was withheld holds a fresh
+            # ffmpeg, and that process owns its own handle on the same cli
+            # stdin: closing only this end would leave the pipe open and the
+            # binary still waiting on it.
+            for player in self.sync_clients:
+                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                    await ffmpeg.kill()
+            await asyncio.gather(
+                *[
+                    stream.write_audio_eof()
+                    for player in self.sync_clients
+                    if (stream := player.stream) and stream.accepts_audio
+                ],
+                return_exceptions=True,
+            )
 
     async def _member_start_step(
         self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
@@ -1004,22 +1129,34 @@ class AirPlayStreamSession:
         """
         # joining a session supersedes any pending automatic group re-join
         airplay_player.cancel_group_rejoin()
-        # sync volume from parent player if needed
-        airplay_player.sync_volume_level()
-        if airplay_player.stream and airplay_player.stream.running:
-            await airplay_player.stream.stop()
-        stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
-        airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
-        airplay_player.stream.session = self
-        await airplay_player.stream.connect(use_shared_ptp)
-        await self._start_player_ffmpeg(airplay_player, self.media)
+        airplay_player.release_foreign_mute_latch()
+        # Held from the decision to displace whatever is published until the new
+        # process is connected and published, so a Sendspin bridge start cannot
+        # put a second cli process on the same receiver in between.
+        async with airplay_player.stream_spawn_lock:
+            if airplay_player.stream:
+                # Stopped unconditionally, not just while it reads as running: a
+                # stream stops reporting that the moment its own stop() starts,
+                # while its process can still be on the receiver. stop() is
+                # idempotent, so this joins a teardown already under way and
+                # returns at once for one that finished.
+                await airplay_player.stream.stop()
+            stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
+            airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
+            airplay_player.stream.session = self
+            await airplay_player.stream.connect(use_shared_ptp)
+            # Wiring the audio producer to the cli stdin belongs to the same
+            # claim: a displacement landing between the connect and this would
+            # leave an ffmpeg feeding a process that is already gone, with
+            # nothing tracking it to clean up.
+            await self._start_player_ffmpeg(airplay_player, self.media)
 
     def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """
         Return the shared audible-start instant for a readiness-confirmed start.
 
         :param warm: True for a warm re-start over live connections (seek/next/
-            resume-from-park). Members on the Apple splice timeline report a
+            resume-from-park). Members on the splice timeline report a
             minimum warm lead — their queued audio plays out before the new
             content can begin — and the shared anchor must sit beyond the
             largest member value so every member splices at the same instant.
@@ -1075,7 +1212,16 @@ class AirPlayStreamSession:
         return anchor
 
     async def _wait_members_audio_present(self) -> None:
-        """Wait until every member's binary reports the new audio flowing."""
+        """
+        Wait until every member's binary reports the new audio flowing.
+
+        A binary can only report audio once it has been handed some, and a seek
+        may land seconds ahead of what the source has produced. So the feed is
+        waited out first and the per-member budget below measures the binary
+        alone; giving up on the source here would only restart the session into
+        the very same wait.
+        """
+        await self._wait_feed_settled()
         members = [(p, p.stream) for p in self.sync_clients if p.stream]
         results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
         if all(results):
@@ -1088,6 +1234,27 @@ class AirPlayStreamSession:
             if not present
         ]
         raise PlayerCommandFailed(f"audio feed was not confirmed by {', '.join(silent)}")
+
+    async def _wait_feed_settled(self) -> None:
+        """Wait for the source to hand over its first audio, or to end without any."""
+        task = self._audio_source_task
+        if task is None or self._feed_settled.is_set():
+            return
+        settled = asyncio.create_task(self._feed_settled.wait())
+        try:
+            # The streamer settles the event itself, but watching the task too
+            # means a feed that never even starts cannot hold this open: a task
+            # cancelled before its first step never runs the finally that
+            # settles the event. The timeout is the backstop for a producer that
+            # neither delivers nor gives up: this runs under the player lock,
+            # where every route that could stop the session waits behind it.
+            await asyncio.wait(
+                {settled, task},
+                timeout=AIRPLAY_FEED_START_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            settled.cancel()
 
     async def _wait_members_clock_ready(self) -> int:
         """
@@ -1210,6 +1377,8 @@ class AirPlayStreamSession:
             )
         self.start_unix_ms = target_ms
         self.start_time = target_ms / 1000
+        # the only place a session (re)gains a live timeline, so any park ends here
+        self.parked = False
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""

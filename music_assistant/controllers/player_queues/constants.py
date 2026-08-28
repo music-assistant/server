@@ -24,6 +24,24 @@ CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
+CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
+CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_RADIO = "default_click_action_radio"
+CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
+
+CLICK_ACTION_BROWSE = "browse"
+CLICK_ACTION_PLAY = "play"
+CLICK_ACTION_DEFAULT_VALUE = CLICK_ACTION_BROWSE
+
+CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK = "default_play_action_album_track"
+CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK = "default_play_action_playlist_track"
+
+PLAY_ACTION_PLAY_FROM_HERE = "play_from_here"
+PLAY_ACTION_PLAY_TRACK = "play_track"
+PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
+
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
@@ -64,6 +82,19 @@ MANAGED_POOL_MAX = 50
 # how many of its tracks are held in memory at once; a larger source pages the remainder in as the
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
+
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a radio station is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.RADIO,
+)
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

@@ -430,6 +430,44 @@ async def test_idle_monitor_keeps_models_while_sessions_active(
     await asyncio.gather(controller._idle_unload_task, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_idle_monitor_keeps_models_while_finalize_in_flight(
+    controller: AudioAnalysisController,
+    mock_mass: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-flight finalize keeps the models loaded, and releases them once it completes."""
+    prov = _unloadable_provider()
+    prov.instance_id = "prov_1"
+    release = asyncio.Event()
+
+    async def _blocking_finalize(_session_id: str) -> None:
+        await release.wait()
+
+    prov.finalize = AsyncMock(side_effect=_blocking_finalize)
+    mock_mass.get_provider = MagicMock(return_value=prov)
+    monkeypatch.setattr(controller.__class__, "providers", property(lambda _self: [prov]))
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_CHECK_INTERVAL_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio_analysis.MODEL_IDLE_UNLOAD_SECONDS", 0.0
+    )
+
+    controller._active_sessions["sess"] = {"prov_1"}
+    controller._mark_analysis_activity()
+    controller._finalize_providers("sess")
+    assert "sess" not in controller._active_sessions
+
+    await asyncio.sleep(0.05)  # several monitor ticks while the finalize is still running
+    prov.unload_idle_models.assert_not_called()
+
+    release.set()
+    assert controller._idle_unload_task is not None
+    await asyncio.wait_for(controller._idle_unload_task, timeout=2.0)
+    prov.unload_idle_models.assert_awaited_once()
+
+
 # -- Edge cases --
 
 
@@ -580,6 +618,8 @@ async def test_finalize_cleans_up_provider_sessions() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(return_value=None)
 
     await AudioAnalysisProvider.finalize(provider, "test_session")
@@ -599,6 +639,7 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
     provider.domain = "test_domain"
     provider.analysis_version = 1
     provider.max_analysis_duration = None
+    provider.unloading = False
 
     streamdetails = MagicMock()
     streamdetails.item_id = "shared_id"
@@ -632,6 +673,8 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.logger = MagicMock()
     provider._sessions = {"test_session": MagicMock(spec=AnalysisSessionData)}
+    provider._finalize_tasks = set()
+    provider.unloading = False
     provider._finalize = AsyncMock(side_effect=RuntimeError("analysis failed"))
 
     # MUST NOT raise — exception is swallowed and logged

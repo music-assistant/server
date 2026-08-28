@@ -117,6 +117,14 @@ def negotiated_pin_length(descriptor: PairMethodDescriptor | None, server_min: i
     return max(client_min or 0, server_min)
 
 
+def pin_code_format(length: int) -> str:
+    """Return the PAIRING_CODE entry format for a numeric PIN of `length` digits."""
+    if length >= 6 and length % 2 == 0:
+        half = length // 2
+        return f"{'#' * half}-{'#' * half}"
+    return "#" * length
+
+
 def pair_method_descriptor(
     methods: Iterable[PairMethodDescriptor], method: PairMethod
 ) -> PairMethodDescriptor | None:

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from libopensonic.errors import DataNotFoundError
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from libopensonic.media import PodcastChannel
+from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
@@ -52,6 +54,7 @@ def _make_sonic_item(
     channel_count: int | None = None,
     duration: int = 120,
     replay_gain: object = None,
+    cover_art: str | None = None,
 ) -> Mock:
     item = Mock()
     item.id = item_id
@@ -63,6 +66,27 @@ def _make_sonic_item(
     item.channel_count = channel_count
     item.duration = duration
     item.replay_gain = replay_gain
+    item.cover_art = cover_art
+    # remaining fields consulted by parse_track when it isn't stubbed out; keep them falsy
+    # so tests exercising the real parser don't need to fake a full album/artist context
+    item.album_id = None
+    item.album = None
+    item.parent = None
+    item.explicit_status = None
+    item.genre = None
+    item.genres = None
+    item.moods = None
+    item.contributors = None
+    item.disc_number = None
+    item.starred = False
+    item.bit_rate = None
+    item.track = None
+    item.music_brainz_id = None
+    item.path = None
+    item.sort_name = None
+    item.artist_id = None
+    item.artists = None
+    item.artist = None
     return item
 
 
@@ -407,6 +431,43 @@ async def test_get_playlist_tracks_avoids_per_track_metadata_fetch(
     provider.conn.get_lyrics_by_song_id.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_sets_track_image_from_cover_art(
+    provider: OpenSonicProvider,
+) -> None:
+    """Playlist tracks must carry their own cover art, since album is no longer fetched."""
+    sonic_playlist = Mock()
+    sonic_playlist.entry = [
+        _make_sonic_item(item_id=f"tr-{i}", cover_art=f"cover-{i}") for i in range(3)
+    ]
+
+    provider.conn = Mock()
+    provider.conn.get_playlist = AsyncMock(return_value=sonic_playlist)
+    provider.conn.get_album = AsyncMock()
+    provider.conn.get_album_info2 = AsyncMock()
+    provider.conn.get_lyrics = AsyncMock()
+    provider.conn.get_lyrics_by_song_id = AsyncMock()
+
+    tasks = _force_cache_miss(provider)
+
+    result = await provider.get_playlist_tracks("pl-1")
+    await asyncio.gather(*tasks)
+
+    assert len(result) == 3
+    for i, track in enumerate(result):
+        images = track.metadata.images
+        assert images is not None
+        assert len(images) == 1
+        assert images[0].type == ImageType.THUMB
+        assert images[0].path == f"cover-{i}"
+        assert images[0].provider == provider.instance_id
+        assert images[0].remotely_accessible is False
+    provider.conn.get_album.assert_not_awaited()
+    provider.conn.get_album_info2.assert_not_awaited()
+    provider.conn.get_lyrics.assert_not_awaited()
+    provider.conn.get_lyrics_by_song_id.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # search / get_artist_toptracks
 # ---------------------------------------------------------------------------
@@ -468,3 +529,18 @@ async def test_get_artist_toptracks_avoids_per_track_lyrics_fetch(
     provider.conn.get_top_songs.assert_awaited_once()
     provider.conn.get_lyrics.assert_not_awaited()
     provider.conn.get_lyrics_by_song_id.assert_not_awaited()
+
+
+async def test_podcast_episodes_positioned_by_publish_date(provider: OpenSonicProvider) -> None:
+    """The newest episode gets the highest position, whatever order the server lists them in."""
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "podcasts" / "gonic-sample.podcast.json"
+    channel = PodcastChannel.from_json(fixture.read_text(encoding="utf-8"))
+    provider._enable_podcasts = True
+    provider.conn = Mock()
+    provider.conn.get_podcasts = AsyncMock(return_value=[channel])
+
+    episodes = [ep async for ep in provider.get_podcast_episodes("chan-1")]
+
+    # the fixture lists newest-first, so the positions run the other way
+    positions = {ep.item_id.split(EP_CHAN_SEP)[1]: ep.position for ep in episodes}
+    assert positions == {"pe-4805": 5, "pe-1857": 4, "pe-1858": 3, "pe-1859": 2, "pe-1860": 1}

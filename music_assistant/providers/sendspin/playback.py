@@ -51,16 +51,18 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     channels=2,
     sample_type="float",
 )
-# Media types whose upstream feeds at realtime rate, so the Sendspin queue cannot
-# grow after playback begins, so their send-ahead stays at the min_buffer_ms floor.
-# Buffered types (tracks, podcasts, etc.) race ahead and fill the queue naturally, so
-# their send-ahead may extend to a larger required_lead_time_ms without lasting cost.
+# Media types whose upstream always feeds at realtime rate, so the Sendspin queue
+# cannot grow after playback begins and their send-ahead stays at the min_buffer_ms
+# floor. Buffered types (tracks, podcasts, etc.) race ahead and fill the queue
+# naturally, so their send-ahead may extend to a larger required_lead_time_ms without
+# lasting cost. Media type alone does not settle it: a track can come from a source
+# that also feeds just-in-time, which is what StreamDetails.is_realtime marks - see
+# _is_live_source().
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
         MediaType.AUDIO_SOURCE,
         MediaType.PLUGIN_SOURCE,
-        MediaType.FLOW_STREAM,
     }
 )
 
@@ -400,8 +402,15 @@ class SendspinPlaybackSession:
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)
 
-    async def cancel(self, reason: str) -> None:
-        """Cancel and await the active playback task, if any."""
+    async def cancel(self, reason: str, *, keep_stream: bool = False) -> None:
+        """
+        Cancel and await the active playback task, if any.
+
+        :param reason: Why the task is being cancelled, for logging and the cancel message.
+        :param keep_stream: Keep the stream active for a track change and only have clients
+            clear their buffers. Ignored while legacy clients are allowed, since they might
+            mishandle stream/clear.
+        """
         task = self.playback_task
         if task is None:
             return
@@ -409,9 +418,15 @@ class SendspinPlaybackSession:
             if self.playback_task is task:
                 self.playback_task = None
             return
+        provider = cast("SendspinProvider", self.player.provider)
+        if provider.server_api.allow_noncompliant_clients:
+            keep_stream = False
         self.player.logger.debug("Cancelling playback task (%s)", reason)
         self._cancel_requested = True
-        task.cancel()
+        task.cancel(msg=reason)
+        if keep_stream:
+            with suppress(Exception):
+                self._stop_push_stream(keep_stream=True)
         with suppress(asyncio.CancelledError, Exception):
             await task
         if self.playback_task is task:
@@ -423,9 +438,10 @@ class SendspinPlaybackSession:
         if active_task is not None and not active_task.done():
             if not restart:
                 raise RuntimeError("playback already active")
-            await self.cancel("restart requested")
+            await self.cancel("restart requested", keep_stream=True)
         self._cancel_requested = False
         self.playback_task = asyncio.create_task(self._run_playback(media))
+        self._attach_task_exception_logger(self.playback_task, "playback")
 
     async def close(self) -> None:
         """Stop playback and release all managed resources."""
@@ -733,29 +749,39 @@ class SendspinPlaybackSession:
         # before the play timeline exists, so its cost can neither stall audio production nor
         # push the timeline into a forward rebase.
         await import_module_in_thread("av")
-        # refresh the session PCM format from the leader's preferred output before
-        # building any pipelines; member ffmpeg pipelines and pre-computed filter
-        # params depend on this rate so the cache must also be cleared
-        self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
-        self._queue_id = media.source_id
-        self._queue_session_id = get_media_session_id(media)
-        self._pipeline_config_cache.clear()
-        self.player.logger.debug(
-            "Sendspin session PCM format: %d Hz / F32",
-            self._pcm_format.sample_rate,
-        )
-        push_stream = self._create_push_stream()
-        is_live = media.media_type in _LIVE_MEDIA_TYPES
-        push_stream.set_live_source(is_live)
-        async with self._state_lock:
-            self._push_stream = push_stream
-            self._playback_running = True
-            self._producer_eof_sent = False
-            self._history.clear()
-            self._produced_audio_us = 0
-            self._timeline_start_us = None
-            self._first_commit_monotonic_us = None
-            self._mapping_dirty = True
+        push_stream: PushStream | None = None
+        try:
+            # refresh the session PCM format from the leader's preferred output before
+            # building any pipelines; member ffmpeg pipelines and pre-computed filter
+            # params depend on this rate so the cache must also be cleared
+            self._pcm_format, self._sendspin_pcm_format = self._select_session_pcm_formats()
+            self._queue_id = media.source_id
+            self._queue_session_id = get_media_session_id(media)
+            self._pipeline_config_cache.clear()
+            self.player.logger.debug(
+                "Sendspin session PCM format: %d Hz / F32",
+                self._pcm_format.sample_rate,
+            )
+            push_stream = self._create_push_stream()
+            push_stream.set_live_source(self._is_live_source(media))
+            async with self._state_lock:
+                self._push_stream = push_stream
+                self._playback_running = True
+                self._producer_eof_sent = False
+                self._history.clear()
+                self._produced_audio_us = 0
+                self._timeline_start_us = None
+                self._first_commit_monotonic_us = None
+                self._mapping_dirty = True
+        except Exception:
+            # A track change stops the previous stream without stream/end, so a failed
+            # setup has to end this one. Cancellation propagates untouched, since there
+            # the successor keeps the stream.
+            if push_stream is not None:
+                with suppress(Exception):
+                    push_stream.stop()
+            await self._reset_session_state()
+            raise
         # Bounded queue between producer (stream reader) and consumer (committer).
         pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(
             maxsize=_PRODUCER_BACKLOG_SIZE
@@ -925,17 +951,12 @@ class SendspinPlaybackSession:
                         if time.monotonic() >= deadline:
                             break
                         await asyncio.sleep(0.01)
-                if sentinel_sent:
-                    with suppress(asyncio.CancelledError, Exception):
-                        await commit_task
-                else:
+                if not sentinel_sent:
                     commit_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await commit_task
             else:
                 commit_task.cancel()
-                with suppress(asyncio.CancelledError, Exception):
-                    await commit_task
+            with suppress(asyncio.CancelledError, Exception):
+                await commit_task
             # On clean EOF, wait for clients to finish playing their
             # buffered audio before sending stream/end (which clears
             # client buffers per the Sendspin spec). Skip this when a
@@ -952,19 +973,11 @@ class SendspinPlaybackSession:
                 # Same condition as the group.stop() below, so we snapshot on exactly the
                 # paths where a group STOP - and therefore a freeze - is already emitted.
                 self._stop_push_stream(
-                    snapshot_progress=producer_stopped_cleanly and not self._cancel_requested
+                    snapshot_progress=producer_stopped_cleanly and not self._cancel_requested,
                 )
             await self._clear_join_catchup()
             await self._clear_member_pipelines()
-            async with self._state_lock:
-                self._push_stream = None
-                self._playback_running = False
-                self._timeline_start_us = None
-                self._first_commit_monotonic_us = None
-                self._produced_audio_us = 0
-                self._history.clear()
-                # Drop cached DSP decisions so next playback reflects latest config.
-                self._pipeline_config_cache.clear()
+            await self._reset_session_state()
             # Only emit a group STOP when MA stream playback reached natural EOF.
             # Skip this on cancellation/error paths to avoid stop-event races with transitions.
             if producer_stopped_cleanly and not self._cancel_requested:
@@ -1440,12 +1453,15 @@ class SendspinPlaybackSession:
                 break
         self.player.logger.debug("Client buffer drain complete")
 
-    def _stop_push_stream(self, *, snapshot_progress: bool = False) -> None:
+    def _stop_push_stream(
+        self, *, snapshot_progress: bool = False, keep_stream: bool = False
+    ) -> None:
         """
         Stop the active PushStream.
 
         :param snapshot_progress: Freeze the group's playback progress first. Pass this
             only for a natural end of stream, never for one being superseded.
+        :param keep_stream: Clear buffered audio without ending the client stream.
         """
         ps = self._push_stream
         if ps is None or ps.is_stopped:
@@ -1454,7 +1470,21 @@ class SendspinPlaybackSession:
             # The group can only resolve the live position while the stream is up; once
             # it is down the freeze can just re-emit the last anchor that was pushed.
             metadata_role.freeze_progress()
-        ps.stop()
+        if keep_stream:
+            ps.clear()
+        ps.stop(keep_stream=keep_stream)
+
+    async def _reset_session_state(self) -> None:
+        """Drop all per-session playback state so the next session starts clean."""
+        async with self._state_lock:
+            self._push_stream = None
+            self._playback_running = False
+            self._timeline_start_us = None
+            self._first_commit_monotonic_us = None
+            self._produced_audio_us = 0
+            self._history.clear()
+            # Drop cached DSP decisions so next playback reflects latest config.
+            self._pipeline_config_cache.clear()
 
     def _resolve_channel_for_player(self, player_id: str) -> UUID:
         """Channel resolver callback for per-player routing."""
@@ -1504,3 +1534,22 @@ class SendspinPlaybackSession:
         frame_size = bytes_per_sample * int(self._pcm_format.channels)
         samples = max(0, round((duration_us / 1_000_000) * int(self._pcm_format.sample_rate)))
         return b"\x00" * (samples * frame_size)
+
+    def _is_live_source(self, media: PlayerMedia) -> bool:
+        """
+        Return whether this media is fed to the server at playback pace.
+
+        Radio and live sources always are; a track is when its provider hands
+        over the audio just-in-time (a queue flow of such items included, which
+        the media type cannot express because it names the first item).
+
+        :param media: The media about to be played.
+        """
+        if media.media_type in _LIVE_MEDIA_TYPES:
+            return True
+        if not media.source_id or not media.queue_item_id:
+            return False
+        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+        return bool(
+            queue_item and queue_item.streamdetails and queue_item.streamdetails.is_realtime
+        )

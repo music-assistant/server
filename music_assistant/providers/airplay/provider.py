@@ -21,8 +21,14 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
+    CONF_PLAYERS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
+)
+from music_assistant.helpers.config_entries import (
+    CONF_CONNECTED_PLAYERS,
+    CONF_PUBLISH_NAME_TEMPLATE,
+    resolve_publish_name,
 )
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
@@ -40,8 +46,11 @@ from .constants import (
     AIRPLAY_VOLUME_MUTE,
     CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
-    CONF_IGNORE_VOLUME,
+    CONF_COMPAT_PINS_REVIEWED,
+    CONF_PASSWORD_INVALID,
+    CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
+    CONF_STREAMING_MODE,
     CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
     EXTERNAL_ARTWORK_PATH_PREFIX,
@@ -50,6 +59,8 @@ from .constants import (
     PTP_DAEMON_WARN_BURST,
     PTP_DAEMON_WARN_WINDOW,
     RAOP_DISCOVERY_TYPE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -221,8 +232,17 @@ class AirPlayProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
+        self._drop_unverified_password_markers()
+        self._reset_auto_pinned_compat_modes()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+        # Shared audible instants for in-flight announcements, keyed by
+        # (group-or-leader player id, render key) -> unix ms. The controller
+        # forwards a group-entity announcement to every member concurrently;
+        # each call arms its own member and reuses the instant the first call
+        # planned, so all rooms render the clip in sync (managed by
+        # announce.py, pruned as plans pass).
+        self._announce_plans: dict[tuple[str, str], int] = {}
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
@@ -573,9 +593,7 @@ class AirPlayProvider(PlayerProvider):
         :param discovery_info: The mdns service info that triggered the discovery.
         """
         from music_assistant.providers.airplay_receiver import (  # noqa: PLC0415
-            CONF_AIRPLAY_NAME,
-            DEFAULT_AIRPLAY_NAME,
-            airplay_receiver_port,
+            airplay_receiver_ports,
         )
 
         # Collect the advertised names and ports of all configured AirPlay Receiver
@@ -588,18 +606,27 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
-            setup_name = self.mass.config.get_provider_setup_value(
-                str(instance_id), CONF_AIRPLAY_NAME
-            )
             values = raw_conf.get("values")
-            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
-            airplay_name = setup_name or legacy_name
-            receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
-            receiver_ports.add(airplay_receiver_port(str(instance_id)))
+            values = values if isinstance(values, dict) else {}
+            player_ids = [str(player_id) for player_id in values.get(CONF_CONNECTED_PLAYERS) or []]
+            receiver_ports.update(airplay_receiver_ports(str(instance_id), player_ids).values())
+            template = values.get(CONF_PUBLISH_NAME_TEMPLATE)
+            for player_id in player_ids:
+                # best effort: a registered player's live name, else its stored config
+                # name; when neither resolves the port match stays the strong signal
+                if player := self.mass.players.get_player(player_id):
+                    player_name: str | None = player.display_name
+                else:
+                    stored_name = self.mass.config.get_raw_player_config_value(
+                        player_id, "name"
+                    ) or self.mass.config.get_raw_player_config_value(player_id, "default_name")
+                    player_name = str(stored_name) if stored_name else None
+                if player_name:
+                    receiver_names.add(resolve_publish_name(template, player_name))
         # running instances are authoritative for the actual daemon ports
         for prov in self.mass.get_provider_instances("airplay_receiver"):
-            if (port := getattr(prov, "airplay_port", None)) is not None:
-                receiver_ports.add(port)
+            if ports := getattr(prov, "airplay_ports", None):
+                receiver_ports.update(ports)
         if not receiver_names and not receiver_ports:
             return False
 
@@ -1038,10 +1065,6 @@ class AirPlayProvider(PlayerProvider):
                 parent_player = player
 
             player_id = player.player_id
-            ignore_volume_report = (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
-                or player.device_info.manufacturer.lower() == "apple"
-            )
             if path == "/ctrl-int/1/nextitem":
                 self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
@@ -1078,7 +1101,7 @@ class AirPlayProvider(PlayerProvider):
                         player_id,
                         task_id=f"debounced_pause_{player_id}",
                     )
-            elif "dmcp.device-volume=" in path and not ignore_volume_report:
+            elif "dmcp.device-volume=" in path and not player.ignore_volume_reports:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
                 # In case of a small rounding difference, we ignore this,
@@ -1164,3 +1187,71 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
+
+    def _drop_unverified_password_markers(self) -> None:
+        """
+        Clear the stored "password rejected" verdicts left by earlier releases, once.
+
+        Those releases marked a player whenever the binary reported an auth-shaped
+        rejection, without separating a password challenge from a device that
+        refused the handshake outright. The refusals put players that have no
+        password at all into a setup flow only a password could leave, so the
+        verdicts are dropped and left to be earned again on the next connect.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not self.mass.config.get_raw_player_config_value(
+                player_id, CONF_PASSWORD_INVALID, False
+            ):
+                continue
+            self.logger.info("Clearing the unverified password marker on %s", player_id)
+            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
+        # last, so a failure part-way through leaves the review to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )
+
+    def _reset_auto_pinned_compat_modes(self) -> None:
+        """
+        Reset the compatibility-mode pins left by earlier releases, once.
+
+        Those releases switched a player's streaming mode to compatibility mode
+        themselves when its native control channel failed, which a network
+        dropout of the device also triggers. The pin outlived the dropout and
+        put the player on a lane many devices reject outright, so the
+        machine-written values are returned to Automatic; a user who wants
+        compatibility mode can simply pin it again.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if (
+                self.mass.config.get_raw_player_config_value(player_id, CONF_STREAMING_MODE)
+                != STREAMING_MODE_AP2_COMPAT
+            ):
+                continue
+            self.logger.info("Resetting the streaming mode of %s back to Automatic", player_id)
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
+            )
+        # last, so a failure part-way through leaves the reset to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, True
+        )

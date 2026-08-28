@@ -61,6 +61,7 @@ from .constants import (
     CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
+    PAIRING_PIN_FORMAT,
 )
 from .helpers import (
     get_decoded_property,
@@ -626,6 +627,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 if mrp_device.push_updater.active:
                     mrp_device.push_updater.stop()
             mrp_device.close()
+            # _handle_connection_closed skips its cleanup for this device because
+            # _mrp_device was already detached above, so drop the external playback
+            # snapshot here or it survives forced reconnects indefinitely.
+            self._clear_external_state()
         if companion_device:
             companion_device.close()
         self._disconnecting = False
@@ -854,9 +859,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_COMPANION_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_companion",
@@ -899,9 +905,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_MRP_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_mrp",
@@ -1076,10 +1083,19 @@ class AirPlayControlPlayer(AirPlayPlayer):
         app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
             DeviceState.Playing: PlaybackState.PLAYING,
-            DeviceState.Loading: PlaybackState.PLAYING,
             DeviceState.Seeking: PlaybackState.PLAYING,
             DeviceState.Paused: PlaybackState.PAUSED,
         }.get(playing.device_state, PlaybackState.IDLE)
+        # Loading only means "about to play" while playback is already going on
+        # (buffering between tracks). HomePods can get stuck in a perpetual
+        # Loading state carrying the cached metadata of a long-dead session, so
+        # a Loading snapshot on a player that is not already playing must map
+        # to idle (matching Home Assistant's apple_tv handling), not playing.
+        if (
+            playing.device_state == DeviceState.Loading
+            and self._attr_playback_state == PlaybackState.PLAYING
+        ):
+            playback_state = PlaybackState.PLAYING
         # Many tvOS apps (e.g. Netflix) report Idle rather than Paused when
         # paused. While the same app stays the active source, keep it paused
         # instead of going idle so transport controls resume the app itself
@@ -1187,6 +1203,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._mrp_device = None
             self._mrp_state_listener = None
             self._mrp_push_listener = None
+            self._clear_external_state()
         else:
             return
         if exception:
@@ -1206,7 +1223,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_state_listener = None
         self._mrp_push_listener = None
         device.close()
+        self._clear_external_state()
         self._schedule_connection()
+
+    def _clear_external_state(self) -> None:
+        """Drop the playback snapshot observed over a closed MRP connection."""
+        if self._external_state_blocked or self._attr_active_source is None:
+            return
+        # Without a live connection the snapshot can no longer be updated, and the
+        # last one is typically an app held at paused: leaving it in place keeps
+        # transport commands aimed at that app instead of the Music Assistant queue.
+        self.mark_external_source_ended()
+        self.update_state()
 
     def _notify_companion_state_change(self) -> None:
         """Notify a wired-up observer that the Companion connection state changed."""

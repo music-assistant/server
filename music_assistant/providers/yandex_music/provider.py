@@ -1479,7 +1479,8 @@ class YandexMusicProvider(MusicProvider):
             try:
                 yield parse_artist(self, artist)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library artist: %s", err)
+                # only raised for a missing artist id, so the item is unidentifiable
+                self.report_skipped_sync_item(MediaType.ARTIST, None, err)
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """
@@ -1494,7 +1495,9 @@ class YandexMusicProvider(MusicProvider):
             try:
                 yield parse_album(self, album)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library album: %s", err)
+                # album.id may still be usable even if one of its artists is not
+                item_id = str(album.id) if album.id is not None else None
+                self.report_skipped_sync_item(MediaType.ALBUM, item_id, err)
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library podcasts from Yandex Music (filtered liked albums)."""
@@ -1504,7 +1507,8 @@ class YandexMusicProvider(MusicProvider):
             try:
                 yield parse_podcast(self, album)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library podcast: %s", err)
+                # only raised for a missing album id, so the item is unidentifiable
+                self.report_skipped_sync_item(MediaType.PODCAST, None, err)
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from Yandex Music (filtered liked albums)."""
@@ -1514,7 +1518,8 @@ class YandexMusicProvider(MusicProvider):
             try:
                 yield parse_audiobook(self, album)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library audiobook: %s", err)
+                # only raised for a missing album id, so the item is unidentifiable
+                self.report_skipped_sync_item(MediaType.AUDIOBOOK, None, err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Yandex Music."""
@@ -1532,7 +1537,9 @@ class YandexMusicProvider(MusicProvider):
                 try:
                     yield parse_track(self, track)
                 except InvalidDataError as err:
-                    self.logger.debug("Error parsing library track: %s", err)
+                    # track.id may still be usable even if its artist/album is not
+                    item_id = str(track.id) if track.id is not None else None
+                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """
@@ -1552,7 +1559,11 @@ class YandexMusicProvider(MusicProvider):
                 seen_ids.add(parsed.item_id)
                 yield parsed
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library playlist: %s", err)
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
         # User-liked editorial playlists (not in users_playlists_list)
         liked_playlists = await self.client.get_liked_playlists()
         for playlist in liked_playlists:
@@ -1561,7 +1572,11 @@ class YandexMusicProvider(MusicProvider):
                 if parsed.item_id not in seen_ids:
                     yield parsed
             except InvalidDataError as err:
-                self.logger.debug("Error parsing liked playlist: %s", err)
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
 
     # Library edit methods
 

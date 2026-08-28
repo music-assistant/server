@@ -34,17 +34,14 @@ from music_assistant.providers.sendspin.bridge_role import (
 
 from .analyzer import HueAudioAnalyzer
 from .constants import (
-    CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
-    CONF_COLOR_MODE,
-    CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
-    DEFAULT_HUE_LATENCY_MS,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
     SPECTRUM_SCALE,
 )
+from .settings import get_brightness, get_color_mode, get_hue_latency_ms
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ServerStatePayload
@@ -109,24 +106,14 @@ class HueEntertainmentBridge:
         self._start_task: asyncio.Task[None] | None = None
         self._render_handle: asyncio.TimerHandle | None = None
         self._entertainment_starting: bool = False
-        self._hue_latency_us: int = (
-            int(
-                float(
-                    str(
-                        self.provider.config.get_value(CONF_HUE_LATENCY_MS)
-                        or DEFAULT_HUE_LATENCY_MS
-                    )
-                )
-            )
-            * 1000
-        )
+        self._hue_latency_us: int = get_hue_latency_ms(self.provider.config) * 1000
 
     async def start(self) -> None:
         """Start the bridge — register as an in-process Sendspin visualizer client."""
         self._analyzer = HueAudioAnalyzer(
             channels=self.area.channels,
-            color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
-            brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
+            color_mode=get_color_mode(self.provider.config),
+            brightness=get_brightness(self.provider.config),
         )
 
         client_id = f"hue-{self.area.id.replace('-', '')[:16]}"

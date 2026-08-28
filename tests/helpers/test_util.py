@@ -1,8 +1,10 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import codecs
 import contextlib
 import gc
+import logging
 import socket
 import threading
 import time
@@ -12,10 +14,12 @@ from unittest.mock import MagicMock, patch
 import ifaddr
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
+    detect_charset,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -30,6 +34,107 @@ from music_assistant.models.music_provider import MusicProvider
 from tests.common import collect_loop_errors
 
 GUARDED_PROVIDER_ID = "test_guarded_prov"
+
+# a CUE sheet as Russian rips ship them: ASCII keywords with only the titles in
+# the local ANSI codepage (support #6093)
+CYRILLIC_CUE = """REM GENRE "Punk Rock"
+REM DATE 2002
+PERFORMER "Король и Шут"
+TITLE "Как в старой сказке"
+FILE "CDImage.ape" WAVE
+  TRACK 01 AUDIO
+    TITLE "Проклятый старый дом"
+    INDEX 01 00:00:00
+"""
+
+
+def _cue_sheet(performer: str, title: str, track: str) -> str:
+    """Build a CUE sheet with the same ASCII-heavy shape as CYRILLIC_CUE."""
+    return (
+        'REM GENRE "Rock"\n'
+        "REM DATE 1998\n"
+        f'PERFORMER "{performer}"\n'
+        f'TITLE "{title}"\n'
+        'FILE "CDImage.ape" WAVE\n'
+        "  TRACK 01 AUDIO\n"
+        f'    TITLE "{track}"\n'
+        "    INDEX 01 00:00:00\n"
+    )
+
+
+# the other codepages rippers wrote; every one of these sits next to a neighbour
+# that decodes the same bytes into plausible but wrong text
+LEGACY_CUES = {
+    "cp1251": CYRILLIC_CUE,
+    "koi8-r": _cue_sheet("Аквариум", "Русский альбом", "Никита Рязанский"),
+    "cp1250": _cue_sheet("Kabát", "Šťastný člověk", "Zůstaň"),
+    "cp1252": _cue_sheet("Björk", "Homogenic", "Jóga"),
+    # the dotless i is what a detector has to get right to tell cp1254 from cp1252
+    "cp1254": _cue_sheet("Barış Manço", "Mağusa'da", "Gülpembe"),  # noqa: RUF001
+    "cp1253": _cue_sheet("Μίκης Θεοδωράκης", "Άξιον Εστί", "Ένα το χελιδόνι"),
+    "cp1255": _cue_sheet("עידן רייכל", "הפרויקט של עידן רייכל", "בואי"),
+    "cp1257": _cue_sheet("Prāta Vētra", "Lupatkājis", "Jūra"),
+    # a multi-byte charset, where a wrong guess costs whole characters rather than
+    # single letters
+    "gbk": _cue_sheet("周杰伦", "叶惠美", "东风破"),
+}
+
+
+class TestDetectCharset:
+    """detect_charset names the charset raw text has to be decoded with."""
+
+    async def test_ascii_and_utf8_are_taken_as_utf8(self) -> None:
+        """Anything that is already valid UTF-8 needs no detection."""
+        assert await detect_charset(b'TITLE "Greatest Hits"') == "utf-8"
+        assert await detect_charset(CYRILLIC_CUE.encode()) == "utf-8"
+
+    async def test_byte_order_mark_is_stripped(self) -> None:
+        """A UTF-8 BOM must not survive into the decoded text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw)
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", list(LEGACY_CUES))
+    async def test_legacy_charsets_survive_a_round_trip(self, charset: str) -> None:
+        """
+        Text in a legacy charset comes back readable instead of as replacement chars.
+
+        Mostly-ASCII files such as CUE sheets hold very little non-ASCII text, so the
+        charset has to be resolved from a thin sample rather than given up on and
+        decoded as UTF-8 (support #6093). The round trip is what is asserted, not the
+        charset name, because neighbouring codepages decode these bytes identically.
+        """
+        source = LEGACY_CUES[charset]
+        raw = source.encode(charset)
+        assert raw.decode(await detect_charset(raw)) == source
+
+    async def test_undetectable_data_uses_the_fallback(self) -> None:
+        """Bytes that hold no readable text at all fall back to the given charset."""
+        assert await detect_charset(b"\xff\x00\xff", fallback="cp1257") == "cp1257"
+
+    async def test_declared_charset_wins_over_detection(self) -> None:
+        """A charset the source declares itself beats guessing at the bytes."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        assert await detect_charset(raw, preferred="cp1251") == "cp1251"
+
+    async def test_byte_order_mark_beats_the_declared_charset(self) -> None:
+        """A source declaring plain utf-8 must not leave its own BOM in the text."""
+        raw = codecs.BOM_UTF8 + CYRILLIC_CUE.encode()
+        encoding = await detect_charset(raw, preferred="utf-8")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    async def test_unknown_declared_charset_is_ignored(self) -> None:
+        """A charset name Python has no codec for must not reach decode()."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred="utf8mb4")
+        assert raw.decode(encoding) == CYRILLIC_CUE
+
+    @pytest.mark.parametrize("charset", ["base64", "zlib", "rot_13", "idna", "undefined"])
+    async def test_declared_charset_that_cannot_decode_text_is_ignored(self, charset: str) -> None:
+        """A charset name that resolves to a codec but cannot decode text is ignored."""
+        raw = CYRILLIC_CUE.encode("cp1251")
+        encoding = await detect_charset(raw, preferred=charset)
+        assert raw.decode(encoding) == CYRILLIC_CUE
 
 
 class TestGetSourceIpForTarget:
@@ -597,6 +702,27 @@ class TestGuardSingleRequest:
         assert caller.calls == 1
 
     @pytest.mark.asyncio
+    async def test_failure_reaches_the_caller_without_being_logged(
+        self, mass_minimal: MusicAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failure raised at the caller is not also warned about as an unhandled one."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.error = ProviderUnavailableError("some_provider is not available")
+        caller.release.set()
+
+        with pytest.raises(ProviderUnavailableError):
+            await caller.fetch("123")
+
+        # the task's done callback runs an iteration after the task itself finished
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and "Exception in task" in record.getMessage()
+        ]
+
+    @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
         """Two objects of the same class each issue their own request."""
         first = _GuardedCaller(mass_minimal)
@@ -771,12 +897,15 @@ class _GuardedCaller:
         self.mass = mass
         self.calls = 0
         self.release = asyncio.Event()
+        self.error: Exception | None = None
 
     @guard_single_request
     async def fetch(self, item_id: str) -> str:
         """Return the result for the given item id, once released."""
         self.calls += 1
         await self.release.wait()
+        if self.error is not None:
+            raise self.error
         return f"result-{item_id}"
 
     @guard_single_request

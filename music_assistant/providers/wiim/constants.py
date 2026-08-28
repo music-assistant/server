@@ -5,6 +5,11 @@ from music_assistant_models.player import PlayerSource
 # Player ID prefix to avoid colliding with DLNA (which uses the raw UDN)
 PLAYER_ID_PREFIX = "wiim_"
 
+# Backend markers so either player class can recognise a group member's backend without a
+# circular import, and so detect a cross-backend (mixed) group that must stay read-only.
+BACKEND_OFFICIAL = "official"
+BACKEND_GENERIC = "generic"
+
 # Passive sources detected via current track URI
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
