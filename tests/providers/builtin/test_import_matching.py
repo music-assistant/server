@@ -6,7 +6,7 @@ import asyncio
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.enums import ExternalID, ImageType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -1036,6 +1036,54 @@ async def test_matched_entry_excludes_unmatched_stale_mapping() -> None:
     assert domains == {"qobuz"}
     report_markdown = set_report.call_args.args[0]
     assert "| Exact release | 1 |" in report_markdown
+
+
+async def test_matched_entry_uses_matched_candidate_metadata_not_source() -> None:
+    """The substituted entry reflects the matched candidate, not the dead source's metadata."""
+    prov = _make_provider()
+    item = _make_playlist_item(
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")]
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    # the dead source track carries release evidence (MB_TRACK) for a release that is
+    # no longer reachable - it must not leak into the substituted entry, or a later
+    # export/re-import could mistake this same-recording match for an exact one
+    stale_source_track = _make_track("Song", artists=["Artist"])
+    stale_source_track.external_ids = {(ExternalID.MB_TRACK, "stale-dead-release-mbid")}
+    matched_mapping = ProviderMapping(
+        item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz--1"
+    )
+    # the actual matched candidate, freshly fetched from qobuz, has its own (different)
+    # release evidence that genuinely belongs to it
+    matched_candidate_track = _make_track(
+        "Song", artists=["Artist"], provider_mappings={matched_mapping}
+    )
+    matched_candidate_track.external_ids = {(ExternalID.MB_TRACK, "fresh-matched-release-mbid")}
+    enrichment = TrackProviderEnrichment(
+        track=stale_source_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_candidate_track,
+                mapping=matched_mapping,
+                confidence=TrackMatchConfidence.LIKELY,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
+        )
+
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert written_items[0].metadata is not None
+    assert written_items[0].metadata.get("mb_track") == "fresh-matched-release-mbid"
+    report_markdown = set_report.call_args.args[0]
+    assert "| Same recording | 1 |" in report_markdown
 
 
 async def test_update_playlist_metadata_uses_per_playlist_lock() -> None:

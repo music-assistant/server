@@ -1109,14 +1109,15 @@ class BuiltinProvider(MusicProvider):
                 failed_providers=enrichment.failed_providers,
             )
         best_confidence = max(match.confidence for match in enrichment.matches)
-        matched_domains = {match.mapping.provider_domain for match in enrichment.matches}
+        # enrichment.matches is ordered strongest-tier-first (see
+        # _resolve_confident_matches), so the first entry carries the strongest
+        # accepted candidate's own metadata - using it (rather than the dead
+        # source's copy) keeps release evidence such as MB_TRACK attributable to
+        # the actual matched release, so a later export/re-import can't
+        # mistake a same-recording/best-effort substitution for an exact one
         matched_track = replace(
-            enrichment.track,
-            provider_mappings={
-                mapping
-                for mapping in enrichment.track.provider_mappings
-                if mapping.provider_domain in matched_domains
-            },
+            enrichment.matches[0].track,
+            provider_mappings={match.mapping for match in enrichment.matches},
         )
         return _ImportTrackMatchResult(
             label=label,
