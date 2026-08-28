@@ -483,7 +483,7 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
     mass = _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
     assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE]
     assert step.last_step is True
     session.handle_submit({})
@@ -556,7 +556,7 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     mass = _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
     assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE]
     assert step.last_step is True
     session.handle_submit({CONF_PAIR_DEVICE: False})
@@ -610,7 +610,7 @@ async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> N
     _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
     session.handle_submit({CONF_PAIR_DEVICE: True})
 
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")

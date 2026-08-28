@@ -592,10 +592,7 @@ class SendspinBasePlayer(Player):
                     default_value=False,
                 )
             )
-        # The audio input is what the page has to explain differently, and a plain allow
-        # declines it (revisable by pairing later), so each case gets its own wording.
-        step_id = "approve_device_source" if self._source_input_pending else "approve_device"
-        values = await session.form(entries, step_id=step_id, last_step=True)
+        values = await session.form(entries, step_id="approve_device", last_step=True)
         if offer_pairing and bool(values.get(CONF_PAIR_DEVICE)):
             return True
         # record the input decline only once the grant actually took effect

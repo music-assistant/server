@@ -184,7 +184,7 @@
     },
     "approve_device": {
       "title": "Allow this device",
-      "description": "This device accepts connections without pairing, which is how most devices connect. The connection is encrypted, but the device is not verified, so any server on your network could reach it. You can optionally pair it for a permanent, verified connection. Press Finish to trust the device and allow playback to it."
+      "description": "This device can be used without pairing. The connection is encrypted, but the device is not verified. Press Finish to start using it, or pair it first for a permanent, verified connection."
     },
     "source_input": {
       "title": "Audio input available",
@@ -225,10 +225,6 @@
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
       "timed_out": "The device did not respond in time. Run the setup again to retry."
-    },
-    "approve_device_source": {
-      "title": "Allow this device",
-      "description": "This device accepts connections without pairing, which is how most devices connect. The connection is encrypted, but the device is not verified, so any server on your network could reach it. This device also has an audio input, and pairing is what lets it send audio to Music Assistant. Pair it for a permanent, verified connection, or press Finish to trust it for playback only."
     }
   },
   "manifest": {
