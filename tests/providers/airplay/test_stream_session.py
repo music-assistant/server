@@ -1144,20 +1144,26 @@ async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> 
         for chunk in no_chunks:
             yield chunk
 
-    session._audio_source_task = asyncio.create_task(session._audio_streamer(exhausted_source()))
-    # let the source run out and the streamer reach the wait that holds the EOF
-    for _ in range(10):
-        await asyncio.sleep(0)
-        if player.player_id not in session._player_ffmpeg:
-            break
-    assert not session._audio_source_task.done()
-
-    with (
-        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
-        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
-        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    with patch(
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0.05
     ):
-        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+        streamer = asyncio.create_task(session._audio_streamer(exhausted_source()))
+        session._audio_source_task = streamer
+        # the source runs out over mocked awaits alone, so the streamer is holding
+        # the withheld EOF well before the wait itself could expire
+        await asyncio.sleep(0.01)
+        assert not streamer.done()
+
+        with (
+            patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+            patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+            patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        ):
+            assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+        assert streamer.cancelled()
+        # well past the point where a wait left running would have delivered it
+        await asyncio.sleep(0.1)
 
     player.stream.write_audio_eof.assert_not_awaited()
 
