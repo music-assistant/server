@@ -1094,10 +1094,17 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
         return False
     base_credits = _track_artist_credit_groups(base_track)
     compare_credits = _track_artist_credit_groups(compare_track)
-    return _artist_credit_groups_cover(
-        base_credits,
-        compare_credits,
-    ) or _artist_credit_groups_cover(compare_credits, base_credits)
+    if not (
+        _artist_credit_groups_cover(base_credits, compare_credits)
+        or _artist_credit_groups_cover(compare_credits, base_credits)
+    ):
+        return False
+    # a shared featured artist alone is not enough to accept the match: each side's
+    # own primary artist must also be represented on the other side, or an unrelated
+    # track that merely happens to share a featured/guest artist could be substituted
+    return _artist_credited(base_track.artists[0].name, compare_credits) and _artist_credited(
+        compare_track.artists[0].name, base_credits
+    )
 
 
 def _track_artist_credit_groups(track: Track) -> set[frozenset[str]]:
@@ -1129,6 +1136,12 @@ def _artist_credit_groups_cover(
         group in target_groups or (len(group) > 1 and group.issubset(target_singletons))
         for group in source_groups
     )
+
+
+def _artist_credited(name: str, credit_groups: set[frozenset[str]]) -> bool:
+    """Return whether an artist name is represented, alone or within a group, among credits."""
+    key = _artist_credit_key(name)
+    return any(key in group for group in credit_groups)
 
 
 def _artist_credit_key(name: str) -> str:

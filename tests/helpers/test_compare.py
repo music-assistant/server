@@ -1535,6 +1535,27 @@ def test_compare_track_evidence_keeps_composite_artist_identity() -> None:
     )
 
 
+def test_compare_track_evidence_rejects_candidate_missing_primary_artist() -> None:
+    """A candidate crediting only the source's featured guest is not the same track."""
+    original = _provider_track(
+        "original",
+        "provider_a",
+        artist_names=("Alice", "Bob"),
+        album_name="Original",
+    )
+    guest_only = _provider_track(
+        "guest_only",
+        "provider_b",
+        artist_names=("Bob",),
+        album_name="Bob Solo Album",
+    )
+
+    assert (
+        compare.compare_track_evidence(original, guest_only)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
 def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
     """A separator inside one featured artist name is not treated as conflicting credits."""
     title_credit = _provider_track(
