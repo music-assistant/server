@@ -444,6 +444,60 @@ async def test_full_track_album_domain_only_tries_every_allowed_instance(
     assert result is album
 
 
+async def test_full_track_album_domain_reference_expands_past_incidentally_allowed_instance(
+    music: MusicController,
+) -> None:
+    """A domain reference keeps expanding even when it happens to resolve to an allowed instance."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        # a domain, not an instance id - the registry happens to resolve it to an
+        # instance that is itself allowed, which must not stop expansion to siblings
+        item_id="album",
+        provider="qobuz",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    qobuz_1 = MagicMock(spec=MusicProvider)
+    qobuz_1.instance_id = "qobuz_1"
+    qobuz_1.domain = "qobuz"
+    qobuz_2 = MagicMock(spec=MusicProvider)
+    qobuz_2.instance_id = "qobuz_2"
+    qobuz_2.domain = "qobuz"
+    providers = {"qobuz": qobuz_1, "qobuz_1": qobuz_1, "qobuz_2": qobuz_2}
+    album = create_album("qobuz_2", "album", name="Album")
+
+    def get_provider(provider_instance_or_domain: str, **_kwargs: Any) -> MusicProvider | None:
+        return providers.get(provider_instance_or_domain)
+
+    async def get_provider_item_side_effect(
+        _item_id: str, instance_id: str, **_kwargs: Any
+    ) -> Album:
+        if instance_id == "qobuz_1":
+            # this account no longer has the album - qobuz_2 must still be tried
+            # even though qobuz_1 was itself an allowed instance
+            raise MediaNotFoundError("gone")
+        return album
+
+    with (
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums,
+            "get_provider_item",
+            AsyncMock(side_effect=get_provider_item_side_effect),
+        ) as get_,
+    ):
+        result = await music.tracks._get_full_track_album(
+            track, allowed_provider_instances={"qobuz_1", "qobuz_2"}
+        )
+
+    assert result is album
+    assert get_.await_args_list == [
+        call("album", "qobuz_1", allow_fallback=False, strict_provider_instance=True),
+        call("album", "qobuz_2", allow_fallback=False, strict_provider_instance=True),
+    ]
+
+
 async def test_full_track_album_domain_only_falls_back_after_instance_failure(
     music: MusicController,
 ) -> None:
@@ -1564,6 +1618,97 @@ async def test_enrich_provider_mappings_prefers_higher_confidence_over_visitatio
     assert "Aaa" in result.ambiguous_providers
     assert loose_mapping not in result.track.provider_mappings
     assert exact_mapping in result.track.provider_mappings
+
+
+async def test_enrich_provider_mappings_stops_at_ambiguous_top_tier(
+    music: MusicController,
+) -> None:
+    """A conflicting top tier blocks a weaker, otherwise-clean, tier from being accepted."""
+    source = create_track("spotify_1", "source")
+    # qobuz and deezer tie at the strongest tier (EXACT) but disagree with each other
+    qobuz_track = create_track("qobuz_1", "qobuz-track", isrc="QOBUZ")
+    qobuz_track.metadata.explicit = True
+    qobuz_mapping = next(iter(qobuz_track.provider_mappings))
+    deezer_track = create_track("deezer_1", "deezer-track", isrc="DEEZER")
+    deezer_track.metadata.explicit = False
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    # aaa is a single, internally-consistent match, but only at a weaker tier (LIKELY)
+    aaa_track = create_track("aaa_1", "aaa-track", isrc="AAA")
+    aaa_mapping = next(iter(aaa_track.provider_mappings))
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    aaa_provider = MagicMock(spec=MusicProvider)
+    aaa_provider.name = "Aaa"
+    aaa_provider.instance_id = "aaa_1"
+    aaa_provider.domain = "aaa"
+    aaa_provider.available = True
+    aaa_provider.is_streaming_provider = True
+    qobuz_match = TrackProviderMatch(
+        track=qobuz_track, mapping=qobuz_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    aaa_match = TrackProviderMatch(
+        track=aaa_track, mapping=aaa_mapping, confidence=TrackMatchConfidence.LIKELY
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(match=qobuz_match),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+        "aaa_1": TrackProviderMatchResult(match=aaa_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": qobuz_provider,
+                "deezer_1": deezer_provider,
+                "aaa_1": aaa_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "deezer_1", "aaa_1"},
+        )
+
+    # the conflicting EXACT tier can't be resolved, and a weaker LIKELY match doesn't
+    # settle which EXACT candidate was right - it must not be substituted in instead
+    assert result.matches == ()
+    assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
+    assert "Aaa" not in result.ambiguous_providers
+    assert qobuz_mapping not in result.track.provider_mappings
+    assert deezer_mapping not in result.track.provider_mappings
+    assert aaa_mapping not in result.track.provider_mappings
 
 
 async def test_enrich_provider_mappings_filters_inaccessible_source_mappings(

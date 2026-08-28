@@ -1161,9 +1161,7 @@ class BuiltinProvider(MusicProvider):
                 if key not in seen:
                     seen.add(key)
                     candidates.append(key)
-        needs_provider_metadata = not item.providers and not item.path.startswith(
-            BUILTIN_URL_SCHEMES
-        )
+        needs_provider_metadata = False
         if not item.providers:
             # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
             # metadata at all needs this path parsed - an entry that does carry
@@ -1172,6 +1170,12 @@ class BuiltinProvider(MusicProvider):
             # domain, since that sibling is not actually the entry's original source
             with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
                 _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
+                # a resolved external provider reference - a bare MA URI or a public
+                # share link such as https://open.spotify.com/track/... - has no other
+                # way to attach a provider mapping and must be persisted; a raw builtin
+                # stream URL already reconstructs "builtin" from the path alone on
+                # every future load and needs nothing written back
+                needs_provider_metadata = provider_instance_or_domain != "builtin"
                 for instance_id in self._allowed_instances_for(
                     provider_instance_or_domain, allowed_provider_instances
                 ):

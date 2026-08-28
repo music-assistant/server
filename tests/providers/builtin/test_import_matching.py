@@ -301,7 +301,29 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
     assert "| Retained | 1 |" in report_markdown
 
 
-async def test_transient_stream_failure_retains_original_without_confirmation() -> None:
+async def test_share_url_without_extprov_is_persisted_as_provider_mapping() -> None:
+    """A public share URL is resolved and persisted, not treated as a raw builtin stream."""
+    prov = _make_provider(loaded_provider_domains={"spotify"})
+    item = PlaylistItem(path="https://open.spotify.com/track/abc123", title="Test", length="120")
+    assert not item.providers
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify", "qobuz--1")
+        )
+
+    # written back so the entry resolves through Spotify on future loads too, instead
+    # of reconstructing as an unplayable raw builtin web URL
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 1
+    assert written_items[0].providers == [
+        ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify")
+    ]
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
     """A network blip during the ffprobe check must not substitute a live stream."""
     prov = _make_provider(
         loaded_provider_domains={"builtin"},

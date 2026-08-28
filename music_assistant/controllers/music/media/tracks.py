@@ -1162,7 +1162,11 @@ class TracksController(MediaControllerBase[Track]):
             provider = self.mass.get_provider(
                 provider_instance_id_or_domain, return_unavailable=True
             )
-            if provider is not None and provider.instance_id in allowed_provider_instances:
+            if (
+                provider is not None
+                and provider.instance_id == provider_instance_id_or_domain
+                and provider.instance_id in allowed_provider_instances
+            ):
                 candidate_instances = [provider.instance_id]
             else:
                 # a bare domain resolves to its first registered instance, which may
@@ -1267,7 +1271,10 @@ class TracksController(MediaControllerBase[Track]):
         provider was visited first, and rejects a whole confidence tier as
         ambiguous when its own candidates disagree with each other - missing
         source evidence (e.g. no explicitness tag) can otherwise let unrelated
-        recordings tie and get merged or picked arbitrarily.
+        recordings tie and get merged or picked arbitrarily. Resolution stops at
+        the first ambiguous tier: once the strongest remaining evidence can't be
+        told apart, a weaker tier can't settle that disagreement either, so it
+        would be wrong to quietly substitute it in as if it were the answer.
         """
         accepted: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
@@ -1284,7 +1291,7 @@ class TracksController(MediaControllerBase[Track]):
                 )
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in tier)
-                continue
+                break
             accepted.extend(tier)
         return accepted, ambiguous_providers
 
