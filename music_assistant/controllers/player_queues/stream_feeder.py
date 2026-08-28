@@ -59,6 +59,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and next_item.streamdetails.buffer
             and next_item.streamdetails.buffer.is_valid()
         ):
+            # reusing audio an earlier session left behind claims it for this one, so its
+            # stop releases it and the earlier session's stop no longer can
+            next_item.streamdetails.queue_session_id = self._queue_data[queue_id].session_id
             return
 
         async def _do_prepare() -> None:
