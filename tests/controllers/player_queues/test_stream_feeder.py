@@ -136,6 +136,24 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
     return controller, next_item, mass
 
 
+async def test_reusing_a_warm_buffer_claims_it_for_the_current_session() -> None:
+    """
+    A prewarm that is already warm still becomes this session's audio.
+
+    Without the claim the buffer keeps the session that filled it, and that session's stop
+    releases audio the current one is relying on.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    warm = MagicMock()
+    warm.is_valid.return_value = True
+    next_item.streamdetails = SimpleNamespace(buffer=warm, queue_session_id="session-0")
+
+    controller.prepare_next_audio_buffer("queue-1")
+
+    assert next_item.streamdetails.queue_session_id == "session-1"
+    mass.create_task.assert_not_called()
+
+
 async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
     """Warming the next track never waits longer for capacity than a speculative attempt may."""
     controller, next_item, mass = _controller_with_next_item()

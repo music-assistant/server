@@ -3429,6 +3429,17 @@ class StreamsAudio:
                 if (not final_pass and (alternatives_left or busy_instances or match_pending))
                 else remaining
             )
+            # record whose audio this is before it exists: a queue stop releases only the
+            # buffers of the session it is tearing down, and details resolved by an earlier
+            # session are reused as they are, so the claim has to be made where the buffer
+            # is attached rather than where the details came from. The queue's own session
+            # is the owner rather than the one a caller asks for: a superseded request that
+            # reuses a live buffer must not take it from the session still playing it
+            streamdetails.queue_session_id = (
+                queue_data.session_id
+                if (queue_data := self.mass.player_queues.queue_data_or_none(queue_item.queue_id))
+                else None
+            )
             try:
                 return await AudioBuffer.get_buffer(
                     mass=self.mass,

@@ -1809,6 +1809,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"preload_next_item_{queue_id}")
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
+        # a prewarm still running would attach its buffer after the teardown below has run,
+        # leaving a stopped queue holding a provider's stream. Cancelled here rather than
+        # alongside that teardown, where the task id can already belong to a new session.
+        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
         queue_data = self._queue_data[queue_id]
         session_id = queue_data.session_id
@@ -1824,10 +1828,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # a device that could not be reached still gets its session torn down: an
             # open session keeps the item buffers producing, which holds a provider's
             # live session open long after the queue was told to stop
-            if queue_data.session_id == session_id:
-                queue_data.session_id = None
-            self.mass.streams.audio_processing.clear(queue_id, session_id)
-            self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+            if session_id is not None:
+                # only the stopped session's audio is released. A stop that had no session
+                # owns none of what is here, and taking it down would hit playback that
+                # started while this stop was still waiting on the device
+                if queue_data.session_id == session_id:
+                    queue_data.session_id = None
+                self.mass.streams.audio_processing.clear(queue_id, session_id)
+                self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
