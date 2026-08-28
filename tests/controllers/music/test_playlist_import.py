@@ -40,6 +40,15 @@ def _make_provider_mock(instance_id: str, domain: str) -> MagicMock:
     return provider
 
 
+def _make_provider_config_mock(instance_id: str, domain: str, enabled: bool = True) -> MagicMock:
+    """Build a mock ProviderConfig exposing instance_id, domain, and enabled."""
+    config = MagicMock()
+    config.instance_id = instance_id
+    config.domain = domain
+    config.enabled = enabled
+    return config
+
+
 async def test_import_without_match_policy_skips_background_task() -> None:
     """No background task is scheduled when match_policy is omitted."""
     ctrl = _make_controller()
@@ -69,6 +78,12 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
         _make_provider_mock("spotify--1", "spotify"),
         _make_provider_mock("qobuz--1", "qobuz"),
     ]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify"),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
@@ -105,6 +120,9 @@ async def test_import_with_library_matching_true_defaults_to_best_effort() -> No
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
     ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[_make_provider_config_mock("qobuz--1", "qobuz")]
+    )
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
@@ -134,6 +152,9 @@ async def test_import_with_explicit_match_policy_overrides_library_matching() ->
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
     ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[_make_provider_config_mock("qobuz--1", "qobuz")]
+    )
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
@@ -163,6 +184,12 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
         _make_provider_mock("spotify--1", "spotify"),
         _make_provider_mock("qobuz--1", "qobuz"),
     ]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify"),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
@@ -187,4 +214,126 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
         PlaylistMatchPolicy.BEST_EFFORT,
         ("qobuz--1", "spotify--1"),
         ("qobuz--1",),
+    )
+
+
+async def test_import_source_validation_includes_configured_but_unloaded_provider() -> None:
+    """A configured provider that failed to load still counts for source validation."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    # spotify--1 failed setup (or is temporarily down) and is therefore not loaded,
+    # but it is still configured and enabled
+    ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify"),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist("#EXTM3U\n", match_policy=PlaylistMatchPolicy.BEST_EFFORT)
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    await call_kwargs["handler"]()
+    # the unloaded spotify--1 is still part of the source-validation snapshot (so its
+    # tracks are not mistaken for removed), but it is excluded from the search targets
+    # since nothing can be searched on a provider that isn't loaded
+    builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
+        "playlist_1",
+        PlaylistMatchPolicy.BEST_EFFORT,
+        ("qobuz--1", "spotify--1"),
+        ("qobuz--1",),
+    )
+
+
+async def test_import_source_validation_excludes_disabled_provider() -> None:
+    """A disabled provider config is not treated as one of the user's own sources."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify", enabled=False),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist("#EXTM3U\n", match_policy=PlaylistMatchPolicy.BEST_EFFORT)
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    await call_kwargs["handler"]()
+    builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
+        "playlist_1",
+        PlaylistMatchPolicy.BEST_EFFORT,
+        ("qobuz--1",),
+        ("qobuz--1",),
+    )
+
+
+async def test_import_source_validation_respects_user_provider_filter() -> None:
+    """A provider outside the requesting user's own filter is never part of the snapshot."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = [
+        _make_provider_mock("spotify--1", "spotify"),
+        _make_provider_mock("qobuz--1", "qobuz"),
+    ]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify"),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
+    user = MagicMock()
+    user.provider_filter = {"qobuz--1"}
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=user,
+        ),
+    ):
+        await ctrl.import_playlist("#EXTM3U\n", match_policy=PlaylistMatchPolicy.BEST_EFFORT)
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    await call_kwargs["handler"]()
+    # allowed_provider_instances (source validation) is built from provider configs and
+    # explicitly narrowed by the user's own filter; search_provider_instances is read
+    # straight from mass.music.providers, which already applies that same filter in
+    # production - this double just returns both instances unfiltered
+    builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
+        "playlist_1",
+        PlaylistMatchPolicy.BEST_EFFORT,
+        ("qobuz--1",),
+        ("qobuz--1", "spotify--1"),
     )

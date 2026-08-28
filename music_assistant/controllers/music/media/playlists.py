@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderURI,
@@ -395,12 +395,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
             user = get_current_user()
             # snapshot the current user's allowed provider instances now: the matching
             # itself runs later in an unattended background task, without the request's
-            # user context, so provider-instance isolation must be captured up front
-            allowed_provider_instances = {item.instance_id for item in self.mass.music.providers}
+            # user context, so provider-instance isolation must be captured up front.
+            # Source ownership is checked against every provider instance the user has
+            # configured and enabled, not just the ones currently loaded, so a provider
+            # that failed setup or is temporarily down is not mistaken for one the user
+            # removed - only actually searching for a substitute needs a loaded provider.
+            user_provider_filter = user.provider_filter if user else None
+            configured_providers = await self.mass.config.get_provider_configs(
+                provider_type=ProviderType.MUSIC
+            )
+            allowed_provider_instances = {
+                conf.instance_id
+                for conf in configured_providers
+                if conf.enabled
+                and (not user_provider_filter or conf.instance_id in user_provider_filter)
+            }
             # match_providers only narrows which providers are searched for a substitute;
             # it must not narrow source validation, or a playable original on a provider
             # outside that list would look unavailable and get replaced unnecessarily
-            search_provider_instances = allowed_provider_instances
+            search_provider_instances = {item.instance_id for item in self.mass.music.providers}
             if match_providers:
                 search_provider_instances = {
                     item.instance_id

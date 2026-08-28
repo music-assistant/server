@@ -306,6 +306,33 @@ async def test_configured_but_unavailable_provider_is_retained() -> None:
     assert "| Retained | 1 |" in report_markdown
 
 
+async def test_configured_but_unloaded_provider_is_retained() -> None:
+    """A provider that failed setup entirely (not just down) is still not treated as gone."""
+    # spotify--1 is deliberately absent from the registry: this simulates a provider
+    # that is configured and allowed for this user, but did not load at all right now
+    # (e.g. it failed setup), as opposed to one that loaded but is currently unavailable
+    prov = _make_provider(loaded_provider_domains={"qobuz--1"})
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "qobuz--1")
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
 async def test_available_provider_with_dead_item_id_is_matched() -> None:
     """A loaded provider whose item id no longer resolves is substituted, not retained."""
     prov = _make_provider(

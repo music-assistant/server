@@ -1084,13 +1084,14 @@ class BuiltinProvider(MusicProvider):
         cached details and without a stored fallback - instead of trusting the
         ``available`` flag on a resolved track's provider mappings, which only
         reflects whether the provider was loaded when the M3U metadata was last
-        written. Candidates are built directly from the
-        entry's own ``#EXTPROV`` references (falling back to parsing the raw path for
-        a plain M3U entry that carries a bare Music Assistant URI without one) instead
-        of through the shared library's mapping resolution, which silently substitutes
-        an arbitrary same-domain instance for a domain-only reference. A provider that
-        is merely down right now counts as still usable, so a transient outage does not
-        trigger a permanent substitution. Candidates are only ever expanded within the
+        written. Candidates are built directly from the entry's own ``#EXTPROV``
+        references (falling back to parsing the raw path for a plain M3U entry that
+        carries a bare Music Assistant URI without one) instead of through the shared
+        library's mapping resolution, which silently substitutes an arbitrary
+        same-domain instance for a domain-only reference. A provider that is merely
+        down right now, or is configured but not currently loaded (e.g. it failed
+        setup), counts as still usable, so a transient outage does not trigger a
+        permanent substitution. Candidates are only ever expanded within the
         initiating user's own provider instances, so a domain-only reference can never
         reach an inaccessible account.
         """
@@ -1113,9 +1114,11 @@ class BuiltinProvider(MusicProvider):
                     candidates.append((instance_id, raw_item_id))
         for provider_instance, provider_item_id in candidates:
             provider = self.mass.get_provider(provider_instance, return_unavailable=True)
-            if provider is None:
-                continue
-            if not provider.available:
+            if provider is None or not provider.available:
+                # every candidate here already passed the allowed-instances snapshot, so
+                # a missing/unavailable provider is a configured source that is merely
+                # down or failed setup right now, not one the user removed - a transient
+                # outage must not trigger a permanent substitution
                 return True
             try:
                 await self.mass.music.tracks.get_provider_item(
@@ -1151,14 +1154,12 @@ class BuiltinProvider(MusicProvider):
         An exact instance id is kept as-is, and only if it is in the caller's own
         snapshot; a bare domain is expanded to every one of the caller's allowed
         instances of that domain instead of the single, arbitrary instance the
-        shared library would otherwise resolve it to.
+        shared library would otherwise resolve it to. The snapshot itself covers
+        every instance the caller has configured, whether or not it is currently
+        loaded, so this never depends on the provider's current load state.
         """
-        if any(
-            provider.instance_id == provider_instance_or_domain for provider in self.mass.providers
-        ):
-            if provider_instance_or_domain in allowed_provider_instances:
-                return [provider_instance_or_domain]
-            return []
+        if provider_instance_or_domain in allowed_provider_instances:
+            return [provider_instance_or_domain]
         return [
             provider.instance_id
             for provider in self.mass.get_provider_instances(
