@@ -1116,7 +1116,19 @@ class TracksController(MediaControllerBase[Track]):
     def _get_provider_mapping(track: Track, provider: MusicProvider) -> ProviderMapping | None:
         """Return an available mapping suitable for the provider instance."""
         domain_mapping: ProviderMapping | None = None
-        for mapping in sorted(track.provider_mappings, key=lambda item: item.quality, reverse=True):
+        # provider_mappings is a set, so its iteration order is not guaranteed stable
+        # across runs; tie-break equal-quality mappings by identity so the chosen
+        # mapping is deterministic instead of process-dependent
+        sorted_mappings = sorted(
+            track.provider_mappings,
+            key=lambda item: (
+                -item.quality,
+                item.provider_domain,
+                item.provider_instance,
+                item.item_id,
+            ),
+        )
+        for mapping in sorted_mappings:
             if not mapping.available:
                 continue
             if mapping.provider_instance == provider.instance_id:

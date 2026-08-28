@@ -1,7 +1,7 @@
 """Tests for the tracks controller."""
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -1728,6 +1728,42 @@ async def test_enrich_provider_mappings_reports_fully_unloaded_allowed_provider(
     find_match.assert_not_awaited()
     assert result.failed_providers == ("qobuz_1",)
     assert failed_provider_instances == {"qobuz_1"}
+
+
+def test_get_provider_mapping_breaks_quality_ties_deterministically() -> None:
+    """Equal-quality domain mappings resolve to the same one regardless of set order."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "qobuz_3"
+    provider.domain = "qobuz"
+    # both mappings share the same quality and neither is unique, so only the
+    # identity tie-breaker (domain, instance, item id) can decide between them
+    mapping_a = ProviderMapping(
+        item_id="track_a",
+        provider_domain="qobuz",
+        provider_instance="qobuz_1",
+        audio_format=AudioFormat(),
+    )
+    mapping_b = ProviderMapping(
+        item_id="track_b",
+        provider_domain="qobuz",
+        provider_instance="qobuz_2",
+        audio_format=AudioFormat(),
+    )
+    # a real set's iteration order is stable within one process regardless of
+    # insertion order, so a plain list is used here to control the input order
+    # directly and prove the tie-break, not just the incidental set layout
+    track_forward = create_track("spotify_1", "source")
+    track_forward.provider_mappings = cast("set[ProviderMapping]", [mapping_a, mapping_b])
+    track_reversed = create_track("spotify_1", "source")
+    track_reversed.provider_mappings = cast("set[ProviderMapping]", [mapping_b, mapping_a])
+
+    resolved_forward = TracksController._get_provider_mapping(track_forward, provider)
+    resolved_reversed = TracksController._get_provider_mapping(track_reversed, provider)
+
+    assert resolved_forward is not None
+    assert resolved_forward.item_id == "track_a"
+    assert resolved_reversed is not None
+    assert resolved_reversed.item_id == "track_a"
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(
