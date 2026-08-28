@@ -725,6 +725,37 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_mb_track() -> No
     assert reconstructed.get_external_id(ExternalID.ISRC) == "USRC17607839"
 
 
+def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> None:
+    """Conflicting merged external IDs from different providers are not exported arbitrarily."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # a library track merges external IDs from every matched provider - two
+        # providers disagreeing on MB_TRACK means they identify different releases,
+        # so neither value is reliable release evidence for the exported entry
+        external_ids={
+            (ExternalID.ISRC, "USRC17607839"),
+            (ExternalID.MB_TRACK, "spotify-release-track-mbid"),
+            (ExternalID.MB_TRACK, "qobuz-release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+    # unambiguous external IDs are unaffected
+    assert playlist_item.metadata["isrc"] == "USRC17607839"
+
+
 def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
     """
     EXACT is only reachable when the parsed M3U carries release-track evidence.
