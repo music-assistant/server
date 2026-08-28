@@ -265,10 +265,13 @@ def test_missing_prompt_embeddings_fail_instead_of_downloading_a_text_encoder() 
     with (
         patch.object(provider, "_try_load_cached_prompt_embeddings", return_value=None),
         patch("music_assistant.providers.sonic_analysis.vendored_clap.CLAP") as clap_cls,
-        pytest.raises(SetupFailedError) as exc_info,
+        pytest.raises(UnsupportedSystemError) as exc_info,
     ):
         provider._load_clap()
 
+    # the exact type matters: it is the one setup error MA does not retry, and no
+    # retry can recreate a shipped file
+    assert type(exc_info.value) is UnsupportedSystemError
     assert exc_info.value.translation_key == "prompt_embeddings_unavailable"
     clap_cls.assert_not_called()
 

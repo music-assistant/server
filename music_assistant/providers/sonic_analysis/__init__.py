@@ -12,7 +12,7 @@ import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
@@ -443,8 +443,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
         Downloads the checkpoint on first use, so only call this off the event loop.
 
-        :raises SetupFailedError: When the checkpoint could not be downloaded, or the
-            prompt embeddings are missing or stale.
+        :raises SetupFailedError: When the checkpoint could not be downloaded.
+        :raises UnsupportedSystemError: When the shipped prompt embeddings are unusable.
         """
         # httpx arrives with huggingface-hub; named only for the errors it re-raises below.
         import httpx  # noqa: PLC0415
@@ -457,7 +457,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         cached = self._try_load_cached_prompt_embeddings()
         if cached is None:
             # Falling back to a text-enabled model here would download the GPT2 encoder.
-            raise SetupFailedError(
+            raise UnsupportedSystemError(
                 "The precomputed CLAP prompt embeddings are missing or out of date. "
                 "Re-run scripts/precompute_clap_prompt_embeddings.py to regenerate them.",
                 translation_key="prompt_embeddings_unavailable",
