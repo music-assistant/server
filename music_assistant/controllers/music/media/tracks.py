@@ -712,6 +712,11 @@ class TracksController(MediaControllerBase[Track]):
                 mapped_candidate = await self.get_provider_item(
                     mapping.item_id,
                     provider.instance_id,
+                    # an untrusted mapping (trust_base_mapping=False) may have just been
+                    # proven dead by an authoritative caller-side probe - a cached hit
+                    # here must not resurrect it as a confident match, so bypass the
+                    # provider cache the same way that probe did
+                    force_refresh=not trust_base_mapping,
                     allow_fallback=False,
                     strict_provider_instance=True,
                 )

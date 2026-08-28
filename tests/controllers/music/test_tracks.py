@@ -309,6 +309,45 @@ async def test_find_provider_match_revalidates_untrusted_source_mapping(
     assert likely_result.match.confidence == TrackMatchConfidence.LIKELY
 
 
+async def test_find_provider_match_force_refreshes_untrusted_mapped_candidate(
+    music: MusicController,
+) -> None:
+    """An untrusted mapping is revalidated without trusting a stale cached candidate."""
+    source = create_track("qobuz_1", "source")
+    candidate = create_track("qobuz_1", "source")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = set()
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(return_value=candidate),
+        ) as get_provider_item,
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await music.tracks.find_provider_match(source, provider, trust_base_mapping=False)
+        untrusted_call = get_provider_item.await_args
+        get_provider_item.reset_mock()
+
+        await music.tracks.find_provider_match(
+            source, provider, mapping_source=candidate, trust_base_mapping=True
+        )
+        trusted_call = get_provider_item.await_args
+
+    assert untrusted_call is not None
+    assert trusted_call is not None
+    assert untrusted_call.kwargs["force_refresh"] is True
+    assert trusted_call.kwargs["force_refresh"] is False
+
+
 async def test_match_confidence_hydrates_album_after_initial_no_match(
     music: MusicController,
 ) -> None:
