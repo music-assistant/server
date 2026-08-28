@@ -542,9 +542,38 @@ def _combo_api_with_pending_source() -> _FakeApi:
     return api
 
 
-async def test_source_input_dismiss_persists_and_finishes() -> None:
-    """Declining the audio input persists the choice and asks nothing further."""
+async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> None:
+    """
+    A guest device with a pending input consents on the approval step, not the input picker.
+
+    Guest access already carries playback, so the only choice left is the optional upgrade
+    to a pairing; finishing keeps guest access and leaves the input off.
+    """
     api = _combo_api_with_pending_source()
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
+    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE, CONF_SOURCE_INPUT_NOTE]
+    session.handle_submit({CONF_PAIR_DEVICE: False})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+    )
+    assert provider.trust_calls == [True]
+    assert provider.start_calls == 0
+    assert session.finish_step_id == FINISH_STEP_SILENT
+
+
+async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None:
+    """Without guest access on offer, a pending input still gets the pair-or-decline picker."""
+    api = _combo_api_with_pending_source()
+    api.info_or_none.unpaired_access = SimpleNamespace(enabled=False)
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -564,12 +593,11 @@ async def test_source_input_dismiss_persists_and_finishes() -> None:
         "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
     )
     assert provider.trust_calls == []
-    assert provider.start_calls == 0
     assert session.finish_step_id == FINISH_STEP_SILENT
 
 
-async def test_source_input_pair_offers_only_pair_methods() -> None:
-    """Choosing to pair for the audio input never re-offers unpaired access or ignore."""
+async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> None:
+    """Ticking the pairing box on the approval step never re-offers unpaired access or ignore."""
     api = _combo_api_with_pending_source()
     api.info_or_none.supported_pair_methods = [
         _desc(PairMethod.DYNAMIC_PIN),
@@ -581,8 +609,8 @@ async def test_source_input_pair_offers_only_pair_methods() -> None:
     _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="source_input")
-    session.handle_submit({CONF_SOURCE_INPUT_ACTION: SOURCE_INPUT_PAIR})
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
+    session.handle_submit({CONF_PAIR_DEVICE: True})
 
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
     assert {option.value for option in step.entries[0].options} == {

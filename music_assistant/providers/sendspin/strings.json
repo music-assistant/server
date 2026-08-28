@@ -175,10 +175,10 @@
     },
     "pair_device": {
       "label": "Pair this device",
-      "description": "Verify the device with a pairing code or pairing token instead of allowing it unpaired."
+      "description": "Sets up a verified, permanent connection. Also required before the device may send its audio input to Music Assistant."
     },
     "source_input_note": {
-      "label": "The device also has an audio input. It stays off unless the device is paired."
+      "label": "This device can send its audio (such as a line-in) to Music Assistant, which needs pairing. Without it the device still plays through guest access and the input stays off."
     }
   },
   "setup_flow": {

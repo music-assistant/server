@@ -442,7 +442,11 @@ class SendspinBasePlayer(Player):
             return
         options = self._pairing_method_options(provider)
         wants_pairing = True
-        if not self.api.active_roles and self._offers_unpaired_consent:
+        if self._offers_unpaired_consent and (
+            not self.api.active_roles or self._source_input_pending
+        ):
+            # Guest access already carries playback, so the only thing left to consent to is
+            # the audio input: finishing keeps guest access and leaves the input off.
             wants_pairing = await self._run_consent_step(
                 session, provider, offer_pairing=bool(options)
             )
@@ -578,7 +582,7 @@ class SendspinBasePlayer(Player):
         if self._source_input_pending:
             # pairing is what enables the audio input, so the consent page carries the
             # note and a plain allow declines the input (revisable by pairing later)
-            entries.append(ConfigEntry(key=CONF_SOURCE_INPUT_NOTE, type=ConfigEntryType.ALERT))
+            entries.append(ConfigEntry(key=CONF_SOURCE_INPUT_NOTE, type=ConfigEntryType.LABEL))
         values = await session.form(entries, step_id="approve_device")
         if offer_pairing and bool(values.get(CONF_PAIR_DEVICE)):
             return True
