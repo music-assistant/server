@@ -616,6 +616,76 @@ async def test_available_provider_with_dead_item_id_is_matched() -> None:
     assert "| Exact release | 1 |" in report_markdown
 
 
+async def test_persisted_mappings_exclude_weaker_compatible_tier() -> None:
+    """A weaker, merely-compatible tier does not end up as the persisted substitute."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    exact_mapping = ProviderMapping(
+        item_id="exact123", provider_domain="qobuz", provider_instance="qobuz--1"
+    )
+    likely_mapping = ProviderMapping(
+        item_id="likely456", provider_domain="tidal", provider_instance="tidal--1"
+    )
+    exact_track = _make_track("Song", artists=["Artist"], provider_mappings={exact_mapping})
+    likely_track = _make_track("Song", artists=["Artist"], provider_mappings={likely_mapping})
+    enrichment = TrackProviderEnrichment(
+        track=exact_track,
+        # ordered strongest-tier-first, as _resolve_confident_matches guarantees
+        matches=(
+            TrackProviderMatch(
+                track=exact_track, mapping=exact_mapping, confidence=TrackMatchConfidence.EXACT
+            ),
+            TrackProviderMatch(
+                track=likely_track,
+                mapping=likely_mapping,
+                confidence=TrackMatchConfidence.LIKELY,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "spotify--1", "qobuz--1", "tidal--1"),
+        )
+
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    # the weaker LIKELY tier's own mapping must not become the persisted (and
+    # therefore potentially chosen-as-primary-URI) substitute, even though it was
+    # compatible enough to be accepted alongside the stronger EXACT tier
+    assert written_items[0].providers == [
+        ProviderMappingInfo(
+            domain="qobuz",
+            item_id="exact123",
+            instance_id="qobuz--1",
+            content_type="?",
+            sample_rate=44100,
+            bit_depth=16,
+        )
+    ]
+    report_markdown = set_report.call_args.args[0]
+    assert "| Exact release | 1 |" in report_markdown
+
+
 async def test_dead_url_is_matched_instead_of_retained() -> None:
     """A plain stream URL that no longer resolves is substituted, not silently kept."""
     prov = _make_provider(
