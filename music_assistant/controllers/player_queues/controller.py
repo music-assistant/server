@@ -66,7 +66,6 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
-    SKIP_DEBOUNCE_DELAY,
     SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -79,7 +78,7 @@ from music_assistant.controllers.player_queues.media_resolver import MediaResolv
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
-from music_assistant.controllers.player_queues.state import PendingSkip, PlayerQueueData
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
@@ -715,7 +714,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        self._clear_pending_skip(queue_id)
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
@@ -843,6 +841,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         )
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
+    @handle_play_action
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """
         Handle SKIP command for given queue.
@@ -850,48 +849,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
         """
-        self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
         if (current_item := queue.current_item) is None:
             raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
         if not current_item.duration:
             raise InvalidCommand("Can not skip in items without duration.")
-        if queue.current_index is None:
-            raise InvalidCommand(f"Queue {queue.display_name} has no current index.")
-        queue_player = self.mass.players.get_player(queue_id, True)
-        assert queue_player is not None  # for type checking
-        if queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            raise InvalidCommand("Can not skip while an announcement is playing.")
-
-        now = time.time()
-        queue_data = self._queue_data[queue_id]
-        # within the debounce window the queue clock sits frozen at the previous target and keeps
-        # extrapolating past it, so compose onto that target instead of reading the clock. A target
-        # left behind by a burst that never applied is ignored rather than composed onto.
-        pending = queue_data.pending_skip
-        compose = (
-            pending is not None
-            and pending.queue_item_id == current_item.queue_item_id
-            and now - pending.set_at < SKIP_DEBOUNCE_DELAY * 2
+        target = self._clamp_skip_target(
+            queue.corrected_elapsed_time + seconds, current_item.duration
         )
-        base = pending.target if compose and pending else queue.corrected_elapsed_time
-        target = self._clamp_skip_target(base + seconds, current_item.duration)
-        queue_data.pending_skip = PendingSkip(current_item.queue_item_id, target, now)
-
-        # freeze player updates so the position published below survives the debounce window
-        self._set_transitioning(queue_id, True)
-        queue.elapsed_time = target
-        queue.elapsed_time_last_updated = now
-        self.signal_update(queue_id)
-
-        # shared task_id, so a track change cancels a pending skip and the other way round
-        self.mass.call_later(
-            SKIP_DEBOUNCE_DELAY,
-            self._apply_pending_skip,
-            queue_id,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        await self.seek(queue_id, int(target))
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
     async def seek(self, queue_id: str, position: int = 10) -> None:
@@ -988,7 +955,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        self._clear_pending_skip(queue_id)
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._set_transitioning(queue_id, True)
         try:
@@ -1352,7 +1318,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # recreate a deleted entry after the player is gone (the timer becomes a task once it fires)
         self.mass.cancel_timer(f"save_queue_cache_{player_id}")
         self.mass.cancel_task(f"save_queue_cache_{player_id}")
-        self._clear_pending_skip(player_id)
         self._set_transitioning(player_id, False)
         if permanent:
             self.purge_saved_queue(player_id)
@@ -1853,7 +1818,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"preload_next_item_{queue_id}")
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
-        self._clear_pending_skip(queue_id)
         self._set_transitioning(queue_id, False)
         queue_data = self._queue_data[queue_id]
         session_id = queue_data.session_id
@@ -1896,35 +1860,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
-
-    async def _apply_pending_skip(self, queue_id: str) -> None:
-        """
-        Apply the accumulated target of a settled burst of relative skip commands.
-
-        :param queue_id: queue_id of the queue whose pending skip is due.
-        """
-        if (queue_data := self.queue_data_or_none(queue_id)) is None:
-            return
-        if (pending := queue_data.pending_skip) is None:
-            self._set_transitioning(queue_id, False)
-            return
-        queue = queue_data.queue
-        # drop it before awaiting, so a press during the rebuild composes onto the fresh clock
-        queue_data.pending_skip = None
-        if (
-            queue.current_item is None
-            or queue.current_item.queue_item_id != pending.queue_item_id
-            or queue.current_index is None
-        ):
-            # the item moved on underneath the pending skip, so its target means nothing here
-            self._set_transitioning(queue_id, False)
-            return
-        await self.play_index(queue_id, queue.current_index, seek_position=int(pending.target))
-
-    def _clear_pending_skip(self, queue_id: str) -> None:
-        """Drop a queued relative skip target (no-op if the queue is not registered)."""
-        if (queue_data := self.queue_data_or_none(queue_id)) is not None:
-            queue_data.pending_skip = None
 
     def _clamp_skip_target(self, target: float, duration: int) -> float:
         """
