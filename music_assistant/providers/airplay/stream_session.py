@@ -26,6 +26,7 @@ from .constants import (
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
+    AIRPLAY_REPLACEMENT_POLL_INTERVAL,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
     ClockReadiness,
@@ -1053,19 +1054,25 @@ class AirPlayStreamSession:
 
         This runs on the audio streamer's own task, which every route that takes
         the session over - a warm replace, a park, a stop - cancels before it
-        touches the members, so reaching the end of the wait means the transition
-        the EOF was held for never arrived. The queue clears that transition on
-        any failure between rotating its stream session and the play_media that
-        carries the replacement, and nothing else can end this stream: without
-        the EOF the binary never plays out, never reports eof, and the player
-        keeps reporting playback until the user commands something else.
+        touches the members, so getting past the wait below means no replacement
+        ever claimed the session. The queue is watched rather than a fixed time
+        waited out: it clears its transition on any failure between rotating its
+        stream session and the play_media that carries the replacement, which
+        says one is never coming, while a slow load keeps it set and must not be
+        cut short. Nothing else can end this stream - without the EOF the binary
+        never plays out, never reports eof, and the player keeps reporting
+        playback until the user commands something else.
         """
-        await asyncio.sleep(AIRPLAY_REPLACEMENT_EOF_TIMEOUT)
+        deadline = time.monotonic() + AIRPLAY_REPLACEMENT_EOF_TIMEOUT
+        while self._replacement_expected() and (left := deadline - time.monotonic()) > 0:
+            await asyncio.sleep(min(AIRPLAY_REPLACEMENT_POLL_INTERVAL, left))
         self.prov.logger.warning(
-            "No replacement stream claimed the AirPlay session of %s within %.0fs; "
+            "No replacement stream claimed the AirPlay session of %s - %s; "
             "ending it so the player can report idle",
             self.media.source_id,
-            AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
+            f"it is still loading one after {AIRPLAY_REPLACEMENT_EOF_TIMEOUT:.0f}s"
+            if self._replacement_expected()
+            else "the queue ended that transition without one",
         )
         async with self._lock:
             # A member that joined while the EOF was withheld holds a fresh

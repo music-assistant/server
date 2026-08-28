@@ -1122,6 +1122,43 @@ async def test_a_replacement_that_never_arrives_still_ends_the_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_queue_that_gives_up_releases_the_withheld_eof_early() -> None:
+    """
+    The queue ending its transition is what says no replacement is coming.
+
+    It clears the flag on any failure between rotating its stream session and
+    the play_media that carries the replacement, so the EOF follows that rather
+    than waiting out the cap, which only covers a transition that hangs.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queue_data = MagicMock(session_id="session-2", transitioning=True)
+    queues.queue_data_or_none = MagicMock(return_value=queue_data)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 30
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_POLL_INTERVAL",
+            0.01,
+        ),
+    ):
+        backstop = asyncio.create_task(session._end_stream_if_no_replacement_lands())
+        await asyncio.sleep(0.02)
+        # the load is still running, so the EOF stays withheld
+        assert not backstop.done()
+        player.stream.write_audio_eof.assert_not_awaited()
+        queue_data.transitioning = False
+        await asyncio.wait_for(backstop, timeout=5)
+
+    player.stream.write_audio_eof.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
     """
     Nothing may still own the cli stdin when a withheld EOF is finally sent.
