@@ -3634,8 +3634,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         )
 
         if should_stop:
-            # Stop playback on the player if it is being removed from itself
-            await self._handle_cmd_stop(parent_player.player_id)
+            await self._stop_dissolved_group_leader(parent_player)
 
     async def _handle_set_members_with_protocols(
         self,
@@ -3807,6 +3806,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 if active_domain in member.playback_domains:
                     return member_id
         return candidates[0]
+
+    async def _stop_dissolved_group_leader(self, player: Player) -> None:
+        """
+        Stop the leader of a sync group that was just dissolved around it.
+
+        :param player: The former sync leader, already removed from its own group.
+        """
+        # End the queue itself when the leader was playing its own, exactly as a stop
+        # command does: stopping only the device leaves the queue session open, so its
+        # preloading keeps pulling audio and a provider streaming a live session (Spotify)
+        # stays tethered for another track or two. Restricted to the player's own queue:
+        # get_active_queue resolves a player that is grouped elsewhere to a queue this
+        # dissolve has no business stopping. The permission-free handler, because group
+        # bookkeeping runs without any user context.
+        if (
+            active_queue := self.get_active_queue(player)
+        ) and active_queue.queue_id == player.player_id:
+            await self.mass.player_queues._handle_stop(player.player_id)
+            return
+        await self._handle_cmd_stop(player.player_id)
 
     def _clear_sleep_timer(self, player: Player) -> None:
         """
