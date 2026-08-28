@@ -709,6 +709,13 @@ class StreamsAudio:
 
         # set queue_id on the streamdetails so we know what is being streamed
         streamdetails.queue_id = queue_item.queue_id
+        # stamp the session that is claiming these details, so a stop can tell the audio it
+        # is tearing down from the audio a session started after it is still filling
+        streamdetails.queue_session_id = (
+            queue_data.session_id
+            if (queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id))
+            else None
+        )
         # handle skip/fade_in details
         streamdetails.seek_position = seek_position
         streamdetails.fade_in = fade_in

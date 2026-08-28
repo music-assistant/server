@@ -1827,7 +1827,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if queue_data.session_id == session_id:
                 queue_data.session_id = None
             self.mass.streams.audio_processing.clear(queue_id, session_id)
-            self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+            self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:

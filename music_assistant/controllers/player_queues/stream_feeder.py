@@ -258,7 +258,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 cleanup_threshold + 1,
             )
 
-    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+    async def _cleanup_queue_audio_data(self, queue_id: str, session_id: str | None = None) -> None:
         """
         Clean up all audio-related data for a queue when it is stopped or cleared.
 
@@ -267,6 +267,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
         - Any pending crossfade data for the queue
 
         :param queue_id: The queue ID to clean up.
+        :param session_id: Only clear buffers belonging to this playback session, leaving
+            those a later session already claimed alone. None clears every buffer.
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
@@ -274,10 +276,19 @@ class StreamFeederMixin(_PlayerQueuesBase):
         buffers_cleared = 0
 
         for item in queue_items:
-            if item.streamdetails and item.streamdetails.buffer:
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
-                buffers_cleared += 1
+            if not item.streamdetails or not item.streamdetails.buffer:
+                continue
+            if (
+                session_id is not None
+                and item.streamdetails.queue_session_id is not None
+                and item.streamdetails.queue_session_id != session_id
+            ):
+                # a session that started while this teardown was still running owns this
+                # audio now; killing its producer would strand the playback that replaced us
+                continue
+            await item.streamdetails.buffer.clear()
+            item.streamdetails.buffer = None
+            buffers_cleared += 1
 
         if buffers_cleared > 0:
             self.logger.debug(

@@ -74,7 +74,7 @@ async def test_stop_ends_the_session_and_clears_the_buffers() -> None:
     fake.mass.players._handle_cmd_stop.assert_awaited_once_with("q")
     assert fake._queue_data["q"].session_id is None
     fake.mass.streams.audio_processing.clear.assert_called_once_with("q", "sess-1")
-    fake._cleanup_queue_audio_data.assert_called_once_with("q")
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_a_player_that_cannot_be_stopped_still_loses_its_session() -> None
 
     assert fake._queue_data["q"].session_id is None
     fake.mass.streams.audio_processing.clear.assert_called_once_with("q", "sess-1")
-    fake._cleanup_queue_audio_data.assert_called_once_with("q")
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
 
 
 @pytest.mark.asyncio
@@ -109,3 +109,6 @@ async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> N
     await _stop(fake)
 
     assert fake._queue_data["q"].session_id == "sess-2"
+    # the cleanup is handed the stopped session, so it tears down that session's audio
+    # without touching what the replacement already prepared
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
