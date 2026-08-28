@@ -1065,6 +1065,13 @@ class AirPlayStreamSession:
             AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
         )
         async with self._lock:
+            # A member that joined while the EOF was withheld holds a fresh
+            # ffmpeg, and that process owns its own handle on the same cli
+            # stdin: closing only this end would leave the pipe open and the
+            # binary still waiting on it.
+            for player in self.sync_clients:
+                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                    await ffmpeg.kill()
             await asyncio.gather(
                 *[
                     stream.write_audio_eof()

@@ -193,11 +193,13 @@ AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
 # and a transition can end without ever reaching the play_media that claims the
 # session (an item that fails to load, a provider error), which leaves nothing
 # else to end the stream: the EOF is what makes the binary play out, report eof
-# and the player report idle. Sized well past a normal item load (library
-# lookups plus the streamdetails fetch, sub-second in practice) so a slow but
-# real replacement is never cut short into a cold restart, and short enough that
-# a session nothing will claim stops reporting playback while the user watches.
-AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 10.0
+# and the player report idle. The wait has to outlast the load that carries the
+# replacement, which is bounded by the queue's own buffer prepare
+# (BUFFER_READY_TIMEOUT, 15s) rather than by the provider call alone; the margin
+# on top keeps a slow but real seek from being cut short into a cold restart.
+# The capacity path can run longer still, but ends by stopping the queue, which
+# tears this session down anyway.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 20.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the

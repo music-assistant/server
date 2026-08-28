@@ -1122,6 +1122,32 @@ async def test_a_replacement_that_never_arrives_still_ends_the_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
+    """
+    Nothing may still own the cli stdin when a withheld EOF is finally sent.
+
+    A member that joined while the EOF was held has an ffmpeg of its own writing
+    into that same stdin, so closing only this end would leave the binary waiting
+    on a pipe that never ends.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    order: list[str] = []
+    player.stream.write_audio_eof = AsyncMock(side_effect=lambda: order.append("eof"))
+    ffmpeg = MagicMock(closed=False)
+    ffmpeg.kill = AsyncMock(side_effect=lambda: order.append("kill"))
+    session._player_ffmpeg[player.player_id] = ffmpeg
+
+    with patch(
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0
+    ):
+        await session._end_stream_if_no_replacement_lands()
+
+    assert order == ["kill", "eof"]
+    assert not session._player_ffmpeg
+
+
+@pytest.mark.asyncio
 async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> None:
     """A session taken over warm never delivers the EOF it held for that takeover."""
     session = _make_session(0, 0)
