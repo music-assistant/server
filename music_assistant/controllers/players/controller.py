@@ -166,8 +166,9 @@ EXTERNAL_POWER_OFF_STOP_DELAY = 15
 
 # Player types that must be detached from their (sync)group when they power off.
 # A stereo pair joins a group and leads a sync session exactly like a single speaker does.
-# GROUP is deliberately not in here: ungrouping a group player powers it off, which is
-# what brought us here in the first place.
+# A GROUP player has no group of its own to leave: its members are released by its own
+# power off, and ungrouping one is defined as powering it off - which is what already
+# brought it here.
 UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
@@ -3971,7 +3972,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await self._stop_player_or_its_queue(player)
 
         # power off all synced childs when player is a sync leader
-        elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:
+        elif (
+            not powered
+            and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
+            and player_state.group_members
+        ):
             async with TaskManager(self.mass) as tg:
                 for member in self.iter_group_members(player, True):
                     if member.power_control == PLAYER_CONTROL_NONE:

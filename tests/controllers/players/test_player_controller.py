@@ -1942,6 +1942,76 @@ class TestPowerOffEndsTheQueue:
         player_stop.assert_not_awaited()
 
 
+class TestSyncLeaderPowerOffUngroup:
+    """
+    Tests for detaching a sync leader from its own session when it powers off.
+
+    A sync leader is removed from itself, which either hands leadership to a remaining
+    member or dissolves the session - the type of the leader does not change that.
+    """
+
+    @staticmethod
+    def _sync_leader(
+        mock_mass: MagicMock, player_type: PlayerType
+    ) -> tuple[PlayerController, MockPlayer]:
+        """
+        Build a powered sync leader with one synced follower.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param player_type: The type to register the leader as.
+        :return: The controller and the leader.
+        """
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
+        )
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader", player_type=player_type)
+        leader._attr_group_members = ["leader", "follower"]
+        leader._attr_powered = True
+        follower = MockPlayer(provider, "follower", "Follower")
+        controller._players = {"leader": leader, "follower": follower}
+        mock_mass.players = controller
+        for player in (leader, follower):
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+        return controller, leader
+
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.asyncio
+    async def test_ma_power_off_ungroups_a_sync_leader(
+        self, mock_mass: MagicMock, player_type: PlayerType
+    ) -> None:
+        """An MA power off removes a sync leader from its own session."""
+        controller, leader = self._sync_leader(mock_mass, player_type)
+        assert leader.state.group_members == ["leader", "follower"]
+        ungrouped: list[str] = []
+
+        async def _ungroup(player_id: str) -> None:
+            ungrouped.append(player_id)
+
+        controller.cmd_ungroup = _ungroup  # type: ignore[method-assign]
+
+        await controller._handle_cmd_power("leader", False)
+
+        assert ungrouped == ["leader"]
+
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    def test_external_power_off_ungroups_a_sync_leader(
+        self, mock_mass: MagicMock, player_type: PlayerType
+    ) -> None:
+        """A power control switched off outside MA removes a sync leader too."""
+        controller, leader = self._sync_leader(mock_mass, player_type)
+        # the handler hands the coroutine to create_task, so the stub only records the call
+        controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
+
+        controller.signal_player_state_update(leader, {"powered": (True, False)})
+
+        controller.cmd_ungroup.assert_called_once_with("leader")
+
+
 class TestExternalPowerOffUnsync:
     """
     Tests for unsyncing a player when its power is turned off outside of MA.
@@ -2025,10 +2095,10 @@ class TestExternalPowerOffUnsync:
 
     def test_power_off_of_a_group_player_does_not_ungroup_it(self, mock_mass: MagicMock) -> None:
         """
-        A group player dissolves through its own power off, not through an ungroup.
+        A group player has no group of its own to leave.
 
-        Ungrouping a group player is defined as powering it off, so routing it here
-        would only send the power off it just reported straight back at it.
+        Its members are released by its own power off, and ungrouping a group player is
+        defined as powering it off, so routing it through here would achieve nothing.
         """
         controller, group_player, _member = _group_with_member(mock_mass)
         controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
