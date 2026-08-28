@@ -40,6 +40,11 @@ LOGGER = logging.getLogger(__name__)
 _CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
 _TRANSCRIPT_FETCH_TIMEOUT = ClientTimeout(total=15)
 
+# some podcast hosts and CDNs reject anything that does not look like a browser, so these
+# fetches override the Music Assistant user agent that the session sends by default
+# https://github.com/music-assistant/support/issues/3596
+_BROWSER_UA_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
 # transcript formats carrying timings, most preferred first. Anything else is still
 # usable, but only as untimed text.
 _TIMED_TRANSCRIPT_TYPES = ("text/vtt", "application/x-subrip", "application/srt", "text/srt")
@@ -63,10 +68,8 @@ async def get_podcastparser_dict(
     max_episodes = 0 does not limit the returned episodes.
     """
     feed_data: bytes | None = None
-    # without user agent, some feeds can not be retrieved
-    # https://github.com/music-assistant/support/issues/3596
-    # but, reports on discord show, that also the opposite may be true
-    for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
+    # reports on discord show that some feeds need the opposite, so also try without any UA
+    for headers in [_BROWSER_UA_HEADERS, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
         # url doesn't exist etc. The body is read inside the context manager, so a
@@ -502,16 +505,15 @@ async def enrich_episode_chapters(
     url = chapters_json_url
     if not url:
         return
-    # send a browser UA: some podcast hosts/CDNs reject non-browser agents
-    # (music-assistant/support#3596). Chapter data is supplementary, so unlike
-    # get_podcastparser_dict we make a single best-effort attempt with no UA-less retry.
+    # chapter data is supplementary, so unlike get_podcastparser_dict this is a single
+    # attempt with no UA-less retry.
     # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly
     # to keep this enrichment best-effort. The parse stays inside the try so a malformed
     # document can never break episode resolution either.
     try:
         async with session.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=_BROWSER_UA_HEADERS,
             raise_for_status=True,
             timeout=_CHAPTERS_FETCH_TIMEOUT,
         ) as response:
@@ -578,12 +580,11 @@ def _select_transcript_url(transcripts: list[dict[str, Any]] | None) -> str | No
 
 async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str | None:
     """Fetch a transcript document, returning None when it cannot be retrieved."""
-    # send a browser UA: some podcast hosts and CDNs reject non-browser agents.
     # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly.
     try:
         async with session.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=_BROWSER_UA_HEADERS,
             raise_for_status=True,
             timeout=_TRANSCRIPT_FETCH_TIMEOUT,
         ) as response:
