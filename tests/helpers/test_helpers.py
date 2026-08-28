@@ -234,6 +234,14 @@ def test_with_artist_credit_preserves_trailing_title_content() -> None:
     ) == ("Great Song (Duet)", "")
 
 
+def test_bare_colon_feature_credit_stripped_for_search() -> None:
+    """A bare, unbracketed colon-form featured credit is stripped like the other forms."""
+    assert util.parse_title_and_version(
+        "Great Song feat:Alice",
+        strip_for_search=True,
+    ) == ("Great Song", "")
+
+
 async def test_uri_parsing() -> None:
     """Test parsing of URI."""
     # test regular uri

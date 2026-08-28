@@ -620,15 +620,6 @@ _DISPLAY_STRIP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Featuring patterns for stripping from titles (not in parentheses).
-_FEATURING_PATTERNS = (
-    " featuring ",
-    " feat. ",
-    " feat ",
-    " ft. ",
-    " ft ",
-)
-
 
 def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
@@ -751,13 +742,11 @@ def parse_title_and_version(
                 title = f"{title[: match.start()]}{title[match.end() :]}"
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
-        # Strip bare featuring credits (not in parentheses)
-        title_lower = title.lower()
-        for pattern in _FEATURING_PATTERNS:
-            if pattern in title_lower:
-                idx = title_lower.find(pattern)
-                title = title[:idx]
-                break
+        # Strip bare featuring credits (not in parentheses), reusing the same
+        # feat/ft pattern used for credit extraction so dot, colon, and space
+        # separator forms (e.g. "feat.", "feat:", "feat ") are all recognized
+        if bare_credit_match := _TITLE_FEATURED_CREDIT_PATTERN.search(title):
+            title = title[: bare_credit_match.start()]
         # Clean up dangling hyphens and extra spaces
         title = re.sub(r"\s*-\s*$", "", title)
         title = re.sub(r"\s+", " ", title).strip()

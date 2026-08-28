@@ -1461,6 +1461,27 @@ def test_compare_track_evidence_stops_feature_credit_before_version() -> None:
     )
 
 
+def test_compare_track_evidence_strips_bare_colon_feature_credit() -> None:
+    """A bare colon-form featured credit is stripped like the dot/space forms during search."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track feat:Guest",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
 def test_compare_track_evidence_allows_omitted_featured_artist() -> None:
     """A provider may omit a featured credit carried by the other provider."""
     credited = _provider_track(
