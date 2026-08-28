@@ -1045,9 +1045,11 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)
-        is_playable, confirmed_mapping = await self._original_source_is_playable(
-            item, allowed_provider_instances
-        )
+        (
+            is_playable,
+            confirmed_mapping,
+            confirmed_dead_mappings,
+        ) = await self._original_source_is_playable(item, allowed_provider_instances)
         if is_playable:
             # the original source still resolves, or its provider is merely down right
             # now - either way there is nothing to substitute
@@ -1095,6 +1097,10 @@ class BuiltinProvider(MusicProvider):
                 # so a provider mapping it already carries is not treated as authoritative
                 trust_track_mappings=False,
                 failed_provider_instances=failed_provider_instances,
+                # the liveness check above already force-refreshed these exact
+                # (instance, item id) pairs and proved them dead - hydrating them again
+                # here would double every stale entry's provider API traffic for nothing
+                known_dead_mappings=confirmed_dead_mappings,
                 # release-evidence hydration (e.g. the source's own album) must reach the
                 # user's full allowed snapshot, not just the narrowed search targets, or a
                 # match_providers filter would starve EXACT matching of evidence that is
@@ -1167,7 +1173,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _original_source_is_playable(
         self, item: PlaylistItem, allowed_provider_instances: Mapping[str, str]
-    ) -> tuple[bool, ProviderMappingInfo | None]:
+    ) -> tuple[bool, ProviderMappingInfo | None, frozenset[tuple[str, str]]]:
         """
         Check whether an imported entry's original source is still usable.
 
@@ -1193,10 +1199,13 @@ class BuiltinProvider(MusicProvider):
         allowed instance. A raw builtin stream URL already reconstructs its own mapping
         from the path alone and needs nothing written back, and an ``#EXTPROV``
         reference that already names an exact instance already resolves correctly on
-        its own.
+        its own. Also returns every ``(instance_id, item_id)`` pair that was just
+        authoritatively confirmed dead here, so a subsequent matching pass does not
+        force-refresh the exact same candidate a second time.
         """
         candidates: list[tuple[str, str, bool]] = []
         seen: set[tuple[str, str]] = set()
+        confirmed_dead: set[tuple[str, str]] = set()
         for prov_info in item.providers:
             # a domain-only reference (no pinned instance id) is not yet tied to one
             # specific account; once resolved, normalize it to whichever allowed
@@ -1235,7 +1244,7 @@ class BuiltinProvider(MusicProvider):
                 # a missing/unavailable provider is a configured source that is merely
                 # down or failed setup right now, not one the user removed - a transient
                 # outage must not trigger a permanent substitution
-                return True, None
+                return True, None, frozenset(confirmed_dead)
             try:
                 hydrated = await self.mass.music.tracks.get_provider_item(
                     provider_item_id,
@@ -1246,6 +1255,7 @@ class BuiltinProvider(MusicProvider):
                 )
             except MediaNotFoundError:
                 # a catalog id genuinely no longer exists on the provider
+                confirmed_dead.add((provider.instance_id, provider_item_id))
                 continue
             except InvalidDataError:
                 if provider_item_id.startswith(
@@ -1255,8 +1265,9 @@ class BuiltinProvider(MusicProvider):
                     # is actually gone - anything else this error can mean (a DNS
                     # hiccup, a timeout, a 5xx response, or - for a catalog id - a
                     # provider's own API/HTTP fault) does not prove deletion
+                    confirmed_dead.add((provider.instance_id, provider_item_id))
                     continue
-                return True, None
+                return True, None, frozenset(confirmed_dead)
             except (
                 ResourceTemporarilyUnavailable,
                 ProviderUnavailableError,
@@ -1266,10 +1277,10 @@ class BuiltinProvider(MusicProvider):
             ):
                 # could not verify right now (network blip) - assume it is still fine
                 # rather than substitute it
-                return True, None
+                return True, None, frozenset(confirmed_dead)
             else:
                 if not needs_provider_metadata:
-                    return True, None
+                    return True, None, frozenset(confirmed_dead)
                 # a bare URI without #EXTPROV, or a domain-only reference not yet
                 # pinned to one instance, would otherwise stay unresolvable or keep
                 # guessing the wrong account on every future load - persist what was
@@ -1286,16 +1297,20 @@ class BuiltinProvider(MusicProvider):
                 # carried its own mapping - otherwise leave them unset rather than
                 # writing a guessed/default format into the persisted metadata
                 audio_format = own_mapping.audio_format if own_mapping else None
-                return True, ProviderMappingInfo(
-                    domain=provider.domain,
-                    item_id=provider_item_id,
-                    instance_id=provider.instance_id,
-                    content_type=audio_format.content_type.value if audio_format else "",
-                    sample_rate=audio_format.sample_rate if audio_format else 0,
-                    bit_depth=audio_format.bit_depth if audio_format else 0,
-                    bit_rate=(audio_format.bit_rate or 0) if audio_format else 0,
+                return (
+                    True,
+                    ProviderMappingInfo(
+                        domain=provider.domain,
+                        item_id=provider_item_id,
+                        instance_id=provider.instance_id,
+                        content_type=audio_format.content_type.value if audio_format else "",
+                        sample_rate=audio_format.sample_rate if audio_format else 0,
+                        bit_depth=audio_format.bit_depth if audio_format else 0,
+                        bit_rate=(audio_format.bit_rate or 0) if audio_format else 0,
+                    ),
+                    frozenset(confirmed_dead),
                 )
-        return False, None
+        return False, None, frozenset(confirmed_dead)
 
     async def _stream_url_confirmed_gone(self, url: str) -> bool:
         """

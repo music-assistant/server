@@ -617,6 +617,61 @@ async def test_available_provider_with_dead_item_id_is_matched() -> None:
     assert "| Exact release | 1 |" in report_markdown
 
 
+async def test_confirmed_dead_original_is_not_hydrated_again_during_matching() -> None:
+    """The just-confirmed-dead original mapping is passed on, not force-refreshed twice."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    enrich_provider_mappings = AsyncMock(return_value=enrichment)
+    prov_any.mass.music.tracks.enrich_provider_mappings = enrich_provider_mappings
+
+    with patch("music_assistant.providers.builtin.set_current_task_report"):
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "spotify--1", "qobuz--1"),
+        )
+
+    # the liveness check above already force-refreshed and confirmed this exact
+    # (instance, item id) pair dead, so it must be handed on rather than probed twice
+    assert enrich_provider_mappings.await_args is not None
+    assert enrich_provider_mappings.await_args.kwargs["known_dead_mappings"] == frozenset(
+        {("spotify--1", "abc123")}
+    )
+
+
 async def test_persisted_mappings_exclude_weaker_compatible_tier() -> None:
     """A weaker, merely-compatible tier does not end up as the persisted substitute."""
     prov = _make_provider(

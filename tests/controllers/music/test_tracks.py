@@ -348,6 +348,30 @@ async def test_find_provider_match_force_refreshes_untrusted_mapped_candidate(
     assert trusted_call.kwargs["force_refresh"] is False
 
 
+async def test_find_provider_match_skips_known_dead_mapping_hydration(
+    music: MusicController,
+) -> None:
+    """A mapped candidate a caller already confirmed dead is not hydrated again here."""
+    source = create_track("qobuz_1", "source")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    # no SEARCH feature - isolates this test to the mapped-candidate hydration path
+    provider.supported_features = set()
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with patch.object(music.tracks, "get_provider_item", AsyncMock()) as get_provider_item:
+        result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            trust_base_mapping=False,
+            known_dead_mappings=frozenset({("qobuz_1", "source")}),
+        )
+
+    get_provider_item.assert_not_awaited()
+    assert result.match is None
+
+
 async def test_match_confidence_hydrates_album_after_initial_no_match(
     music: MusicController,
 ) -> None:

@@ -688,6 +688,7 @@ class TracksController(MediaControllerBase[Track]):
         mapping_source: Track | None = None,
         allowed_provider_instances: set[str] | None = None,
         trust_base_mapping: bool = True,
+        known_dead_mappings: frozenset[tuple[str, str]] | None = None,
     ) -> TrackProviderMatchResult:
         """
         Find the best track match on a music provider.
@@ -699,6 +700,8 @@ class TracksController(MediaControllerBase[Track]):
         :param mapping_source: Optional library track whose mappings may be reused as candidates.
         :param allowed_provider_instances: Provider instances available to the initiating user.
         :param trust_base_mapping: Treat a direct base-track mapping as exact provider identity.
+        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has already
+            authoritatively confirmed unresolvable, so they are not hydrated again here.
         """
         resolved_base_album = base_album
         mapped_match: TrackProviderMatch | None = None
@@ -712,22 +715,30 @@ class TracksController(MediaControllerBase[Track]):
                         confidence=TrackMatchConfidence.EXACT,
                     )
                 )
-            try:
-                mapped_candidate = await self.get_provider_item(
-                    mapping.item_id,
-                    provider.instance_id,
-                    # an untrusted mapping (trust_base_mapping=False) may have just been
-                    # proven dead by an authoritative caller-side probe - a cached hit
-                    # here must not resurrect it as a confident match, so bypass the
-                    # provider cache the same way that probe did
-                    force_refresh=not trust_base_mapping,
-                    allow_fallback=False,
-                    strict_provider_instance=True,
-                )
-            except MediaNotFoundError, InvalidDataError:
-                # a stale mapping (deleted catalog id, unreadable stream) is not fatal -
-                # fall through to a fresh search below instead of aborting the provider
+            if known_dead_mappings and (provider.instance_id, mapping.item_id) in (
+                known_dead_mappings
+            ):
+                # a caller already authoritatively confirmed this exact candidate dead
+                # moments ago - hydrating it again here would double its provider
+                # traffic for nothing, so fall through to a fresh search straight away
                 mapped_candidate = None
+            else:
+                try:
+                    mapped_candidate = await self.get_provider_item(
+                        mapping.item_id,
+                        provider.instance_id,
+                        # an untrusted mapping (trust_base_mapping=False) may have just
+                        # been proven dead by an authoritative caller-side probe - a
+                        # cached hit here must not resurrect it as a confident match,
+                        # so bypass the provider cache the same way that probe did
+                        force_refresh=not trust_base_mapping,
+                        allow_fallback=False,
+                        strict_provider_instance=True,
+                    )
+                except MediaNotFoundError, InvalidDataError:
+                    # a stale mapping (deleted catalog id, unreadable stream) is not
+                    # fatal - fall through to a fresh search below instead of aborting
+                    mapped_candidate = None
             if mapped_candidate:
                 confidence, resolved_base_album = await self._get_match_confidence(
                     base_track,
@@ -792,6 +803,7 @@ class TracksController(MediaControllerBase[Track]):
         trust_track_mappings: bool = True,
         failed_provider_instances: set[str] | None = None,
         evidence_provider_instances: set[str] | None = None,
+        known_dead_mappings: frozenset[tuple[str, str]] | None = None,
     ) -> TrackProviderEnrichment:
         """
         Resolve missing streaming-provider mappings without updating the library.
@@ -806,6 +818,8 @@ class TracksController(MediaControllerBase[Track]):
             ``provider_instance_ids`` when not given separately, so a narrower search scope
             never also narrows which of the user's own accounts evidence may be hydrated
             from.
+        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has already
+            authoritatively confirmed unresolvable, so they are not hydrated again here.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -844,6 +858,7 @@ class TracksController(MediaControllerBase[Track]):
             existing_domains=existing_domains,
             failed_provider_instances=failed_provider_instances,
             failed_providers=failed_providers,
+            known_dead_mappings=known_dead_mappings,
         )
         provider_matches, domain_ambiguous_providers = self._select_best_match_per_domain(
             provider_matches
@@ -1278,6 +1293,7 @@ class TracksController(MediaControllerBase[Track]):
         existing_domains: set[str],
         failed_provider_instances: set[str] | None,
         failed_providers: list[str],
+        known_dead_mappings: frozenset[tuple[str, str]] | None = None,
     ) -> tuple[
         list[tuple[MusicProvider, TrackProviderMatch]], list[str], TrackMatchConfidence | None
     ]:
@@ -1323,6 +1339,7 @@ class TracksController(MediaControllerBase[Track]):
                     mapping_source=mapping_source,
                     allowed_provider_instances=evidence_provider_instances,
                     trust_base_mapping=trust_track_mappings,
+                    known_dead_mappings=known_dead_mappings,
                 )
             except (
                 ResourceTemporarilyUnavailable,
