@@ -956,6 +956,41 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert result.path == "tidal://track/t2"
 
 
+def test_media_item_to_playlist_item_prefers_available_provider_as_primary() -> None:
+    """A higher-quality but unavailable mapping must not be chosen as the primary URI."""
+    track = Track(
+        item_id="t1",
+        provider="spotify",
+        name="Track With An Unavailable Best Match",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="unavailable-best",
+                provider_domain="tidal",
+                provider_instance="tidal_1",
+                available=False,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24, bit_rate=0
+                ),
+            ),
+            ProviderMapping(
+                item_id="s1",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.OGG, sample_rate=44100, bit_depth=0, bit_rate=320
+                ),
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    # the tidal mapping has the higher quality, but it is unavailable - the primary
+    # URI must fall back to the playable spotify mapping instead
+    assert result.path == "spotify://track/s1"
+
+
 def test_media_item_to_playlist_item_ties_are_broken_deterministically() -> None:
     """Equal-quality provider mappings resolve to the same primary URI every time."""
     tied_format = AudioFormat(

@@ -828,10 +828,18 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     seen_domains: set[str] = set()
     # provider_mappings is a set, so its iteration order is not guaranteed stable across
     # runs; tie-break equal-quality mappings by identity so the chosen primary URI is
-    # deterministic instead of process-dependent
+    # deterministic instead of process-dependent. Available mappings are ranked before
+    # unavailable ones so an unplayable primary URI is never chosen while a playable
+    # sibling mapping exists (in the same or another domain).
     sorted_mappings = sorted(
         full_item.provider_mappings,
-        key=lambda x: (-x.quality, x.provider_domain, x.provider_instance, x.item_id),
+        key=lambda x: (
+            not x.available,
+            -x.quality,
+            x.provider_domain,
+            x.provider_instance,
+            x.item_id,
+        ),
     )
     for prov_mapping in sorted_mappings:
         domain = prov_mapping.provider_domain
