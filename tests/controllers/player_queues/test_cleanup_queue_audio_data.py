@@ -115,6 +115,29 @@ async def test_without_a_session_every_buffer_is_cleared() -> None:
         assert item.streamdetails.buffer is None
 
 
+async def test_a_buffer_attached_while_it_is_released_is_kept() -> None:
+    """
+    Releasing a buffer suspends, and what a later session attaches then must survive.
+
+    Cancelling the producer waits on the producer task, so the replacement session gets to
+    run and attach its own buffer to the same stream details while that is in flight.
+    """
+    stopped = _item("stopped", "sess-1")
+    ctrl = _controller([stopped])
+    assert stopped.streamdetails is not None
+    replacement_buffer = MagicMock(spec=AudioBuffer)
+
+    async def _attach_a_replacement() -> None:
+        # stands in for the new session claiming this item while the old buffer is released
+        stopped.streamdetails.buffer = replacement_buffer  # type: ignore[union-attr]
+
+    stopped.streamdetails.buffer.clear = AsyncMock(side_effect=_attach_a_replacement)
+
+    await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
+
+    assert stopped.streamdetails.buffer is replacement_buffer
+
+
 async def test_pending_crossfade_data_is_always_dropped() -> None:
     """A restarted session starts its first track from scratch, with nothing to fade from."""
     ctrl = _controller([_item("a", "sess-2")])

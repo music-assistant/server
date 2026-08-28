@@ -238,7 +238,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         for idx, item in enumerate(queue_items):
             if idx > cleanup_threshold:
                 break  # No need to check further
-            if item.streamdetails and item.streamdetails.buffer:
+            if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
@@ -246,8 +246,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     idx,
                     queue_id,
                 )
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
+                # detached before releasing, as in _cleanup_queue_audio_data
+                streamdetails.buffer = None
+                await buffer.clear()
                 buffers_cleared += 1
 
         if buffers_cleared > 0:
@@ -276,18 +277,20 @@ class StreamFeederMixin(_PlayerQueuesBase):
         buffers_cleared = 0
 
         for item in queue_items:
-            if not item.streamdetails or not item.streamdetails.buffer:
+            if not (streamdetails := item.streamdetails) or not (buffer := streamdetails.buffer):
                 continue
             if (
                 session_id is not None
-                and item.streamdetails.queue_session_id is not None
-                and item.streamdetails.queue_session_id != session_id
+                and streamdetails.queue_session_id is not None
+                and streamdetails.queue_session_id != session_id
             ):
                 # a session that started while this teardown was still running owns this
                 # audio now; killing its producer would strand the playback that replaced us
                 continue
-            await item.streamdetails.buffer.clear()
-            item.streamdetails.buffer = None
+            # detach before releasing: clearing suspends on the producer's cancellation, and a
+            # session starting in that window attaches its own buffer here
+            streamdetails.buffer = None
+            await buffer.clear()
             buffers_cleared += 1
 
         if buffers_cleared > 0:
