@@ -663,7 +663,9 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
     assert result.match is not None
     assert result.match.track.item_id == "exact"
     assert result.match.confidence == TrackMatchConfidence.EXACT
-    assert search_provider.await_count == 1
+    # the second artist-credit query still runs and fails transiently, but the
+    # already-found exact candidate is kept rather than raising
+    assert search_provider.await_count == 2
 
 
 async def test_exact_mapped_candidate_still_checked_against_search_results(
@@ -778,6 +780,77 @@ async def test_find_provider_match_prefers_exact_candidate(
         call.args[1] == provider.instance_id and call.kwargs["strict_provider_instance"] is True
         for call in get_provider_item_mock.await_args_list
     )
+
+
+async def test_find_provider_match_checks_every_artist_credit_query(
+    music: MusicController,
+) -> None:
+    """An exact hit on the first artist-credit query must not skip later credited artists."""
+    base = create_track("spotify_1", "base")
+    base.artists.append(
+        ItemMapping(
+            item_id="other-artist",
+            provider="spotify_1",
+            name="Other Artist",
+            media_type=MediaType.ARTIST,
+        )
+    )
+    first_candidate = create_track("qobuz_1", "first")
+    second_candidate = create_track("qobuz_1", "second")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(
+                side_effect=(
+                    SearchResults(tracks=[first_candidate]),
+                    SearchResults(tracks=[second_candidate]),
+                )
+            ),
+        ) as search_provider,
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(
+                side_effect=lambda item_id, *_args, **_kwargs: {
+                    "first": first_candidate,
+                    "second": second_candidate,
+                }[item_id]
+            ),
+        ),
+        # both candidates independently tie the base track at EXACT confidence, so a
+        # single artist-credit query must not decide the outcome on its own
+        patch.object(
+            music.tracks,
+            "_get_match_confidence",
+            AsyncMock(
+                side_effect=lambda _base, _candidate, base_album, **_kw: (
+                    TrackMatchConfidence.EXACT,
+                    base_album,
+                )
+            ),
+        ),
+    ):
+        candidates = await music.tracks._search_provider_track_matches(
+            base,
+            provider,
+            TrackMatchConfidence.LOOSE,
+            None,
+            None,
+            True,
+            None,
+        )
+
+    # the second artist's query must still run, and its candidate must still be
+    # collected, even though the first query already produced an exact match
+    assert search_provider.await_count == 2
+    assert {match.track.item_id for _, match in candidates} == {"first", "second"}
 
 
 async def test_find_provider_match_keeps_fallback_after_later_timeout(

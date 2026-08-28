@@ -135,7 +135,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             item_id = uri
         else:
             raise KeyError
-    except (TypeError, AttributeError, ValueError, KeyError) as err:
+    except (TypeError, AttributeError, ValueError, KeyError, IndexError) as err:
+        # IndexError covers a recognized share-URL prefix that is truncated
+        # (e.g. "https://open.spotify.com" with no path segments to split out)
         msg = f"Not a valid Music Assistant uri: {uri}"
         raise InvalidProviderURI(msg) from err
     if validate_id and not valid_id(provider_instance_id_or_domain, item_id):

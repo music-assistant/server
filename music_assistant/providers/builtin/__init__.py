@@ -413,11 +413,12 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
             playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
-            if await asyncio.to_thread(os.path.isfile, playlist_file):
-                # both the per-playlist edit lock and the global file-I/O lock used by
-                # _read_m3u_file/_write_m3u_file must be held, or a concurrent read or
-                # write already in flight on this file could still race the unlink
-                async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
+            # both the per-playlist edit lock and the global file-I/O lock used by
+            # _read_m3u_file/_write_m3u_file must be held, and the existence check
+            # itself must happen inside them - otherwise a concurrent read, write or
+            # second delete already in flight on this file could still race the unlink
+            async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
+                if await asyncio.to_thread(os.path.isfile, playlist_file):
                     await asyncio.to_thread(os.remove, playlist_file)
             return True
         else:

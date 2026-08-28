@@ -992,7 +992,7 @@ class TracksController(MediaControllerBase[Track]):
         allow_item_id_match: bool,
         mapped_match: TrackProviderMatch | None,
     ) -> list[tuple[int, TrackProviderMatch]]:
-        """Return ranked provider candidates, stopping once a search page yields an exact match."""
+        """Return ranked provider candidates from every credited-artist search query."""
         search_queries = list(
             dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
         )
@@ -1013,7 +1013,6 @@ class TracksController(MediaControllerBase[Track]):
                 if candidates:
                     break
                 raise
-            found_exact = False
             for search_result in search_results.tracks:
                 if not isinstance(search_result, Track):
                     continue
@@ -1067,13 +1066,6 @@ class TracksController(MediaControllerBase[Track]):
                     confidence=confidence,
                 )
                 candidates.append((len(candidates), candidate_match))
-                if confidence == TrackMatchConfidence.EXACT:
-                    # an already-fetched page may hold another, conflicting exact
-                    # candidate, so the remaining results are still worth checking;
-                    # only further (costlier) search queries are skipped from here
-                    found_exact = True
-            if found_exact:
-                break
         return candidates
 
     async def _get_match_confidence(

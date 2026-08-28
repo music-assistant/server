@@ -1092,6 +1092,41 @@ async def test_delete_playlist_waits_for_global_file_lock() -> None:
                 delete_task.cancel()
 
 
+async def test_concurrent_deletes_of_the_same_playlist_do_not_race() -> None:
+    """Two concurrent deletes of the same playlist must not both attempt os.remove."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    file_state = {"exists": True}
+
+    def fake_isfile(_path: str) -> bool:
+        return file_state["exists"]
+
+    def fake_remove(path: str) -> None:
+        if not file_state["exists"]:
+            # a real os.remove on an already-deleted file raises this
+            raise FileNotFoundError(path)
+        file_state["exists"] = False
+
+    with (
+        patch("music_assistant.providers.builtin.os.path.isfile", side_effect=fake_isfile),
+        patch(
+            "music_assistant.providers.builtin.os.remove", side_effect=fake_remove
+        ) as remove_mock,
+    ):
+        # the existence check must be re-evaluated under the lock for each caller,
+        # rather than both callers trusting a stale check made before either
+        # acquired it
+        result_a, result_b = await asyncio.gather(
+            prov.library_remove("playlist_1", MediaType.PLAYLIST),
+            prov.library_remove("playlist_1", MediaType.PLAYLIST),
+        )
+
+    assert result_a is True
+    assert result_b is True
+    remove_mock.assert_called_once()
+
+
 async def test_read_m3u_file_existence_check_is_atomic_with_delete() -> None:
     """A read's existence check and file open cannot be split by a concurrent delete."""
     prov = _make_provider()
