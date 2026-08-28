@@ -756,6 +756,34 @@ def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> 
     assert playlist_item.metadata["isrc"] == "USRC17607839"
 
 
+def test_media_item_to_playlist_item_merges_equivalent_external_ids() -> None:
+    """Providers formatting the same MBID differently is not treated as a conflict."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # both providers actually agree on the same MusicBrainz track ID, just
+        # formatted differently (braces + uppercase vs bare lowercase) - this must
+        # still be recognized as the single, unambiguous release-track identifier
+        external_ids={
+            (ExternalID.MB_TRACK, "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+            (ExternalID.MB_TRACK, "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert playlist_item.metadata["mb_track"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
 def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
     """
     EXACT is only reachable when the parsed M3U carries release-track evidence.

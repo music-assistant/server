@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
@@ -900,15 +901,20 @@ def _unambiguous_external_id(full_item: MediaItem, external_id_type: ExternalID)
     Return an external ID value only when the item carries exactly one of that type.
 
     A library item merges external IDs from every matched provider, so more than
-    one distinct value for the same type means they disagree about which release
-    the item actually is (e.g. different MB_TRACK release-track pairings) - persisting
-    one arbitrarily would misrepresent it as reliable release evidence on export.
+    one distinct *canonical* value for the same type means they disagree about
+    which release the item actually is (e.g. different MB_TRACK release-track
+    pairings) - persisting one arbitrarily would misrepresent it as reliable
+    release evidence on export. Values are canonicalized before comparing so
+    equivalent identifiers in different provider formats (casing, separators,
+    braces) are not mistaken for a genuine conflict.
     """
-    values = {
-        value for current_type, value in full_item.external_ids if current_type == external_id_type
+    canonical_values = {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in full_item.external_ids
+        if current_type == external_id_type
     }
-    if len(values) == 1:
-        return next(iter(values))
+    if len(canonical_values) == 1:
+        return next(iter(canonical_values))
     return None
 
 
