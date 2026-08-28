@@ -402,6 +402,39 @@ async def test_head_404_alone_does_not_confirm_a_stream_is_gone() -> None:
     assert "| Retained | 1 |" in report_markdown
 
 
+async def test_head_method_not_allowed_still_confirms_via_get() -> None:
+    """A server that rejects HEAD outright must still have a dead GET confirm it."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("ffprobe failed")),
+    )
+    item = PlaylistItem(
+        path="https://example.com/stream.mp3", title="Artist - Live Stream", length=None
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    # 405 means the server doesn't support HEAD at all, not that the stream is alive -
+    # the ranged GET must still be attempted to determine that
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHttpResponse(405))
+    prov_any.mass.http_session.get = MagicMock(return_value=_FakeHttpResponse(404))
+    enrichment = TrackProviderEnrichment(
+        track=cast("Any", MagicMock()),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "builtin", "qobuz--1")
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" not in report_markdown
+
+
 async def test_catalog_item_api_error_retains_original_without_confirmation() -> None:
     """A provider API error must not be treated as proof a catalog id was deleted."""
     prov = _make_provider(

@@ -1262,7 +1262,9 @@ class BuiltinProvider(MusicProvider):
         ``rtsp://``/``rtmp://``) is never treated as confirmed gone. A HEAD
         404/410 is corroborated with a minimal ranged GET before being treated
         as terminal, since some servers reject HEAD requests they would still
-        serve on GET.
+        serve on GET. A server that explicitly refuses the HEAD method itself
+        (405/501) is also corroborated by that same GET, rather than being
+        treated as inconclusive forever.
         """
         if not url.startswith(("http://", "https://")):
             return False
@@ -1275,7 +1277,7 @@ class BuiltinProvider(MusicProvider):
                 timeout=ClientTimeout(total=10),
             ) as resp:
                 head_status = resp.status
-        if head_status not in (404, 410):
+        if head_status not in (404, 410, 405, 501):
             return False
         with suppress(ClientError, TimeoutError):
             async with self.mass.http_session.get(
