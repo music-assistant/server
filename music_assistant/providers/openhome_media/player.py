@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
 
-    from .provider import OpenHomePlayerProvider
+    from music_assistant.providers.openhome_media.provider import OpenHomePlayerProvider
 
 
 def catch_request_errors[OpenHomePlayerT: "OpenHomePlayer", **P, R](
@@ -236,8 +236,10 @@ class OpenHomePlayer(Player):
     async def seek(self, position: int) -> None:
         """SEEK command on the player."""
         if self.profile.has_transport_seek_second_absolute:
-            await self.profile.async_transport_seek_absolute(position)
-        elif self.profile.active_source == ProductSourceType.RADIO:
+            stream_id = self.profile.transport_stream_id
+            if stream_id:
+                await self.profile.async_transport_seek_second_absolute(stream_id, position)
+        elif self._attr_active_source == ProductSourceType.RADIO:
             await self.profile.async_radio_seek_second_absolute(position)
         else:
             await self.profile.async_playlist_seek_second_absolute(position)
@@ -247,10 +249,6 @@ class OpenHomePlayer(Player):
         """Play media command."""
         logger = self.provider.logger.getChild(self.player_id)
         logger.debug("Command PLAY_MEDIA for player %s", self.display_name)
-
-        if self.profile is None:
-            logger.warning("play_media - no profile available for %s", self.display_name)
-            return
 
         # always clear MA queue (by sending stop) first
         try:
@@ -305,7 +303,7 @@ class OpenHomePlayer(Player):
         """Poll player for all state variables (fallback mode only)."""
         logger = self.provider.logger.getChild(self.player_id)
 
-        if self.profile.is_subscribed():
+        if self.profile.is_subscribed:
             self._attr_needs_poll = False
             return
 
@@ -313,7 +311,7 @@ class OpenHomePlayer(Player):
         if self.last_seen is None:
             do_ping: bool = True
         else:
-            do_ping = bool((now - self.last_seen) > 60)
+            do_ping = (now - self.last_seen) > 60
 
         try:
             with suppress(ValueError, ParseError):
@@ -412,8 +410,8 @@ class OpenHomePlayer(Player):
                 return
 
             # Connect to the base UPNP device
-            if TYPE_CHECKING:
-                assert isinstance(self.provider, OpenHomePlayerProvider)
+            # if TYPE_CHECKING:
+            #     assert isinstance(self.provider, OpenHomePlayerProvider)
             upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
 
             # Create profile wrapper
@@ -580,18 +578,19 @@ class OpenHomePlayer(Player):
                     match sv.name:
                         case ProductState.SOURCE_INDEX:
                             try:
-                                if 0 <= sv.value < self.profile.product_source_count:
+                                if sv.value and self.profile.product_source_count and 0 <= sv.value < self.profile.product_source_count:
                                     schedule_state_update = True
                                     if self.product_source_xml is not None:
                                         self._attr_active_source = self.product_source_xml[
                                             sv.value
                                         ].findtext("Name", default="Unknown")
-                            except ParseError, AttributeError, IndexError, KeyError, TypeError:
+                            except AttributeError, IndexError, KeyError, TypeError:
                                 logger.debug("Unable to process Product source index %s", sv.value)
                         case ProductState.SOURCE_XML:
                             schedule_state_update = True
                             try:
-                                self.product_source_xml = DefusedET.fromstring(sv.value)
+                                if sv.value:
+                                    self.product_source_xml = DefusedET.fromstring(str(sv.value))
                             except ParseError, AttributeError, IndexError, KeyError, TypeError:
                                 logger.debug("Unable to process Source XML %s", sv.value)
                             else:

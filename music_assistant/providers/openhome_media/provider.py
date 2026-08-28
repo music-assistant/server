@@ -89,14 +89,14 @@ class OpenHomePlayerProvider(PlayerProvider):
 
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
+            if mass_player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
             return
 
         cur_address = get_primary_ip_address_from_zeroconf(info)
-        if mass_player := self.mass.players.get(player_id):
+        if mass_player := self.mass.players.get_player(player_id):
             if cur_address and cur_address != mass_player.device_info.ip_address:
                 self.logger.debug(
                     "Address updated to %s for player %s",
