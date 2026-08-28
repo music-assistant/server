@@ -88,6 +88,10 @@ class TrackProviderMatchResult:
 
     match: TrackProviderMatch | None = None
     ambiguous: bool = False
+    # the confidence tier at which this provider's own candidates could not be told
+    # apart, so a caller resolving several providers together can tell that a weaker
+    # tier from another provider isn't actually a safe, uncontested answer either
+    ambiguous_confidence: TrackMatchConfidence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -770,7 +774,7 @@ class TracksController(MediaControllerBase[Track]):
             # missing source evidence (e.g. no explicitness tag) can let unrelated
             # candidates tie at the same confidence - checked at every tier, not just
             # LOOSE, since a quality tie-break would otherwise pick one arbitrarily
-            return TrackProviderMatchResult(ambiguous=True)
+            return TrackProviderMatchResult(ambiguous=True, ambiguous_confidence=best_confidence)
         _, best_match = max(
             best_matches,
             key=lambda ranked_match: (
@@ -822,80 +826,32 @@ class TracksController(MediaControllerBase[Track]):
         )
         if evidence_provider_instances is None:
             evidence_provider_instances = provider_instance_ids
-        base_album: Album | ItemMapping | None = None
-        base_album_loaded = False
         matches: list[TrackProviderMatch] = []
-        provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
-        ambiguous_providers: list[str] = []
         providers, failed_providers = self._resolve_allowed_providers(
             provider_instance_ids, failed_provider_instances
         )
-        mapping_source = library_track or track
-        for provider in providers:
-            if (
-                failed_provider_instances is not None
-                and provider.instance_id in failed_provider_instances
-            ):
-                continue
-            if provider.domain in existing_domains:
-                continue
-            if not provider.is_streaming_provider and not (
-                self._get_provider_mapping(mapping_source, provider)
-            ):
-                continue
-            if not base_album_loaded:
-                base_album = await self._get_full_track_album(
-                    track, allowed_provider_instances=evidence_provider_instances
-                )
-                base_album_loaded = True
-            try:
-                result = await self.find_provider_match(
-                    track,
-                    provider,
-                    minimum_confidence=minimum_confidence,
-                    base_album=base_album,
-                    mapping_source=mapping_source,
-                    allowed_provider_instances=evidence_provider_instances,
-                    trust_base_mapping=trust_track_mappings,
-                )
-            except (
-                ResourceTemporarilyUnavailable,
-                ProviderUnavailableError,
-                ClientError,
-                OSError,
-                TimeoutError,
-            ) as err:
-                if failed_provider_instances is not None:
-                    failed_provider_instances.add(provider.instance_id)
-                self.logger.warning(
-                    "Failed to match %s on provider %s: %s",
-                    track.name,
-                    provider.name,
-                    err,
-                )
-                failed_providers.append(provider.name)
-                continue
-            except (InvalidDataError, MediaNotFoundError) as err:
-                self.logger.warning(
-                    "Failed to match %s on provider %s: %s",
-                    track.name,
-                    provider.name,
-                    err,
-                )
-                failed_providers.append(provider.name)
-                continue
-            if result.match:
-                # defer accept/reject until every allowed instance has been queried, so
-                # a conflict (including between two instances of the same domain) is
-                # resolved by confidence rather than by which one was visited first
-                provider_matches.append((provider, result.match))
-            elif result.ambiguous:
-                ambiguous_providers.append(provider.name)
+        (
+            provider_matches,
+            ambiguous_providers,
+            ambiguous_confidence,
+        ) = await self._query_provider_matches(
+            track,
+            providers,
+            minimum_confidence=minimum_confidence,
+            mapping_source=library_track or track,
+            evidence_provider_instances=evidence_provider_instances,
+            trust_track_mappings=trust_track_mappings,
+            existing_domains=existing_domains,
+            failed_provider_instances=failed_provider_instances,
+            failed_providers=failed_providers,
+        )
         provider_matches, domain_ambiguous_providers = self._select_best_match_per_domain(
             provider_matches
         )
         ambiguous_providers.extend(domain_ambiguous_providers)
-        accepted, tier_ambiguous_providers = self._resolve_confident_matches(provider_matches)
+        accepted, tier_ambiguous_providers = self._resolve_confident_matches(
+            provider_matches, unresolved_confidence=ambiguous_confidence
+        )
         ambiguous_providers.extend(tier_ambiguous_providers)
         for provider, match in accepted:
             enriched_track.provider_mappings = {
@@ -1272,7 +1228,9 @@ class TracksController(MediaControllerBase[Track]):
         return best, ambiguous_providers
 
     def _resolve_confident_matches(
-        self, provider_matches: list[tuple[MusicProvider, TrackProviderMatch]]
+        self,
+        provider_matches: list[tuple[MusicProvider, TrackProviderMatch]],
+        unresolved_confidence: TrackMatchConfidence | None = None,
     ) -> tuple[list[tuple[MusicProvider, TrackProviderMatch]], list[str]]:
         """
         Accept provider matches confidence tier by confidence tier.
@@ -1286,6 +1244,11 @@ class TracksController(MediaControllerBase[Track]):
         the first ambiguous tier: once the strongest remaining evidence can't be
         told apart, a weaker tier can't settle that disagreement either, so it
         would be wrong to quietly substitute it in as if it were the answer.
+
+        :param unresolved_confidence: The highest tier at which some other
+            provider's own candidates already tied ambiguously, if any. A tier at
+            or below it is rejected too rather than accepted, since it cannot be
+            trusted over evidence that is itself unresolved at that level.
         """
         accepted: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
@@ -1295,16 +1258,114 @@ class TracksController(MediaControllerBase[Track]):
         ):
             tier = list(tier_iter)
             tier_matches = [match for _, match in tier]
-            if not self._matches_are_compatible(tier_matches, tier_confidence) or (
-                accepted
-                and not self._matches_are_compatible(
-                    [*(match for _, match in accepted), *tier_matches], tier_confidence
+            if (
+                (unresolved_confidence is not None and tier_confidence <= unresolved_confidence)
+                or not self._matches_are_compatible(tier_matches, tier_confidence)
+                or (
+                    accepted
+                    and not self._matches_are_compatible(
+                        [*(match for _, match in accepted), *tier_matches], tier_confidence
+                    )
                 )
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in tier)
                 break
             accepted.extend(tier)
         return accepted, ambiguous_providers
+
+    async def _query_provider_matches(
+        self,
+        track: Track,
+        providers: list[MusicProvider],
+        minimum_confidence: TrackMatchConfidence,
+        mapping_source: Track,
+        evidence_provider_instances: set[str] | None,
+        trust_track_mappings: bool,
+        existing_domains: set[str],
+        failed_provider_instances: set[str] | None,
+        failed_providers: list[str],
+    ) -> tuple[
+        list[tuple[MusicProvider, TrackProviderMatch]], list[str], TrackMatchConfidence | None
+    ]:
+        """
+        Query every allowed provider for a match, deferring accept/reject decisions.
+
+        Every allowed instance is queried before any conflict is resolved, so a
+        disagreement (including between two instances of the same domain) is settled
+        by confidence rather than by which instance happened to be visited first.
+        Providers whose own candidates tied ambiguously contribute no match here;
+        the highest such tier is returned separately so a caller resolving several
+        providers together can tell that a weaker, uncontested-looking match from
+        another provider isn't actually a safe answer to that disagreement either.
+        """
+        base_album: Album | ItemMapping | None = None
+        base_album_loaded = False
+        provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
+        ambiguous_providers: list[str] = []
+        ambiguous_confidence: TrackMatchConfidence | None = None
+        for provider in providers:
+            if (
+                failed_provider_instances is not None
+                and provider.instance_id in failed_provider_instances
+            ):
+                continue
+            if provider.domain in existing_domains:
+                continue
+            if not provider.is_streaming_provider and not (
+                self._get_provider_mapping(mapping_source, provider)
+            ):
+                continue
+            if not base_album_loaded:
+                base_album = await self._get_full_track_album(
+                    track, allowed_provider_instances=evidence_provider_instances
+                )
+                base_album_loaded = True
+            try:
+                result = await self.find_provider_match(
+                    track,
+                    provider,
+                    minimum_confidence=minimum_confidence,
+                    base_album=base_album,
+                    mapping_source=mapping_source,
+                    allowed_provider_instances=evidence_provider_instances,
+                    trust_base_mapping=trust_track_mappings,
+                )
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ) as err:
+                if failed_provider_instances is not None:
+                    failed_provider_instances.add(provider.instance_id)
+                self.logger.warning(
+                    "Failed to match %s on provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                )
+                failed_providers.append(provider.name)
+                continue
+            except (InvalidDataError, MediaNotFoundError) as err:
+                self.logger.warning(
+                    "Failed to match %s on provider %s: %s",
+                    track.name,
+                    provider.name,
+                    err,
+                )
+                failed_providers.append(provider.name)
+                continue
+            if result.match:
+                provider_matches.append((provider, result.match))
+            elif result.ambiguous:
+                ambiguous_providers.append(provider.name)
+                if result.ambiguous_confidence is not None and (
+                    ambiguous_confidence is None
+                    or result.ambiguous_confidence > ambiguous_confidence
+                ):
+                    ambiguous_confidence = result.ambiguous_confidence
+        return provider_matches, ambiguous_providers, ambiguous_confidence
 
     def _resolve_allowed_providers(
         self,

@@ -1740,6 +1740,145 @@ async def test_enrich_provider_mappings_treats_conflicting_exact_release_evidenc
     assert deezer_mapping not in result.track.provider_mappings
 
 
+async def test_enrich_provider_mappings_rejects_weaker_match_when_stronger_tier_is_ambiguous(
+    music: MusicController,
+) -> None:
+    """A provider's own unresolved tie at a higher tier blocks a weaker confident match."""
+    source = create_track("spotify_1", "source")
+    # qobuz's own candidates tied ambiguously at EXACT and were discarded entirely, so
+    # deezer's confident but merely LIKELY match must not be quietly accepted in its
+    # place - that would substitute weaker, uncontested-looking evidence for a
+    # disagreement that was never actually resolved
+    deezer_track = create_track("deezer_1", "deezer-track")
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.LIKELY
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(
+            ambiguous=True, ambiguous_confidence=TrackMatchConfidence.EXACT
+        ),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": qobuz_provider,
+                "deezer_1": deezer_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "deezer_1"},
+        )
+
+    assert result.matches == ()
+    assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
+    assert deezer_mapping not in result.track.provider_mappings
+
+
+async def test_enrich_provider_mappings_accepts_stronger_match_despite_weaker_tier_ambiguity(
+    music: MusicController,
+) -> None:
+    """A confident, strictly stronger match is accepted despite a weaker unresolved tie."""
+    source = create_track("spotify_1", "source")
+    # qobuz's own candidates only tied ambiguously at LOOSE, which is weaker evidence
+    # than deezer's confident EXACT match - the stronger, uncontested match should
+    # still be trusted since it isn't the tier that was actually left unresolved
+    deezer_track = create_track("deezer_1", "deezer-track")
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(
+            ambiguous=True, ambiguous_confidence=TrackMatchConfidence.LOOSE
+        ),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": qobuz_provider,
+                "deezer_1": deezer_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "deezer_1"},
+        )
+
+    assert result.matches == (deezer_match,)
+    assert result.ambiguous_providers == ("Qobuz",)
+    assert deezer_mapping in result.track.provider_mappings
+
+
 async def test_enrich_provider_mappings_prefers_higher_confidence_over_visitation_order(
     music: MusicController,
 ) -> None:
