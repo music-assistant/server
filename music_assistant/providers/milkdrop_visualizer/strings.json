@@ -1,9 +1,5 @@
 {
   "config_entries": {
-    "color_tint": {
-      "label": "Recolor with artwork colors",
-      "description": "Send the current track's color palette to the visualizer, which recolors the picture with it. Off means no artwork coloring at all, whichever recoloring option a viewer has chosen."
-    },
     "show_on_dashboards": {
       "label": "Show on dashboards and cast displays",
       "description": "Render the visualizer on the party screen and on dashboards cast to a TV or display. A cast display follows the visualizer settings of whoever cast it, live; only this switch (and a per-player choice) decides whether it shows at all. Note that TV and cast devices have far weaker graphics hardware than a computer, so the visualizer always renders at reduced quality there, adapting automatically to what the device can sustain."

@@ -1058,11 +1058,33 @@ async def test_preferences_change_signals_only_for_session_owners() -> None:
     """A preference change pings sessions of that owner and nobody else."""
     controller = _make_controller()
     controller._session_owners["dash1"] = "user-1"
+    before = {"visualizer_preset": "one"}
+    after = {"visualizer_preset": "two"}
 
-    controller.notify_user_preferences_changed("someone-else")
+    controller.notify_user_preferences_changed("someone-else", before, after)
     controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
 
-    controller.notify_user_preferences_changed("user-1")
+    controller.notify_user_preferences_changed("user-1", before, after)
+    controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
+        EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
+    )
+
+
+async def test_preferences_change_ignores_settings_a_viewer_never_sees() -> None:
+    """Preferences are written whole, so only a change to the visualizer keys is worth a ping."""
+    controller = _make_controller()
+    controller._session_owners["dash1"] = "user-1"
+
+    controller.notify_user_preferences_changed(
+        "user-1",
+        {"visualizer_preset": "one", "theme": "light"},
+        {"visualizer_preset": "one", "theme": "dark"},
+    )
+    controller.mass.signal_event.assert_not_called()  # type: ignore[attr-defined]
+
+    controller.notify_user_preferences_changed(
+        "user-1", None, {"visualizer_preset": "one", "theme": "dark"}
+    )
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
     )

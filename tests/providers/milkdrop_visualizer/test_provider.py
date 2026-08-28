@@ -10,22 +10,34 @@ from music_assistant.providers.milkdrop_visualizer.provider import (
     CONF_SHOW_ON_DASHBOARDS,
     CONFIG_COMMAND,
     MAX_REPORT_FIELD_LEN,
+    UNKNOWN_DISPLAY,
     MilkdropVisualizerProvider,
 )
 
 
-def _provider() -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
+def _provider(
+    sessions: list[Any] | None = None,
+) -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
     """Return a provider instance (with its logger and config-read mocks) without full setup."""
     provider = MilkdropVisualizerProvider.__new__(MilkdropVisualizerProvider)
     logger = Mock()
     config_value = AsyncMock()
     mass = Mock()
     mass.config.get_provider_config_value = config_value
+    mass.dashboard.get_dashboard_sessions = AsyncMock(return_value=sessions or [])
     mocked = cast("Any", provider)
     mocked.logger = logger
     mocked.config = Mock()
     mocked.mass = mass
+    mocked._last_report = {}
     return provider, logger, config_value
+
+
+def _session(dashboard_id: str) -> Mock:
+    """Return a dashboard-session-shaped mock for the given endpoint."""
+    session = Mock()
+    session.dashboard_id = dashboard_id
+    return session
 
 
 async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
@@ -99,5 +111,83 @@ async def test_capability_report_flattens_and_caps_viewer_strings() -> None:
     provider, logger, _config_value = _provider()
     await provider.report_capability(error="boom\nViewer error: forged", user_agent="x" * 900)
     logged_args = logger.warning.call_args.args
-    assert logged_args[1] == "boom Viewer error: forged"
-    assert logged_args[2] == "x" * MAX_REPORT_FIELD_LEN
+    assert logged_args[2] == "boom Viewer error: forged"
+    assert logged_args[3] == "x" * MAX_REPORT_FIELD_LEN
+
+
+async def test_render_report_flattens_and_caps_every_viewer_field() -> None:
+    """Every render field is viewer-supplied, so none of them may forge a log line."""
+    provider, logger, _config_value = _provider()
+
+    await provider.report_capability(
+        render={
+            "note": "steady\nViewer render forged",
+            "level": "x" * 900,
+            "gpu_warp": "1\n2",
+            "preset": "a\nb",
+        }
+    )
+
+    logged_args = logger.info.call_args.args
+    assert "steady Viewer render forged" in logged_args
+    assert "x" * MAX_REPORT_FIELD_LEN in logged_args
+    assert "\n" not in "".join(str(arg) for arg in logged_args)
+
+
+async def test_render_report_names_the_reporting_display() -> None:
+    """A dashboard id with a live session identifies the display it reported for."""
+    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
+
+    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
+
+    assert "chromecast_abc" in logger.info.call_args.args
+
+
+async def test_report_from_an_unknown_display_shares_one_bucket() -> None:
+    """Minting fresh ids must not buy fresh cooldowns: an unknown id is never its own key."""
+    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
+
+    await provider.report_capability(webgl2=True, dashboard_id="made-up")
+
+    assert "made-up" not in logger.info.call_args.args
+    assert UNKNOWN_DISPLAY in logger.info.call_args.args
+
+    # a second, different made-up id lands in the same bucket, so it is already spent
+    await provider.report_capability(webgl2=True, dashboard_id="also-made-up")
+
+    assert logger.info.call_count == 1
+    assert logger.debug.call_count == 1
+
+
+async def test_an_error_is_not_buried_by_a_chatty_renderer() -> None:
+    """Errors are the only evidence these displays produce: render reports must not spend them."""
+    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
+
+    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
+    await provider.report_capability(error="boom", dashboard_id="chromecast_abc")
+
+    logger.warning.assert_called_once()
+
+
+async def test_repeat_reports_within_the_cooldown_drop_to_debug() -> None:
+    """A display cannot flood the log: only the first report in a cooldown window is logged."""
+    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
+
+    for _ in range(3):
+        await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
+
+    assert logger.info.call_count == 1
+    assert logger.debug.call_count == 2
+
+
+async def test_the_cooldown_is_kept_per_display() -> None:
+    """One noisy display must not silence another one's first report."""
+    provider, logger, _config_value = _provider(
+        sessions=[_session("chromecast_abc"), _session("kiosk_1")]
+    )
+
+    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
+    await provider.report_capability(webgl2=True, dashboard_id="kiosk_1")
+
+    assert logger.info.call_count == 2
+    logger.debug.assert_not_called()

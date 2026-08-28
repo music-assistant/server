@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from .provider import MilkdropVisualizerProvider
 
 WAVE_SAMPLES = 1024
-CONF_COLOR_TINT = "color_tint"
-DEFAULT_COLOR_TINT = True
 # Derived from the model, so a field added upstream is forwarded automatically.
 COLOR_FIELDS = tuple(field.name for field in dataclasses.fields(MediaItemPalette))
 # How far ahead of the audible playhead the tap reads. Viewers schedule frames
@@ -509,8 +507,6 @@ class TapManager:
 
     def _sync_color(self, tap: Tap) -> None:
         """Fan out the track palette whenever it changes (once per track, in practice)."""
-        if not self.provider.config.get_value(CONF_COLOR_TINT):
-            return
         player = self.mass.players.get_player(tap.player_id)
         media = player.state.current_media if player is not None else None
         payload = palette_payload(media.palette if media is not None else None)

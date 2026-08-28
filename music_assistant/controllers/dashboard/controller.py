@@ -39,6 +39,9 @@ ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.U
 # the frontend's router leaves these literal in a query value; escaped, it never matches
 ROUTE_SAFE_CHARS = ":!'()*@,;$/"
 
+# the only preference namespace a dashboard viewer is handed
+VIEWER_PREFERENCE_PREFIX = "visualizer_"
+
 
 @dataclass
 class _RegisteredDashboard:
@@ -262,11 +265,7 @@ class DashboardController(CoreController):
         owner = await self.mass.webserver.auth.get_user(owner_id)
         if owner is None:
             return {}
-        return {
-            key: value
-            for key, value in (owner.preferences or {}).items()
-            if key.startswith("visualizer_")
-        }
+        return _viewer_preferences(owner.preferences)
 
     @api_command("dashboard/get_url")
     async def get_url_for_dashboard(
@@ -343,15 +342,24 @@ class DashboardController(CoreController):
         if sessions_changed:
             self._signal_sessions_updated()
 
-    def notify_user_preferences_changed(self, user_id: str) -> None:
+    def notify_user_preferences_changed(
+        self,
+        user_id: str,
+        previous: dict[str, Any] | None,
+        current: dict[str, Any] | None,
+    ) -> None:
         """
-        Signal active dashboard sessions when their owner's preferences changed.
+        Signal active dashboard sessions when their owner's visualizer preferences changed.
 
         Viewers re-fetch `dashboard/viewer_preferences` on the sessions-updated
         event, so a preference change reaches a cast display live.
 
         :param user_id: The user whose preferences were just updated.
+        :param previous: The user's preferences before the update.
+        :param current: The user's preferences after the update.
         """
+        if _viewer_preferences(previous) == _viewer_preferences(current):
+            return
         if user_id in self._session_owners.values():
             self._signal_sessions_updated()
 
@@ -518,3 +526,16 @@ class DashboardController(CoreController):
         self.mass.signal_event(
             EventType.DASHBOARD_SESSIONS_UPDATED, data=list(self._sessions.values())
         )
+
+
+def _viewer_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Return the visualizer subset of a user's preferences, the only part a viewer is shown.
+
+    :param preferences: A user's full preferences, or None when they have none.
+    """
+    return {
+        key: value
+        for key, value in (preferences or {}).items()
+        if key.startswith(VIEWER_PREFERENCE_PREFIX)
+    }
