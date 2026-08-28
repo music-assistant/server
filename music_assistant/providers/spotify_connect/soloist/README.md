@@ -9,7 +9,7 @@ changes — at the cost of a managed binary download and a per-user API key.
    Spotify app  (mobile / desktop / web)
         │   Connect protocol: mDNS discovery + audio
         ▼
-   soloist daemon  (one per instance, spawned with PULSE_SINK=<capture sink>)
+   soloist daemon  (one per connected player, spawned with PULSE_SINK=<capture sink>)
         │   plays decoded PCM into a PulseAudio pipe-sink
         ▼
    PulseAudio module-pipe-sink ──▶ FIFO (s32le / 44.1 kHz / 2ch)
@@ -37,7 +37,7 @@ changes — at the cost of a managed binary download and a per-user API key.
 Spotify does not distribute Soloist through package managers; the manager downloads the
 tarball for the host architecture from Spotify's CDN — **only after explicit user consent**
 recorded in the setup flow — validates it (tar structure, ELF magic and architecture),
-and installs it atomically (write-aside + rename, with rollback). All instances share one
+and installs it atomically (write-aside + rename, with rollback). All daemons share one
 install under the MA storage dir, serialized by a module-level lock.
 
 Soloist builds **expire 90 days after their build date** (the daemon then exits with code
@@ -46,12 +46,12 @@ Soloist builds **expire 90 days after their build date** (the daemon then exits 
 1. **Install-time**: `ensure_fresh()` replaces a build nearing/at expiry (metadata
    timestamp parsed from `--version`), keeping a still-valid binary on download failure.
 2. **Daily refresh loop**: replaces the build ahead of expiry and respawns the daemon.
-   The comparison baseline is the digest of the build *this* instance's daemon runs, so an
-   update installed by a sibling instance is picked up too.
+   The comparison baseline is the digest of the build *this* daemon runs, so an update
+   installed by a sibling daemon is picked up too.
 3. **Exit-code-10 recovery**: a forced re-verification (bypassing the short verify cache)
    before the supervisor respawns.
 
-A recently-verified cache (60 s) keeps concurrent instance startups from re-checking; the
+A recently-verified cache (60 s) keeps concurrent daemon startups from re-checking; the
 API key is only ever passed on the daemon's argv and redacted from its captured
 output (stderr is merged into stdout, which the log reader redacts).
 
@@ -59,7 +59,7 @@ output (stderr is merged into stdout, which the log reader redacts).
 
 Soloist has no pipe/stdout output of its own — it plays into an audio server. The backend
 uses the shared `helpers/pulse_capture.py` infrastructure: a private per-MA PulseAudio
-daemon hosting one `module-pipe-sink` per instance, delivering s32le/44.1kHz/2ch PCM into
+daemon hosting one `module-pipe-sink` per daemon, delivering s32le/44.1kHz/2ch PCM into
 a FIFO. The daemon is spawned with `PULSE_SERVER`/`PULSE_SINK` pointing at its sink.
 
 - `get_stream_source()` is a **pure read** (it also runs from queue preload): it returns

@@ -2631,6 +2631,29 @@ async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> 
     )
 
 
+async def test_prune_maps_collapsed_plugin_instances(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that filters naming a collapsed connected-player plugin instance follow it.
+
+    The collapse migration re-keys spotify_connect/airplay_receiver instances to the
+    bare domain; pruning the old id instead of mapping it would leave a user whose
+    last filter entry it was unrestricted.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    auth_manager.mass.config.set(
+        f"{CONF_PROVIDERS}/spotify_connect", {"instance_id": "spotify_connect"}
+    )
+    user = await auth_manager.create_user(
+        username="collapsed",
+        provider_filter=["spotify_connect--abcd1234"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (["spotify_connect"], [])
+
+
 async def test_prune_stale_user_filters_ignores_empty_config(
     auth_manager: AuthenticationManager,
 ) -> None:

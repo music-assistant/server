@@ -405,6 +405,7 @@ class SendspinProvider(PlayerProvider):
                 key=CONF_ALLOW_LEGACY_CLIENTS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
+                hidden=True,
             ),
             ConfigEntry(
                 key=CONF_MIN_PIN_LENGTH,
@@ -461,7 +462,7 @@ class SendspinProvider(PlayerProvider):
         self.server_api = SendspinServer(
             self.mass.loop,
             identity,
-            "Music Assistant",
+            self.mass.webserver.server_name,
             self.mass.http_session,
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
@@ -1246,7 +1247,7 @@ class SendspinProvider(PlayerProvider):
             player = viz_player
         elif "source" in negotiated_families:
             # Capture-only device: a SendspinPlayer here would advertise playback it
-            # cannot do. It only needs a settings page.
+            # cannot do. It registers as an audio input instead.
             player = SendspinSourcePlayer(self, client_id, initial_hello=initial_hello)
         else:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)

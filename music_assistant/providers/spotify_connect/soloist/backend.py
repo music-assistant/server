@@ -132,7 +132,7 @@ class SoloistBackend(SpotifyConnectBackend):
         self,
         mass: MusicAssistant,
         *,
-        instance_id: str,
+        identity_key: str,
         publish_name: str,
         name: str,
         logger: logging.Logger,
@@ -148,8 +148,8 @@ class SoloistBackend(SpotifyConnectBackend):
         Initialize the backend (cheap; the daemon is launched in ``start``).
 
         :param mass: The MusicAssistant instance.
-        :param instance_id: The owning provider's instance id; keys the
-            data/cache dirs and the capture sink name.
+        :param identity_key: Unique identity of this daemon (one per connected
+            player); keys the data/cache dirs and the capture sink name.
         :param publish_name: Device name advertised to the Spotify app.
         :param name: Display name of the owning provider instance (log messages).
         :param logger: Logger to use for diagnostics.
@@ -180,10 +180,10 @@ class SoloistBackend(SpotifyConnectBackend):
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
         self._audio_quality = audio_quality
-        self._data_dir = Path(mass.storage_path) / "spotify_connect" / instance_id / "soloist-data"
-        self._cache_dir = Path(mass.cache_path) / instance_id / "soloist-cache"
+        self._data_dir = Path(mass.storage_path) / "spotify_connect" / identity_key / "soloist-data"
+        self._cache_dir = Path(mass.cache_path) / identity_key / "soloist-cache"
         # PA sink names end up in space-delimited module arguments and env vars
-        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", instance_id)
+        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", identity_key)
         self._binary: Path | None = None
         # digest of the build the running daemon was spawned from; the shared
         # install can move ahead of it when a sibling instance updates first
@@ -667,6 +667,10 @@ class SoloistBackend(SpotifyConnectBackend):
                         # fatal errors are plain (non-localized) strings for now,
                         # matching the go-librespot backend
                         error="soloist daemon failed to start multiple times.",
+                        # repeated soloist exits are dominated by engine-level
+                        # problems (e.g. a bad or revoked API key) that hit every
+                        # daemon alike
+                        provider_wide=True,
                     )
                 )
                 return
@@ -771,6 +775,8 @@ class SoloistBackend(SpotifyConnectBackend):
                         "installed. Check the server's internet connection and reload "
                         "this provider."
                     ),
+                    # the binary (and its expiry) is shared by every daemon
+                    provider_wide=True,
                 )
             )
             return False

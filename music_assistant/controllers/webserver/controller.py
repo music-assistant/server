@@ -13,6 +13,7 @@ import html
 import inspect
 import os
 import secrets
+import socket
 import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
@@ -31,7 +32,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -96,6 +97,8 @@ if TYPE_CHECKING:
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
+CONF_SERVER_NAME = "server_name"
+CONF_EXTERNAL_URL = "external_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
 CONF_SSL_PRIVATE_KEY = "ssl_private_key"
@@ -146,6 +149,11 @@ def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
         return bind_ip
     # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
     return "::1" if ":" in publish_ip else "127.0.0.1"
+
+
+def _default_server_name() -> str:
+    """Return the default friendly name for this server, derived from the hostname."""
+    return f"Music Assistant ({socket.gethostname().split('.')[0]})"
 
 
 def _locale_from_request(request: web.Request) -> str | None:
@@ -208,6 +216,23 @@ class WebserverController(CoreController):
         return base_url.removesuffix("/")
 
     @property
+    def server_name(self) -> str:
+        """Return the friendly name of this server."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return _default_server_name()
+        return str(config.get_value(CONF_SERVER_NAME) or "") or _default_server_name()
+
+    @property
+    def external_url(self) -> str | None:
+        """Return the external URL for the webserver (if configured)."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return None
+        external_url = str(config.get_value(CONF_EXTERNAL_URL) or "")
+        return external_url.removesuffix("/") or None
+
+    @property
     def internal_base_url(self) -> str:
         """Return the URL to reach this webserver's own API from this host."""
         # the advertised address is not necessarily dialable here: a configured base URL
@@ -253,6 +278,17 @@ class WebserverController(CoreController):
                 )
             return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # push fresh server info to connected clients when any advertised field changed
+        if changed_keys & {
+            f"values/{CONF_SERVER_NAME}",
+            f"values/{CONF_BASE_URL}",
+            f"values/{CONF_EXTERNAL_URL}",
+        }:
+            self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -398,6 +434,9 @@ class WebserverController(CoreController):
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
+        # signal fresh server info so a reload (e.g. changed bind/ssl config)
+        # also refreshes the advertised urls and the mdns record
+        self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -595,6 +634,14 @@ class WebserverController(CoreController):
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
+                key=CONF_SERVER_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=_default_server_name(),
+                # not required: clearing the value restores the default name
+                required=False,
+                requires_reload=False,
+            ),
+            ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
@@ -605,6 +652,12 @@ class WebserverController(CoreController):
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
                 default_value=CONF_VALUE_AUTO,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_EXTERNAL_URL,
+                type=ConfigEntryType.STRING,
+                required=False,
                 requires_reload=False,
             ),
             ConfigEntry(

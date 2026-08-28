@@ -156,7 +156,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 self.logger.debug(
                     "Enqueued next track %s on queue %s",
                     next_item.name,
-                    self._queue_data[queue_id].queue.display_name,
+                    queue.display_name,
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"

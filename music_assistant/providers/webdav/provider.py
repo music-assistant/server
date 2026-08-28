@@ -186,12 +186,14 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             metadata_token=webdav_item.etag,
         )
 
-    async def _scandir(self, path: str) -> list[FileSystemItem]:
+    async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """List WebDAV directory contents with caching."""
         cache_key = f"scandir_{path}"
-        # bypass the cache during sync so edits are picked up immediately;
-        # the fresh result is still written back for subsequent browse/exists calls
-        if not self.sync_running:
+        # bypass the cache during sync (edits must be picked up immediately) or when the
+        # caller explicitly asks not to use it (e.g. an on-demand NFO lookup honoring a manual
+        # "Refresh item"); the fresh result is still written back for subsequent browse/exists
+        # calls
+        if use_cache and not self.sync_running:
             if cached := await self.cache.get(
                 key=cache_key,
                 provider=self.instance_id,
