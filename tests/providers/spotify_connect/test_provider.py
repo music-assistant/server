@@ -133,8 +133,15 @@ async def test_daemon_runner_reselects_api_port_when_taken(tmp_path: Path) -> No
 
 def _volume_sync_provider(
     volume_level: int | None,
+    group_volume: int | None = None,
 ) -> tuple[SpotifyConnectProvider, _PlayerDaemon, AsyncMock]:
-    """Build a minimal provider whose linked player reports the given volume."""
+    """
+    Build a minimal provider whose linked player reports the given volume.
+
+    :param volume_level: The player's own volume level, None for a group.
+    :param group_volume: The group volume, defaulting to the player's own level as it
+        does for anything that is not a group.
+    """
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
     provider.mass.players.get_audio_source_session.return_value = MagicMock(
@@ -149,6 +156,7 @@ def _volume_sync_provider(
     provider._daemons = {_PLAYER_ID: daemon}
     player = MagicMock()
     player.state.volume_level = volume_level
+    player.state.group_volume = volume_level if group_volume is None else group_volume
     provider.mass.players.get_player.return_value = player
     return provider, daemon, set_volume
 
@@ -181,6 +189,37 @@ async def test_sync_player_volume_skips_when_volume_unknown() -> None:
 
     set_volume.assert_not_awaited()
     assert daemon.last_volume_sent is None
+
+
+async def test_sync_player_volume_pushes_group_volume_for_a_group() -> None:
+    """A group has no volume of its own, so its group volume is what gets pushed."""
+    provider, daemon, set_volume = _volume_sync_provider(None, group_volume=44)
+
+    await provider._sync_player_volume_to_spotify(daemon, "player1")
+
+    # the backend otherwise keeps its 100% default and the first press blasts the group
+    # (music-assistant/support#6218)
+    set_volume.assert_awaited_once_with(44)
+
+
+async def test_sync_player_volume_prefers_the_players_own_level_over_the_group() -> None:
+    """A sync leader is commanded on its own, so its own level is what the app must show."""
+    provider, daemon, set_volume = _volume_sync_provider(30, group_volume=60)
+
+    await provider._sync_player_volume_to_spotify(daemon, "player1")
+
+    # cmd_volume_set only redirects a PlayerType.GROUP, so a leader is commanded on its
+    # own and pushing its group's 60 would send the first press to ~62
+    set_volume.assert_awaited_once_with(30)
+
+
+async def test_sync_player_volume_skips_a_group_with_no_powered_members() -> None:
+    """group_volume reads powered members only, so it can be unknown before playback."""
+    provider, daemon, set_volume = _volume_sync_provider(None)
+
+    await provider._sync_player_volume_to_spotify(daemon, "player1")
+
+    set_volume.assert_not_awaited()
 
 
 async def test_sync_player_volume_restores_cache_on_failure() -> None:
