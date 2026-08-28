@@ -1187,7 +1187,8 @@ class TracksController(MediaControllerBase[Track]):
         the same domain (e.g. two personal accounts on the same service), but only one
         mapping can be stored per domain. The highest-confidence match is kept; tied
         top-confidence candidates that disagree with each other are reported as
-        ambiguous instead of picked arbitrarily by instance order.
+        ambiguous, and compatible ties are resolved by mapping quality rather than
+        picked arbitrarily by instance order.
         """
         best: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
@@ -1202,7 +1203,7 @@ class TracksController(MediaControllerBase[Track]):
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in top_tier)
                 continue
-            best.append(top_tier[0])
+            best.append(max(top_tier, key=lambda pm: pm[1].mapping.quality))
         return best, ambiguous_providers
 
     def _resolve_confident_matches(

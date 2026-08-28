@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import ContentType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -14,6 +14,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     ItemMapping,
     ProviderMapping,
     SearchResults,
@@ -1157,6 +1158,72 @@ async def test_enrich_provider_mappings_prefers_stronger_match_within_same_domai
     assert result.matches == (exact_match,)
     assert exact_mapping in result.track.provider_mappings
     assert loose_mapping not in result.track.provider_mappings
+
+
+async def test_enrich_provider_mappings_prefers_higher_quality_among_compatible_ties(
+    music: MusicController,
+) -> None:
+    """Compatible top-tier matches on sibling accounts are resolved by mapping quality."""
+    source = create_track("spotify_1", "source")
+    # same ISRC on both, so the two candidates are compatible (same recording), not ambiguous
+    lossy_track = create_track("qobuz_1", "lossy-track")
+    lossy_mapping = next(iter(lossy_track.provider_mappings))
+    lossy_mapping.audio_format = AudioFormat(content_type=ContentType.MP3)
+    lossless_track = create_track("qobuz_2", "lossless-track")
+    lossless_mapping = next(iter(lossless_track.provider_mappings))
+    lossless_mapping.audio_format = AudioFormat(content_type=ContentType.FLAC)
+    first_provider = MagicMock(spec=MusicProvider)
+    first_provider.name = "Qobuz first"
+    first_provider.instance_id = "qobuz_1"
+    first_provider.domain = "qobuz"
+    first_provider.available = True
+    first_provider.is_streaming_provider = True
+    second_provider = MagicMock(spec=MusicProvider)
+    second_provider.name = "Qobuz second"
+    second_provider.instance_id = "qobuz_2"
+    second_provider.domain = "qobuz"
+    second_provider.available = True
+    second_provider.is_streaming_provider = True
+    # qobuz_1 sorts first and would win under a naive "first in iteration order" pick,
+    # even though qobuz_2's mapping is the higher-quality one
+    lossy_match = TrackProviderMatch(
+        track=lossy_track, mapping=lossy_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    lossless_match = TrackProviderMatch(
+        track=lossless_track, mapping=lossless_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(match=lossy_match),
+        "qobuz_2": TrackProviderMatchResult(match=lossless_match),
+    }
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": first_provider,
+                "qobuz_2": second_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "qobuz_2"},
+        )
+
+    assert result.matches == (lossless_match,)
+    assert lossless_mapping in result.track.provider_mappings
+    assert lossy_mapping not in result.track.provider_mappings
 
 
 async def test_enrich_provider_mappings_treats_tied_conflicting_matches_as_ambiguous(
