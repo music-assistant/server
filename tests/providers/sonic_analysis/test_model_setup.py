@@ -21,9 +21,7 @@ from music_assistant.providers.sonic_analysis import (
 
 SETUP_TASK_ID = "sonic_analysis.model_setup.instance-1"
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# --- Helpers ---
 
 
 class _FakeMass:
@@ -48,8 +46,7 @@ class _FakeMass:
             target.close()
             return existing
         task: asyncio.Task[Any] = asyncio.ensure_future(target)
-        # mass.create_task installs a done callback that retrieves the exception; without
-        # an equivalent here a load nobody waits on logs "exception was never retrieved".
+        # Mirrors create_task's done callback, which retrieves the exception.
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
         if task_id:
             self.tracked[task_id] = task
@@ -115,9 +112,7 @@ def _stub_ml_inference_gate() -> Generator[None]:
         yield
 
 
-# ---------------------------------------------------------------------------
-# handle_async_init
-# ---------------------------------------------------------------------------
+# --- handle_async_init ---
 
 
 @pytest.mark.asyncio
@@ -161,8 +156,7 @@ async def test_load_is_offloaded_to_a_thread() -> None:
     ) as to_thread_mock:
         await provider.handle_async_init()
 
-    # Use ``==`` (not ``is``): each attribute access yields a fresh bound-method object,
-    # but bound methods of the same (instance, function) compare equal.
+    # ``==`` not ``is``: each attribute access yields a fresh bound-method object.
     assert to_thread_mock.call_args.args[0] == provider._load_clap
 
 
@@ -241,9 +235,7 @@ async def test_retry_joins_the_running_load_and_gets_its_result() -> None:
     assert second._models_loaded is True
 
 
-# ---------------------------------------------------------------------------
-# _load_clap
-# ---------------------------------------------------------------------------
+# --- _load_clap ---
 
 
 @pytest.mark.parametrize(
@@ -281,9 +273,7 @@ def test_missing_prompt_embeddings_fail_instead_of_downloading_a_text_encoder() 
     clap_cls.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _start_analysis gating
-# ---------------------------------------------------------------------------
+# --- _start_analysis gating ---
 
 
 @pytest.mark.asyncio

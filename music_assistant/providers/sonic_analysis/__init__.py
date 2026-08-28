@@ -86,10 +86,8 @@ RECOMMENDED_CPU_CORES: int = 4
 
 MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
 
-# How long setup waits for the model before handing back to MA. Generous, because
-# adding a provider has no retry behind it — add_provider_config drops the config again
-# when the load raises — but it does not have to cover the whole first-run download: the
-# load outlives the attempt, so the next one joins it rather than starting over.
+# Bounds the wait, not the load: a slower first download keeps running and the
+# next setup attempt joins it rather than starting over.
 MODEL_SETUP_GRACE_SECONDS: int = 200
 
 
@@ -357,18 +355,14 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        # The first load downloads a ~690MB checkpoint, which is what blows the setup
-        # bound. Run it as a tracked task so it outlives an attempt that gives up:
-        # cancelling would not stop it anyway (it sits in a worker thread), and the
-        # task_id makes the next attempt join the same load rather than start a second
-        # download and a second model build alongside it.
+        # The ~690MB first load outlives an attempt that gives up: cancelling would not stop
+        # the worker thread, and the task_id makes the next attempt join this same load.
         task = self.mass.create_task(
             asyncio.to_thread(self._load_clap),
             task_id=f"sonic_analysis.model_setup.{self.instance_id}",
         )
         try:
-            # The result has to come back through the task: MA builds a fresh provider
-            # instance per load attempt, so whoever joins here is not who started it.
+            # The result comes back through the task: a retry is a different instance.
             models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
         except TimeoutError:
             raise SetupFailedError(
@@ -452,8 +446,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :raises SetupFailedError: When the checkpoint could not be downloaded, or the
             prompt embeddings are missing or stale.
         """
-        # Not an HTTP client of ours: httpx comes in with huggingface-hub, which pins it,
-        # and is named here only for the exception types hub re-raises (see below).
+        # httpx arrives with huggingface-hub; named only for the errors it re-raises below.
         import httpx  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
@@ -463,8 +456,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
         cached = self._try_load_cached_prompt_embeddings()
         if cached is None:
-            # Building a text-enabled model here would download the GPT2 text encoder,
-            # putting a second unbounded fetch inside a step that must stay local.
+            # Falling back to a text-enabled model here would download the GPT2 encoder.
             raise SetupFailedError(
                 "The precomputed CLAP prompt embeddings are missing or out of date. "
                 "Re-run scripts/precompute_clap_prompt_embeddings.py to regenerate them.",
@@ -474,11 +466,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         try:
             model = CLAP(version="2023", use_cuda=False, text_enabled=False)
         except (OSError, httpx.HTTPError) as err:
-            # The hub reports most transport, HTTP and disk failures as OSError, but it
-            # streams the checkpoint body through httpx and, once its five resume attempts
-            # are spent, re-raises that transport error verbatim. Only a typed MA error is
-            # retried, so without this a flaky link leaves the provider dead until a
-            # manual reload.
+            # The hub reports most failures as OSError, but re-raises httpx transport errors
+            # verbatim once its resume attempts are spent; only typed errors get retried.
             raise SetupFailedError(
                 f"Failed to download the Sonic Analysis model: {err}",
                 translation_key="model_assets_download_failed",
