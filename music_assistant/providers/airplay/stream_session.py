@@ -777,7 +777,10 @@ class AirPlayStreamSession:
             return False
         reference = self.sync_clients[0]
         reference_stream = reference.stream
-        if reference_stream is None or not reference_stream.running:
+        # A stream that has been sent its audio EOF keeps running while it plays
+        # out, but it is on its way to exiting and can never be fed again, so a
+        # joiner would land in a session that is ending.
+        if reference_stream is None or not reference_stream.accepts_audio:
             return False
         # A parked (standby) session keeps every member's stream running while
         # its timeline is gone - the anchor is stale and nothing is being fed -

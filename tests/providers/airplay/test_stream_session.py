@@ -1406,6 +1406,31 @@ async def test_late_join_unacknowledged_start_stops_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_late_join_refuses_a_session_that_was_sent_its_audio_eof() -> None:
+    """
+    A stream on its way out after an EOF cannot absorb a joiner.
+
+    It keeps reporting itself running for as long as it plays out, so a joiner
+    would otherwise be anchored onto a session that exits moments later, with a
+    stdin of its own that nothing is left to close.
+    """
+    session = _make_session(time.time() - 10, 12.5)
+    reference: Any = session.sync_clients[0]
+    reference.stream.accepts_audio = False
+    player = _make_late_joiner()
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+    ):
+        await session.add_client(player)
+
+    mock_start.assert_not_called()
+    stop_client.assert_not_awaited()
+    assert player not in session.sync_clients
+
+
+@pytest.mark.asyncio
 async def test_late_join_refuses_a_parked_session() -> None:
     """A parked (standby) session has no live timeline, so it cannot absorb a joiner."""
     session = _make_session(time.time() - 10, 12.5)
@@ -1438,8 +1463,7 @@ async def test_late_join_no_running_session() -> None:
     session = _make_session(now - 10, 12.5)
     # Make the leader's stream not running
     leader = session.sync_clients[0]
-    leader.stream = _stream_defaults(MagicMock())
-    leader.stream.running = False
+    leader.stream = _stream_defaults(MagicMock(running=False))
     player = _make_late_joiner()
 
     with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
