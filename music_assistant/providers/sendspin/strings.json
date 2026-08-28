@@ -56,7 +56,7 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "Which pairing code does the device use?",
+      "label": "",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
@@ -131,28 +131,28 @@
       "label": "The management request failed: {0}."
     },
     "static_pin_location_device": {
-      "label": "The pairing code is printed on the device."
+      "label": "Enter the code printed on the device"
     },
     "static_pin_location_leaflet": {
-      "label": "The pairing code is on a leaflet supplied with the device."
+      "label": "Enter the code from the leaflet supplied with the device"
     },
     "static_pin_location_operator": {
-      "label": "The pairing code is a custom one set on the device by its operator."
+      "label": "Enter the code set on the device by its operator"
     },
     "pairing_psk_location_device": {
-      "label": "The pairing token is printed on the device."
+      "label": "Enter the token printed on the device"
     },
     "pairing_psk_location_leaflet": {
-      "label": "The pairing token is on a leaflet supplied with the device."
+      "label": "Enter the token from the leaflet supplied with the device"
     },
     "pairing_psk_location_operator": {
-      "label": "The pairing token is a custom one set on the device by its operator."
+      "label": "Enter the token set on the device by its operator"
     },
     "dynamic_pin_channel_display": {
-      "label": "The device shows the pairing code on its screen."
+      "label": "Enter the code shown on the device's screen"
     },
     "dynamic_pin_channel_speaker": {
-      "label": "The device speaks the pairing code aloud."
+      "label": "Enter the code the device reads out loud"
     },
     "source_autostart_target": {
       "label": "Automatically play line-in on",
@@ -174,7 +174,7 @@
       }
     },
     "connect_method": {
-      "label": "How do you want to connect?",
+      "label": "",
       "options": {
         "unpaired": "Connect unpaired",
         "pair": "Pair device"
@@ -183,6 +183,9 @@
         "unpaired": "No pairing needed. Quick and easy, but less secure.",
         "pair": "Sets up a permanent, secure connection with this device."
       }
+    },
+    "dynamic_pin_channel_display_speaker": {
+      "label": "Enter the code the device shows on screen or reads out loud"
     }
   },
   "setup_flow": {
@@ -190,8 +193,8 @@
       "title": "Pair this device"
     },
     "approve_device": {
-      "title": "Allow this device",
-      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection is still encrypted, but the device is not verified, so any server on your network could reach it."
+      "title": "How do you want to connect?",
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted."
     },
     "source_input": {
       "title": "Audio input available",
@@ -208,8 +211,7 @@
       "progress_text": "Waiting for the pairing gesture on the device..."
     },
     "enter_pin": {
-      "title": "Enter the pairing code",
-      "description": "Enter the device's pairing code to finish pairing."
+      "title": "Enter the pairing code"
     },
     "confirming": {
       "title": "Finishing pairing",
@@ -217,8 +219,7 @@
       "progress_text": "Completing pairing with the device..."
     },
     "enter_token": {
-      "title": "Enter the pairing token",
-      "description": "Paste the device's pairing token to pair it."
+      "title": "Enter the pairing token"
     },
     "verify_pin": {
       "title": "Verify device presence",
@@ -234,8 +235,8 @@
       "timed_out": "The device did not respond in time. Run the setup again to retry."
     },
     "approve_device_source": {
-      "title": "Allow this device",
-      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection is still encrypted, but the device is not verified, so any server on your network could reach it. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
+      "title": "How do you want to connect?",
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
     }
   },
   "manifest": {

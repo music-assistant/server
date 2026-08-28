@@ -780,10 +780,8 @@ async def test_static_pin_form_hints_where_the_pin_lives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # The unknown location is ignored rather than rendered as a missing translation.
-    assert [entry.key for entry in step.entries] == [
-        "static_pin_location_device",
-        CONF_PAIRING_PIN,
-    ]
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_PIN]
+    assert step.entries[0].translation_key == "static_pin_location_device"
     # A static PIN is always exactly 8 digits (enforced by aiosendspin).
     pin_entry = next(entry for entry in step.entries if entry.key == CONF_PAIRING_PIN)
     assert pin_entry.type is ConfigEntryType.PAIRING_CODE
@@ -803,10 +801,23 @@ async def test_dynamic_pin_form_hints_how_the_pin_arrives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # "other" says nothing an operator can act on, so it renders no hint.
-    assert [entry.key for entry in step.entries] == [
-        "dynamic_pin_channel_speaker",
-        CONF_PAIRING_PIN,
-    ]
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_PIN]
+    assert step.entries[0].translation_key == "dynamic_pin_channel_speaker"
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+    await _wait_for(lambda: session.finished)
+    await task
+
+
+async def test_dynamic_pin_form_names_both_channels_when_the_device_offers_both() -> None:
+    """A PIN carried on screen and aloud is labelled with both, since either one works."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN, out_channels=["display", "speaker"])])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    assert step.entries[0].translation_key == "dynamic_pin_channel_display_speaker"
     session.handle_submit({CONF_PAIRING_PIN: "123456"})
     await _wait_for(lambda: session.finished)
     await task
@@ -821,10 +832,8 @@ async def test_token_form_hints_where_the_token_lives() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    assert [entry.key for entry in step.entries] == [
-        "pairing_psk_location_leaflet",
-        CONF_PAIRING_TOKEN,
-    ]
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_TOKEN]
+    assert step.entries[0].translation_key == "pairing_psk_location_leaflet"
     session.handle_submit({CONF_PAIRING_TOKEN: "tok-1"})
     await _wait_for(lambda: session.finished)
     await task

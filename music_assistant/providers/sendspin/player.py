@@ -244,6 +244,10 @@ _SECRET_HINT_LABELS = {
     },
 }
 
+# A device conveying the PIN both ways needs a label naming both, since the operator can use
+# either; every other combination is described well enough by the device's first hint.
+_BOTH_PIN_CHANNELS = "dynamic_pin_channel_display_speaker"
+
 
 def _pin_error_slug(error: Exception | None) -> str:
     """Return the strings.json errors slug for a retryable PIN failure (re-rendered form)."""
@@ -1114,25 +1118,27 @@ class SendspinBasePlayer(Player):
     def _pin_form_entries(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> list[ConfigEntry]:
-        """Return the PIN form fields, hinting how the operator gets the PIN."""
-        entries = self._secret_hint_entries(provider, pin_session.method)
+        """Return the PIN form fields, labelled with how the operator gets the PIN."""
         # only a dynamic PIN carries a negotiated length; a static PIN is always
         # exactly 8 digits (enforced by aiosendspin)
         pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
-        entries.append(
+        return [
             ConfigEntry(
                 key=CONF_PAIRING_PIN,
                 type=ConfigEntryType.PAIRING_CODE,
                 required=True,
                 format=pin_code_format(pin_length),
+                translation_key=self._secret_hint_key(provider, pin_session.method),
             )
-        )
-        return entries
+        ]
 
-    def _secret_hint_entries(
-        self, provider: SendspinProvider, method: PairMethod
-    ) -> list[ConfigEntry]:
-        """Return LABEL entries for the device's hints on obtaining a method's pairing secret."""
+    def _secret_hint_key(self, provider: SendspinProvider, method: PairMethod) -> str | None:
+        """
+        Return the translation slug labelling the field with where the secret comes from.
+
+        None when the device gave no usable hint, which leaves the field on its own
+        generic label.
+        """
         descriptor = pair_method_descriptor(
             effective_pair_methods(
                 self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
@@ -1140,16 +1146,15 @@ class SendspinBasePlayer(Player):
             method,
         )
         if descriptor is None:
-            return []
+            return None
         hints = (
             descriptor.out_channels if method is PairMethod.DYNAMIC_PIN else descriptor.locations
         )
         labels = _SECRET_HINT_LABELS[method]
-        return [
-            ConfigEntry(key=key, type=ConfigEntryType.LABEL)
-            for hint in hints or []
-            if (key := labels.get(hint)) is not None
-        ]
+        known = [hint for hint in hints or [] if hint in labels]
+        if method is PairMethod.DYNAMIC_PIN and set(known) >= {"display", "speaker"}:
+            return _BOTH_PIN_CHANNELS
+        return labels[known[0]] if known else None
 
     async def _run_token_pairing_flow(
         self, session: SetupSession, provider: SendspinProvider
@@ -1159,8 +1164,12 @@ class SendspinBasePlayer(Player):
         while True:
             token_values = await session.form(
                 [
-                    *self._secret_hint_entries(provider, PairMethod.PAIRING_PSK),
-                    ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True),
+                    ConfigEntry(
+                        key=CONF_PAIRING_TOKEN,
+                        type=ConfigEntryType.STRING,
+                        required=True,
+                        translation_key=self._secret_hint_key(provider, PairMethod.PAIRING_PSK),
+                    )
                 ],
                 step_id="enter_token",
                 errors=errors,
