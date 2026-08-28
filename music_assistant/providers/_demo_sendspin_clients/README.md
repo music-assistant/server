@@ -7,7 +7,9 @@ offers, whether it admits unpaired access, how a PIN reaches the operator, and w
 secret is found. A Music Assistant player object carries none of that, so this provider connects
 real `aiosendspin` clients to this server's own Sendspin endpoint, one per scenario.
 
-Only loaded in dev mode, like every other `_`-prefixed provider. The manifest depends on
+Listed under player providers, though the players it produces belong to the Sendspin provider;
+this one only owns the fake clients. Only loaded in dev mode, like every other `_`-prefixed
+provider. The manifest depends on
 `sendspin`, so the devices are started once that provider is up and are torn down with it.
 `aiosendspin` is not declared as a requirement: the builtin, non-disableable Sendspin provider
 already requires it, so it is always installed.

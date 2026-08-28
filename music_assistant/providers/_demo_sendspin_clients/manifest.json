@@ -1,5 +1,5 @@
 {
-  "type": "plugin",
+  "type": "player",
   "domain": "_demo_sendspin_clients",
   "name": "Demo Sendspin Clients",
   "description": "Development-only fake Sendspin clients, one per pairing scenario, so the pairing and approval flows can be exercised without real hardware.",

@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import SENDSPIN_SERVER_PORT, WILDCARD_BIND_IPS
 from music_assistant.helpers.util import format_ip_for_url
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     ACTION_PRESS_BUTTON,
@@ -36,13 +36,14 @@ if TYPE_CHECKING:
     from .scenarios import Scenario
 
 
-class DemoSendspinClientsProvider(PluginProvider):
+class DemoSendspinClientsProvider(PlayerProvider):
     """
     Runs fake Sendspin clients, one per pairing scenario.
 
     Each device connects to this server's own Sendspin endpoint, so the Sendspin provider
     picks it up as an ordinary client and renders the real approval, pairing and device
-    management screens against it.
+    management screens against it. The players themselves belong to the Sendspin provider,
+    so this one registers none of its own.
     """
 
     # the device URLs are built from the streams bind address while loading
