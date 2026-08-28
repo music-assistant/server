@@ -13,7 +13,7 @@ from aiosendspin.client import PairingSupport, SendspinClient
 from aiosendspin.models.core import DeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSourceSupport
-from aiosendspin.models.types import AudioCodec, PlayerCommand, Roles
+from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.keys import Identity, generate_psk, psk_id_for
 from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
@@ -116,7 +116,10 @@ class FakeSendspinDevice:
             player_support=ClientHelloPlayerSupport(
                 supported_formats=SUPPORTED_FORMATS,
                 buffer_capacity=BUFFER_CAPACITY,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
+                # No volume/mute: aiosendspin hands those commands to a callback rather than
+                # applying them, and reporting the result back needs the connection's own
+                # (non-public) state API. Advertising them would leave the control inert.
+                supported_commands=[],
             ),
             source_support=(
                 ClientHelloSourceSupport(features=ClientHelloSourceFeatures(line_sense=True))
@@ -128,6 +131,7 @@ class FakeSendspinDevice:
         self._client.add_disconnect_listener(self._disconnected.set)
         self._client.add_pairing_abort_listener(self._on_pairing_abort)
         self._task = asyncio.create_task(self._connect_loop())
+        self._task.add_done_callback(self._log_task_result)
 
     async def stop(self) -> None:
         """Disconnect the device and stop its reconnect loop."""
@@ -151,7 +155,7 @@ class FakeSendspinDevice:
         self.awaiting_button = False
         self.last_abort = None
         self._disconnected.clear()
-        self._storage_path.unlink(missing_ok=True)
+        await asyncio.to_thread(self._storage_path.unlink, missing_ok=True)
         await self.start()
 
     def _pairing_support(self) -> PairingSupport:
@@ -197,6 +201,13 @@ class FakeSendspinDevice:
         self.dynamic_pin = pin
         if pin is not None:
             LOGGER.info("%s speaks PIN %s (languages: %s)", self.scenario.name, pin, languages)
+
+    def _log_task_result(self, task: asyncio.Task[None]) -> None:
+        """Log a connect loop that ended on an unexpected error rather than a cancellation."""
+        if task.cancelled():
+            return
+        if (err := task.exception()) is not None:
+            LOGGER.error("%s stopped: %s", self.scenario.name, err, exc_info=err)
 
     def _on_pairing_abort(self, reason: PairAbortReason) -> None:
         """Remember why the last pairing attempt was aborted, for the status entry."""

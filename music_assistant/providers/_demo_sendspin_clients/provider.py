@@ -45,6 +45,9 @@ class DemoSendspinClientsProvider(PluginProvider):
     management screens against it.
     """
 
+    # the device URLs are built from the streams bind address while loading
+    reload_on_streams_network_change = True
+
     def __init__(
         self,
         mass: MusicAssistant,
@@ -115,13 +118,14 @@ class DemoSendspinClientsProvider(PluginProvider):
         if provider is None:
             return
         store = provider.server_api.pairing_store
-        try:
-            if await store.record_by_client_id(client_id) is not None:
+        if await store.record_by_client_id(client_id) is not None:
+            try:
                 await provider.unpair_client(client_id)
-            if await store.trusted_unpaired(client_id) is not None:
-                await provider.set_trusted_unpaired(client_id, enabled=False)
-        except Exception as err:
-            self.logger.warning("Could not forget %s on the server: %s", client_id, err)
+            except ValueError:
+                # not connected, so the device cannot be told to forget its own credential
+                await store.remove_record(client_id)
+        if await store.trusted_unpaired(client_id) is not None:
+            await provider.set_trusted_unpaired(client_id, enabled=False)
 
     def _selected_scenarios(self) -> list[Scenario]:
         """Return the scenarios the user picked, in their declared order."""
@@ -159,7 +163,7 @@ class DemoSendspinClientsProvider(PluginProvider):
         ]
         if device is None:
             return entries
-        if scenario.gesture_gated:
+        if scenario.gesture_gated or device.awaiting_button:
             entries.append(
                 ConfigEntry(
                     key=f"{scenario.scenario_id}{ACTION_SEPARATOR}{ACTION_PRESS_BUTTON}",
