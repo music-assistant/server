@@ -343,7 +343,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     async def handle_async_init(self) -> None:
         """
         Async initialization of the provider.
-        
+
         Loads the CLAP model so provider.available only goes True once analysis can run.
 
         :raises SetupFailedError: When the model is not ready within the grace period,
