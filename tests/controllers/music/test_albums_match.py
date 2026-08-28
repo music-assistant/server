@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import (
@@ -35,6 +36,18 @@ THIRD_BARCODE = "093624912514"
 BASE_MAPPING = ProviderMapping(
     item_id="base-prov", provider_domain="tidal", provider_instance="tidal_1"
 )
+# every way a provider may spell out the retail suffix on one and the same album
+RETAIL_SUFFIX_NAMES = [
+    "Stargazing - EP",
+    "Stargazing -EP",
+    "Stargazing (EP)",
+    "Stargazing [EP]",
+    "Stargazing - Single",
+    "Stargazing -Single",
+    "Stargazing (Single)",
+    "Stargazing [Single]",
+    "Stargazing (single)",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +271,25 @@ async def test_clear_no_match_search_result_skips_full_fetch() -> None:
 
     assert matches == []
     harness.get_provider_item.assert_not_awaited()
+
+
+async def test_search_string_combines_artist_and_album_name() -> None:
+    """The provider search is made on the album artist and the album name."""
+    with _harness(search_results=[], provider_items={}) as harness:
+        await harness.match(_library_album())
+
+    harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+
+
+async def test_album_without_artists_searches_on_name_only() -> None:
+    """An album that has no artists is still searchable instead of raising."""
+    base = _library_album()
+    base.artists = UniqueList()
+    with _harness(search_results=[], provider_items={}) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.search.assert_awaited_once_with("( )", "spotify_1")
 
 
 async def test_insufficient_search_result_proceeds_to_one_full_fetch() -> None:
@@ -839,13 +871,15 @@ async def test_insert_match_looks_up_the_retail_suffix_spellings() -> None:
     expected = ["stargazing", "stargazingep", "stargazingsingle"]
     with _insert_harness(candidates=[]) as harness:
         assert await searched_names(harness, "Stargazing") == expected
-        assert await searched_names(harness, "Stargazing - EP") == expected
+        for spelling in RETAIL_SUFFIX_NAMES:
+            assert await searched_names(harness, spelling) == expected, spelling
 
 
+@pytest.mark.parametrize("suffixed_name", RETAIL_SUFFIX_NAMES)
 async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title(
-    mass: MusicAssistant,
+    mass: MusicAssistant, suffixed_name: str
 ) -> None:
-    """An 'X - EP' from one provider joins the existing 'X' row instead of duplicating it."""
+    """A title naming the format joins the existing plain-title row instead of duplicating it."""
     artist = await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
@@ -875,7 +909,7 @@ async def test_insert_match_links_a_spelled_out_retail_suffix_to_the_plain_title
         Album(
             item_id="suffixed",
             provider="apple_music_1",
-            name="Stargazing - EP",
+            name=suffixed_name,
             artists=UniqueList([artist]),
             provider_mappings={
                 ProviderMapping(

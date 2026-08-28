@@ -75,6 +75,8 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
+# Background analysis is deliberately limited to the user's own files: pulling a streaming
+# service's catalogue for audio nobody asked to hear is not something we do. Keep it that way.
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -236,6 +238,8 @@ class AudioAnalysisController:
         # Monotonic time of the last analysis start, and the monitor that unloads idle models.
         self._last_analysis_activity: float = 0.0
         self._idle_unload_task: asyncio.Task[None] | None = None
+        # In-flight provider finalizes: their session is already gone, but the models are not.
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -1335,7 +1339,11 @@ class AudioAnalysisController:
         for provider_id in provider_ids:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                self.mass.create_task(provider.finalize(session_key))
+                # finalize runs the whole-track inference, long after the session was popped
+                # above, so track it: it is what keeps the models in use from here on.
+                task = self.mass.create_task(provider.finalize(session_key))
+                self._finalize_tasks.add(task)
+                task.add_done_callback(self._finalize_tasks.discard)
 
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
@@ -1367,7 +1375,7 @@ class AudioAnalysisController:
         """Unload heavy models once no analysis has run for MODEL_IDLE_UNLOAD_SECONDS."""
         while True:
             await asyncio.sleep(MODEL_IDLE_CHECK_INTERVAL_SECONDS)
-            if self._active_sessions:
+            if self._active_sessions or self._finalize_tasks:
                 # Keep the timer fresh while analysis is running.
                 self._last_analysis_activity = time.monotonic()
                 continue

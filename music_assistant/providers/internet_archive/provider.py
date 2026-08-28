@@ -695,9 +695,9 @@ class InternetArchiveProvider(MusicProvider):
                         "Network error processing album for artist %s: %s", prov_artist_id, err
                     )
                     continue
-                except Exception as err:
+                except Exception:
                     self.logger.exception(
-                        "Unexpected error processing album for artist %s: %s", prov_artist_id, err
+                        "Unexpected error processing album for artist %s", prov_artist_id
                     )
                     continue
             page += 1
@@ -746,9 +746,9 @@ class InternetArchiveProvider(MusicProvider):
                     "Network error processing track for artist %s: %s", prov_artist_id, err
                 )
                 continue
-            except Exception as err:
+            except Exception:
                 self.logger.exception(
-                    "Unexpected error processing track for artist %s: %s", prov_artist_id, err
+                    "Unexpected error processing track for artist %s", prov_artist_id
                 )
                 continue
 

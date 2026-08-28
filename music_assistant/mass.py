@@ -54,6 +54,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.retired_local_audio import (
+    cleanup_retired_local_audio,
+)
 from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
@@ -84,6 +87,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -317,6 +321,11 @@ class MusicAssistant:
         self.webserver.config = webserver_config
         await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
+        # one-off: drop the retired local_audio provider on installs that never played
+        # through it. Needs the databases, so it cannot run with the settings migrations,
+        # and must precede the provider load so its tombstone never flashes a banner.
+        # TODO: remove after 2.11 release
+        await cleanup_retired_local_audio(self)
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
         # load regular providers (skip when in safe mode)
@@ -420,7 +429,11 @@ class MusicAssistant:
             server_version=self.version,
             schema_version=API_SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
+            name=self.webserver.server_name,
             base_url=self.webserver.base_url,
+            internal_url=self.webserver.base_url,
+            external_url=self.webserver.external_url,
+            has_remote_access=self.webserver.remote_access.is_enabled,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
@@ -1042,6 +1055,10 @@ class MusicAssistant:
             # below have await points, so without this a callback that is still in flight
             # could register a player back onto a provider that is already gone
             provider.unloading = True
+            if isinstance(provider, PluginProvider):
+                # a live source cannot outlive the plugin exposing it: the player would go
+                # on naming a source that can no longer be streamed, its queue held inactive
+                await self.players.release_provider_sources(instance_id)
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
             if isinstance(provider, MusicProvider):

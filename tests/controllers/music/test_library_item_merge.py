@@ -532,13 +532,7 @@ async def test_merge_honors_outer_event_suppression(mass: MusicAssistant) -> Non
             await mass.music.genres.merge_library_items(target.item_id, source.item_id)
     finally:
         SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
-    # unrelated background chatter (a debounced TASKS_UPDATED) can land in the same window,
-    # so assert on the media item events this test is actually about
-    assert [
-        call.args[0]
-        for call in signal_event.call_args_list
-        if call.args and str(call.args[0].value).startswith("media_item")
-    ] == []
+    signal_event.assert_not_called()
 
 
 async def test_genre_merge_rejects_different_taxonomies(mass: MusicAssistant) -> None:
@@ -661,6 +655,122 @@ async def test_merge_retry_does_not_double_play_count(mass: MusicAssistant) -> N
     )
     assert merged_row is not None
     assert merged_row["play_count"] == 5
+
+
+async def test_merge_interrupted_after_relation_transfer_leaves_source_reconcilable(
+    mass: MusicAssistant,
+) -> None:
+    """A merge cut short right after the relation transfer keeps the source row repairable."""
+    artist = await _add_artist(mass, "Shared Artist", "target_instance", "shared-artist")
+    album = await _add_album(
+        mass, "Shared Album", "target_instance", "shared-album", artist, "shared-barcode"
+    )
+    target = await _add_track(
+        mass, "Target Track", "target_instance", "target-track", artist, album
+    )
+    source = await _add_track(
+        mass, "Source Track", "source_instance", "source-track", artist, album
+    )
+
+    original = MediaControllerBase._copy_library_item_relations
+
+    async def _fail_after_relation_transfer(
+        self: MediaControllerBase[Track], target_id: int, source_id: int
+    ) -> None:
+        await original(self, target_id, source_id)
+        raise MusicAssistantError("interrupted")
+
+    with (
+        patch.object(
+            MediaControllerBase, "_copy_library_item_relations", _fail_after_relation_transfer
+        ),
+        pytest.raises(MusicAssistantError, match="interrupted"),
+    ):
+        await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    # the source still owns the album and artist relations that identify it, so the
+    # duplicate reconciliation pass can still see the pair and finish the merge later
+    assert await mass.music.database.get_rows(
+        DB_TABLE_ALBUM_TRACKS, {"track_id": int(source.item_id)}
+    )
+    assert await mass.music.database.get_rows(
+        DB_TABLE_TRACK_ARTISTS, {"track_id": int(source.item_id)}
+    )
+    assert await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": MediaType.TRACK.value, "item_id": int(source.item_id)},
+    )
+
+    await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(source.item_id)
+    assert {
+        int(row["album_id"])
+        for row in await mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(target.item_id)}
+        )
+    } == {int(album.item_id)}
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_ALBUM_TRACKS, {"track_id": int(source.item_id)}
+    )
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_TRACK_ARTISTS, {"track_id": int(source.item_id)}
+    )
+    assert {
+        int(row["item_id"])
+        for row in await mass.music.database.get_rows(
+            DB_TABLE_PROVIDER_MAPPINGS, {"media_type": MediaType.TRACK.value}
+        )
+    } == {int(target.item_id)}
+
+
+async def test_merge_interrupted_before_relation_drop_keeps_target_complete(
+    mass: MusicAssistant,
+) -> None:
+    """A merge cut short before the source relations are dropped leaves nothing to lose."""
+    artist = await _add_artist(mass, "Shared Artist", "target_instance", "shared-artist")
+    album = await _add_album(
+        mass, "Shared Album", "target_instance", "shared-album", artist, "shared-barcode"
+    )
+    source_album = await _add_album(
+        mass, "Source Album", "source_instance", "source-album", artist, "source-barcode"
+    )
+    target = await _add_track(
+        mass, "Target Track", "target_instance", "target-track", artist, album
+    )
+    source = await _add_track(
+        mass, "Source Track", "source_instance", "source-track", artist, source_album
+    )
+
+    with (
+        patch.object(
+            MediaControllerBase,
+            "_drop_library_item_relations",
+            AsyncMock(side_effect=MusicAssistantError("interrupted")),
+        ),
+        pytest.raises(MusicAssistantError, match="interrupted"),
+    ):
+        await mass.music.tracks.merge_library_items(target.item_id, source.item_id)
+
+    # the source has already handed over its provider mappings, so the source-less item
+    # cleanup may delete it at any time: the target must hold every relation by now
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": MediaType.TRACK.value, "item_id": int(source.item_id)},
+    )
+    assert {
+        int(row["album_id"])
+        for row in await mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(target.item_id)}
+        )
+    } == {int(album.item_id), int(source_album.item_id)}
+    assert {
+        int(row["artist_id"])
+        for row in await mass.music.database.get_rows(
+            DB_TABLE_TRACK_ARTISTS, {"track_id": int(target.item_id)}
+        )
+    } == {int(artist.item_id)}
 
 
 async def _assert_album_merge_result(

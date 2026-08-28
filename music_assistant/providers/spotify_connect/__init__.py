@@ -1,13 +1,13 @@
 """
 Spotify Connect plugin for Music Assistant.
 
-We tie a single player to a single Spotify Connect daemon.
-The provider has multi instance support, so multiple players can be linked to
-multiple Spotify Connect daemons.
+The provider runs as a single instance that advertises one Spotify Connect
+device (one backend daemon and one AudioSource) per connected Music Assistant
+player.
 
 The MA-facing logic lives in ``provider.py``; everything specific to one
-Spotify Connect implementation (currently go-librespot) lives behind the
-``SpotifyConnectBackend`` contract in ``backends/``.
+Spotify Connect implementation (Spotify Soloist or go-librespot) lives behind the
+``SpotifyConnectBackend`` contract in ``base.py`` (one implementation per subdirectory).
 """
 
 from __future__ import annotations
@@ -15,11 +15,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .provider import (
-    CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
-    DEFAULT_PUBLISH_NAME,
-    PLAYER_ID_AUTO,
+    BACKEND_GO_LIBRESPOT,
+    BACKEND_SOLOIST,
+    CONF_API_KEY,
+    CONF_BACKEND,
+    CONF_SOLOIST_CONSENT,
+    CONF_VOLUME_MODE,
     SUPPORTED_FEATURES,
+    VOLUME_MODE_OPTIONS,
     SpotifyConnectProvider,
 )
 
@@ -31,11 +34,14 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 __all__ = [
-    "CONF_MASS_PLAYER_ID",
-    "CONF_PUBLISH_NAME",
-    "DEFAULT_PUBLISH_NAME",
-    "PLAYER_ID_AUTO",
+    "BACKEND_GO_LIBRESPOT",
+    "BACKEND_SOLOIST",
+    "CONF_API_KEY",
+    "CONF_BACKEND",
+    "CONF_SOLOIST_CONSENT",
+    "CONF_VOLUME_MODE",
     "SUPPORTED_FEATURES",
+    "VOLUME_MODE_OPTIONS",
     "SpotifyConnectProvider",
     "setup",
 ]

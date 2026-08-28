@@ -101,10 +101,8 @@ PA_INVALID_INDEX: Final = 0xFFFFFFFF
 #   60 dB   0.001      ~6.908     -18 dB      consumer headphones / desktop speakers
 #   70 dB   0.000316   ~8.059     -21 dB      high-dynamic-range hi-fi systems
 #
-# Used both for PA hardware volume (PAVolumeController.set_sink_volume, after
-# a cube-root step to counteract PA's own cubic volume curve) and for the
-# software PCM-scaling fallback path in local_audio, so the same slider
-# position sounds the same regardless of which volume-control mode is active.
+# Used for PA hardware volume (PAVolumeController.set_sink_volume), after a
+# cube-root step to counteract PA's own cubic volume curve.
 _TAPER_A: Final = 0.01  # 10**(-40/20) — 40dB range, suits receiver/outdoor setups
 # _TAPER_A: Final = 0.003162  # 10**(-50/20) — 50dB range
 # _TAPER_A: Final = 0.001     # 10**(-60/20) — 60dB range, suits headphones/desktop
@@ -310,6 +308,13 @@ class PulseCaptureServer:
             # private dir must never be accessible to other local users
             self._base_dir.chmod(0o700)
             self._socket_path.unlink(missing_ok=True)
+            # a stale pid file from a hard shutdown makes pulse refuse to start
+            # ("daemon already running") when that pid is reused by any process
+            (self._base_dir / "pid").unlink(missing_ok=True)
+            # a hard shutdown skips sink cleanup; sweep leftover FIFOs from
+            # previous runs (a fresh daemon has no modules yet)
+            for stale_fifo in self._base_dir.glob("*.pcm"):
+                stale_fifo.unlink(missing_ok=True)
             self._config_path.write_text(config_text, encoding="utf-8")
 
         await asyncio.to_thread(_prepare)

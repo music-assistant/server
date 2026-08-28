@@ -12,7 +12,9 @@ import hashlib
 import html
 import inspect
 import os
-import urllib.parse
+import secrets
+import socket
+import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import aclosing
@@ -30,7 +32,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -95,12 +97,21 @@ if TYPE_CHECKING:
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
+CONF_SERVER_NAME = "server_name"
+CONF_EXTERNAL_URL = "external_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
 CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+# A preview URL only has to survive the hop from the API response to the audio element
+# that plays it. It stays usable for the whole window rather than being single-use,
+# because players routinely re-request a media URL they have already opened.
+PREVIEW_TOKEN_TTL = 60
+# Ceiling on live preview tokens. LIBRARY_READ is a guest scope, so minting is reachable by
+# every signed-in client; the cap keeps a chatty or hostile one from growing the store.
+MAX_PREVIEW_TOKENS = 500
 
 
 def _get_publish_addresses(
@@ -138,6 +149,11 @@ def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
         return bind_ip
     # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
     return "::1" if ":" in publish_ip else "127.0.0.1"
+
+
+def _default_server_name() -> str:
+    """Return the default friendly name for this server, derived from the hostname."""
+    return f"Music Assistant ({socket.gethostname().split('.')[0]})"
 
 
 def _locale_from_request(request: web.Request) -> str | None:
@@ -184,6 +200,9 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # Preview tokens keyed on the token in the URL, value is
+        # (provider instance id or domain, item id, monotonic expiry).
+        self._preview_tokens: dict[str, tuple[str, str, float]] = {}
 
     @property
     def base_url(self) -> str:
@@ -195,6 +214,23 @@ class WebserverController(CoreController):
         if base_url == CONF_VALUE_AUTO:
             return self._auto_base_url
         return base_url.removesuffix("/")
+
+    @property
+    def server_name(self) -> str:
+        """Return the friendly name of this server."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return _default_server_name()
+        return str(config.get_value(CONF_SERVER_NAME) or "") or _default_server_name()
+
+    @property
+    def external_url(self) -> str | None:
+        """Return the external URL for the webserver (if configured)."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return None
+        external_url = str(config.get_value(CONF_EXTERNAL_URL) or "")
+        return external_url.removesuffix("/") or None
 
     @property
     def internal_base_url(self) -> str:
@@ -242,6 +278,17 @@ class WebserverController(CoreController):
                 )
             return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # push fresh server info to connected clients when any advertised field changed
+        if changed_keys & {
+            f"values/{CONF_SERVER_NAME}",
+            f"values/{CONF_BASE_URL}",
+            f"values/{CONF_EXTERNAL_URL}",
+        }:
+            self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -387,6 +434,9 @@ class WebserverController(CoreController):
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
+        # signal fresh server info so a reload (e.g. changed bind/ssl config)
+        # also refreshes the advertised urls and the mdns record
+        self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -507,10 +557,41 @@ class WebserverController(CoreController):
                 )
                 return
 
+    def create_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
+        """
+        Return a short-lived path on this server that serves a preview clip of the given item.
+
+        Relative on purpose: a client reaches this server through whatever address its own
+        setup uses - Home Assistant ingress, a reverse proxy, or the remote connection - and
+        the advertised base URL is not necessarily any of them.
+
+        :param provider_instance_id_or_domain: Music provider that holds the item.
+        :param item_id: Id of the item on that provider.
+        """
+        now = time.monotonic()
+        # minting is the only regular traffic on this store, so it is where expired
+        # tokens are swept as well
+        for expired in [key for key, entry in self._preview_tokens.items() if entry[2] <= now]:
+            del self._preview_tokens[expired]
+        if len(self._preview_tokens) >= MAX_PREVIEW_TOKENS:
+            # every token is still within its lifetime, so drop the oldest to make room
+            # rather than letting a caller grow this without bound
+            del self._preview_tokens[
+                min(self._preview_tokens, key=lambda k: self._preview_tokens[k][2])
+            ]
+        token = secrets.token_urlsafe(16)
+        self._preview_tokens[token] = (
+            provider_instance_id_or_domain,
+            item_id,
+            now + PREVIEW_TOKEN_TTL,
+        )
+        return f"/preview?token={token}"
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
-        provider_instance_id_or_domain = request.query["provider"]
-        item_id = urllib.parse.unquote(request.query["item_id"])
+        if not (preview := self._resolve_preview_token(request.query.get("token", ""))):
+            raise web.HTTPNotFound(reason="Unknown or expired preview token")
+        provider_instance_id_or_domain, item_id = preview
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
         preview_stream = self.mass.streams.get_preview_stream(
@@ -553,6 +634,14 @@ class WebserverController(CoreController):
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
+                key=CONF_SERVER_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=_default_server_name(),
+                # not required: clearing the value restores the default name
+                required=False,
+                requires_reload=False,
+            ),
+            ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
@@ -563,6 +652,12 @@ class WebserverController(CoreController):
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
                 default_value=CONF_VALUE_AUTO,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_EXTERNAL_URL,
+                type=ConfigEntryType.STRING,
+                required=False,
                 requires_reload=False,
             ),
             ConfigEntry(
@@ -746,8 +841,8 @@ class WebserverController(CoreController):
             return None
         try:
             user = await get_authenticated_user(request)
-        except Exception as e:
-            self.logger.exception("Authentication error: %s", e)
+        except Exception:
+            self.logger.exception("Authentication error")
             return web.Response(
                 status=401,
                 text="Authentication failed",
@@ -1252,6 +1347,16 @@ class WebserverController(CoreController):
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
+
+    def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
+        """Return the provider and item a preview token grants, or None when it is not valid."""
+        if not token or not (entry := self._preview_tokens.get(token)):
+            return None
+        provider_instance_id_or_domain, item_id, expires = entry
+        if time.monotonic() >= expires:
+            del self._preview_tokens[token]
+            return None
+        return provider_instance_id_or_domain, item_id
 
 
 def _serialize_script_value(value: str) -> str:

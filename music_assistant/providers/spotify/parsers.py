@@ -273,21 +273,10 @@ def parse_podcast_episode(
     episode_obj: dict[str, Any], provider: SpotifyProvider, podcast: Podcast | None = None
 ) -> PodcastEpisode:
     """Parse spotify podcast episode object to generic layout."""
-    # Get or create a basic podcast reference if not provided
+    # The show object embedded in an episode carries the show's description,
+    # artwork and publisher, so parse it in full rather than as a name-only stub.
     if podcast is None and "show" in episode_obj:
-        podcast = Podcast(
-            item_id=episode_obj["show"]["id"],
-            provider=provider.instance_id,
-            name=episode_obj["show"]["name"],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=episode_obj["show"]["id"],
-                    provider_domain=provider.domain,
-                    provider_instance=provider.instance_id,
-                    url=episode_obj["show"]["external_urls"]["spotify"],
-                )
-            },
-        )
+        podcast = parse_podcast(episode_obj["show"], provider)
     elif podcast is None:
         # Create a minimal podcast reference if none available
         podcast = Podcast(

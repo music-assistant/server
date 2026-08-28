@@ -52,6 +52,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.media_items.media_item import MediaCollection
+from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -71,6 +72,7 @@ from music_assistant.controllers.music.constants import (
     CONF_TRACK_RECONCILIATION_RESCAN_DUE,
     DATABASE_CLEANUP_TASK_ID,
     DB_SCHEMA_VERSION,
+    INITIAL_SYNC_DELAY,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
     SEARCH_CACHE_EXPIRATION_COMBINED,
@@ -106,10 +108,20 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_scope,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
-from music_assistant.helpers.compare import compare_strings, compare_track, compare_version
+from music_assistant.helpers.compare import (
+    ALBUM_RETAIL_SUFFIX_KEYS,
+    album_retail_suffix_sql_match,
+    compare_album_name,
+    compare_strings,
+    compare_track,
+    compare_version,
+)
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
     from_utc_timestamp,
@@ -127,7 +139,7 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook
+    from music_assistant_models.media_items import Audiobook, AudioSource
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
@@ -144,15 +156,42 @@ class RecentPlayedTrack(NamedTuple):
     artists: list[ItemMapping]
 
 
+def _album_title_match(base: str, other: str) -> str:
+    """
+    Return a query part relating two album rows that may name the same album.
+
+    :param base: Alias of the album row the match is expressed against.
+    :param other: Alias of the album row related to it.
+    """
+    # a provider that spells out the retail suffix stores the album under the plain name
+    # plus that suffix, so the pair is related from either side. The raw title decides which
+    # side spelled it out, so an ordinary title that merely ends in those letters ("Step") is
+    # left alone. This relates more titles than the album comparison accepts, which is what
+    # confirms the pair afterwards.
+    matches = [f"{other}.search_name = {base}.search_name"]
+    for suffix in ALBUM_RETAIL_SUFFIX_KEYS:
+        matches.append(
+            f"({album_retail_suffix_sql_match(f'{other}.name', suffix)} "
+            f"AND {other}.search_name = {base}.search_name || '{suffix}')"
+        )
+        matches.append(
+            f"({album_retail_suffix_sql_match(f'{base}.name', suffix)} "
+            f"AND {other}.search_name = "
+            f"substr({base}.search_name, 1, length({base}.search_name) - {len(suffix)}))"
+        )
+    return " OR ".join(matches)
+
+
 # Selects pairs of library track rows that are likely the same recording held twice,
 # once per music provider. Both rows must carry the same normalized title, share a track
 # artist and sit within a few seconds of each other. The album term is the decisive one:
-# both rows must appear at the same position on an album with the same normalized title,
-# so the merge always rests on two providers agreeing on where the track belongs rather
-# than on title and duration alone. Titles that normalize to nothing (symbol-only album
-# names) are excluded there, as they would match every other such album. Rows that already
-# share a provider are skipped, as a provider listing the same recording twice is a
-# separate (and far riskier) case.
+# both rows must appear at the same position on an album with the same title, so the merge
+# always rests on two providers agreeing on where the track belongs rather than on title and
+# duration alone. Titles are related loosely enough to see past a spelled-out retail suffix,
+# leaving the identity for the album comparison the pair is then held to. Titles that
+# normalize to nothing (symbol-only album names) are excluded there, as they would match
+# every other such album. Rows that already share a provider are skipped, as a provider
+# listing the same recording twice is a separate (and far riskier) case.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
@@ -172,9 +211,12 @@ WHERE (t1.item_id > :cursor_item_id_1
     JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
     JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = t2.item_id
     JOIN {DB_TABLE_ALBUMS} al2
-      ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
+      ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
     WHERE at1.track_id = t1.item_id
+      -- a title that is nothing but the suffix strips to nothing, which would relate it to
+      -- every symbol-only album, so neither side may normalize away
       AND al1.search_name != ''
+      AND al2.search_name != ''
       -- an unreported position is stored as 0, so two of those agree on nothing;
       -- a missing disc number does read as disc 1, the way compare_track takes it
       -- for local files that carry no disc tag
@@ -190,19 +232,21 @@ WHERE (t1.item_id > :cursor_item_id_1
 ORDER BY t1.item_id, t2.item_id
 """
 
-# Returns the edition of every album appearance that made the two tracks a candidate, so the
-# pair can be held to agreeing on the edition and not just on the album title. The album terms
-# mirror the candidate query exactly: an appearance the pair does not share a position on says
-# nothing about the edition of the one it does.
+# Returns the title and edition of every album appearance that made the two tracks a
+# candidate, so the pair can be held to agreeing on both. The album terms mirror the candidate
+# query exactly: an appearance the pair does not share a position on says nothing about the
+# album of the one it does.
 _SHARED_ALBUM_EDITIONS_QUERY = f"""
-SELECT al1.version AS version_1, al2.version AS version_2
+SELECT al1.name AS name_1, al2.name AS name_2,
+       al1.version AS version_1, al2.version AS version_2
 FROM {DB_TABLE_ALBUM_TRACKS} at1
 JOIN {DB_TABLE_ALBUMS} al1 ON al1.item_id = at1.album_id
 JOIN {DB_TABLE_ALBUM_TRACKS} at2 ON at2.track_id = :item_id_2
 JOIN {DB_TABLE_ALBUMS} al2
-  ON al2.item_id = at2.album_id AND al2.search_name = al1.search_name
+  ON al2.item_id = at2.album_id AND ({_album_title_match("al1", "al2")})
 WHERE at1.track_id = :item_id_1
   AND al1.search_name != ''
+  AND al2.search_name != ''
   AND at1.track_number > 0
   AND coalesce(nullif(at1.disc_number, 0), 1) = coalesce(nullif(at2.disc_number, 0), 1)
   AND at1.track_number = at2.track_number
@@ -644,9 +688,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/browse", required_scope=Scope.LIBRARY_READ)
     async def browse(
-        self, path: str | None = None
+        self, path: str | None = None, *, player_id: str | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Music providers."""
+        """
+        Browse Music providers.
+
+        :param path: The path to browse; None or "root" for the root level.
+        :param player_id: Scope audio-source listings to the sources bound to this
+            player (sources of player-unbound plugins are always included).
+        """
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[MediaItemType | BrowseFolder] = []
@@ -673,7 +723,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if not isinstance(prov, PluginProvider):
                     continue
                 initiable = [
-                    source for source in await prov.get_audio_sources() if source.can_initiate
+                    source
+                    for source in await self._get_plugin_audio_sources(prov, player_id)
+                    if source.can_initiate
                 ]
                 if not initiable:
                     continue
@@ -718,7 +770,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source for source in await browse_prov.get_audio_sources() if source.can_initiate
+                source
+                for source in await self._get_plugin_audio_sources(browse_prov, player_id)
+                if source.can_initiate
             ]
             return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
@@ -1442,7 +1496,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_played(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
         seconds_played: int | None = None,
         is_playing: bool = False,
@@ -1479,10 +1533,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_item.media_type != MediaType.PLAYLIST
         ):
             return
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
+        reference = media_item
+        media_item = await self._resolve_playlog_item(media_item)
 
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
             "name": media_item.name,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
@@ -1526,6 +1583,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 params["userid"] = user_id
                 await self._upsert_playlog(params)
+            self._signal_playlog_updated(
+                reference,
+                fully_played=fully_played,
+                seconds_played=seconds_played or 0,
+                userid=user.user_id if user else None,
+            )
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -1610,7 +1673,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     @api_command("music/mark_unplayed", required_scope=Scope.LIBRARY_WRITE)
     async def mark_item_unplayed(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         userid: str | None = None,
     ) -> None:
         """
@@ -1620,9 +1683,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         """
+        # the playlog is keyed by the identity the caller referenced, not the resolved one
+        reference = media_item
+        media_item = await self._resolve_playlog_item(media_item)
         params = {
-            "item_id": media_item.item_id,
-            "provider": media_item.provider,
+            "item_id": reference.item_id,
+            "provider": reference.provider,
             "media_type": media_item.media_type.value,
         }
         # try to figure out the user that triggered the action
@@ -1642,9 +1708,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        # play_count only ever rose for a completed play, so note whether we remove one
+        counted_play_removed = False
         for user_id in user_ids:
             params["userid"] = user_id
+            if row := await self.database.get_row(DB_TABLE_PLAYLOG, params):
+                counted_play_removed = counted_play_removed or bool(row["fully_played"])
             await self.database.delete(DB_TABLE_PLAYLOG, params)
+        self._signal_playlog_updated(
+            reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
+        )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
@@ -1670,9 +1743,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # also update playcount in library table
         ctrl = self.get_controller(media_item.media_type)
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if db_item:
+        if db_item and counted_play_removed:
             await self.database.execute(
-                f"UPDATE {ctrl.db_table} SET play_count = play_count - 1, "
+                f"UPDATE {ctrl.db_table} SET play_count = MAX(play_count - 1, 0), "
                 f"last_played = 0 WHERE item_id = {db_item.item_id}"
             )
             await self.database.commit()
@@ -2338,6 +2411,39 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         return await self._handle_verify_item_uri(uri)
 
+    async def _get_plugin_audio_sources(
+        self, provider: PluginProvider, player_id: str | None
+    ) -> list[AudioSource]:
+        """
+        Return the AudioSources of a plugin to list, scoped to a player when given.
+
+        Player-bound plugins yield only the sources bound to the given player;
+        without a player scope all their sources bound to a player the calling
+        user may see are yielded. Player-unbound plugins always yield all sources.
+        """
+        # probing with the (possibly empty) scope tells bound and unbound apart:
+        # a player-bound plugin returns a list for any player id, unbound returns None
+        if provider.get_player_audio_sources(player_id or "") is None:
+            return await provider.get_audio_sources()
+        # bound sources honor the calling user's player access filter, so a
+        # restricted user cannot discover sources of players hidden from them
+        current_user = get_current_user()
+        player_filter = (
+            current_user.player_filter
+            if current_user and not has_scope(current_user, Scope.ALL)
+            else None
+        )
+        if player_id is not None:
+            if player_filter and player_id not in player_filter:
+                return []
+            return provider.get_player_audio_sources(player_id) or []
+        if not player_filter:
+            return await provider.get_audio_sources()
+        sources: list[AudioSource] = []
+        for allowed_player_id in player_filter:
+            sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
+        return sources
+
     def _apply_user_provider_filter(
         self,
         providers: Iterable[ProviderInstanceType],
@@ -2834,14 +2940,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param item_id_1: Library ID of the first track.
         :param item_id_2: Library ID of the second track.
         """
-        # the candidate query can only compare album titles, and an edition is held apart
-        # from the title: without this an original and its remaster or deluxe edition look
-        # like the same album whenever neither track carries a version of its own
+        # the query relates titles loosely so a spelled-out retail suffix cannot hide a
+        # shared album, which leaves the identity for the album comparison to confirm. An
+        # edition is held apart from the title: without that an original and its remaster or
+        # deluxe edition look like the same album whenever neither track carries a version
         rows = await self.database.get_rows_from_query(
             _SHARED_ALBUM_EDITIONS_QUERY,
             {"item_id_1": item_id_1, "item_id_2": item_id_2},
         )
-        return any(compare_version(row["version_1"], row["version_2"]) for row in rows)
+        return any(
+            compare_album_name(row["name_1"], row["name_2"])
+            and compare_version(row["version_1"], row["version_2"])
+            for row in rows
+        )
 
     async def _merge_duplicate_track_pair(self, item_id_1: int, item_id_2: int) -> bool:
         """
@@ -2853,9 +2964,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         track_1 = await self.tracks.get_library_item(item_id_1)
         track_2 = await self.tracks.get_library_item(item_id_2)
-        # the candidate query already established that both rows sit at the same position on
-        # an equally titled album, which is the album agreement strict mode looks for, so the
-        # remaining check is run in non-strict mode. Its version check is reinstated here
+        # the checks below establish that both rows sit at the same position on an equally
+        # titled album, which is the album agreement strict mode looks for, so the remaining
+        # check is run in non-strict mode. Its version check is reinstated here
         # explicitly: without it a remaster, remix or radio edit of equal length would be
         # accepted as the original.
         if not compare_version(track_1.version, track_2.version):
@@ -2902,7 +3013,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name=self._get_sync_task_name(provider, media_type),
             handler=self._create_provider_sync_handler(provider, media_type),
             schedule=provider.get_default_library_sync_schedule(media_type),
-            initial_delay=10 if is_initial else None,
+            initial_delay=INITIAL_SYNC_DELAY if is_initial else None,
             translation_key=self._get_sync_task_translation_key(media_type),
             translation_args=[provider.name],
             translation_owner=self.translation_owner,
@@ -2925,6 +3036,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 elif mapping_or_instance_id.provider_instance in user.provider_filter:
                     return user
         return None
+
+    async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
+        """
+        Return the full media item for a (possibly minimized) media item reference.
+
+        :param media_item: The media item to resolve, either full or an ItemMapping.
+        """
+        if not isinstance(media_item, ItemMapping):
+            return media_item
+        resolved = await self.get_item(
+            media_item.media_type,
+            media_item.item_id,
+            media_item.provider,
+            allow_update_metadata=False,
+        )
+        if isinstance(resolved, BrowseFolder):
+            msg = f"{media_item.uri} does not resolve to a media item"
+            raise MediaNotFoundError(msg)
+        return resolved
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
@@ -2956,6 +3086,35 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"VALUES ({', '.join(f':{column}' for column in columns)}) "
             f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
             entry,
+        )
+
+    def _signal_playlog_updated(
+        self,
+        item: MediaItemType | ItemMapping,
+        *,
+        fully_played: bool,
+        seconds_played: int,
+        userid: str | None,
+    ) -> None:
+        """
+        Signal that the playlog entry of the given item changed.
+
+        :param item: The item as it is keyed in the playlog.
+        :param fully_played: The new fully played state of the item.
+        :param seconds_played: The new resume position of the item.
+        :param userid: The user the change applies to, or None for all users.
+        """
+        assert item.uri is not None
+        self.mass.signal_event(
+            EventType.PLAYLOG_UPDATED,
+            object_id=item.uri,
+            data=PlaylogUpdate(
+                uri=item.uri,
+                media_type=item.media_type,
+                fully_played=fully_played,
+                seconds_played=seconds_played,
+                userid=userid,
+            ),
         )
 
     async def _credit_artist_plays(
@@ -2997,6 +3156,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self._upsert_playlog(playlog_entry)
+            self._signal_playlog_updated(
+                db_artist,
+                fully_played=True,
+                seconds_played=0,
+                userid=user_ids[0] if len(user_ids) == 1 else None,
+            )
 
     async def _credit_podcast_play(
         self,
@@ -3031,6 +3196,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for user_id in user_ids:
             playlog_entry["userid"] = user_id
             await self._upsert_playlog(playlog_entry)
+        self._signal_playlog_updated(
+            credited_podcast,
+            fully_played=True,
+            seconds_played=0,
+            userid=user_ids[0] if len(user_ids) == 1 else None,
+        )
 
     async def _get_item_by_name(
         self,

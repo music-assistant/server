@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
@@ -425,6 +426,11 @@ class NugsProvider(MusicProvider):
 
     async def _get_stream_url(self, item_id: str) -> Any:
         subscription_info = await self._get_data("subscription", "")
+        # trial and promo accounts have no regular plan: their plan sits on the promo object
+        plan = subscription_info.get("plan") or (subscription_info.get("promo") or {}).get("plan")
+        if not plan:
+            msg = "No active nugs.net subscription found for this account"
+            raise AudioError(msg)
         dt_start = datetime.strptime(subscription_info["startedAt"], "%m/%d/%Y %H:%M:%S").replace(
             tzinfo=UTC
         )
@@ -441,7 +447,7 @@ class NugsProvider(MusicProvider):
             "orgn": "websdk",
             "method": "subPlayer",
             "trackId": item_id,
-            "subCostplanIDAccessList": subscription_info["plan"]["id"],
+            "subCostplanIDAccessList": plan["id"],
             "startDateStamp": int(dt_start.timestamp()),
             "endDateStamp": int(dt_end.timestamp()),
             "nn_userID": user_info["userId"],
