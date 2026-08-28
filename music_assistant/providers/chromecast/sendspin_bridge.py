@@ -51,7 +51,6 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     BRIDGE_PREFIX,
-    CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_SENDSPIN_STATIC_DELAY,
 )
 from music_assistant.providers.sendspin.helpers import (
@@ -61,6 +60,7 @@ from music_assistant.providers.sendspin.helpers import (
 
 from .constants import (
     CONF_SENDSPIN_OPT_OUT_PENDING,
+    CONF_SENDSPIN_UNSUPPORTED,
     SENDSPIN_CAST_APP_ID,
     SENDSPIN_CAST_BLOCKLIST,
     SENDSPIN_CAST_EXPERIMENTAL_NOTE,
@@ -462,21 +462,20 @@ class SendspinChromecastBridge:
             "Cast device %s does not support AudioContext — audio playback unavailable",
             self.cast_player.display_name,
         )
-        # the key doubles as the translation key of the warning shown on the output, and
-        # replaces the generic "this is experimental" one for good: a device that reported
-        # this keeps saying so, even after the user switches it back on
+        # Recorded on the Cast player, not on the bridge: the re-evaluation below takes
+        # the bridge and its config away for good, so this device is never offered again.
         self.mass.config.set_raw_player_config_value(
-            self._bridge_client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_CAST_AUDIO_UNSUPPORTED
+            self.cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED, True
         )
         # Bubbles up to the frontend toast via play_media / set_members awaiting this
-        # future. Resolved before the config write below, which tears this bridge down.
+        # future. Resolved before the re-evaluation below, which tears this bridge down.
         self._resolve_cast_app_ready(
             PlayerCommandFailed(
                 f"Sendspin isn't supported on {self.cast_player.display_name}. "
                 "Use the standard Cast protocol instead."
             )
         )
-        await self.mass.config.save_player_config(self._bridge_client_id, {CONF_ENABLED: False})
+        await self.provider.bridge_manager.evaluate_bridge(self.cast_player)
 
     def _on_cast_connected(self) -> None:
         """Handle Cast app "connected" status (called from socket thread)."""
@@ -729,6 +728,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             client_id
             and not self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}")
+            and self._should_have_bridge(player)
         ):
             # This device was never offered the bridge, so its output has to end up off.
             # Recorded before the bridge registers and before anything can go wrong with
@@ -832,6 +832,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return False
 
         if not get_bridge_client_id(cast_player):
+            return False
+
+        if self.mass.config.get_raw_player_config_value(
+            cast_player.player_id, CONF_SENDSPIN_UNSUPPORTED
+        ):
+            # the receiver told us it cannot run the Sendspin client, so do not offer it
             return False
 
         manufacturer = cast_player.device_info.manufacturer or ""
@@ -1111,7 +1117,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             await self.mass.config.save_player_config(client_id, {CONF_ENABLED: False})
         # written last: a missing note is what makes the next evaluation retry all of this
         self.mass.config.set_raw_player_config_value(
-            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, self._experimental_note(client_id)
+            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, SENDSPIN_CAST_EXPERIMENTAL_NOTE
         )
         self.mass.config.set_raw_player_config_value(player_id, CONF_SENDSPIN_OPT_OUT_PENDING, None)
 
@@ -1135,14 +1141,3 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             client_id,
         )
         return False
-
-    def _experimental_note(self, client_id: str) -> str:
-        """
-        Return the warning to show on a Cast device's Sendspin output.
-
-        :param client_id: The Sendspin client_id of the bridge.
-        """
-        if self.mass.config.get_raw_player_config_value(client_id, CONF_CAST_AUDIO_UNSUPPORTED):
-            # recorded by an older release, before the note carried the reason itself
-            return CONF_CAST_AUDIO_UNSUPPORTED
-        return SENDSPIN_CAST_EXPERIMENTAL_NOTE

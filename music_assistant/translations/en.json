@@ -2069,7 +2069,6 @@
   "provider.samsung_wam.manifest.description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "provider.sendspin.config_entries.allow_legacy_clients.description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release.",
   "provider.sendspin.config_entries.allow_legacy_clients.label": "Allow legacy clients",
-  "provider.sendspin.config_entries.cast_audio_unsupported.label": "Sendspin isn't supported on this Cast device. Use the standard Cast protocol instead.",
   "provider.sendspin.config_entries.dynamic_pin_channel_display.label": "The device shows the pairing code on its screen.",
   "provider.sendspin.config_entries.dynamic_pin_channel_speaker.label": "The device speaks the pairing code aloud.",
   "provider.sendspin.config_entries.management_dynamic_pin_disable.description": "Stop the device from accepting new pairings using a dynamic pairing code it provides while pairing.",

@@ -39,6 +39,10 @@ MULTICHANNEL_RECHECK_INTERVAL = 600
 # default to disabled, so Sendspin over Cast is opt-in per device.
 SENDSPIN_CAST_EXPERIMENTAL_NOTE = "sendspin_cast_experimental"
 
+# Marker on a Cast player whose receiver reported it cannot run the Sendspin client.
+# Kept on the Cast player rather than on the bridge, which is removed for good once set.
+CONF_SENDSPIN_UNSUPPORTED = "sendspin_unsupported"
+
 # Marker on a Cast player that was never offered the Sendspin bridge before, so its
 # output has to end up switched off. Persisted the moment the device is first bridged,
 # because applying the opt-out needs the protocol link, which may not be in place before

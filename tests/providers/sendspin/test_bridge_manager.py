@@ -13,6 +13,7 @@ from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_OPT_OUT_PENDING,
+    CONF_SENDSPIN_UNSUPPORTED,
     SENDSPIN_CAST_EXPERIMENTAL_NOTE,
 )
 from music_assistant.providers.chromecast.sendspin_bridge import (
@@ -20,7 +21,6 @@ from music_assistant.providers.chromecast.sendspin_bridge import (
 )
 from music_assistant.providers.sendspin import constants as sendspin_constants
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
-from music_assistant.providers.sendspin.constants import CONF_CAST_AUDIO_UNSUPPORTED
 
 
 class FakeBridge:
@@ -214,23 +214,6 @@ class TestBridgeLifecycleReconciliation:
         assert manager.get_bridge("player_1") is not None
 
     @pytest.mark.asyncio
-    async def test_experimental_opt_out_is_never_healed(self) -> None:
-        """Test an opt-out of an experimental output survives losing its parent link."""
-        manager, mass, player, _, player_configs = _make_environment()
-        # a parent that goes away permanently clears the link, which normally reads as
-        # an orphaned cascade-disable - but for an experimental output the disable is
-        # the user declining to opt in
-        player_configs["players/spb_player_1"] = {
-            "enabled": False,
-            "values": {CONF_PROTOCOL_EXPERIMENTAL_NOTE: "sendspin_cast_experimental"},
-        }
-
-        await manager.evaluate_bridge(player)
-
-        mass.config.save_player_config.assert_not_awaited()
-        assert manager.get_bridge("player_1") is None
-
-    @pytest.mark.asyncio
     async def test_stale_disabled_client_without_parent_link_reenabled(self) -> None:
         """Test a disabled client without any parent link is re-enabled."""
         manager, mass, player, _, player_configs = _make_environment()
@@ -290,6 +273,7 @@ class TestCastBridgePolicy:
         mass.subscribe = MagicMock(return_value=MagicMock())
         mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
         mass.create_task = MagicMock()
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
         provider = MagicMock()
         provider.mass = mass
         provider.logger = logging.getLogger("test.cast_bridge_manager")
@@ -343,6 +327,22 @@ class TestCastBridgePolicy:
         mass.players.get_player = MagicMock(return_value=parent)
 
         assert manager._should_have_bridge(cast_player) is True
+
+    def test_denied_after_the_device_reported_it_cannot_run_sendspin(self) -> None:
+        """Test a device that failed once is not offered the bridge again at all."""
+        manager, mass, cast_player = self._make_cast_environment()
+        parent = MagicMock()
+        parent.get_output_protocol_by_domain = MagicMock(return_value=None)
+        mass.players.get_player = MagicMock(return_value=parent)
+        assert manager._should_have_bridge(cast_player) is True
+
+        mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                True if key == CONF_SENDSPIN_UNSUPPORTED else default
+            )
+        )
+
+        assert manager._should_have_bridge(cast_player) is False
 
     def test_blocklist_message_only_repeats_after_policy_change(
         self, caplog: pytest.LogCaptureFixture
@@ -456,6 +456,10 @@ class TestCastBridgeOptIn:
         :return: Tuple of (manager, mass, cast_player, player_configs, scheduled, write_order).
         """
         manager, mass, cast_player = TestCastBridgePolicy._make_cast_environment()
+        # a device with AirPlay is hard-denied by policy, so give it a plain Cast parent
+        parent = MagicMock()
+        parent.get_output_protocol_by_domain = MagicMock(return_value=None)
+        mass.players.get_player = MagicMock(return_value=parent)
         player_configs: dict[str, Any] = {}
         scheduled: list[Any] = []
         # both config writes land in one log, so a test can assert their relative order
@@ -563,17 +567,14 @@ class TestCastBridgeOptIn:
         mass.config.set_raw_player_config_value.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_known_failure_survives_being_switched_back_on(self) -> None:
-        """Test re-enabling a device that cannot run the receiver keeps saying so."""
+    async def test_the_warning_text_is_authored(self) -> None:
+        """Test the note the output renders resolves to a string that exists."""
         manager, _, cast_player, player_configs, _, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         player_configs[f"players/{client_id}"] = {
             "enabled": True,
-            "values": {
-                "protocol_parent_id": "parent_1",
-                CONF_CAST_AUDIO_UNSUPPORTED: True,
-            },
+            "values": {"protocol_parent_id": "parent_1"},
         }
         player_configs["players/parent_1"] = {"enabled": True}
         manager._bridges[cast_player.player_id] = MagicMock()
@@ -581,14 +582,13 @@ class TestCastBridgeOptIn:
         await manager._flag_bridge_experimental(cast_player.player_id, client_id, disable=False)
 
         values = player_configs[f"players/{client_id}"]["values"]
-        assert values[CONF_PROTOCOL_EXPERIMENTAL_NOTE] == CONF_CAST_AUDIO_UNSUPPORTED
-        # both notes are rendered as alerts, so guard the authored strings against drift
+        assert values[CONF_PROTOCOL_EXPERIMENTAL_NOTE] == SENDSPIN_CAST_EXPERIMENTAL_NOTE
+        # the note is rendered as an alert, so guard the authored string against drift
         strings = json.loads(
             (Path(sendspin_constants.__file__).resolve().parent / "strings.json").read_text(
                 encoding="utf-8"
             )
         )
-        assert CONF_CAST_AUDIO_UNSUPPORTED in strings["config_entries"]
         assert SENDSPIN_CAST_EXPERIMENTAL_NOTE in strings["config_entries"]
 
     @pytest.mark.asyncio
@@ -666,17 +666,12 @@ class TestCastFatalAudioError:
     """Tests for a Cast device that reports it cannot run the Sendspin receiver."""
 
     @pytest.mark.asyncio
-    async def test_unsupported_device_switches_its_output_off(self) -> None:
-        """Test the output is turned off and says why, instead of failing again next time."""
+    async def test_unsupported_device_is_not_offered_the_bridge_again(self) -> None:
+        """Test the device is recorded as unsupported and its bridge re-evaluated away."""
         raw_values: dict[tuple[str, str], Any] = {}
-        saved: dict[str, Any] = {}
-        # the resolve and the save share one log: the save tears the bridge down, which
-        # cancels the future the play command waits on, so it has to come second
+        # the resolve and the re-evaluation share one log: the re-evaluation tears the
+        # bridge down, which cancels the future the play command waits on
         order: list[str] = []
-
-        async def save(player_id: str, values: dict[str, Any]) -> None:
-            saved[player_id] = values
-            order.append("save")
 
         mass = MagicMock()
         mass.config.set_raw_player_config_value = MagicMock(
@@ -684,14 +679,19 @@ class TestCastFatalAudioError:
                 (player_id, key), value
             )
         )
-        mass.config.save_player_config = AsyncMock(side_effect=save)
+
+        async def evaluate(_player: Any) -> None:
+            order.append("evaluate")
 
         bridge = MagicMock(spec=bridge_module.SendspinChromecastBridge)
         bridge.mass = mass
         bridge.logger = logging.getLogger("test.cast_bridge")
         bridge._bridge_client_id = "spb_aabbccddeeff"
         bridge.cast_player = MagicMock()
+        bridge.cast_player.player_id = "cc_player"
         bridge.cast_player.display_name = "Cast Speaker"
+        bridge.provider = MagicMock()
+        bridge.provider.bridge_manager.evaluate_bridge = AsyncMock(side_effect=evaluate)
         resolved: list[BaseException | None] = []
 
         def resolve(error: BaseException | None) -> None:
@@ -702,11 +702,7 @@ class TestCastFatalAudioError:
 
         await bridge_module.SendspinChromecastBridge._handle_fatal_audio_error(bridge)
 
-        # the key doubles as the translation key of the warning on the disabled output
-        assert (
-            raw_values[("spb_aabbccddeeff", CONF_PROTOCOL_EXPERIMENTAL_NOTE)]
-            == CONF_CAST_AUDIO_UNSUPPORTED
-        )
-        assert saved == {"spb_aabbccddeeff": {"enabled": False}}
+        # recorded on the Cast player: the bridge config goes away with the bridge
+        assert raw_values[("cc_player", CONF_SENDSPIN_UNSUPPORTED)] is True
         assert isinstance(resolved[0], PlayerCommandFailed)
-        assert order == ["resolve", "save"]
+        assert order == ["resolve", "evaluate"]

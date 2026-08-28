@@ -22,11 +22,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from music_assistant_models.enums import EventType
 
-from music_assistant.constants import (
-    CONF_PLAYERS,
-    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
-    CONF_PROTOCOL_PARENT_ID,
-)
+from music_assistant.constants import CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -297,13 +293,9 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return
         if self.sendspin_server is None or not self._is_player_enabled(player.player_id):
             return
-        values = raw_conf.get("values") or {}
-        if values.get(CONF_PROTOCOL_EXPERIMENTAL_NOTE):
-            # an experimental output is off until the user opts in, so a disable on one
-            # is a deliberate choice rather than the leftover of a vanished parent
-            return
         # MAC-based client ids outlive the UUID-based parent ids they were
         # disabled under; without the parent there is no UI toggle to undo it.
+        values = raw_conf.get("values") or {}
         parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
         if parent_id and self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"):
             # the parent the disable was made under still exists - respect it
