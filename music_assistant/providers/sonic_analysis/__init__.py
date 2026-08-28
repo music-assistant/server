@@ -458,6 +458,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             shipped prompt embeddings are missing or no longer match the prompts they
             were computed from.
         """
+        # Not an HTTP client of ours: httpx comes in with huggingface-hub, which pins it,
+        # and is named here only for the exception types hub re-raises (see below).
         import httpx  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
@@ -479,9 +481,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             model = CLAP(version="2023", use_cuda=False, text_enabled=False)
         except (OSError, httpx.HTTPError) as err:
             # The hub reports most transport, HTTP and disk failures as OSError, but it
-            # streams the body through httpx and re-raises its transport errors verbatim
-            # once its own retries are spent. Only a typed MA error is retried, so
-            # without this a flaky link leaves the provider dead until a manual reload.
+            # streams the checkpoint body through httpx and, once its five resume attempts
+            # are spent, re-raises that transport error verbatim. Only a typed MA error is
+            # retried, so without this a flaky link leaves the provider dead until a
+            # manual reload.
             raise SetupFailedError(
                 f"Failed to download the Sonic Analysis model: {err}",
                 translation_key="model_assets_download_failed",
