@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -892,27 +893,28 @@ class BuiltinProvider(MusicProvider):
         :return: Indices into `pending_substitutions` whose original entry was no longer in
             the playlist (e.g. removed by a concurrent edit) and so were not applied.
         """
+        # index pending replacements by a stable key with per-key queues, so a playlist
+        # with duplicate entries is still matched in original order without a per-item
+        # linear scan of the (potentially large) remaining list
+        pending_by_key: dict[str, deque[tuple[int, PlaylistItem]]] = defaultdict(deque)
+        for index, (original, replacement) in enumerate(pending_substitutions):
+            pending_by_key[repr(original)].append((index, replacement))
+
         async with self._get_playlist_lock(prov_playlist_id):
             current_items = parse_m3u(await self._read_m3u_file(prov_playlist_id))
-            remaining = list(enumerate(pending_substitutions))
             updated_items: list[PlaylistItem] = []
+            applied_indices: set[int] = set()
             changed = False
             for current_item in current_items:
-                match_index = next(
-                    (
-                        i
-                        for i, (_, (original, _)) in enumerate(remaining)
-                        if original == current_item
-                    ),
-                    None,
-                )
-                if match_index is None:
+                queue = pending_by_key.get(repr(current_item))
+                if not queue:
                     updated_items.append(current_item)
                     continue
-                _, (_, replacement) = remaining.pop(match_index)
+                index, replacement = queue.popleft()
                 updated_items.append(replacement)
+                applied_indices.add(index)
                 changed = True
-            not_applied = {original_index for original_index, _ in remaining}
+            not_applied = set(range(len(pending_substitutions))) - applied_indices
             if changed:
                 playlist = await self.get_playlist(prov_playlist_id)
                 await self._write_m3u_file(
@@ -1515,10 +1517,12 @@ class BuiltinProvider(MusicProvider):
     ) -> list[PlaylistPlayableItem]:
         """Get user-created playlist tracks with caching and parallel resolution."""
         playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
-        # use file mtime as cache checksum so edits invalidate the cache
+        # use file mtime as cache checksum so edits invalidate the cache; nanosecond
+        # resolution avoids two writes within the same second (e.g. import immediately
+        # followed by a background match) sharing a checksum and hiding the second write
         try:
             stat = await asyncio.to_thread(os.stat, playlist_file)
-            cache_checksum = str(int(stat.st_mtime))
+            cache_checksum = str(stat.st_mtime_ns)
         except OSError:
             cache_checksum = "0"
 
