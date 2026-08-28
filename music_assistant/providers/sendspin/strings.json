@@ -1,7 +1,7 @@
 {
   "config_entries": {
-    "cast_audio_unsupported": {
-      "label": "Sendspin isn't supported on this Cast device. Use the standard Cast protocol instead."
+    "sendspin_cast_experimental": {
+      "label": "Sendspin on Cast devices is experimental. Playback is rarely in sync out of the box, so you will probably have to set the playback delay for this speaker by hand. Some recent Cast firmwares cannot run Sendspin at all, and there is no way to tell in advance: you only find out the first time you play something."
     },
     "sendspin_static_delay": {
       "label": "Static playback delay (ms)",
