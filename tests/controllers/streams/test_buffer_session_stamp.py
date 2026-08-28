@@ -97,24 +97,25 @@ async def test_the_session_asking_for_a_buffer_claims_it(
     assert queue_item.streamdetails.queue_session_id == "sess-2"
 
 
-async def test_a_stream_request_claims_for_its_own_session(
+async def test_a_superseded_request_cannot_take_a_live_buffer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A caller that names its session claims for that one, not the queue's current one.
+    Audio the playing session is filling stays its own, whoever asks for it next.
 
-    A stream request that arrives late still belongs to the session that issued it, so
-    that session's stop is the one that releases its producer.
+    The single-item stream route serves a request for a session that is no longer the
+    queue's without rejecting it, and reusing a live buffer must not hand that session
+    the power to release it out from under the one still playing.
     """
-    queue_item = _queue_item(stamped_with=None)
-    monkeypatch.setattr(
-        AudioBuffer, "get_buffer", AsyncMock(return_value=MagicMock(spec=AudioBuffer))
-    )
+    queue_item = _queue_item(stamped_with="sess-2")
+    live_buffer = MagicMock(spec=AudioBuffer)
+    queue_item.streamdetails.buffer = live_buffer  # type: ignore[union-attr]
+    monkeypatch.setattr(AudioBuffer, "get_buffer", AsyncMock(return_value=live_buffer))
 
-    await _audio("sess-2").get_audio_buffer(queue_item, reason="streaming", session_id="sess-1")
+    await _audio("sess-2").get_audio_buffer(queue_item, reason="streaming")
 
     assert queue_item.streamdetails is not None
-    assert queue_item.streamdetails.queue_session_id == "sess-1"
+    assert queue_item.streamdetails.queue_session_id == "sess-2"
 
 
 async def test_an_unregistered_queue_claims_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

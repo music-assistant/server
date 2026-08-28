@@ -760,7 +760,6 @@ class StreamsAudio:
         reason: str = "",
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
         allow_provider_match: bool = True,
-        session_id: str | None = None,
     ) -> AudioBuffer:
         """
         Return a ready AudioBuffer for the given queue item.
@@ -774,8 +773,6 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
-        :param session_id: Playback session the audio is for, recorded on the stream details
-            so its own stop releases it. Defaults to the queue's current session.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
@@ -784,12 +781,7 @@ class StreamsAudio:
             self._audio_buffer_locks[lock_key] = buffer_lock
         async with buffer_lock:
             return await self._get_audio_buffer(
-                queue_item,
-                seek_position_ms,
-                reason,
-                capacity_wait_timeout,
-                allow_provider_match,
-                session_id,
+                queue_item, seek_position_ms, reason, capacity_wait_timeout, allow_provider_match
             )
 
     async def get_media_stream(
@@ -1716,10 +1708,7 @@ class StreamsAudio:
                 audio_buffer = prepared_buffer
             else:
                 audio_buffer = await self.get_audio_buffer(
-                    queue_item,
-                    seek_position_ms=seek_position_ms,
-                    reason="streaming",
-                    session_id=session_id,
+                    queue_item, seek_position_ms=seek_position_ms, reason="streaming"
                 )
         except AudioError as err:
             streamdetails.stream_error = True
@@ -3353,7 +3342,6 @@ class StreamsAudio:
         reason: str,
         capacity_wait_timeout: float,
         allow_provider_match: bool,
-        session_id: str | None = None,
     ) -> AudioBuffer:
         """
         Create or reuse a ready AudioBuffer within one queue-item preparation lock.
@@ -3444,8 +3432,10 @@ class StreamsAudio:
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
             # session are reused as they are, so the claim has to be made where the buffer
-            # is attached rather than where the details came from
-            streamdetails.queue_session_id = session_id or (
+            # is attached rather than where the details came from. The queue's own session
+            # is the owner rather than the one a caller asks for: a superseded request that
+            # reuses a live buffer must not take it from the session still playing it
+            streamdetails.queue_session_id = (
                 queue_data.session_id
                 if (queue_data := self.mass.player_queues.queue_data_or_none(queue_item.queue_id))
                 else None
