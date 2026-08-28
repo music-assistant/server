@@ -157,6 +157,13 @@ VOLUME_TARGET_EXPIRY = 2.0
 # before it is considered never started and released.
 AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 
+# How long a player must stay powered off before the queue it was playing is ended.
+# Home Assistant reports an entity that is (briefly) unavailable or unknown as off, so an
+# external power control can report a power off that comes straight back - which must not
+# stop the music. Long enough to sit out a reloading integration or a device missing a
+# poll, short enough that a real power off is not left streaming.
+EXTERNAL_POWER_OFF_STOP_DELAY = 15
+
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
 
@@ -2034,6 +2041,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # that can require an unsync actually changed - this runs on every state tick
         if changed_values.keys() & {ATTR_AVAILABLE, ATTR_ENABLED, ATTR_POWERED}:
             self._handle_membership_cleanup_on_state_change(player, changed_values)
+            self._handle_external_power_off(player, changed_values)
 
         # enforce volume limits when volume changes externally
         if "volume_level" in changed_values:
@@ -2962,6 +2970,60 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and (player.state.synced_to or player.state.active_group or player.state.group_members)
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
+
+    def _handle_external_power_off(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """End the queue of a player whose power was turned off outside of MA."""
+        if (
+            changed_values.get(ATTR_POWERED) != (True, False)
+            or player.state.type not in PLAYBACK_TARGET_TYPES
+        ):
+            return
+        if player.state.synced_to or player.state.active_group or player.state.group_members:
+            # a grouped player is detached from its group instead, which ends the
+            # group's queue through the group's own power off
+            return
+        # a device that powers itself off may report its stop in this very update, so
+        # judge on the playback state as it was before it - which is also the snapshot
+        # an MA power off works from
+        prev_playback_state = (
+            changed_values["playback_state"][0]
+            if "playback_state" in changed_values
+            else player.state.playback_state
+        )
+        if prev_playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return
+        self.mass.call_later(
+            EXTERNAL_POWER_OFF_STOP_DELAY,
+            self._stop_queue_on_external_power_off,
+            player.player_id,
+            task_id=f"external_power_off_stop_{player.player_id}",
+        )
+
+    async def _stop_queue_on_external_power_off(self, player_id: str) -> None:
+        """
+        End the queue of a player that is still powered off.
+
+        :param player_id: The player whose power was turned off outside of MA.
+        """
+        # hold the playback lock across the checks: a power on that overlaps the wait
+        # holds it while it resumes the queue, and reading the power state before that
+        # completes would stop the playback it just started (the lock is re-entrant per
+        # task, so the stop below re-acquiring it is a no-op)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            if not (player := self.get_player(player_id)) or player.state.powered is not False:
+                # the power came back on while we were waiting it out
+                return
+            # only the player's own queue: get_active_queue resolves to another player's
+            # queue as soon as this one is hearing someone else's audio
+            active_queue = self.get_active_queue(player)
+            if active_queue is None or active_queue.queue_id != player_id:
+                return
+            # a player gone unavailable along with its power cannot be told to stop,
+            # but the queue teardown that matters here runs regardless
+            with suppress(PlayerUnavailableError):
+                await self.mass.player_queues._handle_stop(player_id)
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""

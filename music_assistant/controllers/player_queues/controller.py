@@ -1812,20 +1812,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, False)
         queue_data = self._queue_data[queue_id]
         session_id = queue_data.session_id
-        queue_player = self.mass.players.get_player(queue_id, True)
-        if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Use internal handler to avoid circular redirect:
-        # public cmd_stop redirects to queue.stop when a queue is active,
-        # which would loop back here indefinitely.
-        await self.mass.players._handle_cmd_stop(queue_id)
-        if queue_data.session_id == session_id:
-            queue_data.session_id = None
-        self.mass.streams.audio_processing.clear(queue_id, session_id)
-        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        try:
+            # Use internal handler to avoid circular redirect:
+            # public cmd_stop redirects to queue.stop when a queue is active,
+            # which would loop back here indefinitely.
+            await self.mass.players._handle_cmd_stop(queue_id)
+        finally:
+            # a device that could not be reached still gets its session torn down: an
+            # open session keeps the item buffers producing, which holds a provider's
+            # live session open long after the queue was told to stop
+            if queue_data.session_id == session_id:
+                queue_data.session_id = None
+            self.mass.streams.audio_processing.clear(queue_id, session_id)
+            self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
