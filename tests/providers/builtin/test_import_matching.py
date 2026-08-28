@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+import asyncio
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import ImageType, MediaType
@@ -91,6 +92,7 @@ def _make_provider(
     prov.mass = mass
     prov.logger = MagicMock()
     prov._playlist_locks = {}
+    prov._playlist_lock = asyncio.Lock()
     return prov
 
 
@@ -242,6 +244,19 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     assert args[3] == "https://img.example.com/cover.jpg"
 
 
+class _FakeHeadResponse:
+    """Stand-in for an aiohttp HEAD response carrying a fixed status code."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
 async def test_available_original_is_retained_without_search() -> None:
     """An entry whose original provider is still loaded is left untouched."""
     prov = _make_provider(loaded_provider_domains={"builtin"})
@@ -284,6 +299,59 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
     ]
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
+
+
+async def test_transient_stream_failure_retains_original_without_confirmation() -> None:
+    """A network blip during the ffprobe check must not substitute a live stream."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("ffprobe failed")),
+    )
+    item = PlaylistItem(path="https://example.com/stream.mp3", title="Live Stream", length=None)
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    # a 500 response does not prove the stream is gone - ffprobe wraps both a
+    # transient server error and a genuinely dead stream in the same error
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHeadResponse(500))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "builtin", "qobuz--1")
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
+async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
+    """A confirmed terminal HTTP status proves the stream is actually gone."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("ffprobe failed")),
+    )
+    item = PlaylistItem(
+        path="https://example.com/stream.mp3", title="Artist - Live Stream", length=None
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHeadResponse(404))
+    enrichment = TrackProviderEnrichment(
+        track=cast("Any", MagicMock()),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "builtin", "qobuz--1")
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" not in report_markdown
 
 
 async def test_bare_radio_uri_without_extma_is_not_matched_as_track() -> None:
@@ -915,6 +983,33 @@ async def test_delete_playlist_uses_per_playlist_lock() -> None:
         await prov.library_remove("playlist_1", MediaType.PLAYLIST)
 
     assert "playlist_1" in prov_any._playlist_locks
+
+
+async def test_delete_playlist_waits_for_global_file_lock() -> None:
+    """Deleting a playlist file cannot race an in-flight _read_m3u_file/_write_m3u_file call."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+
+    with (
+        patch("music_assistant.providers.builtin.os.path.isfile", return_value=True),
+        patch("music_assistant.providers.builtin.os.remove") as remove_mock,
+    ):
+        # hold the same global file-I/O lock that _read_m3u_file/_write_m3u_file
+        # acquire around their actual file access, as if a read or write were
+        # already in flight
+        await prov_any._playlist_lock.acquire()
+        delete_task = asyncio.ensure_future(prov.library_remove("playlist_1", MediaType.PLAYLIST))
+        try:
+            await asyncio.sleep(0.1)
+            # the removal must not proceed while the global lock is held elsewhere
+            remove_mock.assert_not_called()
+            prov_any._playlist_lock.release()
+            await asyncio.wait_for(delete_task, timeout=2)
+            remove_mock.assert_called_once()
+        finally:
+            if not delete_task.done():
+                delete_task.cancel()
 
 
 async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:

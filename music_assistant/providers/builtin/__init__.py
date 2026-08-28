@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
@@ -68,6 +68,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.playlists import (
     ArtistInfo,
@@ -413,7 +414,10 @@ class BuiltinProvider(MusicProvider):
             # user-created playlist removal - delete the M3U file
             playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
             if await asyncio.to_thread(os.path.isfile, playlist_file):
-                async with self._get_playlist_lock(prov_item_id):
+                # both the per-playlist edit lock and the global file-I/O lock used by
+                # _read_m3u_file/_write_m3u_file must be held, or a concurrent read or
+                # write already in flight on this file could still race the unlink
+                async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
                     await asyncio.to_thread(os.remove, playlist_file)
             return True
         else:
@@ -1188,8 +1192,19 @@ class BuiltinProvider(MusicProvider):
                     allow_fallback=False,
                     strict_provider_instance=True,
                 )
-            except MediaNotFoundError, InvalidDataError:
-                # confirmed unusable, e.g. a deleted catalog id or an unreadable stream
+            except MediaNotFoundError:
+                # a catalog id genuinely no longer exists on the provider
+                continue
+            except InvalidDataError:
+                if provider_item_id.startswith(
+                    BUILTIN_URL_SCHEMES
+                ) and not await self._stream_url_confirmed_gone(provider_item_id):
+                    # ffprobe wraps a transient failure (DNS, timeout, 5xx) in the
+                    # same error as a genuinely dead stream - only a confirmed
+                    # terminal HTTP status proves this one is actually gone
+                    return True, None
+                # confirmed unusable, e.g. an unreadable stream with no way to
+                # verify its status, or one that is verified terminally gone
                 continue
             except (
                 ResourceTemporarilyUnavailable,
@@ -1229,6 +1244,26 @@ class BuiltinProvider(MusicProvider):
                     bit_rate=(audio_format.bit_rate or 0) if audio_format else 0,
                 )
         return False, None
+
+    async def _stream_url_confirmed_gone(self, url: str) -> bool:
+        """
+        Return whether a stream URL is confirmed to no longer exist.
+
+        ffprobe reports a transient failure (a DNS hiccup, a timeout, a 5xx
+        response) with the same error as a genuinely deleted stream, so only a
+        terminal HTTP status confirms deletion. A scheme this cannot check (e.g.
+        ``rtsp://``/``rtmp://``) is never treated as confirmed gone.
+        """
+        if not url.startswith(("http://", "https://")):
+            return False
+        with suppress(ClientError, TimeoutError):
+            async with self.mass.http_session.head(
+                encoded_request_url(url),
+                allow_redirects=True,
+                timeout=ClientTimeout(total=10),
+            ) as resp:
+                return resp.status in (404, 410)
+        return False
 
     def _allowed_instances_for(
         self, provider_instance_or_domain: str, allowed_provider_instances: Mapping[str, str]

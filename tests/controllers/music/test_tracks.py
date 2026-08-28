@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, ExternalID, MediaType, ProviderFeature
@@ -13,6 +13,7 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     AudioFormat,
     ItemMapping,
@@ -408,6 +409,56 @@ async def test_full_track_album_domain_only_tries_every_allowed_instance(
 
     albums_get.assert_awaited_once_with("album", "qobuz_2", allow_update_metadata=False)
     assert result is album
+
+
+async def test_full_track_album_domain_only_falls_back_after_instance_failure(
+    music: MusicController,
+) -> None:
+    """A failing candidate instance does not block a sibling instance from supplying the album."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        item_id="album",
+        provider="qobuz",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    qobuz_1 = MagicMock(spec=MusicProvider)
+    qobuz_1.instance_id = "qobuz_1"
+    qobuz_1.domain = "qobuz"
+    qobuz_2 = MagicMock(spec=MusicProvider)
+    qobuz_2.instance_id = "qobuz_2"
+    qobuz_2.domain = "qobuz"
+    qobuz_3 = MagicMock(spec=MusicProvider)
+    qobuz_3.instance_id = "qobuz_3"
+    qobuz_3.domain = "qobuz"
+    # the bare "qobuz" domain resolves to an instance the user is not allowed to
+    # use, forcing expansion across the allowed instances of that same domain
+    providers = {"qobuz": qobuz_3, "qobuz_1": qobuz_1, "qobuz_2": qobuz_2, "qobuz_3": qobuz_3}
+    album = create_album("qobuz_2", "album", name="Album")
+
+    def get_provider(provider_instance_or_domain: str, **_kwargs: Any) -> MusicProvider | None:
+        return providers.get(provider_instance_or_domain)
+
+    async def albums_get_side_effect(_item_id: str, instance_id: str, **_kwargs: Any) -> Album:
+        if instance_id == "qobuz_1":
+            # this account no longer has the album - a sibling instance must still
+            # be tried instead of falling back to the unhydrated mapping right away
+            raise MediaNotFoundError("gone")
+        return album
+
+    with (
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+        patch.object(music.albums, "get", AsyncMock(side_effect=albums_get_side_effect)) as get_,
+    ):
+        result = await music.tracks._get_full_track_album(
+            track, allowed_provider_instances={"qobuz_1", "qobuz_2"}
+        )
+
+    assert result is album
+    assert get_.await_args_list == [
+        call("album", "qobuz_1", allow_update_metadata=False),
+        call("album", "qobuz_2", allow_update_metadata=False),
+    ]
 
 
 async def test_find_provider_match_classifies_library_mapping_against_source(
