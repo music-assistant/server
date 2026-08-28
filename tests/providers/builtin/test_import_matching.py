@@ -450,6 +450,33 @@ async def test_original_source_outside_allowed_instances_is_not_trusted() -> Non
     assert "| Exact release | 1 |" in report_markdown
 
 
+async def test_original_source_probe_bypasses_cached_provider_details() -> None:
+    """The authoritative liveness probe must not trust a stale cached hit."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(return_value=MagicMock()),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="spotify--1", item_id="abc123"),
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report"):
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1",)
+        )
+
+    # cached (possibly stale) details are never good enough for this check - a
+    # provider hit that only comes from cache would hide a deletion that happened
+    # after the cache entry was written
+    prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
+    assert prov_any.mass.music.tracks.get_provider_item.await_args.kwargs["force_refresh"] is True
+
+
 async def test_domain_only_reference_tries_every_allowed_instance() -> None:
     """A domain-only #EXTPROV entry is probed on every allowed instance of that domain."""
     prov = _make_provider(

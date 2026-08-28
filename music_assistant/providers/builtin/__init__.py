@@ -1080,10 +1080,11 @@ class BuiltinProvider(MusicProvider):
         """
         Check whether an imported entry's original source is still usable.
 
-        Resolves the exact provider instance and item id authoritatively (no stored
-        fallback) instead of trusting the ``available`` flag on a resolved track's
-        provider mappings, which only reflects whether the provider was loaded when
-        the M3U metadata was last written. Candidates are built directly from the
+        Resolves the exact provider instance and item id authoritatively - bypassing
+        cached details and without a stored fallback - instead of trusting the
+        ``available`` flag on a resolved track's provider mappings, which only
+        reflects whether the provider was loaded when the M3U metadata was last
+        written. Candidates are built directly from the
         entry's own ``#EXTPROV`` references (falling back to parsing the raw path for
         a plain M3U entry that carries a bare Music Assistant URI without one) instead
         of through the shared library's mapping resolution, which silently substitutes
@@ -1120,6 +1121,7 @@ class BuiltinProvider(MusicProvider):
                 await self.mass.music.tracks.get_provider_item(
                     provider_item_id,
                     provider.instance_id,
+                    force_refresh=True,
                     allow_fallback=False,
                     strict_provider_instance=True,
                 )
