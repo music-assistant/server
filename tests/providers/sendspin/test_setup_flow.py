@@ -28,7 +28,6 @@ from music_assistant.providers.sendspin.constants import (
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
-    CONF_PAIRING_TOKEN,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
     CONNECT_METHOD_PAIR,
@@ -36,7 +35,6 @@ from music_assistant.providers.sendspin.constants import (
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
-    PAIR_METHOD_TOKEN,
     SOURCE_INPUT_DISMISS,
     SOURCE_INPUT_PAIR,
 )
@@ -823,22 +821,6 @@ async def test_dynamic_pin_form_names_both_channels_when_the_device_offers_both(
     await task
 
 
-async def test_token_form_hints_where_the_token_lives() -> None:
-    """A token form surfaces the device's own hint about where its pairing secret is printed."""
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK, locations=["leaflet"])])
-    provider = _FakeProvider(api)
-    session, _mass = _make_session(_ok_finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    assert [entry.key for entry in step.entries] == [CONF_PAIRING_TOKEN]
-    assert step.entries[0].translation_key == "pairing_psk_location_leaflet"
-    session.handle_submit({CONF_PAIRING_TOKEN: "tok-1"})
-    await _wait_for(lambda: session.finished)
-    await task
-
-
 async def test_abort_mid_pairing_runs_cleanup() -> None:
     """Cancelling the flow while a PIN session is in flight tears it down in the finally."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN)])
@@ -858,6 +840,19 @@ async def test_abort_mid_pairing_runs_cleanup() -> None:
     assert not session.finished
 
 
+async def test_token_only_device_aborts_as_unpairable() -> None:
+    """Token pairing is how a server enrols itself, so a token-only device cannot be paired."""
+    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    with pytest.raises(AbortFlow) as excinfo:
+        await player.run_setup_flow(session)
+    assert excinfo.value.reason == "token_pairing_only"
+    assert provider.tokens == []
+
+
 async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
     """A device offering both goes straight to its PIN, never showing the token as a choice."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.PAIRING_PSK)])
@@ -873,52 +868,6 @@ async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.tokens == []
-
-
-async def test_token_pairing_success() -> None:
-    """A token-only device drives the token form and pairs on submit."""
-    collected: dict[str, Any] = {}
-
-    async def finish(_s: SetupSession, values: dict[str, Any]) -> dict[str, str]:
-        collected["values"] = values
-        return {"player_id": "client-1"}
-
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api)
-    session, mass = _make_session(finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
-    session.handle_submit({CONF_PAIRING_TOKEN: "tok-123"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.tokens == ["tok-123"]
-    assert collected["values"] == {}
-
-
-async def test_token_invalid_re_renders_then_succeeds() -> None:
-    """An invalid token re-renders the token form with a base error, then pairs on retry."""
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api, token_errors=[SecurityActionError("pairing_error_token_invalid")])
-    session, _mass = _make_session(_ok_finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    session.handle_submit({CONF_PAIRING_TOKEN: "bad"})
-
-    error_step = await _wait_step(
-        session, step_type=FlowStepType.FORM, step_id="enter_token", with_errors=True
-    )
-    assert error_step.errors == {"base": "pairing_error_token_invalid"}
-    session.handle_submit({CONF_PAIRING_TOKEN: "good"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.tokens == ["bad", "good"]
 
 
 async def test_no_pair_methods_aborts() -> None:
@@ -948,7 +897,7 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Static PIN needs both PIN methods usable; the token yields to any usable PIN."""
+    """Static PIN needs both PIN methods usable; the token is never offered at all."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
     provider = _FakeProvider(api)
     player = _make_player(api, provider)
@@ -968,10 +917,8 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_PIN
     ]
 
-    # Without a PIN to fall back on the token is the only way in, so it returns to the list.
+    # The token is never an operator-facing option, so a token-only device offers nothing.
     api_token = _FakeApi([_desc(PairMethod.PAIRING_PSK)], unpaired_access=True)
     provider_token = _FakeProvider(api_token)
     player_token = _make_player(api_token, provider_token)
-    assert player_token._pairing_method_options(cast("SendspinProvider", provider_token)) == [
-        PAIR_METHOD_TOKEN
-    ]
+    assert player_token._pairing_method_options(cast("SendspinProvider", provider_token)) == []

@@ -60,21 +60,16 @@
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
-        "static_pin": "Static pairing code",
-        "token": "Pairing token"
+        "static_pin": "Static pairing code"
       },
       "option_descriptions": {
         "pin": "Enter the device's pairing code.",
         "dynamic_pin": "Enter the device's dynamically generated pairing code.",
-        "static_pin": "Enter the device's fixed pairing code.",
-        "token": "Enter the device's pairing token."
+        "static_pin": "Enter the device's fixed pairing code."
       }
     },
     "pairing_pin": {
       "label": "Pairing code"
-    },
-    "pairing_token": {
-      "label": "Pairing token"
     },
     "unpair": {
       "label": "Unpair",
@@ -138,15 +133,6 @@
     },
     "static_pin_location_operator": {
       "label": "Enter the code set on the device by its operator"
-    },
-    "pairing_psk_location_device": {
-      "label": "Enter the token printed on the device"
-    },
-    "pairing_psk_location_leaflet": {
-      "label": "Enter the token from the leaflet supplied with the device"
-    },
-    "pairing_psk_location_operator": {
-      "label": "Enter the token set on the device by its operator"
     },
     "dynamic_pin_channel_display": {
       "label": "Enter the code shown on the device's screen"
@@ -218,9 +204,6 @@
       "description": "Completing the secure pairing with the device.",
       "progress_text": "Completing pairing with the device..."
     },
-    "enter_token": {
-      "title": "Enter the pairing token"
-    },
     "verify_pin": {
       "title": "Verify device presence",
       "description": "Enter the device's pairing code to confirm it is the physical device in front of you."
@@ -232,7 +215,8 @@
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
-      "timed_out": "The device did not respond in time. Run the setup again to retry."
+      "timed_out": "The device did not respond in time. Run the setup again to retry.",
+      "token_pairing_only": "This device cannot be paired from here. It only offers the pairing method servers use to enrol themselves, which has no code for you to enter."
     },
     "approve_device_source": {
       "title": "How do you want to connect?",

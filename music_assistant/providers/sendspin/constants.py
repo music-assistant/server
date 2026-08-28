@@ -18,7 +18,6 @@ CONF_PAIRING_METHOD = "pairing_method"
 PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
-PAIR_METHOD_TOKEN = "token"
 # The consent step's choice between connecting straight away and pairing first.
 CONF_CONNECT_METHOD = "connect_method"
 CONNECT_METHOD_UNPAIRED = "unpaired"
@@ -31,7 +30,6 @@ SOURCE_INPUT_DISMISS = "dismiss"
 # Persisted (raw player config) marker that the user declined the audio input.
 CONF_SOURCE_APPROVAL_DISMISSED = "source_approval_dismissed"
 
-CONF_PAIRING_TOKEN = "pairing_token"
 CONF_PAIRING_PIN = "pairing_pin"
 
 CONF_ACTION_UNPAIR = "unpair"

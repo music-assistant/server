@@ -92,7 +92,6 @@ from .constants import (
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
-    CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -103,7 +102,6 @@ from .constants import (
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
-    PAIR_METHOD_TOKEN,
     SOURCE_AUTOSTART_OFF,
     SOURCE_INPUT_DISMISS,
     SOURCE_INPUT_PAIR,
@@ -232,11 +230,6 @@ _SECRET_HINT_LABELS = {
         "device": "static_pin_location_device",
         "leaflet": "static_pin_location_leaflet",
         "operator": "static_pin_location_operator",
-    },
-    PairMethod.PAIRING_PSK: {
-        "device": "pairing_psk_location_device",
-        "leaflet": "pairing_psk_location_leaflet",
-        "operator": "pairing_psk_location_operator",
     },
     PairMethod.DYNAMIC_PIN: {
         "display": "dynamic_pin_channel_display",
@@ -481,7 +474,7 @@ class SendspinBasePlayer(Player):
             await session.finish({})
             return
         if not options:
-            raise AbortFlow("no_pair_methods")
+            raise AbortFlow(self._no_options_abort_reason(provider))
         if len(options) == 1:
             method = options[0]
         else:
@@ -498,12 +491,7 @@ class SendspinBasePlayer(Player):
                 step_id="select_method",
             )
             method = str(values[CONF_PAIRING_METHOD])
-        if method == PAIR_METHOD_TOKEN:
-            await self._run_token_pairing_flow(session, provider)
-        else:
-            await self._run_pin_pairing_flow(
-                session, provider, static=method == PAIR_METHOD_STATIC_PIN
-            )
+        await self._run_pin_pairing_flow(session, provider, static=method == PAIR_METHOD_STATIC_PIN)
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
@@ -979,11 +967,18 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        elif any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
-            # Only show the token pairing method in case the client doesn't implement any other one.
-            # token pairing should only be used as a last resort due to the worse UX.
-            options.append(PAIR_METHOD_TOKEN)
+        # Token pairing is deliberately absent: it is how a server enrols itself (the web
+        # player does exactly that), not something an operator can carry out by hand.
         return options
+
+    def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
+        """Say whether the device offers nothing at all, or only the server-side method."""
+        pair_methods = effective_pair_methods(
+            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
+        )
+        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            return "token_pairing_only"
+        return "no_pair_methods"
 
     async def _pairing_succeeded(
         self, provider: SendspinProvider, pin_session: PinPairingSession
@@ -1155,39 +1150,6 @@ class SendspinBasePlayer(Player):
         if method is PairMethod.DYNAMIC_PIN and set(known) >= {"display", "speaker"}:
             return _BOTH_PIN_CHANNELS
         return labels[known[0]] if known else None
-
-    async def _run_token_pairing_flow(
-        self, session: SetupSession, provider: SendspinProvider
-    ) -> None:
-        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
-        errors: dict[str, str] | None = None
-        while True:
-            token_values = await session.form(
-                [
-                    ConfigEntry(
-                        key=CONF_PAIRING_TOKEN,
-                        type=ConfigEntryType.STRING,
-                        required=True,
-                        translation_key=self._secret_hint_key(provider, PairMethod.PAIRING_PSK),
-                    )
-                ],
-                step_id="enter_token",
-                errors=errors,
-            )
-            try:
-                await provider.pair_with_token(
-                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
-                )
-            except (
-                SecurityActionError,
-                PairingError,
-                HandshakeAbortedError,
-                TimeoutError,
-                OSError,
-            ) as err:
-                errors = {"base": error_alert(err).key}
-                continue
-            return
 
 
 class SendspinPlayer(SendspinBasePlayer):
