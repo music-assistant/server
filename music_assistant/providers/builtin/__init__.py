@@ -69,7 +69,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.aiohttp_client import encoded_request_url
-from music_assistant.helpers.compare import TrackMatchConfidence
+from music_assistant.helpers.compare import TrackMatchConfidence, compare_track_evidence
 from music_assistant.helpers.playlists import (
     ArtistInfo,
     ImageInfo,
@@ -1123,22 +1123,38 @@ class BuiltinProvider(MusicProvider):
                 failed_providers=enrichment.failed_providers,
             )
         best_confidence = max(match.confidence for match in enrichment.matches)
-        # enrichment.matches is ordered strongest-tier-first (see
-        # _resolve_confident_matches), so the first entry carries the strongest
-        # accepted candidate's own metadata - using it (rather than the dead
-        # source's copy) keeps release evidence such as MB_TRACK attributable to
-        # the actual matched release, so a later export/re-import can't
-        # mistake a same-recording/best-effort substitution for an exact one.
-        # A weaker, merely-compatible tier may still be present in the full match
-        # set, but media_item_to_playlist_item picks its primary playback URI by
-        # audio quality alone - mixing tiers into the persisted mappings could let
-        # a looser-tier provider become the actual substitute while the entry still
-        # carries the strongest tier's release evidence, so only the strongest
-        # tier's own mappings are kept.
+        tier_matches = [
+            match for match in enrichment.matches if match.confidence == best_confidence
+        ]
+        # media_item_to_playlist_item picks its primary playback URI by the same
+        # availability/quality/identity ordering used here, so the primary match must
+        # be selected the same way - otherwise the entry's release evidence (from
+        # whichever match's track happened to be first) could describe a different
+        # release than the mapping the serializer actually ends up exporting as the
+        # playable URI.
+        primary_match = min(
+            tier_matches,
+            key=lambda match: (
+                not match.mapping.available,
+                -match.mapping.quality,
+                match.mapping.provider_domain,
+                match.mapping.provider_instance,
+                match.mapping.item_id,
+            ),
+        )
+        # a same-tier sibling from another provider is only safe to keep alongside
+        # the primary match's own release evidence (e.g. MB_TRACK) when it is
+        # confirmed to be that exact same release - a merely LIKELY-compatible
+        # sibling may share the recording but not the release, and combining its
+        # mapping under the primary's metadata would misattribute it as exact
         matched_track = replace(
-            enrichment.matches[0].track,
+            primary_match.track,
             provider_mappings={
-                match.mapping for match in enrichment.matches if match.confidence == best_confidence
+                match.mapping
+                for match in tier_matches
+                if match is primary_match
+                or compare_track_evidence(primary_match.track, match.track)
+                == TrackMatchConfidence.EXACT
             },
         )
         return _ImportTrackMatchResult(

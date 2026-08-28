@@ -983,12 +983,6 @@ class TracksController(MediaControllerBase[Track]):
                 seen_candidates.add(candidate_key)
                 if not compare_track_title(base_track.name, search_result.name):
                     continue
-                if not compare_artists(
-                    base_track.artists,
-                    search_result.artists,
-                    any_match=True,
-                ):
-                    continue
                 try:
                     candidate = await self.get_provider_item(
                         search_result.item_id,

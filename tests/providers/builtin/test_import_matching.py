@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.enums import ExternalID, ImageType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
+    AudioFormat,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -684,6 +685,100 @@ async def test_persisted_mappings_exclude_weaker_compatible_tier() -> None:
     ]
     report_markdown = set_report.call_args.args[0]
     assert "| Exact release | 1 |" in report_markdown
+
+
+async def test_same_tier_mappings_only_combine_with_the_primary_release() -> None:
+    """Two same-tier matches for different releases don't get merged as one exact release."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    # a low-quality mapping that happens to be first in the (unordered) matches tuple
+    low_quality_mapping = ProviderMapping(
+        item_id="low456",
+        provider_domain="tidal",
+        provider_instance="tidal--1",
+        audio_format=AudioFormat(sample_rate=44100, bit_depth=16),
+    )
+    low_quality_track = _make_track(
+        "Song", artists=["Artist"], provider_mappings={low_quality_mapping}
+    )
+    # distinct provider identity from the other candidate track, so the two aren't
+    # trivially recognised as the same item by shared-identity comparison
+    low_quality_track.item_id = "low456"
+    low_quality_track.provider = "tidal--1"
+    low_quality_track.external_ids = {(ExternalID.MB_TRACK, "low-quality-release-mbid")}
+    # a higher-quality mapping for a genuinely different release, at the same
+    # (merely recording-level compatible) LIKELY confidence tier
+    high_quality_mapping = ProviderMapping(
+        item_id="high789",
+        provider_domain="qobuz",
+        provider_instance="qobuz--1",
+        audio_format=AudioFormat(sample_rate=192000, bit_depth=24),
+    )
+    high_quality_track = _make_track(
+        "Song", artists=["Artist"], provider_mappings={high_quality_mapping}
+    )
+    high_quality_track.item_id = "high789"
+    high_quality_track.provider = "qobuz--1"
+    high_quality_track.external_ids = {(ExternalID.MB_TRACK, "high-quality-release-mbid")}
+    enrichment = TrackProviderEnrichment(
+        track=low_quality_track,
+        matches=(
+            TrackProviderMatch(
+                track=low_quality_track,
+                mapping=low_quality_mapping,
+                confidence=TrackMatchConfidence.LIKELY,
+            ),
+            TrackProviderMatch(
+                track=high_quality_track,
+                mapping=high_quality_mapping,
+                confidence=TrackMatchConfidence.LIKELY,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "spotify--1", "qobuz--1", "tidal--1"),
+        )
+
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    # media_item_to_playlist_item picks its primary playback URI by mapping quality,
+    # so the higher-quality qobuz mapping is what will actually be exported - the
+    # entry's release evidence must describe that same release, not the low-quality
+    # tidal candidate's unrelated one, and the tidal mapping must not be kept either
+    assert written_items[0].providers == [
+        ProviderMappingInfo(
+            domain="qobuz",
+            item_id="high789",
+            instance_id="qobuz--1",
+            content_type="?",
+            sample_rate=192000,
+            bit_depth=24,
+        )
+    ]
+    assert written_items[0].metadata is not None
+    assert written_items[0].metadata.get("mb_track") == "high-quality-release-mbid"
+    report_markdown = set_report.call_args.args[0]
+    assert "| Same recording | 1 |" in report_markdown
 
 
 async def test_dead_url_is_matched_instead_of_retained() -> None:

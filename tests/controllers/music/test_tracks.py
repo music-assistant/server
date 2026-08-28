@@ -1021,6 +1021,76 @@ async def test_find_provider_match_skips_invalid_data_search_candidate(
     assert result.match.track.item_id == good_candidate.item_id
 
 
+async def test_search_result_with_asymmetric_composite_credit_is_hydrated(
+    music: MusicController,
+) -> None:
+    """A search result whose artist credit is split differently is not pre-filtered out."""
+    base = create_track("spotify_1", "base")
+    # the base track carries one composite artist entry, as a third-party M3U would
+    base.artists = UniqueList(
+        [
+            Artist(
+                item_id="composite-artist",
+                provider="spotify_1",
+                name="Artist A, Artist B",
+                provider_mappings=set(),
+            )
+        ]
+    )
+    # the provider represents the same credit as two separate artists - a plain
+    # artist-list comparison never pairwise-matches this against the composite entry
+    search_result = create_track("qobuz_1", "candidate")
+    search_result.artists = UniqueList(
+        [
+            Artist(
+                item_id="artist-a", provider="qobuz_1", name="Artist A", provider_mappings=set()
+            ),
+            Artist(
+                item_id="artist-b", provider="qobuz_1", name="Artist B", provider_mappings=set()
+            ),
+        ]
+    )
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    get_provider_item = AsyncMock(return_value=search_result)
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[search_result])),
+        ),
+        patch.object(music.tracks, "get_provider_item", get_provider_item),
+        patch.object(
+            music.tracks,
+            "_get_match_confidence",
+            AsyncMock(
+                side_effect=lambda _base, _candidate, base_album, **_kw: (
+                    TrackMatchConfidence.EXACT,
+                    base_album,
+                )
+            ),
+        ),
+    ):
+        candidates = await music.tracks._search_provider_track_matches(
+            base,
+            provider,
+            TrackMatchConfidence.LOOSE,
+            None,
+            None,
+            True,
+            None,
+        )
+
+    # the candidate must reach hydration (and the full evidence comparator) instead
+    # of being discarded by a plain artist-list pre-filter
+    get_provider_item.assert_awaited_once()
+    assert {match.track.item_id for _, match in candidates} == {"candidate"}
+
+
 async def test_find_provider_match_falls_through_search_after_invalid_mapped_candidate(
     music: MusicController,
 ) -> None:
