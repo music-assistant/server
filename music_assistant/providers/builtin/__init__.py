@@ -1036,6 +1036,11 @@ class BuiltinProvider(MusicProvider):
                 # so a provider mapping it already carries is not treated as authoritative
                 trust_track_mappings=False,
                 failed_provider_instances=failed_provider_instances,
+                # release-evidence hydration (e.g. the source's own album) must reach the
+                # user's full allowed snapshot, not just the narrowed search targets, or a
+                # match_providers filter would starve EXACT matching of evidence that is
+                # still on one of the user's own, merely un-searched, accounts
+                evidence_provider_instances=set(allowed_provider_instances),
             )
         except (
             ResourceTemporarilyUnavailable,

@@ -987,6 +987,71 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
     find_provider_match.assert_not_awaited()
 
 
+async def test_enrich_provider_mappings_hydrates_evidence_from_wider_allowed_scope(
+    music: MusicController,
+) -> None:
+    """Narrowing the search targets must not also narrow album-evidence hydration."""
+    source = create_track("spotify_1", "source")
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    get_full_track_album = AsyncMock(return_value=None)
+    find_provider_match = AsyncMock(return_value=TrackProviderMatchResult())
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", get_full_track_album),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=qobuz_provider),
+    ):
+        await music.tracks.enrich_provider_mappings(
+            source,
+            # the search is narrowed to qobuz only, but the source's own album may still
+            # live on spotify, which remains part of the caller's wider allowed snapshot
+            provider_instance_ids={"qobuz_1"},
+            evidence_provider_instances={"qobuz_1", "spotify_1"},
+        )
+
+    get_full_track_album.assert_awaited_once_with(
+        source, allowed_provider_instances={"qobuz_1", "spotify_1"}
+    )
+    assert find_provider_match.call_args.kwargs["allowed_provider_instances"] == {
+        "qobuz_1",
+        "spotify_1",
+    }
+
+
+async def test_enrich_provider_mappings_defaults_evidence_scope_to_search_scope(
+    music: MusicController,
+) -> None:
+    """Without an explicit evidence scope, hydration still respects the search scope."""
+    source = create_track("spotify_1", "source")
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    get_full_track_album = AsyncMock(return_value=None)
+    find_provider_match = AsyncMock(return_value=TrackProviderMatchResult())
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", get_full_track_album),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=qobuz_provider),
+    ):
+        await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+        )
+
+    get_full_track_album.assert_awaited_once_with(source, allowed_provider_instances={"qobuz_1"})
+
+
 async def test_enrich_provider_mappings_does_not_substitute_unavailable_instance(
     music: MusicController,
 ) -> None:

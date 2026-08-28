@@ -782,15 +782,21 @@ class TracksController(MediaControllerBase[Track]):
         provider_instance_ids: set[str] | None = None,
         trust_track_mappings: bool = True,
         failed_provider_instances: set[str] | None = None,
+        evidence_provider_instances: set[str] | None = None,
     ) -> TrackProviderEnrichment:
         """
         Resolve missing streaming-provider mappings without updating the library.
 
         :param track: Provider track to enrich.
         :param minimum_confidence: Lowest confidence that may be accepted.
-        :param provider_instance_ids: Provider instances available to the initiating user.
+        :param provider_instance_ids: Provider instances to search for a match.
         :param trust_track_mappings: Treat mappings attached to the source track as exact.
         :param failed_provider_instances: Provider instances unavailable for the migration.
+        :param evidence_provider_instances: Provider instances available to the initiating
+            user, for authorizing release-evidence album hydration. Defaults to
+            ``provider_instance_ids`` when not given separately, so a narrower search scope
+            never also narrows which of the user's own accounts evidence may be hydrated
+            from.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -809,6 +815,8 @@ class TracksController(MediaControllerBase[Track]):
             if trust_track_mappings
             else set()
         )
+        if evidence_provider_instances is None:
+            evidence_provider_instances = provider_instance_ids
         base_album: Album | ItemMapping | None = None
         base_album_loaded = False
         matches: list[TrackProviderMatch] = []
@@ -832,7 +840,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if not base_album_loaded:
                 base_album = await self._get_full_track_album(
-                    track, allowed_provider_instances=provider_instance_ids
+                    track, allowed_provider_instances=evidence_provider_instances
                 )
                 base_album_loaded = True
             try:
@@ -842,7 +850,7 @@ class TracksController(MediaControllerBase[Track]):
                     minimum_confidence=minimum_confidence,
                     base_album=base_album,
                     mapping_source=mapping_source,
-                    allowed_provider_instances=provider_instance_ids,
+                    allowed_provider_instances=evidence_provider_instances,
                     trust_base_mapping=trust_track_mappings,
                 )
             except (
