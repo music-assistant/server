@@ -14,7 +14,6 @@ from aiosendspin.models.management import (
     ManagementSetPairingConfigPayload,
     SetDynamicPinConfig,
     SetStaticPinConfig,
-    SetUnpairedAccessConfig,
 )
 from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
@@ -89,9 +88,6 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_EXIT,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
-    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE,
-    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
-    CONF_ACTION_REVOKE_UNPAIRED,
     CONF_ACTION_UNPAIR,
     CONF_PAIR_DEVICE,
     CONF_PAIRING_METHOD,
@@ -197,12 +193,6 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
 
 
 _MANAGEMENT_ACTIONS = {
-    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE: ManagementSetPairingConfigPayload(
-        unpaired_access=SetUnpairedAccessConfig(enabled=True)
-    ),
-    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE: ManagementSetPairingConfigPayload(
-        unpaired_access=SetUnpairedAccessConfig(enabled=False)
-    ),
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
         static_pin=SetStaticPinConfig(enabled=True)
     ),
@@ -386,10 +376,13 @@ class SendspinBasePlayer(Player):
         """
         Whether the device is connected and encrypted but not yet usable for playback.
 
-        An unpaired device that has not been paired or allowed unpaired playback still
-        connects, but the server activates no roles for it. Reporting needs_setup keeps it
-        out of the ready-to-play targets while its settings (and the pairing actions) stay
-        reachable. Legacy unencrypted devices and the built-in web player can play as-is.
+        A device that offers neither guest access nor a completed pairing still connects,
+        but the server activates no roles for it. Reporting needs_setup keeps it out of the
+        ready-to-play targets while its settings (and the pairing actions) stay reachable.
+        A device with an undecided audio input reports it too: guest access never carries a
+        line-in, so the choice between keeping guest access and pairing has to be made once.
+        Legacy unencrypted devices, the built-in web player, and any other device already
+        playing through guest access can play as-is.
         """
         if self._is_bridge_or_web_player:
             return False
@@ -399,10 +392,9 @@ class SendspinBasePlayer(Player):
 
         if self.api.connection_security is None:
             return False
-        # A device with active roles stays usable even while its audio input is
-        # undecided (e.g. granted unpaired access before the input decision
-        # existed): the input can be enabled by pairing from the settings page.
-        return not self.api.active_roles
+        # Deliberately also while the device already plays: the audio input cannot be
+        # split out of the setup state, so the one-time input choice is prompted for here.
+        return not self.api.active_roles or self._source_input_pending
 
     @property
     def setup_reason(self) -> str | None:
@@ -844,10 +836,14 @@ class SendspinBasePlayer(Player):
         )
         if not trusted_unpaired:
             return None, []
-        return (
-            ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT),
-            [action_entry(CONF_ACTION_REVOKE_UNPAIRED)],
+        # Whether the device keeps offering guest access is the device's own call, so there is
+        # nothing to revoke here - only the option to upgrade to a pairing, if it offers one.
+        status_key = (
+            "security_status_guest_pairable"
+            if self._pairing_method_options(provider)
+            else "security_status_guest"
         )
+        return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
 
     async def _paired_entries(
         self,
@@ -879,13 +875,6 @@ class SendspinBasePlayer(Player):
         entries: list[ConfigEntry] = [
             ConfigEntry(key="management_status", type=ConfigEntryType.LABEL)
         ]
-        if config.unpaired_access is not None:
-            action = (
-                CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE
-                if config.unpaired_access.enabled
-                else CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE
-            )
-            entries.append(action_entry(action))
         entries.extend(
             SendspinBasePlayer._management_pin_method_entries(
                 config.static_pin,
@@ -922,8 +911,6 @@ class SendspinBasePlayer(Player):
         try:
             if action == CONF_ACTION_UNPAIR:
                 await provider.unpair_client(self.player_id)
-            elif action == CONF_ACTION_REVOKE_UNPAIRED:
-                await provider.set_trusted_unpaired(self.player_id, enabled=False)
             elif action == CONF_ACTION_MANAGEMENT_ENTER:
                 provider.enter_management(self.player_id)
                 try:

@@ -45,6 +45,7 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
+from aiosendspin.server.roles.registry import role_requires_pairing
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -1561,14 +1562,7 @@ class SendspinProvider(PlayerProvider):
             if sendspin_client is None:
                 self.logger.debug("Client %s disconnected before hello completed", client_id)
                 return
-            # Wait for client hello to be processed (info becomes available)
-            # ClientAddedEvent fires before the hello handshake completes
-            for _ in range(50):  # Wait up to 5 seconds
-                if sendspin_client.info_or_none is not None:
-                    break
-                await asyncio.sleep(0.1)
-            else:
-                self.logger.warning("Client %s hello not received within timeout", client_id)
+            if not await self._await_client_hello(client_id, sendspin_client):
                 return
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale add event for %s", client_id)
@@ -1576,6 +1570,7 @@ class SendspinProvider(PlayerProvider):
             if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
+            await self._auto_trust_guest_access(client_id, sendspin_client)
             existing_player = self.mass.players.get_player(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
@@ -1611,6 +1606,49 @@ class SendspinProvider(PlayerProvider):
                 player._unsubscribe_client_callbacks()
         finally:
             self._finish_client_event(client_id)
+
+    async def _await_client_hello(self, client_id: str, sendspin_client: SendspinClient) -> bool:
+        """
+        Wait for a just-connected client's hello, reporting whether it arrived.
+
+        ``ClientAddedEvent`` fires before the hello handshake completes, so everything
+        that reads the client's advertisement has to wait for it first.
+
+        :param client_id: The connected client, for logging.
+        :param sendspin_client: The client whose hello is awaited.
+        """
+        for _ in range(50):  # Wait up to 5 seconds
+            if sendspin_client.info_or_none is not None:
+                return True
+            await asyncio.sleep(0.1)
+        self.logger.warning("Client %s hello not received within timeout", client_id)
+        return False
+
+    async def _auto_trust_guest_access(
+        self, client_id: str, sendspin_client: SendspinClient
+    ) -> None:
+        """
+        Approve a device that offers guest access, so it plays without any setup step.
+
+        Guest access only ever carries playback and the device stays free to withdraw it,
+        so there is nothing for the user to decide. A device whose every role needs pairing
+        (a capture-only one) gains nothing and is left to pair instead.
+
+        :param client_id: The connected client to approve.
+        :param sendspin_client: That client, for its hello and negotiated roles.
+        """
+        info = sendspin_client.info_or_none
+        if info is None or not info.unpaired_access.enabled:
+            return
+        if all(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
+            return
+        store = self.server_api.pairing_store
+        if await store.record_by_client_id(client_id) is not None:
+            return
+        if await store.trusted_unpaired(client_id) is not None:
+            return
+        self.logger.debug("Approving guest access for %s", client_id)
+        await self.server_api.trust_unpaired(client_id)
 
     async def _handle_client_removed(self, client_id: str, event_version: int) -> None:
         """Handle a client disconnection asynchronously."""

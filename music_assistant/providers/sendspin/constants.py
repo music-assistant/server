@@ -36,12 +36,9 @@ CONF_PAIRING_TOKEN = "pairing_token"
 CONF_PAIRING_PIN = "pairing_pin"
 
 CONF_ACTION_UNPAIR = "unpair"
-CONF_ACTION_REVOKE_UNPAIRED = "revoke_unpaired"
 
 CONF_ACTION_MANAGEMENT_ENTER = "management_enter"
 CONF_ACTION_MANAGEMENT_EXIT = "management_exit"
-CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE = "management_unpaired_enable"
-CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE = "management_unpaired_disable"
 CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE = "management_static_pin_enable"
 CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE = "management_static_pin_disable"
 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE = "management_dynamic_pin_enable"

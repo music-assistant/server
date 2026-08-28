@@ -31,8 +31,11 @@
     "security_status_paired": {
       "label": "This device is paired. The connection is encrypted and authenticated."
     },
-    "security_status_unpaired": {
-      "label": "The connection is encrypted, but the device is not securely paired."
+    "security_status_guest": {
+      "label": "This device is connected through guest access. The connection is encrypted but not verified, which the device allows on purpose."
+    },
+    "security_status_guest_pairable": {
+      "label": "This device is connected through guest access. It also supports pairing for a permanent, verified connection - use Reconfigure to set that up."
     },
     "pairing_error_generic": {
       "label": "Pairing failed. Please try again."
@@ -77,24 +80,12 @@
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
     },
-    "revoke_unpaired": {
-      "label": "Require pairing",
-      "description": "Stop letting this device connect without pairing."
-    },
     "management_enter": {
       "label": "Manage device settings",
       "description": "Change the device's own pairing settings. While the management section is open, the device rejects connections from other servers."
     },
     "management_status": {
       "label": "Managing device settings. The device rejects other servers until this section is closed."
-    },
-    "management_unpaired_enable": {
-      "label": "Enable unpaired access",
-      "description": "Let the device accept connections from servers without pairing. Unpaired connections are encrypted but not authenticated."
-    },
-    "management_unpaired_disable": {
-      "label": "Disable unpaired access",
-      "description": "Stop the device from accepting connections from servers that are not paired with it."
     },
     "management_static_pin_enable": {
       "label": "Enable static pairing code",
@@ -175,11 +166,11 @@
       "label": "Audio input",
       "options": {
         "pair": "Pair the device",
-        "dismiss": "Don't use audio input"
+        "dismiss": "Keep guest access"
       },
       "option_descriptions": {
-        "pair": "Pairing is required before the device may send audio to Music Assistant.",
-        "dismiss": "Playback is unaffected. Music Assistant will stop offering this device's audio input."
+        "pair": "Sets up a verified connection, which is required before the device may send audio to Music Assistant.",
+        "dismiss": "Playback keeps working over guest access. Music Assistant will stop offering this device's audio input."
       }
     },
     "pair_device": {
