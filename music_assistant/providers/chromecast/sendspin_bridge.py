@@ -746,6 +746,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return
         if not client_id or not self._has_bridge(player.player_id):
             return
+        claimed_id = self._claimed_clients.get(player.player_id)
+        if claimed_id is not None and claimed_id != client_id:
+            # A client claimed under the other MAC variant belongs to the device's AirPlay
+            # bridge, not to its Cast output, so its warning and opt-out are not ours.
+            return
         if self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
             # the note is written last, so its presence means this output is settled
             return
@@ -1110,7 +1115,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         # The output's toggle and warning are built from the persisted protocol link, so
         # a bridge that is about to be switched off again has to be linked first or it
         # leaves nothing behind to opt in with.
-        if not await self._wait_for_protocol_link(client_id):
+        if not await self._wait_for_protocol_link(player_id, client_id):
             return
         if not self._has_bridge(player_id):
             # the bridge went away while we waited - its config may be gone with it
@@ -1128,21 +1133,26 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         )
         self.mass.config.set_raw_player_config_value(player_id, CONF_SENDSPIN_OPT_OUT_PENDING, None)
 
-    async def _wait_for_protocol_link(self, client_id: str) -> bool:
+    async def _wait_for_protocol_link(self, player_id: str, client_id: str) -> bool:
         """
         Wait for a bridge client's protocol link to be persisted.
 
+        :param player_id: The Chromecast player the bridge belongs to.
         :param client_id: The Sendspin client_id of the bridge.
         :return: True once the link is stored, False when it did not appear in time.
         """
         for _ in range(SENDSPIN_LINK_WAIT_TRIES):
+            if not self._has_bridge(player_id):
+                # the bridge was taken away again, e.g. because the device turned out to
+                # also speak AirPlay, so there is no output left to settle
+                return False
             parent_id = self.mass.config.get_raw_player_config_value(
                 client_id, CONF_PROTOCOL_PARENT_ID
             )
             if parent_id and self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"):
                 return True
             await asyncio.sleep(SENDSPIN_LINK_WAIT_INTERVAL)
-        self.logger.warning(
+        self.logger.debug(
             "Sendspin bridge %s was not linked to a parent player in time; "
             "its output is left as it is and retried on the next evaluation",
             client_id,

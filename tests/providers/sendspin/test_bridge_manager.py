@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE
+from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_PROTOCOL_PARENT_ID
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
 from music_assistant.providers.chromecast.constants import (
     CONF_SENDSPIN_OPT_OUT_PENDING,
@@ -600,6 +600,7 @@ class TestCastBridgeOptIn:
         player_configs[f"players/{client_id}"] = {"enabled": True}
         manager._bridges[cast_player.player_id] = MagicMock()
 
+        manager._bridges[cast_player.player_id] = MagicMock()
         with (
             patch.object(bridge_module, "SENDSPIN_LINK_WAIT_TRIES", 2),
             patch.object(bridge_module, "SENDSPIN_LINK_WAIT_INTERVAL", 0),
@@ -645,6 +646,23 @@ class TestCastBridgeOptIn:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_client_claimed_under_the_other_mac_variant_is_left_alone(self) -> None:
+        """Test the Cast warning is not put on a client that belongs to the AirPlay bridge."""
+        manager, _, cast_player, player_configs, scheduled, _ = self._make_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        player_configs[f"players/{cast_player.player_id}"] = {"enabled": True}
+
+        async def fake_super(player: Any) -> None:
+            """Claim a client under the locally-administered MAC, as the real one can."""
+            manager._claimed_clients[player.player_id] = "spb_5678c9e60da0"
+
+        with patch.object(SendspinBridgeManagerBase, "evaluate_bridge", side_effect=fake_super):
+            await manager.evaluate_bridge(cast_player)
+
+        assert not scheduled
+
+    @pytest.mark.asyncio
     async def test_a_leftover_config_of_a_rejected_device_is_cleaned_up(self) -> None:
         """Test a rejected device keeps nothing on the settings page after a failed cleanup."""
         manager, mass, cast_player, player_configs, _, _ = self._make_environment()
@@ -666,6 +684,32 @@ class TestCastBridgeOptIn:
             await manager.evaluate_bridge(cast_player)
 
         mass.players.delete_player_config.assert_called_once_with(client_id)
+
+    @pytest.mark.asyncio
+    async def test_the_wait_gives_up_as_soon_as_the_bridge_is_taken_away(self) -> None:
+        """Test a bridge denied mid-wait stops the poll instead of running it out."""
+        manager, mass, cast_player, player_configs, _, _ = self._make_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        player_configs[f"players/{client_id}"] = {"enabled": True}
+        polls = 0
+
+        def get_raw(_player_id: str, key: str, default: Any = None) -> Any:
+            nonlocal polls
+            if key == CONF_PROTOCOL_PARENT_ID:
+                polls += 1
+                # the device turns out to speak AirPlay too, so policy pulls the bridge
+                manager._bridges.pop(cast_player.player_id, None)
+            return default
+
+        manager._bridges[cast_player.player_id] = MagicMock()
+        mass.config.get_raw_player_config_value = MagicMock(side_effect=get_raw)
+
+        with patch.object(bridge_module, "SENDSPIN_LINK_WAIT_INTERVAL", 0):
+            assert await manager._wait_for_protocol_link(cast_player.player_id, client_id) is False
+
+        # one look for the link, then the next round sees the bridge is gone and stops
+        assert polls == 1
 
     @pytest.mark.asyncio
     async def test_bridge_gone_after_the_wait_is_not_written_to(self) -> None:
