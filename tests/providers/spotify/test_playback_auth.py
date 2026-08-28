@@ -224,6 +224,10 @@ def test_authorization_code_from_url_rejects_unusable(url: str) -> None:
         ('{"username": "u10", "auth_data": "blob"}', "u1", True),
         # the canonical username Spotify hands librespot is the lowercased account id
         ('{"username": "u1", "auth_data": "blob"}', "U1", False),
+        # non-ASCII usernames are stored percent-encoded; still the same account
+        ('{"username": "us%C3%A9rnam%C3%A9", "auth_data": "blob"}', "usérnamé", False),
+        # and a percent-encoded name that decodes to someone else is still spotted
+        ('{"username": "s%C3%B6meone_else", "auth_data": "blob"}', "usérnamé", True),
         # either side unknown, or an unreadable credential: never block the setup
         ('{"username": "u2", "auth_data": "blob"}', None, False),
         ('{"auth_data": "blob"}', "u1", False),
