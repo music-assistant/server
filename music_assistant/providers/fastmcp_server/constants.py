@@ -40,5 +40,10 @@ def is_policy_key(key: str) -> bool:
 
 
 def is_hot_swappable_key(key: str) -> bool:
-    """Return whether a change can be applied without replacing the provider runtime."""
+    """
+    Return whether a change keeps the same provider instance.
+
+    Policy keys refresh the resolver in place. Resource keys keep the runtime
+    object but rebuild its mounted surface.
+    """
     return key in RESOURCE_KEYS or is_policy_key(key)

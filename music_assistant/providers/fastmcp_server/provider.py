@@ -214,12 +214,11 @@ class MCPServerProvider(PluginProvider):  # type: ignore[misc, unused-ignore]
 
     def _raw_policy_value(self, key: str) -> object:
         """Read one preserved policy value through MA's sanctioned raw API."""
-        instance_id = str(getattr(getattr(self, "config", None), "instance_id", ""))
-        config_controller = getattr(self.mass, "config", None)
-        getter = getattr(config_controller, "get_raw_provider_config_value", None)
-        if not instance_id or not callable(getter):
-            return None
-        return getter(instance_id, key, None)
+        from .policy_config import raw_provider_config_value  # noqa: PLC0415
+
+        return raw_provider_config_value(
+            self.mass, str(getattr(getattr(self, "config", None), "instance_id", "")), key
+        )
 
     def _persist_policy_suffix_index(
         self,

@@ -13,9 +13,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, cast
+from urllib.parse import urlencode
 
 from fastmcp import Context  # noqa: TC002  -- FastMCP resolves injected annotations at runtime.
-from fastmcp.exceptions import NotFoundError, ToolError
+from fastmcp.exceptions import NotFoundError, ResourceError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import WithJsonSchema
 
@@ -39,7 +40,7 @@ from .catalog_pagination import (
     normalize_query,
     resolve_limit,
 )
-from .catalog_resource import register_catalog_resource
+from .dynamic_serialization import COMMAND_ENVELOPE_SCHEMA
 from .errors import ToolFailureCode, tool_failure
 
 if TYPE_CHECKING:
@@ -343,10 +344,46 @@ def _schema_result(entry: DynamicEntry) -> dict[str, Any]:
         "allowImpersonation": entry.allow_impersonation,
         "annotations": entry.annotations,
         "policy_mode": entry.policy_mode.value,
+        "outputSchema": COMMAND_ENVELOPE_SCHEMA,
     }
     if entry.output_schema is not None:
-        result["outputSchema"] = entry.output_schema
+        result["dataSchema"] = entry.output_schema
     return result
+
+
+def _register_catalog_resource(mcp: FastMCP, pager: MetaDiscoveryService) -> None:
+    """Register the always-on, request-filtered catalog resource template."""
+
+    @mcp.resource(
+        "catalog://commands{?cursor,limit}",
+        name="command_catalog",
+        description="Browse visible Music Assistant command names by page.",
+        mime_type="application/json",
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def command_catalog(
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Return one alphabetical page of visible command names."""
+        try:
+            page_limit = resolve_limit("catalog", limit)
+            page = await pager.discover("", cursor=cursor, limit=page_limit)
+        except PaginationError as exc:
+            raise ResourceError(f"{exc.code}: {exc}") from exc
+        next_cursor = page["next_cursor"]
+        next_uri = (
+            f"catalog://commands?{urlencode({'cursor': next_cursor, 'limit': page_limit})}"
+            if next_cursor is not None
+            else None
+        )
+        payload: dict[str, Any] = {
+            "items": page["items"],
+            "total": page["total"],
+            "next_cursor": next_cursor,
+            "next_uri": next_uri,
+            "catalog_revision": page["catalog_revision"],
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def register_meta_discovery(
@@ -356,7 +393,7 @@ def register_meta_discovery(
 ) -> None:
     """Register the permanent direct three-tool discovery surface."""
     service = MetaDiscoveryService(dynamic_adapter)
-    register_catalog_resource(mcp, service)
+    _register_catalog_resource(mcp, service)
 
     @mcp.tool(
         name=SEARCH_TOOL_NAME,
@@ -417,7 +454,17 @@ def register_meta_discovery(
                 "Tool was not found or is not permitted",
             ) from exc
 
-    @mcp.tool(name=CALL_TOOL_NAME)  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.tool(
+        name=CALL_TOOL_NAME,
+        annotations=ToolAnnotations(
+            title="Call tool",
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        output_schema=COMMAND_ENVELOPE_SCHEMA,
+    )  # type: ignore[untyped-decorator, unused-ignore]
     async def call_tool(
         name: str,
         arguments: Annotated[

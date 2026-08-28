@@ -52,22 +52,12 @@ class CatalogSnapshot:
             MappingProxyType({entry.name: entry for entry in self.entries}),
         )
 
+    def with_entries(self, entries: tuple[DynamicEntry, ...]) -> CatalogSnapshot:
+        """Return the same generation with a different entry set."""
+        return CatalogSnapshot(self.fingerprint, entries)
 
-@dataclass(frozen=True, slots=True)
-class CatalogView:
-    """Request-filtered catalog entries from one base snapshot."""
 
-    fingerprint: CatalogFingerprint
-    entries: tuple[DynamicEntry, ...]
-    by_name: Mapping[str, DynamicEntry] = dataclasses.field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        """Build an immutable O(1) request-visible lookup."""
-        object.__setattr__(
-            self,
-            "by_name",
-            MappingProxyType({entry.name: entry for entry in self.entries}),
-        )
+CatalogView = CatalogSnapshot
 
 
 @dataclass(frozen=True, slots=True)

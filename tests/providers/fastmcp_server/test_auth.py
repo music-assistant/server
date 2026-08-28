@@ -8,13 +8,18 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.server.auth import AccessToken
 
 from music_assistant.providers.fastmcp_server.auth import (
     LEGACY_TOKEN_CLIENT_ID,
     LOOKUP_FAILURE_CLIENT_ID,
     MASTokenVerifier,
+    request_identity_holds,
 )
-from music_assistant.providers.fastmcp_server.token_identity import TokenIdentityRegistry
+from music_assistant.providers.fastmcp_server.token_identity import (
+    TokenIdentity,
+    TokenIdentityRegistry,
+)
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
@@ -88,7 +93,17 @@ async def test_non_authoritative_client_ids_do_not_use_user_or_application_ident
     assert failed is not None
     assert legacy.client_id == LEGACY_TOKEN_CLIENT_ID
     assert failed.client_id == LOOKUP_FAILURE_CLIENT_ID
-    assert {legacy.client_id, failed.client_id}.isdisjoint({"u1", "music-assistant"})
+
+
+def test_request_identity_holds_for_exact_binding() -> None:
+    """Command and resource paths share one identity comparison."""
+    token = AccessToken(token="bearer", client_id="tid-1", scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id="tid-1")
+
+    assert request_identity_holds(token, user, identity, live_token_id="tid-1") is True
+    assert request_identity_holds(token, user, None, live_token_id="tid-1") is False
+    assert request_identity_holds(token, user, identity, lookup_failed=True) is False
 
 
 @pytest.mark.asyncio

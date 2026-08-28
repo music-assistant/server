@@ -29,6 +29,30 @@ class TargetRule:
     kind: TargetKind
 
 
+@dataclass(frozen=True, slots=True)
+class CollectionRule:
+    """One command-pattern and the row identity used to hide listing results."""
+
+    command_pattern: str
+    kind: TargetKind
+    row_attributes: tuple[str, ...]
+
+
+_PLAYER_ROW_ATTRIBUTES = ("player_id", "queue_id")
+_MUSIC_PROVIDER_ATTRIBUTES = (
+    "provider_instance_id",
+    "provider_instance",
+    "provider_domain",
+    "provider",
+)
+
+COLLECTION_RULES: tuple[CollectionRule, ...] = (
+    CollectionRule("players/all", TargetKind.PLAYER, _PLAYER_ROW_ATTRIBUTES),
+    CollectionRule("player_queues/all", TargetKind.PLAYER, _PLAYER_ROW_ATTRIBUTES),
+    CollectionRule("music/search", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
+    CollectionRule("music/*/library_items", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
+)
+
 TARGET_RULES: tuple[TargetRule, ...] = (
     # Player controller commands.
     TargetRule("players/*", "player_id", TargetKind.PLAYER),
@@ -100,6 +124,27 @@ def enforce_target_filters(
             )
 
 
+def collection_rule(command: str) -> CollectionRule | None:
+    """Return the listing-visibility declaration for one canonical command."""
+    return next(
+        (rule for rule in COLLECTION_RULES if fnmatchcase(command, rule.command_pattern)),
+        None,
+    )
+
+
+def collection_row_allowed(user: Any, item: Any, *, kind: TargetKind) -> bool:
+    """Return whether one listing row is visible for the current user."""
+    if user is None or str(getattr(user, "role", "")).casefold() == "admin":
+        return True
+    allowed = _allowed_values(
+        getattr(user, "player_filter" if kind in _PLAYER_KINDS else "provider_filter", None)
+    )
+    if allowed is None:
+        return True
+    attributes = _PLAYER_ROW_ATTRIBUTES if kind in _PLAYER_KINDS else _MUSIC_PROVIDER_ATTRIBUTES
+    return bool(_row_ids(item, attributes) & allowed)
+
+
 def filter_collection_result(user: Any, command: str, result: Any) -> Any:
     """
     Hide collection rows the current user is not allowed to see.
@@ -108,26 +153,57 @@ def filter_collection_result(user: Any, command: str, result: Any) -> Any:
     :param command: Canonical command that produced ``result``.
     :param result: Native command return value.
     """
-    if (
-        user is None
-        or command != "player_queues/all"
-        or str(getattr(user, "role", "")).casefold() == "admin"
-    ):
+    if user is None or str(getattr(user, "role", "")).casefold() == "admin":
         return result
-    allowed = _allowed_values(getattr(user, "player_filter", None))
-    if allowed is None or not isinstance(result, list | tuple):
+    rule = collection_rule(command)
+    if rule is None:
         return result
-    filtered = tuple(
-        item
-        for item in result
-        if str(getattr(item, "queue_id", getattr(item, "player_id", ""))) in allowed
+    allowed = _allowed_values(
+        getattr(user, "player_filter" if rule.kind in _PLAYER_KINDS else "provider_filter", None)
     )
-    return filtered if isinstance(result, tuple) else list(filtered)
+    if allowed is None:
+        return result
+    if isinstance(result, Mapping):
+        return {
+            key: (
+                _filter_rows(value, allowed, rule.row_attributes)
+                if isinstance(value, list | tuple)
+                else value
+            )
+            for key, value in result.items()
+        }
+    return _filter_rows(result, allowed, rule.row_attributes)
 
 
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "database", "library"})
+
+
+def _filter_rows(result: Any, allowed: set[str], attributes: tuple[str, ...]) -> Any:
+    """Drop sequence rows whose declared identity is outside the allowlist."""
+    if not isinstance(result, list | tuple):
+        return result
+    filtered = tuple(item for item in result if _row_ids(item, attributes) & allowed)
+    return filtered if isinstance(result, tuple) else list(filtered)
+
+
+def _row_ids(item: Any, attributes: tuple[str, ...]) -> set[str]:
+    """Collect declared identifiers from the row and any provider mappings."""
+    ids = _attribute_ids(item, attributes)
+    mappings = getattr(item, "provider_mappings", None) or ()
+    for mapping in mappings:
+        ids.update(_attribute_ids(mapping, attributes))
+    return ids
+
+
+def _attribute_ids(value: Any, attributes: tuple[str, ...]) -> set[str]:
+    """Return non-empty identifier strings for the declared attributes."""
+    return {
+        str(candidate)
+        for name in attributes
+        if (candidate := getattr(value, name, None)) is not None and str(candidate)
+    }
 
 
 def _target_values(value: Any, *, sequence: bool) -> set[str]:

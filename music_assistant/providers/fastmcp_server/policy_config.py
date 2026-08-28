@@ -129,14 +129,21 @@ def policy_event_buffer_enabled(
         active_token_ids=active_token_ids,
         raw_value_provider=raw_value_provider,
     )
-    snapshots = [resolver.resolve(None)]
-    snapshots.extend(resolver.resolve(token_id) for token_id in resolver.overrides)
-    if any(snapshot.mode(Capability.DEBUG_EVENTS) is not PolicyMode.DENY for snapshot in snapshots):
-        return True
+    return resolver.any_allows(Capability.DEBUG_EVENTS) or _suffix_policies_allow(
+        config, Capability.DEBUG_EVENTS, raw_value_provider
+    )
 
+
+def _suffix_policies_allow(
+    config: ProviderConfig,
+    capability: Capability,
+    raw_value_provider: Callable[[str], Any] | None,
+) -> bool:
+    """Compile suffix-only stored policies that have no token-ID override yet."""
     suffixes = manual_token_suffixes(
         policy_value(config, CONF_POLICY_TOKEN_SUFFIXES, raw_value_provider)
     )
+    capability_fragment = str(capability).replace(":", "_")
     for suffix in suffixes:
         key = f"{TOKEN_POLICY_KEY_PREFIX}{suffix}"
         value = policy_value(config, key, raw_value_provider)
@@ -147,7 +154,7 @@ def policy_event_buffer_enabled(
         except ValueError:
             continue
         if profile is PolicyProfile.CUSTOM:
-            mode_key = f"{TOKEN_POLICY_KEY_PREFIX}debug_events_{suffix}"
+            mode_key = f"{TOKEN_POLICY_KEY_PREFIX}{capability_fragment}_{suffix}"
             try:
                 mode = PolicyMode(
                     str(policy_value(config, mode_key, raw_value_provider) or PolicyMode.DENY)
@@ -155,10 +162,18 @@ def policy_event_buffer_enabled(
             except ValueError:
                 mode = PolicyMode.DENY
         else:
-            mode = policy_snapshot(profile).mode(Capability.DEBUG_EVENTS)
+            mode = policy_snapshot(profile).mode(capability)
         if mode is not PolicyMode.DENY:
             return True
     return False
+
+
+def raw_provider_config_value(mass: Any, instance_id: str, key: str) -> Any:
+    """Read one preserved provider value through Music Assistant's raw config store."""
+    getter = getattr(getattr(mass, "config", None), "get_raw_provider_config_value", None)
+    if not instance_id or not callable(getter):
+        return None
+    return getter(instance_id, key, None)
 
 
 def policy_value(

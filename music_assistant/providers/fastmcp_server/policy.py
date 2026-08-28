@@ -129,6 +129,15 @@ class PolicyResolver:
             return self._default_snapshot
         return self._override_snapshots.get(token_id) or self._default_snapshot
 
+    def any_allows(self, capability: str | Capability) -> bool:
+        """Return whether the default or any compiled override can expose one capability."""
+        if self.resolve(None).mode(capability) is not PolicyMode.DENY:
+            return True
+        return any(
+            snapshot is not None and snapshot.mode(capability) is not PolicyMode.DENY
+            for snapshot in self._override_snapshots.values()
+        )
+
 
 def policy_snapshot(
     profile: PolicyProfile,

@@ -115,13 +115,9 @@ def test_provider_internal_import_graph_is_acyclic() -> None:
         visit(module, ())
 
 
-def test_dynamic_api_is_a_small_one_way_facade() -> None:
-    """The public compatibility module must not regain catalog or execution logic."""
-    facade = (PROVIDER_ROOT / "dynamic_api.py").read_text()
-    execution = (PROVIDER_ROOT / "execution.py").read_text()
-    assert len(facade.splitlines()) < 30
-    assert "from .execution import DynamicAPIAdapter" in facade
-    assert "dynamic_api" not in execution
+def test_dynamic_api_compatibility_module_is_gone() -> None:
+    """Catalog generation and execution are imported directly, not through a facade."""
+    assert not (PROVIDER_ROOT / "dynamic_api.py").exists()
 
 
 def test_provider_has_no_custom_opentelemetry_layer() -> None:

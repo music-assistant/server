@@ -13,14 +13,14 @@ from fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 
 from music_assistant.providers.fastmcp_server import meta_discovery
-from music_assistant.providers.fastmcp_server.config import build_config_entries
-from music_assistant.providers.fastmcp_server.constants import DEFAULT_MOUNT_PATH
-from music_assistant.providers.fastmcp_server.dynamic_api import (
+from music_assistant.providers.fastmcp_server.catalog import (
     CatalogSnapshot,
     CatalogView,
     DynamicEntry,
     RequestCatalogContext,
 )
+from music_assistant.providers.fastmcp_server.config import build_config_entries
+from music_assistant.providers.fastmcp_server.constants import DEFAULT_MOUNT_PATH
 from music_assistant.providers.fastmcp_server.meta_discovery import register_meta_discovery
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 from music_assistant.providers.fastmcp_server.policy import PolicyProfile, policy_snapshot
@@ -102,7 +102,14 @@ class _RecordingAdapter(_Adapter):
         """Capture normalized containers and return a minimal envelope."""
         del ctx
         self.calls.append(_RecordedCall(name, arguments, response_mode, fields, max_items))
-        return {"ok": True}
+        return {
+            "command": name,
+            "data": {"ok": True},
+            "truncated": False,
+            "returned_count": 1,
+            "bytes": 11,
+            "applied": {"mode": response_mode, "fields": fields or [], "max_items": 25},
+        }
 
 
 def _recording_server() -> tuple[FastMCP, _RecordingAdapter]:

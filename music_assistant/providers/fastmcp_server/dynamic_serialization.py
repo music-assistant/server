@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import heapq
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -13,7 +15,23 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from fastmcp.exceptions import ToolError
+
 type JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+
+COMMAND_ENVELOPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "command": {"type": "string"},
+        "data": {},
+        "truncated": {"type": "boolean"},
+        "returned_count": {"type": "integer"},
+        "bytes": {"type": "integer"},
+        "applied": {"type": "object"},
+        "total_count": {"type": "integer"},
+    },
+    "required": ["command", "data", "truncated", "returned_count", "bytes", "applied"],
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,3 +250,183 @@ def _bounded_string(value: str, limit: int | None) -> tuple[str, bool]:
     if over_limit:
         return normalized + "…", True
     return normalized, normalized != value
+
+
+@dataclass(slots=True)
+class _ListReductionCandidate:
+    """Mutable heap state for one list in a response-reduction trial."""
+
+    items: list[Any]
+    depth: int
+    order: int
+    active: bool = True
+    revision: int = 0
+
+
+def fit_json_envelope(envelope: dict[str, Any], byte_cap: int) -> None:
+    """
+    Reduce one command envelope in place until it fits the byte budget.
+
+    :param envelope: Mutable command response envelope.
+    :param byte_cap: Maximum encoded UTF-8 size in bytes.
+    """
+    envelope["bytes"] = byte_cap
+    if _encoded_size(envelope) <= byte_cap:
+        _set_measured_bytes(envelope)
+        return
+
+    original_data = envelope["data"]
+    max_removals = _count_list_items(original_data)
+    if max_removals:
+        envelope["truncated"] = True
+        smallest_data = _simulate_list_removals(original_data, max_removals)
+        envelope["data"] = smallest_data
+        _set_returned_count(envelope)
+        if _encoded_size(envelope) <= byte_cap:
+            low = 1
+            high = max_removals
+            best_data = smallest_data
+            while low < high:
+                midpoint = (low + high) // 2
+                candidate_data = _simulate_list_removals(original_data, midpoint)
+                envelope["data"] = candidate_data
+                _set_returned_count(envelope)
+                if _encoded_size(envelope) <= byte_cap:
+                    high = midpoint
+                    best_data = candidate_data
+                else:
+                    low = midpoint + 1
+            envelope["data"] = best_data
+            _set_returned_count(envelope)
+            _set_measured_bytes(envelope)
+            return
+
+    envelope["data"] = _minimal_json_shape(original_data)
+    envelope["truncated"] = True
+    _set_returned_count(envelope)
+    envelope.pop("total_count", None)
+    if _encoded_size(envelope) <= byte_cap:
+        _set_measured_bytes(envelope)
+        return
+    envelope["applied"]["fields"] = []
+    if _encoded_size(envelope) <= byte_cap:
+        _set_measured_bytes(envelope)
+        return
+    mode = str(envelope["applied"]["mode"])
+    raise ToolError(f"Response exceeds the {mode} byte budget")
+
+
+def _simulate_list_removals(value: Any, removals: int) -> Any:
+    """Return a copy after a bounded number of original-policy list removals."""
+    reduced = copy.deepcopy(value)
+    candidates: list[_ListReductionCandidate] = []
+    candidates_by_id: dict[int, _ListReductionCandidate] = {}
+    heap: list[tuple[int, int, int, int, int]] = []
+
+    def collect(item: Any, depth: int) -> None:
+        if isinstance(item, list):
+            candidate_index = len(candidates)
+            candidate = _ListReductionCandidate(item, depth, candidate_index)
+            candidates.append(candidate)
+            candidates_by_id[id(item)] = candidate
+            if item:
+                heap.append(
+                    (-len(item), depth, candidate.order, candidate.revision, candidate_index)
+                )
+            for child in item:
+                collect(child, depth + 1)
+        elif isinstance(item, dict):
+            for child in item.values():
+                collect(child, depth + 1)
+
+    def invalidate(item: Any) -> None:
+        if isinstance(item, list):
+            candidate = candidates_by_id.get(id(item))
+            if candidate is not None:
+                candidate.active = False
+                candidate.revision += 1
+            for child in item:
+                invalidate(child)
+        elif isinstance(item, dict):
+            for child in item.values():
+                invalidate(child)
+
+    collect(reduced, 0)
+    heapq.heapify(heap)
+    removed = 0
+    while removed < removals and heap:
+        negative_length, _depth, _order, revision, candidate_index = heapq.heappop(heap)
+        candidate = candidates[candidate_index]
+        if (
+            not candidate.active
+            or candidate.revision != revision
+            or len(candidate.items) != -negative_length
+        ):
+            continue
+        removed_item = candidate.items.pop()
+        removed += 1
+        invalidate(removed_item)
+        candidate.revision += 1
+        if candidate.items:
+            heapq.heappush(
+                heap,
+                (
+                    -len(candidate.items),
+                    candidate.depth,
+                    candidate.order,
+                    candidate.revision,
+                    candidate_index,
+                ),
+            )
+    return reduced
+
+
+def _count_list_items(value: Any) -> int:
+    """Return a safe upper bound on logical removals for a JSON tree."""
+    if isinstance(value, list):
+        return len(value) + sum(_count_list_items(item) for item in value)
+    if isinstance(value, dict):
+        return sum(_count_list_items(item) for item in value.values())
+    return 0
+
+
+def _minimal_json_shape(value: Any) -> Any:
+    """Return the smallest JSON value retaining the result's top-level type."""
+    if isinstance(value, dict):
+        return {}
+    if isinstance(value, list):
+        return []
+    if isinstance(value, str):
+        return ""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return 0
+    return None
+
+
+def _set_returned_count(envelope: dict[str, Any]) -> None:
+    """Refresh the envelope's top-level returned item count."""
+    data = envelope["data"]
+    envelope["returned_count"] = len(data) if isinstance(data, list) else (0 if data is None else 1)
+
+
+def _encoded_size(value: Any) -> int:
+    """Measure the compact UTF-8 JSON representation."""
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+
+
+def _set_measured_bytes(envelope: dict[str, Any]) -> None:
+    """Stabilize the self-referential encoded byte count."""
+    for _attempt in range(3):
+        measured = _encoded_size(envelope)
+        if envelope["bytes"] == measured:
+            return
+        envelope["bytes"] = measured

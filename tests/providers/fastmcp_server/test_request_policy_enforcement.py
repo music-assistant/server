@@ -20,7 +20,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.providers.fastmcp_server.auth import LOOKUP_FAILURE_CLIENT_ID
 from music_assistant.providers.fastmcp_server.capabilities import Capability
-from music_assistant.providers.fastmcp_server.dynamic_api import DynamicAPIAdapter
+from music_assistant.providers.fastmcp_server.execution import DynamicAPIAdapter
 from music_assistant.providers.fastmcp_server.meta_discovery import MetaDiscoveryService
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 from music_assistant.providers.fastmcp_server.policy import (
@@ -209,6 +209,34 @@ async def test_privileged_dynamic_execution_audits_success_or_controlled_failure
         "exception-secret-must-not-appear",
     ):
         assert forbidden not in emitted
+
+
+async def test_control_execution_audits_success() -> None:
+    """Successful playback and volume changes are privileged outcomes."""
+
+    async def volume_set(player_id: str, volume_level: int) -> None:
+        del player_id, volume_level
+
+    records: list[Any] = []
+    token = AccessToken(token="volume-bearer", client_id="exact-token-id", scopes=[])
+    adapter = _adapter(
+        [_handler("players/cmd/volume_set", volume_set, "players.control")],
+        current_token=[token],
+        policies={"volume-bearer": _custom(control__volume=PolicyMode.ALLOW)},
+        audit_sink=records.append,
+    )
+
+    await adapter.call(
+        "ma_api:players/cmd/volume_set",
+        {"player_id": "kitchen", "volume_level": 12},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=cast("Context", MagicMock()),
+    )
+
+    assert [record.outcome for record in records] == ["execution.succeeded"]
+    assert records[0].capability == "control:volume"
 
 
 async def test_dynamic_denial_is_audited_once() -> None:
@@ -1464,7 +1492,7 @@ async def test_lookup_failure_identity_recovery_during_confirmation_fails_closed
         adapter.mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value="now-known")
         return SimpleNamespace(action="accept", data=True)
 
-    with pytest.raises(ToolError, match="Authentication is required"):
+    with pytest.raises(ToolError, match="not found or is not permitted"):
         await adapter.call(
             "ma_api:music/search",
             {},
@@ -1472,6 +1500,78 @@ async def test_lookup_failure_identity_recovery_during_confirmation_fails_closed
             fields=None,
             max_items=None,
             ctx=cast("Context", SimpleNamespace(elicit=accept_then_recover)),
+        )
+    assert called is False
+
+
+async def test_lookup_failure_without_identity_cannot_execute() -> None:
+    """A token that never bound an identity cannot run even Safe-query commands."""
+    called = False
+
+    async def search() -> str:
+        nonlocal called
+        called = True
+        return "secret-library"
+
+    token = AccessToken(
+        token="lookup-failure",
+        client_id=LOOKUP_FAILURE_CLIENT_ID,
+        scopes=[],
+    )
+    adapter = _adapter(
+        [_handler("music/search", search)],
+        current_token=[token],
+        policies={"lookup-failure": _custom(query__library=PolicyMode.ALLOW)},
+    )
+    adapter._identity_provider = lambda _bearer: None
+    adapter.mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=RuntimeError("lookup unavailable")
+    )
+
+    with pytest.raises(ToolError, match="not found or is not permitted"):
+        await adapter.call(
+            "ma_api:music/search",
+            {},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=cast("Context", MagicMock()),
+        )
+    assert called is False
+
+
+async def test_adapter_without_identity_registry_cannot_execute() -> None:
+    """An adapter that never received a token-identity registry cannot impersonate a user."""
+    called = False
+
+    async def search() -> str:
+        nonlocal called
+        called = True
+        return "secret-library"
+
+    token = AccessToken(token="no-registry", client_id="user-id-collision", scopes=[])
+    adapter = _adapter(
+        [_handler("music/search", search)],
+        current_token=[token],
+        policies={"no-registry": _custom(query__library=PolicyMode.ALLOW)},
+        user=SimpleNamespace(
+            user_id="user-id-collision",
+            enabled=True,
+            role="admin",
+            player_filter=[],
+            provider_filter=[],
+        ),
+    )
+    adapter._identity_provider = None
+
+    with pytest.raises(ToolError, match="not found or is not permitted"):
+        await adapter.call(
+            "ma_api:music/search",
+            {},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=cast("Context", MagicMock()),
         )
     assert called is False
 

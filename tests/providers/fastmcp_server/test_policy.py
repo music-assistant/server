@@ -92,6 +92,18 @@ def test_named_profile_snapshot_covers_every_capability(
     }
 
 
+def test_resolver_any_allows_checks_default_and_overrides() -> None:
+    """Event retention asks the compiled resolver, not a second policy walk."""
+    denied = PolicyResolver(default=PolicySelection.profile(PolicyProfile.SAFE_QUERIES))
+    allowed = PolicyResolver(
+        default=PolicySelection.profile(PolicyProfile.SAFE_QUERIES),
+        overrides={"tok": PolicySelection.profile(PolicyProfile.TRUSTED)},
+    )
+
+    assert denied.any_allows(Capability.DEBUG_EVENTS) is False
+    assert allowed.any_allows(Capability.DEBUG_EVENTS) is True
+
+
 def test_custom_snapshot_defaults_unset_capabilities_to_deny() -> None:
     """A partial Custom policy cannot accidentally inherit broader access."""
     snapshot = policy_snapshot(

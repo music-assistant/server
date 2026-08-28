@@ -12,8 +12,10 @@ Five endpoints are mounted under ``<mount_path>/connect``:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -45,6 +47,7 @@ class WizardContext:
     # headers are forgeable by any client that can reach MA directly, so this
     # is only safe behind a proxy that sets the header and strips client copies.
     trust_forwarded_proto: bool = False
+    identity_binder: Callable[[str, str, str | None], None] | None = None
 
 
 def _origin_guard(ctx: WizardContext, request: web.Request) -> web.Response | None:
@@ -304,6 +307,7 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: session token mint failed")
             return web.json_response({"error": "mint failed"}, status=500)
 
+        await _bind_request_identity(ctx, session, user)
         return web.json_response(
             {
                 "session_token": session,
@@ -353,11 +357,28 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
             err = _get("error", "invalid credentials")
             return web.json_response({"success": False, "error": str(err)}, status=401)
 
+        session_token = _get("access_token")
+        public_user = _get("user", {})
+        user_id = (
+            public_user.get("user_id")
+            if isinstance(public_user, dict)
+            else getattr(public_user, "user_id", "")
+        )
+        if session_token and not user_id:
+            try:
+                live_user = await ctx.mass.webserver.auth.authenticate_with_token(
+                    str(session_token)
+                )
+            except Exception:
+                live_user = None
+            user_id = str(getattr(live_user, "user_id", "") or "")
+        if session_token and user_id:
+            await _bind_request_identity(ctx, str(session_token), SimpleNamespace(user_id=user_id))
         return web.json_response(
             {
                 "success": True,
-                "session_token": _get("access_token"),
-                "user": _get("user", {}),
+                "session_token": session_token,
+                "user": public_user,
             }
         )
 
@@ -413,9 +434,28 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: per-client token mint failed")
             return web.json_response({"error": "mint failed"}, status=500)
 
+        await _bind_request_identity(ctx, token, user)
         return web.json_response({"token": token})
 
     return handler
+
+
+async def _bind_request_identity(ctx: WizardContext, bearer: object, user: Any) -> None:
+    """Bind one minted bearer when the runtime supplied an identity registry."""
+    if ctx.identity_binder is None or not bearer:
+        return
+    token_id = None
+    getter = getattr(ctx.mass.webserver.auth, "get_token_id_from_token", None)
+    if callable(getter):
+        try:
+            resolved = getter(str(bearer))
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+        except Exception:
+            resolved = None
+        if resolved:
+            token_id = str(resolved)
+    ctx.identity_binder(str(bearer), str(getattr(user, "user_id", "")), token_id)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

@@ -169,7 +169,7 @@ def _profile_annotations(command: str) -> Mapping[str, bool]:
 def _profile_operation(command: str) -> str:
     """Keep known curated commands stable if upstream scope metadata drifts."""
     if any(part in command for part in ("remove", "delete", "clear")):
-        return "write"
+        return "delete"
     if command.startswith(("players/cmd/", "player_queues/")):
         return "control"
     if any(part in command for part in ("/add_", "/create_", "/mark_")):

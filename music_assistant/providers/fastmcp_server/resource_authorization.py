@@ -19,10 +19,11 @@ from .audit import (
     AuditSink,
     emit_audit_record,
 )
-from .auth import LEGACY_TOKEN_CLIENT_ID, LOOKUP_FAILURE_CLIENT_ID
+from .auth import request_identity_holds
 from .capabilities import Capability
 from .commands.authorization import normalize_scope
 from .policy import PolicyMode, PolicySnapshot
+from .target_filters import TargetKind, collection_row_allowed
 
 if TYPE_CHECKING:
     from fastmcp.server.auth.auth import AccessToken
@@ -61,14 +62,7 @@ class AuthorizedResourceRequest:
 
     def library_item_allowed(self, item: Any) -> bool:
         """Apply the current user's provider upper bound to one fetched item."""
-        if item is None or self.user is None or _is_admin(self.user):
-            return True
-        configured = getattr(self.user, "provider_filter", None)
-        if not isinstance(configured, list | tuple | set | frozenset) or not configured:
-            return True
-        allowed = {str(value) for value in configured}
-        candidates = _item_providers(item)
-        if candidates.intersection(allowed):
+        if item is None or collection_row_allowed(self.user, item, kind=TargetKind.MUSIC_PROVIDER):
             return True
         if not self._result_denial_audited:
             self._result_denial_audited = True
@@ -201,16 +195,12 @@ class ResourceAuthorizer:
             or current_token.client_id != token.client_id
         ):
             return False
-        identity = self._identity(token.token)
-        if identity is None:
-            return token.client_id == LOOKUP_FAILURE_CLIENT_ID and evidence.token_id_lookup_failed
-        if str(getattr(user, "user_id", "")) != identity.user_id:
-            return False
-        expected = identity.token_id or LEGACY_TOKEN_CLIENT_ID
-        return (
-            token.client_id == expected
-            and not evidence.token_id_lookup_failed
-            and evidence.live_token_id == identity.token_id
+        return request_identity_holds(
+            token,
+            user,
+            self._identity(token.token),
+            live_token_id=evidence.live_token_id,
+            lookup_failed=evidence.token_id_lookup_failed,
         )
 
     def _ma_denial(
@@ -277,18 +267,3 @@ def _resource_target(uri: str) -> str:
 
 def _is_admin(user: Any) -> bool:
     return str(getattr(user, "role", "")).casefold() == "admin"
-
-
-def _item_providers(item: Any) -> set[str]:
-    providers = {
-        str(value)
-        for name in ("provider", "provider_instance", "provider_instance_id")
-        if (value := getattr(item, name, None)) is not None
-    }
-    mappings = getattr(item, "provider_mappings", None) or ()
-    for mapping in mappings:
-        for name in ("provider_instance", "provider_instance_id", "provider_domain", "provider"):
-            value = getattr(mapping, name, None)
-            if value is not None:
-                providers.add(str(value))
-    return providers

@@ -34,6 +34,7 @@ async def mount_connect_wizard(
     default_profile_provider: Callable[[], str],
     extra_origins_csv: str = "",
     trust_forwarded_proto: bool = False,
+    identity_binder: Callable[[str, str, str | None], None] | None = None,
 ) -> Callable[[], None]:
     """
     Register the wizard routes and return a callable that unregisters them.
@@ -48,6 +49,7 @@ async def mount_connect_wizard(
     :param trust_forwarded_proto: When True, accept a trusted reverse proxy's
         ``X-Forwarded-Proto: https`` as proof the public hop was HTTPS, so the
         credential-bearing endpoints work behind a TLS-terminating proxy.
+    :param identity_binder: Optional bind(bearer, user_id, token_id) for minted tokens.
     :return: Callable that, when invoked, unregisters every wizard route.
     """
     allowlist = compute_origin_allowlist(mass, extra_origins_csv)
@@ -57,6 +59,7 @@ async def mount_connect_wizard(
         default_profile_provider=default_profile_provider,
         origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
         trust_forwarded_proto=trust_forwarded_proto,
+        identity_binder=identity_binder,
     )
 
     base = "/" + mount_path.strip("/")

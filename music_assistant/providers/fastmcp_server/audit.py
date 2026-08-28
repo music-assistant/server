@@ -39,4 +39,4 @@ def emit_audit_record(record: AuditRecord) -> None:
 
 def is_privileged_capability(capability: str) -> bool:
     """Return whether successful and failed execution requires an audit record."""
-    return capability.startswith(("edit:", "delete:", "config:", "system:"))
+    return capability.startswith(("edit:", "delete:", "config:", "system:", "control:", "debug:"))

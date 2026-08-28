@@ -209,7 +209,13 @@ class ProviderCommandSet:
         value = self._config().get_value(CONF_REQUIRE_AUTH)
         return True if value is None else bool(value)
 
-    def _guard(self, command: str, scope: str, capability: Capability) -> _ProviderAuditContext:
+    def _guard(
+        self,
+        command: str,
+        scope: str,
+        capability: Capability,
+        arguments: dict[str, object] | None = None,
+    ) -> _ProviderAuditContext:
         """Authorize one provider command and audit a controlled denial."""
         from ..policy import PolicyMode  # noqa: PLC0415
 
@@ -235,6 +241,9 @@ class ProviderCommandSet:
                 policy_provider=self._policy_provider,
                 require_auth=self._auth_required(),
                 confirmation_command=command,
+                command=command,
+                arguments=arguments,
+                mass=self._mass,
             )
         except AuthenticationRequired, InsufficientPermissions:
             self._emit_audit(context, "authorization.denied")
@@ -301,7 +310,10 @@ class ProviderCommandSet:
     def _definitions(self) -> tuple[ProviderCommand, ...]:
         async def remove_items_safe(queue_id: str, item_ids: list[str]) -> RemoveFromQueueResult:
             audit = self._guard(
-                "fastmcp/queue/remove_items_safe", "queues.control", Capability.DELETE_QUEUE
+                "fastmcp/queue/remove_items_safe",
+                "queues.control",
+                Capability.DELETE_QUEUE,
+                {"queue_id": queue_id, "item_ids": item_ids},
             )
             return await self._execute_audited(
                 audit,

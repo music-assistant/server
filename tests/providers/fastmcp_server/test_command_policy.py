@@ -124,19 +124,21 @@ def test_unknown_command_fails_closed_instead_of_inheriting_scope(scope: str | N
 
 
 @pytest.mark.parametrize(
-    ("command", "scope"),
+    ("command", "scope", "capability"),
     [
-        ("music/future_command", "library.read"),
-        ("player_queues/future_command", "queues.control"),
-        ("config/core/future_command", "config.core.read"),
-        ("players/cmd/future_command", "players.control"),
+        ("music/future_command", "library.read", Capability.QUERY_LIBRARY),
+        ("player_queues/future_command", "queues.control", Capability.EDIT_QUEUE),
+        ("config/core/future_command", "config.core.read", Capability.CONFIG_READ),
+        ("players/cmd/future_command", "players.control", Capability.CONTROL_PLAYERS),
     ],
 )
-def test_unknown_descendant_of_known_family_fails_closed(command: str, scope: str) -> None:
-    """A recognized family cannot classify an unpinned future command."""
+def test_unknown_descendant_of_known_family_uses_the_family_policy(
+    command: str, scope: str, capability: Capability
+) -> None:
+    """The pin list is not a second allowlist; family policy classifies new descendants."""
     decision = resolve_command_policy(command, scope, None)
-    assert decision.hard_denied is True
-    assert decision.required_capabilities == frozenset()
+    assert decision.hard_denied is False
+    assert decision.required_capabilities == frozenset({str(capability)})
 
 
 @pytest.mark.parametrize("command", ["providers_elevated", "config/core_backup/read"])
@@ -163,6 +165,33 @@ def test_safe_queue_extension_keeps_destructive_annotation_and_capability() -> N
     decision = resolve_command_policy("fastmcp/queue/remove_items_safe", "queues.control", None)
     assert decision.required_capabilities == frozenset({str(Capability.DELETE_QUEUE)})
     assert decision.annotations["destructiveHint"] is True
+
+
+def test_library_remove_with_curated_profile_stays_a_delete() -> None:
+    """A curated profile cannot retag library removal as an edit."""
+    decision = resolve_command_policy(
+        "music/library/remove_item",
+        "library.write",
+        COMMAND_PROFILES["music/library/remove_item"],
+    )
+    assert decision.required_capabilities == frozenset({str(Capability.DELETE_LIBRARY)})
+
+
+def test_curated_destructive_profiles_do_not_claim_write() -> None:
+    """Remove, delete, and clear profiles advertise delete, not write."""
+    verbs = frozenset({"clear", "delete", "remove", "reset", "revoke"})
+    liars = [
+        profile.command
+        for profile in COMMAND_PROFILES.values()
+        if {
+            word
+            for segment in profile.command.replace("-", "_").split("/")
+            for word in segment.split("_")
+        }
+        & verbs
+        and profile.operation_override == "write"
+    ]
+    assert liars == []
 
 
 def test_save_as_playlist_requires_the_playlist_edit_capability() -> None:

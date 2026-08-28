@@ -36,6 +36,31 @@ LEGACY_TOKEN_CLIENT_ID = "ma-token:legacy"  # nosec B105
 LOOKUP_FAILURE_CLIENT_ID = "ma-token:lookup-failed"
 
 
+def request_identity_holds(
+    token: AccessToken,
+    user: object,
+    identity: object | None,
+    *,
+    live_token_id: object = None,
+    lookup_failed: bool = False,
+) -> bool:
+    """Return whether one sealed request identity still matches the live user."""
+    if user is None or getattr(user, "enabled", True) is False:
+        return False
+    if identity is None:
+        return False
+    if str(getattr(user, "user_id", "")) != getattr(identity, "user_id", None):
+        return False
+    expected = getattr(identity, "token_id", None) or LEGACY_TOKEN_CLIENT_ID
+    if token.client_id != expected:
+        return False
+    if lookup_failed:
+        return False
+    if live_token_id is None:
+        return True
+    return live_token_id == getattr(identity, "token_id", None)
+
+
 def _is_valid_token_id(value: object) -> bool:
     """Return whether a lookup result has MA's non-empty URL-safe token-ID shape."""
     return (

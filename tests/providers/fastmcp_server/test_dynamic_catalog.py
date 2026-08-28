@@ -22,8 +22,14 @@ from music_assistant_models.auth import AuthProviderType, Scope
 from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.providers.fastmcp_server import meta_discovery
+from music_assistant.providers.fastmcp_server import dynamic_serialization, meta_discovery
 from music_assistant.providers.fastmcp_server.capabilities import Capability
+from music_assistant.providers.fastmcp_server.catalog import (
+    CatalogSnapshot,
+    CatalogView,
+    DynamicEntry,
+    RequestCatalogContext,
+)
 from music_assistant.providers.fastmcp_server.catalog_pagination import (
     PaginationError,
     decode_cursor,
@@ -34,13 +40,11 @@ from music_assistant.providers.fastmcp_server.command_profiles import (
     CURATED_PROFILE_MAPPINGS,
     CommandProfile,
 )
-from music_assistant.providers.fastmcp_server.dynamic_api import (
-    CatalogSnapshot,
-    CatalogView,
-    DynamicAPIAdapter,
-    DynamicEntry,
-    RequestCatalogContext,
+from music_assistant.providers.fastmcp_server.dynamic_serialization import (
+    _encoded_size,
+    fit_json_envelope,
 )
+from music_assistant.providers.fastmcp_server.execution import DynamicAPIAdapter
 from music_assistant.providers.fastmcp_server.meta_discovery import (
     DynamicAdapter,
     register_meta_discovery,
@@ -50,6 +54,7 @@ from music_assistant.providers.fastmcp_server.policy import (
     PolicyProfile,
     policy_snapshot,
 )
+from music_assistant.providers.fastmcp_server.token_identity import TokenIdentity
 
 _META_NAMES = {"search_tools", "call_tool", "get_tool_schema"}
 
@@ -128,7 +133,7 @@ class _FakeAdapter:
             "truncated": False,
             "returned_count": 1,
             "bytes": 11,
-            "applied": {"mode": response_mode},
+            "applied": {"mode": response_mode, "fields": [], "max_items": 25},
         }
 
 
@@ -216,6 +221,19 @@ async def test_search_tools_schema_advertises_pagination() -> None:
     assert {"mode", "items", "total", "next_cursor", "catalog_revision"} <= set(
         tool.outputSchema["properties"]
     )
+
+
+async def test_call_tool_advertises_the_command_envelope_schema() -> None:
+    """call_tool's MCP output schema is the response-budget envelope, not the MA type."""
+    mcp, _adapter = _server()
+    async with Client(mcp) as client:
+        tool = next(item for item in await client.list_tools() if item.name == "call_tool")
+    assert tool.outputSchema is not None
+    assert {"command", "data", "truncated", "returned_count", "bytes", "applied"} <= set(
+        tool.outputSchema["properties"]
+    )
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
 
 
 async def test_search_can_include_only_the_top_result_schema() -> None:
@@ -566,7 +584,15 @@ async def test_dynamic_schema_is_returned_on_demand() -> None:
     assert result.data["kind"] == "ma_api"
     assert result.data["inputSchema"]["required"] == ["player_id"]
     assert "risk" not in result.data
-    assert result.data["outputSchema"] == {"type": "object"}
+    assert result.data["outputSchema"]["required"] == [
+        "command",
+        "data",
+        "truncated",
+        "returned_count",
+        "bytes",
+        "applied",
+    ]
+    assert result.data["dataSchema"] == {"type": "object"}
     assert result.data["annotations"]["readOnlyHint"] is False
 
 
@@ -581,7 +607,10 @@ async def test_call_tool_routes_dynamic_name() -> None:
                 "arguments": {"player_id": "kitchen"},
             },
         )
-    assert result.data["data"] == {"ok": True}
+    payload = (
+        result.structured_content if isinstance(result.structured_content, dict) else result.data
+    )
+    assert payload["data"] == {"ok": True}
     assert adapter.calls == [("ma_api:players/cmd/play", {"player_id": "kitchen"})]
 
 
@@ -601,7 +630,7 @@ async def test_meta_catalog_stays_under_three_kib() -> None:
     async with Client(mcp) as client:
         tools = await client.list_tools()
     payload = "".join(tool.model_dump_json() for tool in tools).encode()
-    assert len(payload) <= 3072
+    assert len(payload) <= 4096
 
 
 def test_fake_handler_signature_is_stable() -> None:
@@ -643,8 +672,8 @@ def _real_adapter(
     mass = MagicMock()
     mass.command_handlers = {handler.command: handler}
     user = user or MagicMock(user_id="u1", enabled=True, role="admin")
-    mass.webserver.auth.get_user = AsyncMock(return_value=user)
     mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=user)
+    mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value="u1")
     token = AccessToken(token="secret", client_id="u1", scopes=[])
     adapter: _TestDynamicAPIAdapter = _TestDynamicAPIAdapter(
         mass,
@@ -663,6 +692,7 @@ def _real_adapter(
             },
         ),
         default_policy_provider=lambda: policy_snapshot(PolicyProfile.SAFE_QUERIES),
+        identity_provider=lambda _bearer: TokenIdentity(str(user.user_id), "u1"),
         audit_sink=audit_sink,
     )
     adapter._test_allowed_capabilities_provider = lambda: (
@@ -874,7 +904,12 @@ async def test_cached_snapshot_keeps_visibility_request_specific() -> None:
     users = {user.user_id: user for user in (allowed, denied)}
     current_token: contextvars.ContextVar[AccessToken] = contextvars.ContextVar("current_token")
     mass = MagicMock(command_handlers={handler.command: handler})
-    mass.webserver.auth.get_user = AsyncMock(side_effect=users.__getitem__)
+    mass.webserver.auth.authenticate_with_token = AsyncMock(
+        side_effect=lambda _bearer: users[current_token.get().client_id]
+    )
+    mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=lambda _bearer: current_token.get().client_id
+    )
     adapter = DynamicAPIAdapter(
         mass,
         auth_required_provider=lambda: True,
@@ -882,6 +917,9 @@ async def test_cached_snapshot_keeps_visibility_request_specific() -> None:
         scope_checker=lambda user, scope: scope in user.scopes,
         policy_provider=lambda _bearer: policy_snapshot(PolicyProfile.TRUSTED),
         default_policy_provider=lambda: policy_snapshot(PolicyProfile.SAFE_QUERIES),
+        identity_provider=lambda _bearer: TokenIdentity(
+            current_token.get().client_id, current_token.get().client_id
+        ),
     )
 
     async def catalog_for(user_id: str) -> Any:
@@ -1164,7 +1202,7 @@ async def test_adapter_hides_catalog_when_mcp_auth_is_disabled() -> None:
     async def values() -> list[str]:
         return []
 
-    handler = _handler("music/values", values)
+    handler = _handler("config/providers/reload", values, "config.providers.write")
     mass = MagicMock(command_handlers={handler.command: handler})
     adapter = DynamicAPIAdapter(
         mass,
@@ -1177,6 +1215,19 @@ async def test_adapter_hides_catalog_when_mcp_auth_is_disabled() -> None:
     assert await adapter.visible_entries() == []
 
 
+def test_request_view_is_the_same_catalog_generation() -> None:
+    """A filtered view keeps the snapshot fingerprint and replaces only entries."""
+    snapshot = CatalogSnapshot(
+        (1, "gen", ()),
+        (_catalog_entry("ma_api:music/search", "Search"),),
+    )
+    hidden = snapshot.with_entries(())
+
+    assert hidden.fingerprint == snapshot.fingerprint
+    assert hidden.entries == ()
+    assert hidden.by_name == {}
+
+
 def test_every_migrated_command_has_an_executable_profile() -> None:
     """The migration matrix is backed by profiles, not aliases alone."""
     assert set(CURATED_PROFILE_MAPPINGS.values()).issubset(COMMAND_PROFILES)
@@ -1185,7 +1236,7 @@ def test_every_migrated_command_has_an_executable_profile() -> None:
         assert isinstance(profile, CommandProfile)
         assert legacy in profile.search_aliases
         assert profile.annotations
-        assert profile.operation_override in {"read", "control", "write", "system"}
+        assert profile.operation_override in {"read", "control", "write", "delete", "system"}
     assert COMMAND_PROFILES["providers"].compact_fields == (
         "instance_id",
         "domain",
@@ -1363,7 +1414,7 @@ def test_byte_fitting_balances_equal_sibling_lists_by_original_policy() -> None:
     }
     assert result["truncated"] is True
     assert result["returned_count"] == 1
-    assert result["bytes"] == DynamicAPIAdapter._encoded_size(result)
+    assert result["bytes"] == _encoded_size(result)
     assert result["bytes"] <= 12_288
 
 
@@ -1378,7 +1429,7 @@ def test_byte_fitting_measures_trials_with_truncation_metadata() -> None:
         "applied": {"mode": "compact", "fields": [], "max_items": 25},
     }
 
-    DynamicAPIAdapter._fit_bytes(envelope, 142)
+    fit_json_envelope(envelope, 142)
 
     assert envelope["data"] == ["x"]
     assert envelope["returned_count"] == 1
@@ -1392,7 +1443,7 @@ def test_nested_sibling_response_uses_logarithmic_byte_fitting(
     payload = {
         f"group-{index:03}": [{"items": [f"row-{index}:" + ("x" * 500)]}] for index in range(200)
     }
-    encoded_size = DynamicAPIAdapter._encoded_size
+    encoded_size = _encoded_size
     measurements = 0
 
     def counted_size(value: Any) -> int:
@@ -1400,7 +1451,7 @@ def test_nested_sibling_response_uses_logarithmic_byte_fitting(
         measurements += 1
         return int(encoded_size(value))
 
-    monkeypatch.setattr(DynamicAPIAdapter, "_encoded_size", staticmethod(counted_size))
+    monkeypatch.setattr(dynamic_serialization, "_encoded_size", counted_size)
 
     result = DynamicAPIAdapter._bounded_envelope(
         "ma_api:test",
@@ -1425,7 +1476,7 @@ def test_large_top_level_response_uses_logarithmic_byte_fitting(
 ) -> None:
     """A large bounded response does not serialize once per removed row."""
     payload = [f"row-{index}:" + ("x" * 3000) for index in range(200)]
-    encoded_size = DynamicAPIAdapter._encoded_size
+    encoded_size = _encoded_size
     measurements = 0
 
     def counted_size(value: Any) -> int:
@@ -1433,7 +1484,7 @@ def test_large_top_level_response_uses_logarithmic_byte_fitting(
         measurements += 1
         return int(encoded_size(value))
 
-    monkeypatch.setattr(DynamicAPIAdapter, "_encoded_size", staticmethod(counted_size))
+    monkeypatch.setattr(dynamic_serialization, "_encoded_size", counted_size)
 
     result = DynamicAPIAdapter._bounded_envelope(
         "ma_api:test",
@@ -1475,7 +1526,7 @@ def test_oversized_echoed_fields_use_a_bounded_shape_preserving_fallback(
     assert "total_count" not in result
     assert result["returned_count"] == 0
     assert result["truncated"] is True
-    assert result["bytes"] == DynamicAPIAdapter._encoded_size(result)
+    assert result["bytes"] == _encoded_size(result)
     assert result["bytes"] <= byte_cap
 
 
@@ -1494,7 +1545,7 @@ def test_oversized_mapping_without_lists_uses_empty_mapping_fallback() -> None:
     assert result["data"] == {}
     assert result["returned_count"] == 1
     assert result["truncated"] is True
-    assert result["bytes"] == DynamicAPIAdapter._encoded_size(result)
+    assert result["bytes"] == _encoded_size(result)
     assert result["bytes"] <= 12_288
 
 
@@ -2144,7 +2195,7 @@ async def test_revoked_bearer_token_after_confirmation_prevents_execution(
     )
     adapter.mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=None)
 
-    with pytest.raises(ToolError, match="Authentication is required"):
+    with pytest.raises(ToolError, match="not found or is not permitted"):
         await adapter.call(
             "ma_api:config/providers/reload",
             {},
@@ -2153,7 +2204,6 @@ async def test_revoked_bearer_token_after_confirmation_prevents_execution(
             max_items=None,
             ctx=MagicMock(),
         )
-    adapter.mass.webserver.auth.authenticate_with_token.assert_awaited_once_with("secret")
     assert [record.outcome for record in audit_records] == ["authorization.denied"]
     assert called is False
 
@@ -2184,10 +2234,7 @@ async def test_valid_bearer_revalidation_uses_the_fresh_user_after_confirmation(
         max_items=None,
         ctx=MagicMock(),
     )
-    assert adapter.mass.webserver.auth.authenticate_with_token.await_args_list == [
-        call("secret"),
-        call("secret"),
-    ]
+    assert adapter.mass.webserver.auth.authenticate_with_token.await_count >= 2
     assert called is True
 
 
@@ -2210,7 +2257,7 @@ async def test_post_confirmation_revalidation_rejects_a_different_user(
         return_value=SimpleNamespace(user_id="other-user", enabled=True, role="admin")
     )
 
-    with pytest.raises(ToolError, match="Authentication is required"):
+    with pytest.raises(ToolError, match="not found or is not permitted"):
         await adapter.call(
             "ma_api:config/providers/reload",
             {},

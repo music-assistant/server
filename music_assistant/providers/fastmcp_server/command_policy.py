@@ -13,7 +13,6 @@ from music_assistant_models.enums import ConfigEntryType
 
 from .capabilities import Capability
 from .config_io.secret_handler import is_secret_key
-from .known_commands import KNOWN_AUTHENTICATED_COMMANDS
 from .policy import PolicyMode, PolicySnapshot, combine_policy_modes
 
 if TYPE_CHECKING:
@@ -266,7 +265,18 @@ def _destructive_write(capability: Capability) -> CommandDecision:
     )
 
 
+def _control(capability: Capability) -> CommandDecision:
+    """Return a non-destructive control decision for one capability."""
+    return CommandDecision(
+        _CONTROL_ANNOTATIONS,
+        frozenset({str(capability)}),
+    )
+
+
 EXACT_POLICIES: dict[str, CommandDecision] = {
+    **{command: _control(Capability.CONTROL_PLAYBACK) for command in _PLAYBACK_COMMANDS},
+    **{command: _control(Capability.CONTROL_MEDIA) for command in _MEDIA_CONTROL_COMMANDS},
+    **{command: _control(Capability.CONTROL_VOLUME) for command in _VOLUME_COMMANDS},
     "music/radios/radio_tracks": CommandDecision(
         _READ_ANNOTATIONS,
         frozenset({str(Capability.QUERY_LIBRARY)}),
@@ -347,8 +357,6 @@ def resolve_command_policy(
         return CommandDecision({}, hard_denied=True)
     if exact := EXACT_POLICIES.get(command):
         return exact
-    if command not in KNOWN_AUTHENTICATED_COMMANDS:
-        return CommandDecision({}, hard_denied=True)
 
     if command.startswith(_SYSTEM_COMMAND_PREFIXES) or command in {
         "info",
@@ -369,9 +377,7 @@ def resolve_command_policy(
     )
     if profile is not None:
         annotations.update(profile.annotations)
-    required_capabilities = _command_capability_override(command) or _required_capabilities(
-        family, operation
-    )
+    required_capabilities = _required_capabilities(family, operation)
     if not required_capabilities:
         return CommandDecision(annotations, hard_denied=True)
     preflight = (
@@ -404,17 +410,6 @@ def resolve_command_policy(
 def command_is_hard_denied(command: str) -> bool:
     """Return whether a command belongs to an unconditional deny family."""
     return command in _HARD_DENIED_COMMANDS or command.startswith(_HARD_DENIED_PREFIXES)
-
-
-def _command_capability_override(command: str) -> frozenset[str]:
-    """Return a fine-grained capability for migrated control commands."""
-    if command in _PLAYBACK_COMMANDS:
-        return frozenset({str(Capability.CONTROL_PLAYBACK)})
-    if command in _MEDIA_CONTROL_COMMANDS:
-        return frozenset({str(Capability.CONTROL_MEDIA)})
-    if command in _VOLUME_COMMANDS:
-        return frozenset({str(Capability.CONTROL_VOLUME)})
-    return frozenset()
 
 
 async def preflight_command(

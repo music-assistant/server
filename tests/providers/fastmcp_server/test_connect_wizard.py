@@ -602,6 +602,34 @@ async def test_login_dataclass_failure_returns_401(
 # ── Per-client token mint ────────────────────────────────────────────────────
 
 
+async def test_token_endpoint_binds_minted_identity(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A successful mint writes the new bearer into the request-identity registry."""
+    bound: list[tuple[str, str, str | None]] = []
+
+    async def _run() -> None:
+        unmount = await mount_connect_wizard(
+            wizard_mass,
+            mount_path="/mcp/v1",
+            default_profile_provider=lambda: "Trusted",
+            identity_binder=lambda bearer, user_id, token_id: bound.append(
+                (bearer, user_id, token_id)
+            ),
+        )
+        async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
+            resp = await client.post(
+                "/mcp/v1/connect/token",
+                json={"session_token": "sess-1", "client_id": "cursor"},
+                headers={"Origin": "http://localhost:8095"},
+            )
+            assert resp.status == 200
+        unmount()
+
+    await _run()
+    assert bound == [("jwt-xyz", mock_user.user_id, "tid:jwt-xyz")]
+
+
 async def test_token_endpoint_mints_named(
     wizard_client: TestClient, wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:

@@ -13,6 +13,7 @@ from fastmcp.server.auth.auth import AccessToken
 from music_assistant_models.auth import Scope
 
 from music_assistant.providers.fastmcp_server.audit import AuditRecord
+from music_assistant.providers.fastmcp_server.auth import LOOKUP_FAILURE_CLIENT_ID
 from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.policy import (
     PolicyMode,
@@ -20,6 +21,7 @@ from music_assistant.providers.fastmcp_server.policy import (
     policy_snapshot,
 )
 from music_assistant.providers.fastmcp_server.resource_authorization import ResourceAuthorizer
+from music_assistant.providers.fastmcp_server.target_filters import filter_collection_result
 from music_assistant.providers.fastmcp_server.token_identity import TokenIdentityRegistry
 
 
@@ -187,6 +189,32 @@ async def test_resource_user_disabled_during_token_id_lookup_is_denied() -> None
         await authorizer.authorize("player://player-1", {str(Capability.QUERY_PLAYERS)})
 
 
+async def test_lookup_failure_without_identity_cannot_read_resources() -> None:
+    """A token that never bound an identity cannot read player or library resources."""
+    bearer = AccessToken(token="lookup-failure", client_id=LOOKUP_FAILURE_CLIENT_ID, scopes=[])
+    authorizer = ResourceAuthorizer(
+        SimpleNamespace(
+            webserver=SimpleNamespace(
+                auth=SimpleNamespace(
+                    authenticate_with_token=AsyncMock(return_value=_user()),
+                    get_token_id_from_token=AsyncMock(
+                        side_effect=RuntimeError("lookup unavailable")
+                    ),
+                )
+            )
+        ),
+        auth_required_provider=lambda: True,
+        token_provider=lambda: bearer,
+        identity_provider=lambda _token: None,
+        policy_provider=lambda _token: _policy(**{str(Capability.QUERY_PLAYERS): PolicyMode.ALLOW}),
+        default_policy_provider=lambda: _policy(),
+        scope_checker=lambda _user, _scope: True,
+    )
+
+    with pytest.raises(ResourceError, match="Authentication is required"):
+        await authorizer.authorize("player://player-1", {str(Capability.QUERY_PLAYERS)})
+
+
 async def test_unknown_resource_denial_uses_fixed_redacted_audit_fields() -> None:
     """Caller-controlled URI values never enter the resource audit boundary."""
     audits: list[AuditRecord] = []
@@ -229,6 +257,21 @@ async def test_library_resource_provider_filter_hides_foreign_item_and_audits_on
         mode="allow",
         outcome="authorization.denied",
     )
+
+
+async def test_library_resource_and_command_listing_agree_on_row_identity() -> None:
+    """library:// keeps a row only when the matching library listing would keep it."""
+    authorizer = _authorizer()
+    request = await authorizer.authorize("library://track/17", {str(Capability.QUERY_LIBRARY)})
+    assert request is not None
+    user = _user()
+    item = SimpleNamespace(
+        provider_mappings=(SimpleNamespace(provider_domain="spotify--1"),),
+    )
+
+    kept = filter_collection_result(user, "music/tracks/library_items", (item,))
+
+    assert request.library_item_allowed(item) is bool(kept)
 
 
 async def test_library_resource_provider_filter_accepts_one_allowed_mapping() -> None:

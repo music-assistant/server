@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 
+from music_assistant.providers.fastmcp_server.catalog import DynamicEntry
 from music_assistant.providers.fastmcp_server.catalog_pagination import (
     CATALOG_DEFAULT_LIMIT,
     MAX_CURSOR_LENGTH,
@@ -21,7 +22,6 @@ from music_assistant.providers.fastmcp_server.catalog_pagination import (
     normalize_query,
     resolve_limit,
 )
-from music_assistant.providers.fastmcp_server.dynamic_api import DynamicEntry
 
 
 def _entry(

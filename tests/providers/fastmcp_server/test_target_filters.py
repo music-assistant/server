@@ -170,6 +170,84 @@ def test_queue_collection_hides_queues_outside_the_player_filter() -> None:
     assert result == (SimpleNamespace(queue_id="kitchen"),)
 
 
+def test_search_collection_hides_items_outside_the_provider_filter() -> None:
+    """Unscoped search cannot enumerate another user's providers."""
+    result = filter_collection_result(
+        _user(),
+        "music/search",
+        {
+            "tracks": [
+                SimpleNamespace(provider_instance_id="spotify--user"),
+                SimpleNamespace(provider_instance_id="qobuz--other"),
+            ],
+            "albums": [SimpleNamespace(provider_instance_id="qobuz--other")],
+        },
+    )
+
+    assert result == {
+        "tracks": [SimpleNamespace(provider_instance_id="spotify--user")],
+        "albums": [],
+    }
+
+
+def test_library_collection_reads_provider_mappings() -> None:
+    """Library rows identify their provider through mappings, not only top-level fields."""
+    result = filter_collection_result(
+        _user(),
+        "music/albums/library_items",
+        (
+            SimpleNamespace(
+                provider_mappings=(SimpleNamespace(provider_instance_id="spotify--user"),)
+            ),
+            SimpleNamespace(
+                provider_mappings=(SimpleNamespace(provider_instance_id="qobuz--other"),)
+            ),
+        ),
+    )
+
+    assert result == (
+        SimpleNamespace(provider_mappings=(SimpleNamespace(provider_instance_id="spotify--user"),)),
+    )
+
+
+def test_library_collection_hides_items_outside_the_provider_filter() -> None:
+    """Zero-argument library listings cannot enumerate another user's providers."""
+    result = filter_collection_result(
+        _user(),
+        "music/tracks/library_items",
+        (
+            SimpleNamespace(provider_instance_id="spotify--user"),
+            SimpleNamespace(provider_instance_id="qobuz--other"),
+        ),
+    )
+
+    assert result == (SimpleNamespace(provider_instance_id="spotify--user"),)
+
+
+def test_player_collection_hides_players_outside_the_player_filter() -> None:
+    """Zero-argument player listings cannot enumerate another user's players."""
+    result = filter_collection_result(
+        _user(),
+        "players/all",
+        (
+            SimpleNamespace(player_id="kitchen"),
+            SimpleNamespace(player_id="bedroom"),
+        ),
+    )
+
+    assert result == (SimpleNamespace(player_id="kitchen"),)
+
+
+def test_undeclared_listing_is_not_filtered() -> None:
+    """A listing without a collection-visibility declaration is returned intact."""
+    rows = (
+        SimpleNamespace(player_id="kitchen"),
+        SimpleNamespace(player_id="bedroom"),
+    )
+
+    assert filter_collection_result(_user(), "players/get", rows) == rows
+
+
 def test_provider_filter_is_not_applied_to_provider_management() -> None:
     """Player/core/plugin provider configuration is outside the music-provider filter."""
     mass = MagicMock()

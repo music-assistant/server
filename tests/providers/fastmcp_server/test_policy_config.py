@@ -27,6 +27,7 @@ from music_assistant.providers.fastmcp_server.policy_config import (
     policy_event_buffer_enabled,
     policy_mode_key,
     policy_token_suffix,
+    raw_provider_config_value,
     token_policy_key,
 )
 
@@ -330,3 +331,18 @@ def test_actual_provider_config_roundtrip_preserves_exact_cold_token_policies(
     assert policy_event_buffer_enabled(cold, raw_value_provider=raw_value) is True
     assert readonly_id not in repr(persisted)
     assert debug_id not in repr(persisted)
+
+
+def test_raw_provider_config_value_uses_ma_store_when_present() -> None:
+    """Runtime and provider share one reader for preserved policy keys."""
+    mass = SimpleNamespace(
+        config=SimpleNamespace(
+            get_raw_provider_config_value=lambda _id, key, _default: f"raw:{key}"
+        )
+    )
+
+    assert raw_provider_config_value(mass, "mcp--1", "policy_default") == "raw:policy_default"
+    assert (
+        raw_provider_config_value(SimpleNamespace(config=None), "mcp--1", "policy_default") is None
+    )
+    assert raw_provider_config_value(mass, "", "policy_default") is None
