@@ -44,6 +44,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?", maxsplit=1)[0]
+            if not item_id:
+                # a truncated URL with a trailing slash (no id segment)
+                raise KeyError
         elif uri.startswith("https://tidal.com/browse/"):
             # Tidal public share URL
             # https://tidal.com/browse/track/123456
@@ -51,6 +54,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[4]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[5].split("?", maxsplit=1)[0]
+            if not item_id:
+                # a truncated URL with a trailing slash (no id segment)
+                raise KeyError
         elif uri.startswith("https://music.apple.com/"):
             # Apple Music share URL
             # https://music.apple.com/{storefront}/{type}/{slug}/{id}

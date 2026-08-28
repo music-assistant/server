@@ -304,6 +304,12 @@ async def test_uri_parsing() -> None:
     # test truncated public share url (no path segments to parse out)
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("https://open.spotify.com")
+    # test truncated public share url with a trailing slash (empty id segment)
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://open.spotify.com/track/")
+    # test truncated Tidal browse url with a trailing slash (empty id segment)
+    with pytest.raises(MusicAssistantError):
+        await uri.parse_uri("https://tidal.com/browse/track/")
 
 
 async def test_apple_music_uri_parsing() -> None:
