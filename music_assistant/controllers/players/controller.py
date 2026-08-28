@@ -3634,7 +3634,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         )
 
         if should_stop:
-            await self._stop_dissolved_group_leader(parent_player)
+            await self._stop_player_or_its_queue(parent_player)
 
     async def _handle_set_members_with_protocols(
         self,
@@ -3807,19 +3807,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     return member_id
         return candidates[0]
 
-    async def _stop_dissolved_group_leader(self, player: Player) -> None:
+    async def _stop_player_or_its_queue(self, player: Player) -> None:
         """
-        Stop the leader of a sync group that was just dissolved around it.
+        Stop the player, ending its queue when it is playing one of its own.
 
-        :param player: The former sync leader, already removed from its own group.
+        :param player: The player to stop.
         """
-        # End the queue itself when the leader was playing its own, exactly as a stop
-        # command does: stopping only the device leaves the queue session open, so its
-        # preloading keeps pulling audio and a provider streaming a live session (Spotify)
-        # stays tethered for another track or two. Restricted to the player's own queue:
-        # get_active_queue resolves a player that is grouped elsewhere to a queue this
-        # dissolve has no business stopping. The permission-free handler, because group
-        # bookkeeping runs without any user context.
+        # End the queue itself, exactly as a stop command does: stopping only the device
+        # leaves the queue session open, so its preloading keeps pulling audio and a
+        # provider streaming a live session (Spotify) stays tethered for another track or
+        # two. Restricted to the player's own queue: get_active_queue resolves a protocol
+        # player to its parent, and stopping that parent's queue would come straight back
+        # here. The permission-free handler, because both callers act on behalf of the
+        # server rather than a user that can address the player.
         if (
             active_queue := self.get_active_queue(player)
         ) and active_queue.queue_id == player.player_id:
@@ -3962,20 +3962,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             # wait for the stop command to process and prevent race conditions
             async with self.wait_for_player_update(player_id, timeout=5):
-                # end the queue itself when the player is playing its own, exactly as a
-                # stop command does: stopping only the player leaves the queue session
-                # open, so its preloading keeps pulling audio and a provider streaming a
-                # live session (Spotify) stays tethered for another track or two.
-                # Restricted to the player's own queue: get_active_queue resolves a
-                # protocol player to its parent, and stopping that parent's queue would
-                # come straight back here. The permission-free handler, because a power
-                # off is also issued internally for players the caller cannot address.
-                if (
-                    active_queue := self.get_active_queue(player)
-                ) and active_queue.queue_id == player_id:
-                    await self.mass.player_queues._handle_stop(player_id)
-                else:
-                    await self._handle_cmd_stop(player_id)
+                await self._stop_player_or_its_queue(player)
 
         # power off all synced childs when player is a sync leader
         elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:

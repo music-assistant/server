@@ -842,6 +842,25 @@ class TestAdHocLeadershipTransfer:
         queue_stop.assert_awaited_once_with("leader")
         controller._handle_cmd_stop.assert_not_awaited()
 
+    async def test_transfer_stops_nothing_on_the_way_out(self, mock_mass: MagicMock) -> None:
+        """
+        Handing the group to a new leader must not stop anything here.
+
+        transfer_queue moves the playback position to the new leader and stops the old
+        one itself, so a stop issued here would land on playback that already moved.
+        """
+        controller, leader, device_stop, queue_stop = _ad_hoc_leader(
+            mock_mass, member_type=PlayerType.PLAYER
+        )
+        controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
+        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
+
+        controller._transfer_ad_hoc_leadership.assert_awaited_once_with(leader, ["member"])
+        device_stop.assert_not_awaited()
+        queue_stop.assert_not_awaited()
+
 
 class TestDissolvedLeaderEndsTheQueue:
     """
@@ -886,25 +905,6 @@ class TestDissolvedLeaderEndsTheQueue:
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
         device_stop.assert_awaited_once_with("leader")
-        queue_stop.assert_not_awaited()
-
-    async def test_leadership_transfer_stops_neither(self, mock_mass: MagicMock) -> None:
-        """
-        Handing the group to a new leader must not stop anything on the way out.
-
-        transfer_queue moves the playback position to the new leader and stops the old
-        one itself, so a stop issued here would land on playback that already moved.
-        """
-        controller, leader, device_stop, queue_stop = _ad_hoc_leader(
-            mock_mass, member_type=PlayerType.PLAYER
-        )
-        controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
-        controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
-
-        await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
-
-        controller._transfer_ad_hoc_leadership.assert_awaited_once_with(leader, ["member"])
-        device_stop.assert_not_awaited()
         queue_stop.assert_not_awaited()
 
 
