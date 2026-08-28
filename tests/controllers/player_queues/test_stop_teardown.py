@@ -97,6 +97,22 @@ async def test_a_player_that_cannot_be_stopped_still_loses_its_session() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_stop_cancels_the_prewarm_still_running() -> None:
+    """
+    A prewarm in flight would attach its buffer after the teardown has already run.
+
+    It is cancelled before the device is told to stop, so the queue cannot be left holding
+    a provider's stream. The prewarm releases its own half-filled source on cancellation.
+    """
+    fake = _fake_controller()
+
+    await _stop(fake)
+
+    cancelled = {call.args[0] for call in fake.mass.cancel_task.call_args_list}
+    assert "prepare_next_audio_buffer_q" in cancelled
+
+
+@pytest.mark.asyncio
 async def test_a_stop_with_no_session_of_its_own_tears_nothing_down() -> None:
     """
     A stop on a queue that was not playing owns none of the audio it finds.
