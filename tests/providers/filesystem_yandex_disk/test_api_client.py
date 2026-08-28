@@ -18,24 +18,39 @@ class _Resource:
 
 
 def test_to_raw_item_file() -> None:
-    """A file resource maps to a RawItem with md5 checksum and size."""
-    res = _Resource(path="disk:/Music/a.flac", name="a.flac", type="file", md5="abc", size=123)
-    assert _to_raw_item(res) == ("disk:/Music/a.flac", "a.flac", False, "abc", 123)
+    """A file resource maps to a RawItem with checksum, size, and metadata token."""
+    res = _Resource(
+        path="disk:/Music/a.flac",
+        name="a.flac",
+        type="file",
+        md5="abc",
+        size=123,
+        modified="2026-08-28T07:00:00Z",
+    )
+    assert _to_raw_item(res) == (
+        "disk:/Music/a.flac",
+        "a.flac",
+        False,
+        "abc",
+        123,
+        "2026-08-28T07:00:00Z",
+    )
 
 
 def test_to_raw_item_dir_has_empty_checksum_and_no_size() -> None:
     """A directory has no size and an empty checksum."""
     res = _Resource(path="disk:/Music", name="Music", type="dir", md5=None, size=None)
-    assert _to_raw_item(res) == ("disk:/Music", "Music", True, "", None)
+    assert _to_raw_item(res) == ("disk:/Music", "Music", True, "", None, None)
 
 
 def test_to_raw_item_file_without_md5_falls_back() -> None:
     """A file lacking md5 gets the 'unknown' checksum sentinel."""
     res = _Resource(path="disk:/x.mp3", name="x.mp3", type="file", md5=None, size=1)
-    _id, _name, is_dir, checksum, size = _to_raw_item(res)
+    _id, _name, is_dir, checksum, size, metadata_token = _to_raw_item(res)
     assert is_dir is False
     assert checksum == "unknown"
     assert size == 1
+    assert metadata_token is None
 
 
 class _AuthStub:

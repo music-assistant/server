@@ -62,17 +62,20 @@ def _to_raw_item(resource: object) -> RawItem:
     Map a yadisk resource object to the base's ``RawItem`` tuple.
 
     :param resource: A yadisk (Async)ResourceObject.
-    :returns: ``(id, name, is_dir, checksum, size)`` where id is the disk path.
+    :returns: ``(id, name, is_dir, checksum, size, metadata_token)`` where id is
+        the disk path.
     """
     is_dir = getattr(resource, "type", None) == "dir"
-    checksum = "" if is_dir else (getattr(resource, "md5", None) or "unknown")
+    checksum = "" if is_dir else str(getattr(resource, "md5", None) or "unknown")
     size = None if is_dir else getattr(resource, "size", None)
+    metadata_token = str(getattr(resource, "modified", None) or "") or None
     return (
         str(getattr(resource, "path", "")),
         str(getattr(resource, "name", "")),
         is_dir,
         checksum,
         size,
+        metadata_token,
     )
 
 
