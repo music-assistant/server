@@ -1006,7 +1006,7 @@ class PlayerConfigMixin:
                 ),
             )
             protocol_player_enabled = self.get_raw_player_config_value(
-                protocol.output_protocol_id, CONF_ENABLED, not experimental_note
+                protocol.output_protocol_id, CONF_ENABLED, True
             )
             provider_available = self.mass.get_provider(protocol.protocol_domain) is not None
             if not provider_available:

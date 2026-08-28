@@ -11,7 +11,10 @@ from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_PROTOCOL_EXPERIMENTAL_NOTE
 from music_assistant.providers.chromecast import sendspin_bridge as bridge_module
-from music_assistant.providers.chromecast.constants import SENDSPIN_CAST_EXPERIMENTAL_NOTE
+from music_assistant.providers.chromecast.constants import (
+    CONF_SENDSPIN_OPT_OUT_PENDING,
+    SENDSPIN_CAST_EXPERIMENTAL_NOTE,
+)
 from music_assistant.providers.chromecast.sendspin_bridge import (
     SendspinBridgeManager as CastSendspinBridgeManager,
 )
@@ -490,6 +493,8 @@ class TestCastBridgeOptIn:
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
 
+        player_configs[f"players/{cast_player.player_id}"] = {"enabled": True}
+
         async def fake_super(player: Any) -> None:
             """Register the bridge the way a real setup would, link included."""
             player_configs[f"players/{client_id}"] = {
@@ -518,6 +523,7 @@ class TestCastBridgeOptIn:
         manager, mass, cast_player, player_configs, scheduled, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
+        player_configs[f"players/{cast_player.player_id}"] = {"enabled": True}
         player_configs[f"players/{client_id}"] = {
             "enabled": True,
             "values": {"protocol_parent_id": "parent_1"},
@@ -605,6 +611,38 @@ class TestCastBridgeOptIn:
             "values", {}
         )
         mass.config.save_player_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_missed_opt_out_is_retried_on_the_next_evaluation(self) -> None:
+        """Test a device whose link never landed still gets switched off later."""
+        manager, _, cast_player, player_configs, scheduled, _ = self._make_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        # what a previous run left behind: bridged and marked, but never switched off
+        # because its protocol link had not been persisted yet
+        player_configs[f"players/{cast_player.player_id}"] = {
+            "enabled": True,
+            "values": {CONF_SENDSPIN_OPT_OUT_PENDING: True},
+        }
+        player_configs[f"players/{client_id}"] = {
+            "enabled": True,
+            "values": {"protocol_parent_id": "parent_1"},
+        }
+        player_configs["players/parent_1"] = {"enabled": True}
+
+        async def fake_super(player: Any) -> None:
+            manager._bridges[player.player_id] = MagicMock()
+
+        with patch.object(SendspinBridgeManagerBase, "evaluate_bridge", side_effect=fake_super):
+            await manager.evaluate_bridge(cast_player)
+        assert len(scheduled) == 1
+        await scheduled[0]
+
+        assert player_configs[f"players/{client_id}"]["enabled"] is False
+        # settled now, so the marker is cleared and nothing retries again
+        assert not player_configs[f"players/{cast_player.player_id}"]["values"][
+            CONF_SENDSPIN_OPT_OUT_PENDING
+        ]
 
     @pytest.mark.asyncio
     async def test_bridge_gone_after_the_wait_is_not_written_to(self) -> None:

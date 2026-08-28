@@ -431,18 +431,6 @@ async def test_experimental_output_defaults_to_off_with_a_warning(
     assert warning.depends_on is None
 
 
-async def test_experimental_output_reads_off_without_a_stored_value(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """An experimental output nobody opted into reads as off, not as on."""
-    mass_minimal.config.set(
-        f"{CONF_PLAYERS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
-        "sendspin_cast_experimental",
-    )
-    entries = await _protocol_block_entries(mass_minimal, [])
-    assert entries[f"{_DLNA_PREFIX}{CONF_ENABLED}"].value is False
-
-
 async def test_warning_of_a_switched_off_output_still_resolves(
     mass_minimal: MusicAssistant,
 ) -> None:

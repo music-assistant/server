@@ -60,6 +60,7 @@ from music_assistant.providers.sendspin.helpers import (
 )
 
 from .constants import (
+    CONF_SENDSPIN_OPT_OUT_PENDING,
     SENDSPIN_CAST_APP_ID,
     SENDSPIN_CAST_BLOCKLIST,
     SENDSPIN_CAST_EXPERIMENTAL_NOTE,
@@ -724,18 +725,32 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         :param player: The player to evaluate.
         """
         client_id = self._bridge_client_id(player)
-        never_offered = bool(client_id) and not self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
+        if (
+            client_id
+            and not self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
+            and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}")
+        ):
+            # This device was never offered the bridge, so its output has to end up off.
+            # Recorded before the bridge registers and before anything can go wrong with
+            # applying it, because registration is what creates the config this reads.
+            self.mass.config.set_raw_player_config_value(
+                player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING, True
+            )
         await super().evaluate_bridge(player)
         if not client_id or not self._has_bridge(player.player_id):
             return
-        note_missing = not self.mass.config.get_raw_player_config_value(
-            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE
-        )
-        if never_offered or note_missing:
-            self.mass.create_task(
-                self._flag_bridge_experimental(player.player_id, client_id, disable=never_offered),
-                task_id=f"sendspin_cast_experimental_{client_id}",
+        if self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):
+            # the note is written last, so its presence means this output is settled
+            return
+        never_offered = bool(
+            self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING
             )
+        )
+        self.mass.create_task(
+            self._flag_bridge_experimental(player.player_id, client_id, disable=never_offered),
+            task_id=f"sendspin_cast_experimental_{client_id}",
+        )
 
     async def remove_bridge(self, player_id: str, permanent: bool = False) -> None:
         """
@@ -1098,6 +1113,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         self.mass.config.set_raw_player_config_value(
             client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, self._experimental_note(client_id)
         )
+        self.mass.config.set_raw_player_config_value(player_id, CONF_SENDSPIN_OPT_OUT_PENDING, None)
 
     async def _wait_for_protocol_link(self, client_id: str) -> bool:
         """
@@ -1115,7 +1131,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             await asyncio.sleep(SENDSPIN_LINK_WAIT_INTERVAL)
         self.logger.warning(
             "Sendspin bridge %s was not linked to a parent player in time; "
-            "its output stays switched on for now",
+            "its output is left as it is and retried on the next evaluation",
             client_id,
         )
         return False
