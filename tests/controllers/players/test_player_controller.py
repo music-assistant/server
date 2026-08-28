@@ -1961,11 +1961,11 @@ class TestSyncLeaderPowerOffUngroup:
         :param player_type: The type to register the leader as.
         :return: The controller and the leader.
         """
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
-        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        # the leader has no power control of its own, so the command returns right after
+        # the group handling - which is the only part of it these tests are about
         leader = MockPlayer(provider, "leader", "Leader", player_type=player_type)
         leader._attr_group_members = ["leader", "follower"]
         leader._attr_powered = True
@@ -2010,6 +2010,31 @@ class TestSyncLeaderPowerOffUngroup:
         controller.signal_player_state_update(leader, {"powered": (True, False)})
 
         controller.cmd_ungroup.assert_called_once_with("leader")
+
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    @pytest.mark.asyncio
+    async def test_power_off_takes_the_synced_followers_with_it(
+        self,
+        mock_mass: MagicMock,
+        player_type: PlayerType,
+        running_background_tasks: None,
+    ) -> None:
+        """A sync leader that was not playing powers off the followers it leaves behind."""
+        controller, _leader = self._sync_leader(mock_mass, player_type)
+        follower = controller.get_player("follower")
+        assert follower is not None
+        # a follower without power control of its own is skipped, so give it one
+        follower._attr_supported_features.add(PlayerFeature.POWER)
+        follower._cache.clear()
+        follower.update_state(signal_event=False)
+        follower.power = AsyncMock()  # type: ignore[method-assign]
+        # the ungroup is what would empty the group; stubbing it keeps the followers in
+        # place so the branch that powers them off is the one under test
+        controller.cmd_ungroup = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_cmd_power("leader", False)
+
+        follower.power.assert_awaited_once_with(False)
 
 
 class TestExternalPowerOffUnsync:
