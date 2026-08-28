@@ -12,6 +12,10 @@ pairing, verification and device-management screens against them. Audio is decod
 so the resulting players are usable playback targets as well.
 
 Only loaded when Music Assistant runs in dev mode, like the other ``_``-prefixed providers.
+
+The manifest depends on ``sendspin``, so setup waits for that provider and follows its
+reloads. ``aiosendspin`` itself is deliberately not declared as a requirement: the Sendspin
+provider is builtin and non-disableable, so the package is always installed already.
 """
 
 from __future__ import annotations
