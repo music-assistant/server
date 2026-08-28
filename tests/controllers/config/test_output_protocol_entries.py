@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_FLOW_MODE,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.mass import MusicAssistant
@@ -404,3 +405,45 @@ async def test_available_native_ignores_default_domain(mass_minimal: MusicAssist
         default_domain="dlna",
     )
     assert entry.default_value == "native"
+
+
+async def test_experimental_output_defaults_to_off_with_a_warning(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An output its provider flagged as experimental is opt-in and says why."""
+    mass_minimal.config.set(
+        f"{CONF_PLAYERS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
+        "sendspin_cast_experimental",
+    )
+    entries = await _protocol_block_entries(mass_minimal, [])
+    enabled = entries[f"{_DLNA_PREFIX}{CONF_ENABLED}"]
+    assert enabled.default_value is False
+    assert enabled.translation_key == "protocol_enable_experimental"
+    warning = entries[f"{_DLNA_PREFIX}sendspin_cast_experimental"]
+    assert warning.type is ConfigEntryType.ALERT
+    # the note is owned by the protocol's provider, not by the player rendering it
+    assert warning.translation_owner == "provider.dlna"
+    assert warning.translation_key == "sendspin_cast_experimental"
+    # the warning explains why the toggle is off, so it must not be hidden behind it
+    assert warning.depends_on is None
+
+
+async def test_experimental_output_reads_off_without_a_stored_value(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An experimental output nobody opted into reads as off, not as on."""
+    mass_minimal.config.set(
+        f"{CONF_PLAYERS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
+        "sendspin_cast_experimental",
+    )
+    entries = await _protocol_block_entries(mass_minimal, [])
+    assert entries[f"{_DLNA_PREFIX}{CONF_ENABLED}"].value is False
+
+
+async def test_plain_output_keeps_its_default_and_label(mass_minimal: MusicAssistant) -> None:
+    """An output without the flag is unchanged: on by default, no warning."""
+    entries = await _protocol_block_entries(mass_minimal, [])
+    enabled = entries[f"{_DLNA_PREFIX}{CONF_ENABLED}"]
+    assert enabled.default_value is True
+    assert enabled.translation_key == "protocol_enable"
+    assert not [key for key in entries if "experimental" in key]

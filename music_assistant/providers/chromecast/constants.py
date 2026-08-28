@@ -34,6 +34,16 @@ DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 # passive multichannel endpoint that should be removed from the setup.
 MULTICHANNEL_RECHECK_INTERVAL = 600
 
+# Translation key (owned by the Sendspin provider, which renders it) of the warning
+# shown on the Sendspin output of a Cast device. Its presence also makes that output
+# default to disabled, so Sendspin over Cast is opt-in per device.
+SENDSPIN_CAST_EXPERIMENTAL_NOTE = "sendspin_cast_experimental"
+
+# Bounded wait for the protocol link of a freshly registered Sendspin Cast bridge to
+# be persisted, before the bridge is switched off again for the user to opt in.
+SENDSPIN_LINK_WAIT_INTERVAL = 0.5
+SENDSPIN_LINK_WAIT_TRIES = 20
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
