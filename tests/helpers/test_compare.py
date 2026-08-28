@@ -1616,6 +1616,29 @@ def test_compare_track_evidence_matches_composite_primary_artist() -> None:
     assert compare.compare_track_evidence(base, candidate) != compare.TrackMatchConfidence.NO_MATCH
 
 
+def test_compare_track_evidence_matches_asymmetric_composite_credit() -> None:
+    """A single composite credit reconstructed from an M3U still matches two split artists."""
+    # a third-party M3U exporter can collapse a multi-artist credit into one combined
+    # name; the provider candidate credits the same two artists as separate entries
+    m3u_credit = _provider_track(
+        "m3u",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Artist A, Artist B",),
+    )
+    provider_credit = _provider_track(
+        "provider",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Artist B"),
+    )
+
+    assert (
+        compare.compare_track_evidence(m3u_credit, provider_credit)
+        != compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
 def test_compare_track_evidence_ranks_recording_identifiers() -> None:
     """Release-track IDs are exact while recording IDs identify alternate releases."""
     mb_track = (

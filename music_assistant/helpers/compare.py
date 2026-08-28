@@ -1090,8 +1090,14 @@ def _track_version(track: Track) -> str:
 
 def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool:
     """Return whether credited artists agree or one provider omitted credits."""
-    if not compare_artists(base_track.artists, compare_track.artists, any_match=True):
+    if not base_track.artists or not compare_track.artists:
         return False
+    # deliberately not gated on compare_artists: an exact per-artist match there
+    # only proves one credited artist is shared, which the primary-artist check
+    # below already treats as insufficient on its own - the credit-group coverage
+    # comparison is the one that must decide, so it must always run rather than
+    # being preempted by a list-level comparison that splits composite credits
+    # (e.g. "Artist A, Artist B" reconstructed as one M3U artist) differently
     base_credits = _track_artist_credit_groups(base_track)
     compare_credits = _track_artist_credit_groups(compare_track)
     if not (
