@@ -22,9 +22,12 @@ jobs:
     name: Redirect to support repository
     runs-on: ubuntu-latest
     # Maintainers file issues here deliberately and trusted automation
-    # opens its own, so only community-opened issues get redirected.
+    # opens its own, so only community-opened issues get redirected. An
+    # issue transferred in arrives as a fresh "opened" still carrying its
+    # original author, so the actor check leaves those alone.
     if: >-
       github.event.issue.user.type != 'Bot' &&
+      github.event.sender.login == github.event.issue.user.login &&
       !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
       github.event.issue.author_association)
     steps:
