@@ -8,6 +8,8 @@ from dataclasses import replace
 
 from music_assistant_models.media_items import MediaItemTranscriptCue
 
+from music_assistant.helpers.util import try_parse_duration
+
 # WebVTT writes [HH:]MM:SS.mmm and SubRip writes HH:MM:SS,mmm, and documents in the wild
 # are loose about zero padding, so accept either separator and an optional hour part
 _CUE_TIMINGS = re.compile(
@@ -121,20 +123,11 @@ def _build_cue(timings: re.Match[str], text_lines: list[str]) -> MediaItemTransc
     if voice := _VOICE_TAG.search(text_lines[0]):
         speaker = _collapse(html.unescape(voice.group(1))) or None
     return MediaItemTranscriptCue(
-        start=_to_seconds(timings.group(1)),
-        end=_to_seconds(timings.group(2)),
+        start=try_parse_duration(timings.group(1)),
+        end=try_parse_duration(timings.group(2)),
         text=text,
         speaker=speaker,
     )
-
-
-def _to_seconds(timestamp: str) -> float:
-    """Convert an [HH:]MM:SS.mmm or HH:MM:SS,mmm timestamp to seconds."""
-    parts = timestamp.replace(",", ".").split(":")
-    seconds = float(parts.pop())
-    for power, part in enumerate(reversed(parts), start=1):
-        seconds += int(part) * 60**power
-    return seconds
 
 
 def _normalize_newlines(raw: str) -> str:
