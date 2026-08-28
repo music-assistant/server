@@ -91,6 +91,7 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
         "playlist_1",
         PlaylistMatchPolicy.SAME_RECORDING,
         ("qobuz--1", "spotify--1"),
+        ("qobuz--1", "spotify--1"),
     )
 
 
@@ -119,7 +120,7 @@ async def test_import_with_library_matching_true_defaults_to_best_effort() -> No
     assert call_kwargs["metadata"]["match_policy"] == "best_effort"
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",), ("qobuz--1",)
     )
 
 
@@ -149,8 +150,8 @@ async def test_import_with_explicit_match_policy_overrides_library_matching() ->
     assert call_kwargs["metadata"]["match_policy"] == "exact"
 
 
-async def test_import_with_match_providers_narrows_snapshot() -> None:
-    """match_providers narrows the snapshot to the requested instances/domains."""
+async def test_import_with_match_providers_narrows_search_only() -> None:
+    """match_providers narrows only the search targets, not the source-validation snapshot."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = MagicMock()
@@ -178,8 +179,12 @@ async def test_import_with_match_providers_narrows_snapshot() -> None:
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     await call_kwargs["handler"]()
+    # source validation keeps the user's full snapshot (a playable spotify original must
+    # not look unavailable just because match_providers narrows the search), while the
+    # search target set is narrowed to the requested provider
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.BEST_EFFORT,
+        ("qobuz--1", "spotify--1"),
         ("qobuz--1",),
     )

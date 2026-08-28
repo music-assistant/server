@@ -262,6 +262,27 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
     assert "| Retained | 1 |" in report_markdown
 
 
+async def test_search_narrowing_does_not_affect_source_validation() -> None:
+    """Narrowing the search targets must not make a playable original look unavailable."""
+    prov = _make_provider(loaded_provider_domains={"spotify", "qobuz"})
+    item = PlaylistItem(path="spotify://track/abc123", title="Test", length="120")
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        # spotify is allowed (source validation), but the search is narrowed to qobuz only
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.BEST_EFFORT,
+            ("spotify", "qobuz--1"),
+            ("qobuz--1",),
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
 async def test_configured_but_unavailable_provider_is_retained() -> None:
     """A provider that is configured but currently down is not treated as gone."""
     prov = _make_provider(unavailable_provider_domains={"spotify--1"})

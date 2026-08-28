@@ -397,8 +397,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # itself runs later in an unattended background task, without the request's
             # user context, so provider-instance isolation must be captured up front
             allowed_provider_instances = {item.instance_id for item in self.mass.music.providers}
+            # match_providers only narrows which providers are searched for a substitute;
+            # it must not narrow source validation, or a playable original on a provider
+            # outside that list would look unavailable and get replaced unnecessarily
+            search_provider_instances = allowed_provider_instances
             if match_providers:
-                allowed_provider_instances &= {
+                search_provider_instances = {
                     item.instance_id
                     for item in self.mass.music.providers
                     if item.instance_id in match_providers or item.domain in match_providers
@@ -409,6 +413,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     prov_playlist_id,
                     effective_match_policy,
                     tuple(sorted(allowed_provider_instances)),
+                    tuple(sorted(search_provider_instances)),
                 ),
                 translation_key="import_playlist_matching",
                 translation_owner=self.translation_owner,

@@ -631,6 +631,7 @@ class BuiltinProvider(MusicProvider):
         prov_playlist_id: str,
         match_policy: PlaylistMatchPolicy,
         allowed_provider_instances: tuple[str, ...],
+        search_provider_instances: tuple[str, ...] | None = None,
     ) -> None:
         """
         Match imported playlist tracks against available providers.
@@ -642,8 +643,13 @@ class BuiltinProvider(MusicProvider):
 
         :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
         :param match_policy: Lowest track-match confidence accepted for a substitute.
-        :param allowed_provider_instances: Provider instances to search, snapshotted from the
-            user that requested the import.
+        :param allowed_provider_instances: Provider instances snapshotted from the user
+            that requested the import, used to validate whether an entry's original
+            source is still playable. Always the user's full accessible set, independent
+            of any search narrowing, so a valid original outside that narrowing is never
+            treated as unavailable.
+        :param search_provider_instances: Provider instances to search for a substitute.
+            Defaults to ``allowed_provider_instances`` when not narrowed by the caller.
         """
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         parsed_items = parse_m3u(m3u_data)
@@ -653,6 +659,11 @@ class BuiltinProvider(MusicProvider):
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
         allowed_provider_instance_set = set(allowed_provider_instances)
+        search_provider_instance_set = (
+            allowed_provider_instance_set
+            if search_provider_instances is None
+            else set(search_provider_instances)
+        )
         failed_provider_instances: set[str] = set()
         total = len(parsed_items)
         counts = dict.fromkeys(
@@ -693,6 +704,7 @@ class BuiltinProvider(MusicProvider):
                     item,
                     minimum_confidence,
                     allowed_provider_instance_set,
+                    search_provider_instance_set,
                     failed_provider_instances,
                 )
                 resolved_by_entry[entry_key] = result
@@ -988,6 +1000,7 @@ class BuiltinProvider(MusicProvider):
         item: PlaylistItem,
         minimum_confidence: TrackMatchConfidence,
         allowed_provider_instances: set[str],
+        search_provider_instances: set[str],
         failed_provider_instances: set[str],
     ) -> _ImportTrackMatchResult:
         """Resolve one imported playlist entry against the allowed providers."""
@@ -1016,7 +1029,7 @@ class BuiltinProvider(MusicProvider):
             enrichment = await self.mass.music.tracks.enrich_provider_mappings(
                 media_item,
                 minimum_confidence=minimum_confidence,
-                provider_instance_ids=allowed_provider_instances,
+                provider_instance_ids=search_provider_instances,
                 # imported metadata comes from outside Music Assistant and is unverified,
                 # so a provider mapping it already carries is not treated as authoritative
                 trust_track_mappings=False,
