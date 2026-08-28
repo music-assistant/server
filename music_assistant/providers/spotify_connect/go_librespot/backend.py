@@ -15,7 +15,7 @@ import os
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
@@ -27,11 +27,11 @@ from music_assistant.helpers.util import (
     select_free_port,
 )
 from music_assistant.providers.spotify_connect.base import (
-    AUDIO_QUALITY_HIGH,
     AUDIO_QUALITY_LOSSLESS,
-    AUDIO_QUALITY_NORMAL,
-    AUDIO_QUALITY_VERY_HIGH,
+    LOSSY_BIT_RATES,
+    MAX_LOSSY_BIT_RATE,
     SpotifyConnectBackend,
+    spotify_source_audio_format,
 )
 from music_assistant.providers.spotify_connect.helpers import (
     generate_device_id,
@@ -66,17 +66,6 @@ STREAM_READ_CHUNK = 16384
 API_PORT_RANGE_START = 38800
 API_PORT_RANGE_END = 38900
 
-# Quality tier -> go-librespot's `bitrate` setting, which only accepts these
-# three values. go-librespot cannot do lossless, so that tier gets the 320 kbps
-# ceiling rather than nothing.
-_MAX_BITRATE: Final = 320
-_BITRATES: Final[dict[str, int]] = {
-    AUDIO_QUALITY_NORMAL: 96,
-    AUDIO_QUALITY_HIGH: 160,
-    AUDIO_QUALITY_VERY_HIGH: _MAX_BITRATE,
-    AUDIO_QUALITY_LOSSLESS: _MAX_BITRATE,
-}
-
 
 class GoLibrespotBackend(SpotifyConnectBackend):
     """Spotify Connect backend wrapping a supervised go-librespot daemon."""
@@ -85,7 +74,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self,
         mass: MusicAssistant,
         *,
-        instance_id: str,
+        identity_key: str,
         publish_name: str,
         name: str,
         logger: logging.Logger,
@@ -98,8 +87,9 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         Initialize the backend (cheap; the daemon is launched in ``start``).
 
         :param mass: The MusicAssistant instance.
-        :param instance_id: The owning provider's instance id; keys the
-            credential/cache dir and the stable Spotify device id.
+        :param identity_key: Unique identity of this daemon (one per connected
+            player); keys the credential/cache dir and the stable Spotify
+            device id.
         :param publish_name: Device name advertised to the Spotify app.
         :param name: Display name of the owning provider instance (log messages).
         :param logger: Logger to use for diagnostics.
@@ -115,13 +105,13 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self.mass = mass
         self.logger = logger
         self.name = name
-        self._instance_id = instance_id
+        self._identity_key = identity_key
         self._publish_name = publish_name
         self._event_callback = event_callback
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
         self._audio_quality = audio_quality
-        self.cache_dir = os.path.join(self.mass.cache_path, instance_id)
+        self.cache_dir = os.path.join(self.mass.cache_path, identity_key)
         self._binary: str | None = None
         self._api_port: int = 0
         self._client: GoLibrespotClient | None = None
@@ -130,20 +120,14 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._events_task: asyncio.Task[None] | None = None
         self._proc: AsyncProcess | None = None
         self._restart_error_count = 0
-        # _audio_format is the original Spotify source codec (Ogg Vorbis 320 kbps),
-        # advertised to clients for display. _decoded_audio_format is the raw PCM
-        # go-librespot actually writes to its stdout after decoding — what the
-        # audio reader yields and what the streams controller hands ffmpeg as
-        # the input format. We always emit the source's own format here; MA is
-        # responsible for converting it to whatever each player needs.
-        self._audio_format = AudioFormat(
-            content_type=ContentType.OGG,
-            codec_type=ContentType.VORBIS,
-            sample_rate=44100,
-            bit_depth=16,
-            channels=2,
-            bit_rate=320,
-        )
+        # _audio_format is the original Spotify source codec (Ogg Vorbis at the
+        # configured tier's bitrate), advertised to clients for display.
+        # _decoded_audio_format is the raw PCM go-librespot actually writes to its
+        # stdout after decoding — what the audio reader yields and what the streams
+        # controller hands ffmpeg as the input format. We always emit the source's
+        # own format here; MA is responsible for converting it to whatever each
+        # player needs.
+        self._audio_format = spotify_source_audio_format(audio_quality, lossless=False)
         self._decoded_audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             codec_type=ContentType.PCM_S16LE,
@@ -279,8 +263,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",
-            "device_id": generate_device_id(self._instance_id),
-            "bitrate": _BITRATES.get(self._audio_quality, _MAX_BITRATE),
+            "device_id": generate_device_id(self._identity_key),
+            "bitrate": LOSSY_BIT_RATES.get(self._audio_quality, MAX_LOSSY_BIT_RATE),
             "audio_backend": "pipe",
             # write decoded PCM to the daemon's stdout, which we capture and
             # forward (the process pipe is always attached, so the daemon's

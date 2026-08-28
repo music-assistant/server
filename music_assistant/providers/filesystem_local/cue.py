@@ -210,96 +210,8 @@ class CueSheetHandler:
 
         :param cue_item: The CUE file's FileSystemItem.
         """
-        provider = self.provider
-        logger = provider.logger
-        cue_sheet = await self.load_cue_sheet(cue_item)
-
-        if not cue_sheet.tracks:
-            msg = f"CUE sheet has no tracks: {cue_item.relative_path}"
-            raise InvalidDataError(msg)
-
-        audio_relative_path = await self.find_audio_file(cue_item, cue_sheet)
-        if audio_relative_path is None:
-            msg = f"Audio file not found for CUE sheet: {cue_item.relative_path}"
-            raise MediaNotFoundError(msg)
-
-        audio_item = await provider.resolve(audio_relative_path)
-        tags = await async_parse_tags(audio_item.absolute_path, audio_item.file_size)
-        total_duration = tags.duration or 0.0
-        if total_duration <= 0:
-            msg = f"Could not determine duration for audio file of CUE sheet: {cue_item.relative_path}"
-            raise InvalidDataError(msg)
-
-        self._apply_cue_overrides(tags, cue_sheet)
-
-        album: Album | None = None
-        if tags.album:
-            album = await provider._parse_album(
-                track_path=audio_relative_path,
-                track_tags=tags,
-                track_created_at=cue_item.created_at,
-            )
-        else:
-            logger.warning(
-                "CUE sheet %s has no TITLE and audio file has no album tag",
-                cue_item.relative_path,
-            )
-
-        # embedded cover art is shared across all CUE tracks from this audio file
-        embedded_image = (
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=audio_relative_path,
-                provider=provider.instance_id,
-                remotely_accessible=False,
-            )
-            if tags.has_cover_image
-            else None
-        )
-        # if the album lacks its own image, adopt the embedded one
-        if album and embedded_image and not album.image:
-            album.metadata.images = UniqueList([embedded_image])
-
-        ctx = _TrackBuildContext(
-            audio_format=self._audio_format_from_tags(audio_relative_path, tags),
-            # honor audio file's DISCNUMBER (CUE does not carry disc info); defaults to 1
-            disc_number=tags.disc or 1,
-            date_added=(
-                datetime.fromtimestamp(cue_item.created_at, tz=UTC) if cue_item.created_at else None
-            ),
-            embedded_image=embedded_image,
-            track_genres=set(tags.genres) if tags.genres else None,
-            album=album,
-            album_performers=tuple(cue_sheet.performers),
-        )
-
-        sorted_tracks = sorted(cue_sheet.tracks, key=lambda t: t.start_position)
-        tracks: list[Track] = []
-        for i, cue_track in enumerate(sorted_tracks):
-            if i + 1 < len(sorted_tracks):
-                duration = sorted_tracks[i + 1].start_position - cue_track.start_position
-            else:
-                duration = total_duration - cue_track.start_position
-
-            if duration <= 0:
-                logger.warning(
-                    "CUE sheet %s track %d has non-positive duration (%.2fs); skipping",
-                    cue_item.relative_path,
-                    cue_track.number,
-                    duration,
-                )
-                continue
-            if not cue_track.title:
-                logger.warning(
-                    "CUE sheet %s track %d has no TITLE; skipping",
-                    cue_item.relative_path,
-                    cue_track.number,
-                )
-                continue
-
-            tracks.append(await self._build_track(cue_track, cue_item, duration, ctx))
-
-        return tracks
+        with self.provider._ondemand_listing_scope():
+            return await self._parse_tracks_impl(cue_item)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """
@@ -397,6 +309,104 @@ class CueSheetHandler:
         ):
             yield chunk
 
+    async def _parse_tracks_impl(self, cue_item: FileSystemItem) -> list[Track]:
+        """Parse a CUE sheet's tracks (implementation, see :meth:`parse_tracks`)."""
+        provider = self.provider
+        logger = provider.logger
+        cue_sheet = await self.load_cue_sheet(cue_item)
+
+        if not cue_sheet.tracks:
+            msg = f"CUE sheet has no tracks: {cue_item.relative_path}"
+            raise InvalidDataError(msg)
+
+        audio_relative_path = await self.find_audio_file(cue_item, cue_sheet)
+        if audio_relative_path is None:
+            msg = f"Audio file not found for CUE sheet: {cue_item.relative_path}"
+            raise MediaNotFoundError(msg)
+
+        audio_item = await provider.resolve(audio_relative_path)
+        tags = await async_parse_tags(audio_item.absolute_path, audio_item.file_size)
+        total_duration = tags.duration or 0.0
+        if total_duration <= 0:
+            msg = f"Could not determine duration for audio file of CUE sheet: {cue_item.relative_path}"
+            raise InvalidDataError(msg)
+
+        self._apply_cue_overrides(tags, cue_sheet)
+
+        album: Album | None = None
+        if tags.album:
+            album = await provider._parse_album(
+                track_path=audio_relative_path,
+                track_tags=tags,
+                track_created_at=cue_item.created_at,
+                # the companion audio file is absorbed into CUE tracks and is never itself a
+                # synced item (its own sync entry is dropped, see sync_library's CUE-companion
+                # filter), so it cannot be re-queued for reparsing; register the CUE sheet's own
+                # path instead, since re-processing that path re-runs this same parse
+                representative_track=cue_item.relative_path,
+            )
+        else:
+            logger.warning(
+                "CUE sheet %s has no TITLE and audio file has no album tag",
+                cue_item.relative_path,
+            )
+
+        # embedded cover art is shared across all CUE tracks from this audio file
+        embedded_image = (
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=audio_relative_path,
+                provider=provider.instance_id,
+                remotely_accessible=False,
+            )
+            if tags.has_cover_image
+            else None
+        )
+        # if the album lacks its own image, adopt the embedded one
+        if album and embedded_image and not album.image:
+            album.metadata.images = UniqueList([embedded_image])
+
+        ctx = _TrackBuildContext(
+            audio_format=self._audio_format_from_tags(audio_relative_path, tags),
+            # honor audio file's DISCNUMBER (CUE does not carry disc info); defaults to 1
+            disc_number=tags.disc or 1,
+            date_added=(
+                datetime.fromtimestamp(cue_item.created_at, tz=UTC) if cue_item.created_at else None
+            ),
+            embedded_image=embedded_image,
+            track_genres=set(tags.genres) if tags.genres else None,
+            album=album,
+            album_performers=tuple(cue_sheet.performers),
+        )
+
+        sorted_tracks = sorted(cue_sheet.tracks, key=lambda t: t.start_position)
+        tracks: list[Track] = []
+        for i, cue_track in enumerate(sorted_tracks):
+            if i + 1 < len(sorted_tracks):
+                duration = sorted_tracks[i + 1].start_position - cue_track.start_position
+            else:
+                duration = total_duration - cue_track.start_position
+
+            if duration <= 0:
+                logger.warning(
+                    "CUE sheet %s track %d has non-positive duration (%.2fs); skipping",
+                    cue_item.relative_path,
+                    cue_track.number,
+                    duration,
+                )
+                continue
+            if not cue_track.title:
+                logger.warning(
+                    "CUE sheet %s track %d has no TITLE; skipping",
+                    cue_item.relative_path,
+                    cue_track.number,
+                )
+                continue
+
+            tracks.append(await self._build_track(cue_track, cue_item, duration, ctx))
+
+        return tracks
+
     @staticmethod
     def _audio_format_from_tags(audio_path: str, tags: AudioTags) -> AudioFormat:
         """
@@ -471,6 +481,9 @@ class CueSheetHandler:
                     if idx < len(cue_track.musicbrainz_artistids)
                     else None
                 ),
+                # same reasoning as the album parse above: this performer may have their own
+                # artist.nfo/images, and only the CUE sheet's own path can be re-queued later
+                representative_track=cue_item.relative_path,
             )
             if artist:
                 track_artists.append(artist)

@@ -41,6 +41,7 @@ from .constants import (
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
+from .play_reporting import TidalPlayReportingManager
 from .playlist import TidalPlaylistManager
 from .recommendations import TidalRecommendationManager
 from .streaming import TidalStreamingManager
@@ -94,6 +95,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.playlists = TidalPlaylistManager(self)
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
+        self.play_reporting = TidalPlayReportingManager(self)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -214,6 +216,29 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming.get_stream_details(item_id)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report a completed play back to Tidal (best-effort, never blocks playback).
+
+        Only the terminal call matters here, not the periodic progress pings sent
+        while is_playing is True.
+        """
+        if media_type != MediaType.TRACK or is_playing or not isinstance(media_item, Track):
+            return
+        self.mass.create_task(
+            self.play_reporting.report_played(
+                prov_item_id, media_item.duration, position, fully_played
+            )
+        )
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""

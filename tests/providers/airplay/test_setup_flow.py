@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import FlowStepType
+from music_assistant_models.enums import ConfigEntryType, FlowStepType
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
@@ -256,6 +256,10 @@ async def test_streaming_pin_pairing_persists_airplay_credentials() -> None:
     assert forms[0].step_id == "pair_pin"
     # steps localize under the provider's own namespace
     assert forms[0].translation_owner == "provider.airplay"
+    # the PIN renders as a 4-digit code input
+    pin_entry = next(entry for entry in forms[0].entries if entry.key == CONF_PAIRING_PIN)
+    assert pin_entry.type is ConfigEntryType.PAIRING_CODE
+    assert pin_entry.format == "####"
 
 
 async def test_streaming_pin_pairing_uses_raop_credentials_key() -> None:
@@ -484,6 +488,17 @@ async def test_two_code_sequence_streaming_then_companion() -> None:
     # streaming PIN comes before the optional control offers
     assert step_ids.index("pair_pin") < step_ids.index("companion_offer")
     assert "pair_companion" in step_ids
+    # both PINs render as 4-digit code inputs
+    pin_entries = [
+        entry
+        for step in _published_steps(mass)
+        if step.type == FlowStepType.FORM
+        for entry in step.entries
+        if entry.key in (CONF_PAIRING_PIN, CONF_COMPANION_PAIRING_PIN)
+    ]
+    assert len(pin_entries) == 2
+    assert all(entry.type is ConfigEntryType.PAIRING_CODE for entry in pin_entries)
+    assert all(entry.format == "####" for entry in pin_entries)
 
 
 async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> None:

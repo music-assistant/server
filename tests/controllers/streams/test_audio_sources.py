@@ -629,6 +629,8 @@ class TestAudioSourceElapsedTimeOverride:
 
         # The override is layered AFTER protocol/sync resolution, so it wins
         assert player.state.elapsed_time == 42
+        assert player.state.current_media is not None
+        assert player.state.current_media.elapsed_time == 42
 
     def test_audio_source_elapsed_time_last_updated_fallback(
         self,
@@ -658,6 +660,43 @@ class TestAudioSourceElapsedTimeOverride:
         assert player.state.elapsed_time_last_updated is not None
         assert player.state.elapsed_time_last_updated >= before
         assert player.state.elapsed_time_last_updated <= after
+
+    def test_audio_source_media_position_follows_the_player(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """A source reporting no position of its own reports the player's own position."""
+        protocol_player = MockPlayer(
+            provider, "airplay_1", "AirPlay", player_type=PlayerType.PROTOCOL
+        )
+        protocol_player._attr_playback_state = PlaybackState.PLAYING
+        protocol_player._attr_elapsed_time = 5.0
+        protocol_player._attr_elapsed_time_last_updated = time.time()
+        # the owner's own clock is stale: the audio is rendered by the protocol player
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 8.0
+        player._attr_elapsed_time_last_updated = time.time()
+        player._attr_active_source = "player_1"
+        player.set_active_output_protocol("airplay_1")
+
+        controller._players = {"player_1": player, "airplay_1": protocol_player}
+
+        session = _make_audio_source_session(elapsed_time=None)
+        mock_mass.players.get_audio_source_session = MagicMock(return_value=session)
+
+        protocol_player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+
+        assert player.state.current_media is not None
+        assert player.state.elapsed_time == 5.0
+        assert player.state.current_media.elapsed_time == 5
+        assert (
+            player.state.current_media.elapsed_time_last_updated
+            == player.state.elapsed_time_last_updated
+        )
 
 
 # ----------------------------------------------- silence-keepalive wrapper
@@ -726,6 +765,137 @@ class TestAudioSourceSilenceKeepalive:
             )
         ]
         assert chunks == [b"one"]
+
+    @pytest.mark.asyncio
+    async def test_propagates_inner_error(self) -> None:
+        """An error from the source generator reaches the stream consumer."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise RuntimeError("source failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format())
+        assert await anext(stream) == b"one"
+        with pytest.raises(RuntimeError, match="source failed"):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_completes(self) -> None:
+        """Cancelling the wrapper also closes a source blocked on a full queue."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+        source_closed = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                source_closed.set()
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        await asyncio.wait_for(stream.aclose(), timeout=1)
+
+        assert source_closed.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_with_full_queue_propagates_cleanup_error(self) -> None:
+        """Source cleanup errors propagate without blocking wrapper cancellation."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        queue_full = asyncio.Event()
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            try:
+                for index in range(10):
+                    if index == 9:
+                        queue_full.set()
+                    yield b"audio"
+            finally:
+                raise RuntimeError("cleanup failed")
+
+        stream = audio_source_silence_keepalive(_inner(), _audio_format(), idle_threshold_s=1)
+        assert await anext(stream) == b"audio"
+        await asyncio.wait_for(queue_full.wait(), timeout=1)
+
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await asyncio.wait_for(stream.aclose(), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_source_cancelled_error_completes(self) -> None:
+        """A source-raised cancellation cleanly ends the stream."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"one"
+            raise asyncio.CancelledError
+
+        chunks = [
+            chunk async for chunk in audio_source_silence_keepalive(_inner(), _audio_format())
+        ]
+        assert chunks == [b"one"]
+
+    @pytest.mark.asyncio
+    async def test_custom_audio_source_path_applies_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CUSTOM AudioSources are wrapped using the format their bytes arrive in."""
+        decoded_format = _audio_format()
+        wrapped_formats: list[AudioFormat] = []
+
+        async def _inner() -> AsyncGenerator[bytes]:
+            yield b"audio"
+
+        async def _keepalive(
+            inner: AsyncGenerator[bytes], pcm_format: AudioFormat
+        ) -> AsyncGenerator[bytes]:
+            wrapped_formats.append(pcm_format)
+            async for chunk in inner:
+                yield chunk
+
+        monkeypatch.setattr(
+            "music_assistant.controllers.streams.audio.audio_source_silence_keepalive",
+            _keepalive,
+        )
+        provider = MagicMock()
+        provider.available = True
+        provider.get_audio_stream.return_value = _inner()
+        mass = MagicMock()
+        mass.get_provider.return_value = provider
+        controller = StreamsAudio(mass)
+        streamdetails = StreamDetails(
+            provider="fake_plugin",
+            item_id="main",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+            decoded_audio_format=decoded_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+        )
+
+        source, seek_position, extra_input_args = await controller._resolve_media_stream_source(
+            streamdetails, seek_position=0, extra_input_args=[]
+        )
+
+        assert not isinstance(source, str)
+        assert [chunk async for chunk in source] == [b"audio"]
+        assert wrapped_formats == [decoded_format]
+        assert seek_position == 0
+        assert extra_input_args == []
 
 
 class TestAudioSourceLibraryRejection:

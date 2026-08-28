@@ -216,8 +216,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    # the checksum invalidates entries cached before search was authenticated
-    @use_cache(3600 * 24 * 7, cache_checksum="authenticated_search_v1")  # Cache for 7 days
+    # the checksum invalidates entries cached before the search was pinned to English
+    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -250,7 +250,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            language=self.language,
             user=self._yt_user,
         )
         parsed_results = SearchResults()
@@ -513,10 +512,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
-        for index, episode_obj in enumerate(podcast_obj.get("episodes", []), start=1):
+        episodes = podcast_obj.get("episodes", [])
+        total = len(episodes)
+        # API lists newest-first; number down so bigger position = newer
+        for idx, episode_obj in enumerate(episodes):
             episode = self._parse_podcast_episode(episode_obj, podcast)
-            ep_index = episode_obj.get("index") or index
-            episode.position = ep_index
+            episode.position = total - idx
             yield episode
 
     @use_cache(3600 * 3)  # Cache for 3 hours

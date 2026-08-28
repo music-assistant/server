@@ -182,6 +182,22 @@ class MusicProvider(Provider):
             else None
         )
 
+    def delivers_normalized_audio(self, streamdetails: StreamDetails) -> bool:
+        """
+        Return whether this provider hands over audio it has already normalized.
+
+        True means the source applies a loudness target of its own, so Music
+        Assistant leaves the level alone instead of measuring and correcting it
+        a second time. Only say so when the audio really is normalized on the
+        way out: nothing downstream double-checks it.
+
+        :param streamdetails: Stream details of the item being asked about. A
+            provider that normalizes per playback session answers for the queue
+            these details belong to, not for whatever it happens to serve
+            elsewhere.
+        """
+        return False
+
     @property
     def max_concurrent_streams(self) -> int | None:
         """

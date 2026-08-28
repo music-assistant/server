@@ -120,12 +120,13 @@ each option is offered only when the device can actually use it: the AirPlay 2
 lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
 and Apple receivers get every lane except NTP timing (they render silence on an
 NTP-timed realtime stream). The modes map
-onto the binary's `--protocol`/`--timing` arguments. Music Assistant writes the
-setting itself when an automatic route has conclusively failed: a device that
-advertises PTP but never answers a clock probe is switched to "AirPlay 2 - NTP
-timing", while a native route whose control channel fails after its keepalive
-retries is switched to "AirPlay 2 - compatibility mode". The next playback uses
-the new route; setting the mode back to Automatic retries the original one.
+onto the binary's `--protocol`/`--timing` arguments. Music Assistant never
+writes the setting itself: when an automatic route conclusively fails (a device
+that advertises PTP but never answers a clock probe, or a native control
+channel that fails after its keepalive retries) it logs a warning pointing at
+this selector and leaves the choice to the user. The usual cause of a control
+channel failure is a network dropout, and a persisted automatic switch would
+outlive it and pin the player to a lane the device may not even accept.
 
 The selector is hidden only for RAOP-only devices (no alternative lane; a
 stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
@@ -275,6 +276,29 @@ AirPlay uses **flow mode** streaming, which means:
 - Supports crossfade between tracks
 - Once started, the stream continues until explicitly stopped
 
+### Announcements
+
+An announcement is mixed into the audio the player is already rendering: the binary
+overlays the clip on the outgoing stream with the music ducked underneath, without a
+flush or a re-anchor, so the group timeline is untouched. Native announcement support
+is therefore only offered while there is live playback to mix into — an idle player
+gets the generic announcement handling from the players controller instead.
+
+The clip file is wrapped in ducked silence, because the binary holds the duck for the
+whole file:
+
+| Part | What happens |
+|---|---|
+| lead-in | music already ducked, nothing said yet — the announcement volume is raised here |
+| clip | the announcement itself, at the announcement volume |
+| tail | music still ducked — the volume is put back here |
+
+Both volume changes are timed on the audible instant the binary acks, and they travel
+through the players controller so they land on whichever control owns the output (see
+[Volume Ownership](#volume-ownership)). Neither is ever heard as the music changing
+level. The duck is deepened by exactly the size of the volume bump, so the music keeps
+the same perceived level underneath while the clip gets louder.
+
 
 ## Multi-Room Synchronization
 
@@ -350,11 +374,13 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 
 An AirPlay volume command sets the receiver's own volume, and that level stays behind on the device after the session ends. Music Assistant therefore only sends one when nothing else owns the volume of this output: on a device that is also reachable through a native provider or another protocol (a Sonos speaker, an AV receiver), the stream simply plays at the level the device is already set to, and volume stays with that provider.
 
-A volume is still sent when the AirPlay output itself is the resolved volume control, when a mute has to travel with the stream, and when a session asks for a specific level (an announcement).
+A volume is still sent when the AirPlay output itself is the resolved volume control, and when a mute has to travel with the stream.
 
 ### Volume Feedback
 
 Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+
+A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
 **Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
 - Useful when device volume reports are unreliable
@@ -553,7 +579,7 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ## Configuration Options
 
 ### Protocol Selection
-- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Auto-pinned to NTP timing when the device never answers the PTP clock, or to compatibility mode after the native control channel conclusively fails
+- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Only ever written by the user; a conclusively failing automatic route is reported in the log, never switched away from
 
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again

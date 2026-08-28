@@ -13,6 +13,8 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, MediaType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
+
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
@@ -205,7 +207,9 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
         key=lambda player: player.display_name.lower(),
     )
     player_options = [
-        ConfigValueOption(player.player_id, title=player.display_name) for player in ma_player_list
+        ConfigValueOption(player.player_id, title=player.display_name)
+        for player in ma_player_list
+        if player.type in PLAYBACK_TARGET_TYPES
     ]
     return ConfigEntry(
         key=CONF_SCROBBLE_PLAYERS,

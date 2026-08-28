@@ -1,12 +1,13 @@
 """
 Setup flow for the Spotify Connect plugin.
 
-The flow starts with an explicit backend choice: Spotify Soloist (Spotify's
+The flow is a single explicit backend choice: Spotify Soloist (Spotify's
 official headless client, guarded by a ToS warning/consent step and a personal
-API key) or the community go-librespot daemon. Both branches end with the shared
-target-player / device-name step. Reconfigure preselects the stored backend and
-re-runs the branch steps; switching away from soloist clears the soloist
-secrets, but only once the new setup finishes successfully.
+API key) or the community go-librespot daemon. The players this plugin exposes
+Spotify Connect devices for are regular provider options, not setup input.
+Reconfigure preselects the stored backend and re-runs the branch steps;
+switching away from soloist clears the soloist secrets, but only once the new
+setup finishes successfully.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
-from music_assistant.helpers.config_entries import create_player_selector
 from music_assistant.models.setup_flow import SetupFlowError
 
 from . import (
@@ -25,11 +24,7 @@ from . import (
     BACKEND_SOLOIST,
     CONF_API_KEY,
     CONF_BACKEND,
-    CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
     CONF_SOLOIST_CONSENT,
-    DEFAULT_PUBLISH_NAME,
-    PLAYER_ID_AUTO,
 )
 from .soloist import UnsupportedPlatformError, verify_platform_supported
 
@@ -44,7 +39,7 @@ MIN_API_KEY_LENGTH = 16
 
 async def run_setup(session: SetupSession) -> None:
     """
-    Configure the Spotify Connect backend, target player and device name.
+    Configure the Spotify Connect playback backend.
 
     :param session: The setup session driving the flow.
     """
@@ -52,7 +47,7 @@ async def run_setup(session: SetupSession) -> None:
     stored_backend = str(
         setup_data.get(CONF_BACKEND) or session.context.values.get(CONF_BACKEND) or ""
     )
-    selected = stored_backend or BACKEND_GO_LIBRESPOT
+    selected = stored_backend or BACKEND_SOLOIST
     choice_errors: dict[str, str] | None = None
     while True:
         selected = await _choose_backend(session, selected, choice_errors)
@@ -72,8 +67,11 @@ async def run_setup(session: SetupSession) -> None:
             # aborted or failed switch keeps them intact
             collected[CONF_API_KEY] = ""
             collected[CONF_SOLOIST_CONSENT] = False
-        await _finish_with_player_and_name(session, collected)
-        return
+        try:
+            await session.finish(collected)
+            return
+        except SetupFlowError as err:
+            choice_errors = {"base": err.translation_key or str(err)}
 
 
 async def _choose_backend(
@@ -89,17 +87,17 @@ async def _choose_backend(
     while True:
         values = await session.form(
             [
-                CONF_ENTRY_WARN_PREVIEW,
                 ConfigEntry(
                     key=CONF_BACKEND,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=BACKEND_GO_LIBRESPOT,
+                    default_value=BACKEND_SOLOIST,
                     value=preselect,
                     options=[
                         ConfigValueOption(BACKEND_SOLOIST),
                         ConfigValueOption(BACKEND_GO_LIBRESPOT),
                     ],
+                    expanded_options=True,
                 ),
             ],
             step_id="backend",
@@ -183,42 +181,3 @@ async def _ask_api_key(session: SetupSession, collected: dict[str, Any]) -> None
                 continue
             collected[CONF_API_KEY] = api_key
         return
-
-
-async def _finish_with_player_and_name(session: SetupSession, collected: dict[str, Any]) -> None:
-    """
-    Run the shared target-player / device-name step and finish the flow.
-
-    :param session: The setup session driving the flow.
-    :param collected: The values collected by the earlier steps.
-    """
-    errors: dict[str, str] | None = None
-    while True:
-        prefill: dict[str, Any] = {**session.context.values, **collected}
-        publish_name = str(prefill.get(CONF_PUBLISH_NAME) or DEFAULT_PUBLISH_NAME)
-        values = await session.form(
-            [
-                create_player_selector(
-                    session.mass,
-                    CONF_MASS_PLAYER_ID,
-                    prefill.get(CONF_MASS_PLAYER_ID),
-                    PLAYER_ID_AUTO,
-                ),
-                ConfigEntry(
-                    key=CONF_PUBLISH_NAME,
-                    type=ConfigEntryType.STRING,
-                    required=True,
-                    default_value=publish_name,
-                    value=publish_name,
-                ),
-            ],
-            step_id="user",
-            errors=errors,
-            last_step=True,
-        )
-        collected.update(values)
-        try:
-            await session.finish(collected)
-            return
-        except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}

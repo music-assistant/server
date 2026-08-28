@@ -764,6 +764,16 @@ async def test_resolve_deferred_placeholders_skips_weather_without_token() -> No
     assert values["<weather_daily>"] == ""
 
 
+async def test_resolve_deferred_placeholders_timestamp_spells_out_weekday() -> None:
+    """The <timestamp> value names the weekday so the LLM never has to derive it."""
+    renderer = DummyRenderer()
+
+    values = await renderer._resolve_deferred_placeholders("Just plain text, no tokens.")
+
+    assert "Thursday" in values["<timestamp>"]
+    assert "July" in values["<timestamp>"]
+
+
 async def test_mint_clip_media_resolves_host_tts_engine() -> None:
     """A clip whose host declares a tts_engine reaches _get_tts_engine with that override."""
     renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")

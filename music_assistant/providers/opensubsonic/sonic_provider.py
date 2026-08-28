@@ -51,6 +51,7 @@ from music_assistant.constants import (
     UNKNOWN_ARTIST,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
 from .parsers import (
@@ -652,9 +653,12 @@ class OpenSonicProvider(MusicProvider):
         if not channel.episode:
             return
 
-        for episode in channel.episode:
+        # rank on the publish date, so the order the server returns the episodes in does
+        # not decide the ordering
+        positions = rank_episodes_by_date([ep.publish_date for ep in channel.episode])
+        for position, episode in zip(positions, channel.episode, strict=True):
             self._set_loudness(episode)
-            yield parse_epsiode(self.instance_id, episode, channel)
+            yield parse_epsiode(self.instance_id, episode, channel, position)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:

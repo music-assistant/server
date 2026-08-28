@@ -29,14 +29,14 @@ def get_go_librespot_binary() -> str:
     raise RuntimeError(msg)
 
 
-def generate_device_id(instance_id: str) -> str:
+def generate_device_id(identity_key: str) -> str:
     """
-    Derive a stable Spotify device id (40 hex chars) from the provider instance id.
+    Derive a stable Spotify device id (40 hex chars) from a daemon's identity key.
 
     Passing a fixed ``device_id`` to go-librespot keeps the Spotify Connect device
     identity stable across daemon restarts, so the Spotify app keeps recognising it
     as the same speaker instead of spawning a fresh device each time.
 
-    :param instance_id: The provider instance id.
+    :param identity_key: The daemon's unique identity key.
     """
-    return hashlib.sha256(instance_id.encode()).hexdigest()[:40]
+    return hashlib.sha256(identity_key.encode()).hexdigest()[:40]

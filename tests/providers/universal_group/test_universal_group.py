@@ -22,6 +22,7 @@ from music_assistant_models.constants import (
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 
@@ -34,6 +35,11 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_power = AsyncMock()
     mass.players.iter_group_members = MagicMock(return_value=[])
+
+    lock_ctx = AsyncMock()
+    lock_ctx.__aenter__.return_value = None
+    lock_ctx.__aexit__.return_value = False
+    mass.players.get_player_lock = MagicMock(return_value=lock_ctx)
 
     wait_ctx = AsyncMock()
     wait_ctx.__aenter__.return_value = None
@@ -222,6 +228,8 @@ class TestPowerlessLifecycle:
         assert mass.players._handle_play_media.await_count == 2
         for call in mass.players._handle_play_media.await_args_list:
             assert call.args[1].queue_session_id == "session-1"
+        mass.players.get_player_lock.assert_any_call("m1", PlayerLockPurpose.PLAYBACK)
+        mass.players.get_player_lock.assert_any_call("m2", PlayerLockPurpose.PLAYBACK)
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
 

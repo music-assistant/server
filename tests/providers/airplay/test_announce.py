@@ -3,12 +3,14 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Coroutine, Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
@@ -16,9 +18,12 @@ from music_assistant.providers.airplay import announce
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ANNOUNCE_AT_MARGIN_MS,
     AIRPLAY_ANNOUNCE_DUCK_DB,
+    AIRPLAY_ANNOUNCE_DUCK_LEAD_S,
     AIRPLAY_ANNOUNCE_DUCK_TAIL_S,
     AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS,
+    AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_VOLUME_ECHO_GRACE_S,
 )
 
 ANNOUNCE_DATA = {
@@ -28,20 +33,6 @@ ANNOUNCE_DATA = {
     "announce_player_id": None,
 }
 HIRES_PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=48000, bit_depth=24)
-
-
-@pytest.fixture(autouse=True)
-def _zero_restore_pad() -> Iterator[None]:
-    """
-    Zero the audible-end pad for every test.
-
-    Both paths hold the volume restore until the clip's audible end plus this
-    pad - the live path holds its return with it too; the streams below ack a
-    long-past instant, so only the pad would otherwise add real wall-clock time
-    to every test. The tests that assert on that timing override it themselves.
-    """
-    with patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 0):
-        yield
 
 
 def _make_render(duration: float = 1.5) -> MagicMock:
@@ -65,8 +56,8 @@ def _make_stream(
     """
     Build a mock member stream whose announce arm resolves with the given ack.
 
-    The default ack reports a long-past audible instant, so the audible-end
-    hold at the end of the live path resolves without waiting.
+    The default ack reports a long-past audible instant, so every wait the
+    announcement holds for resolves without spending wall-clock time.
     """
     stream = MagicMock()
     stream.running = True
@@ -87,15 +78,19 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.display_name = player_id
     player.synced_to = None
     player.state.active_group = None
+    player.state.volume_level = 30
     player.protocol_parent_id = None
-    player.playback_state = PlaybackState.PLAYING
-    player.volume_level = 30
-    player.volume_set = AsyncMock()
+    player.has_live_audio = stream is not None
     player.stream = stream
     player._lock = asyncio.Lock()
     player.logger = logging.getLogger("test.airplay.announce")
     player.mass.create_task = MagicMock(
         side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
+    )
+    player.mass.players.cmd_volume_set = AsyncMock()
+    # what the controller's scaling returns for the default 0/100 volume limits
+    player.mass.players.scale_volume_to_device = MagicMock(
+        side_effect=lambda _player_id, level: level
     )
     player.provider._announce_plans = {}
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=None)
@@ -118,6 +113,50 @@ def _make_playing_group(*streams: MagicMock) -> list[MagicMock]:
 def _make_announcement() -> MagicMock:
     """Build the announcement PlayerMedia handed down by the player controller."""
     return MagicMock(custom_data=dict(ANNOUNCE_DATA))
+
+
+def _record_spawned_tasks(player: MagicMock) -> list[asyncio.Task[None]]:
+    """
+    Make the player's task spawner record what it starts, and return that record.
+
+    :param player: The player the announcement targets; the restore its teardown
+        falls back on runs from a task of its own.
+    """
+    tasks: list[asyncio.Task[None]] = []
+
+    def create_task(
+        coro: Coroutine[Any, Any, None], *_args: Any, **_kwargs: Any
+    ) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(coro)
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = MagicMock(side_effect=create_task)
+    return tasks
+
+
+@contextmanager
+def _timeline(player: MagicMock) -> Iterator[list[tuple[str, float]]]:
+    """
+    Record the announcement's volume timeline without spending its waits.
+
+    Yields the ordered log of the instants (unix ms) the announcement holds for and
+    the volume levels it sets, so a test can assert the ORDER of both volume changes
+    against the clip's own instants without reading the wall clock.
+
+    :param player: The player the announcement targets; its controller is the one
+        every volume command travels through.
+    """
+    events: list[tuple[str, float]] = []
+
+    async def hold_until(unix_ms: float) -> None:
+        events.append(("hold", unix_ms))
+
+    player.mass.players.cmd_volume_set = AsyncMock(
+        side_effect=lambda _player_id, level: events.append(("volume", level))
+    )
+    with patch.object(announce, "_hold_until", hold_until):
+        yield events
 
 
 def test_member_span_prefers_the_warm_lead() -> None:
@@ -166,10 +205,8 @@ async def test_live_announcement_arms_every_member_at_one_shared_instant() -> No
     members = _make_playing_group(*streams)
     leader = members[0]
 
-    with patch.object(announce, "_announce_with_session", new_callable=AsyncMock) as session_path:
-        await announce.play_announcement(leader, _make_announcement(), None)
+    await announce.play_announcement(leader, _make_announcement(), None)
 
-    session_path.assert_not_awaited()
     arms = [stream.announce.call_args for stream in streams]
     for arm in arms:
         assert arm is not None
@@ -190,29 +227,38 @@ async def test_live_announcement_renders_one_clip_per_distinct_format() -> None:
     streams = [_make_stream(), _make_stream(pcm_format=HIRES_PCM_FORMAT)]
     members = _make_playing_group(*streams)
 
-    with patch.object(announce, "_announce_with_session", new_callable=AsyncMock):
-        await announce.play_announcement(members[0], _make_announcement(), None)
+    await announce.play_announcement(members[0], _make_announcement(), None)
 
     clip_paths = {stream.announce.call_args.args[0] for stream in streams}
     assert len(clip_paths) == 2
 
 
 @pytest.mark.asyncio
-async def test_idle_player_takes_the_session_path() -> None:
-    """Without live playback the announcement runs as its own stream session."""
+async def test_clip_file_wraps_the_audio_in_ducked_silence() -> None:
+    """The clip file is lead-in silence, then the announcement audio, then tail silence."""
+    clip_path = await announce._render_clip_file(_make_render(), HIRES_PCM_FORMAT)
+    try:
+        clip = Path(clip_path).read_bytes()
+    finally:
+        Path(clip_path).unlink()
+
+    # the silence is sized on the content type: this format carries 24 bit over an
+    # s32le wire, so a bit_depth-derived size would come out a quarter short
+    frame_bytes = 4 * HIRES_PCM_FORMAT.channels
+    lead_bytes = int(HIRES_PCM_FORMAT.sample_rate * AIRPLAY_ANNOUNCE_DUCK_LEAD_S) * frame_bytes
+    tail_bytes = int(HIRES_PCM_FORMAT.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S) * frame_bytes
+    assert clip == bytes(lead_bytes) + b"\xff" * 64 + bytes(tail_bytes)
+
+
+@pytest.mark.asyncio
+async def test_player_without_live_audio_is_refused() -> None:
+    """Without audio to mix into the announcement is refused, releasing the render."""
     player = _make_player("solo")
-    player.playback_state = PlaybackState.IDLE
-    announcement = _make_announcement()
 
-    with patch.object(announce, "_announce_with_session", new_callable=AsyncMock) as session_path:
-        await announce.play_announcement(player, announcement, 40)
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
+        await announce.play_announcement(player, _make_announcement(), 40)
 
-    session_path.assert_awaited_once()
-    args = session_path.call_args.args
-    assert args[0] is player
-    assert args[1] is announcement
-    assert args[3] == 1.5  # the render's exact duration bounds the session waits
-    assert args[4] == 40
+    player.mass.streams.announcement_renderer.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -220,72 +266,147 @@ async def test_no_member_arming_fails_without_killing_the_music() -> None:
     """
     Live members that never arm the clip fail the announcement, not the music.
 
-    An outdated cliairplay silently ignores the arm command; a fallback session
-    would stop the user's playing session over a clip that could not be mixed.
+    An outdated cliairplay silently ignores the arm command: nothing is said, but
+    the session every member is playing from is left exactly as it was.
     """
     streams = [_make_stream(ack=None), _make_stream(ack=None)]
     members = _make_playing_group(*streams)
     live_session = streams[0].session
     live_session.stop = AsyncMock()
 
-    with (
-        patch.object(announce, "_announce_with_session", new_callable=AsyncMock) as session_path,
-        pytest.raises(PlayerCommandFailed, match="may not support announcements"),
-    ):
+    with pytest.raises(PlayerCommandFailed, match="may not support announcements"):
         await announce.play_announcement(members[0], _make_announcement(), None)
 
     for stream in streams:
         stream.announce.assert_awaited_once()
         stream.wait_announce_done.assert_not_awaited()
-    session_path.assert_not_awaited()
     live_session.stop.assert_not_awaited()
     members[0].mass.streams.announcement_renderer.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_partial_success_warns_and_does_not_fall_back(
+async def test_partial_success_warns_about_the_members_that_stayed_silent(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """One member playing the clip is a success; the members that did not are named."""
     streams = [_make_stream(), _make_stream(ack=None)]
     members = _make_playing_group(*streams)
 
-    with (
-        patch.object(announce, "_announce_with_session", new_callable=AsyncMock) as session_path,
-        caplog.at_level(logging.WARNING),
-    ):
+    with caplog.at_level(logging.WARNING):
         await announce.play_announcement(members[0], _make_announcement(), None)
 
-    session_path.assert_not_awaited()
     assert "member_1" in caplog.text
     streams[0].wait_announce_done.assert_awaited_once()
     streams[1].wait_announce_done.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_volume_is_scheduled_on_the_acked_instant() -> None:
-    """The volume bump lands at the acked audible instant, the restore after the clip."""
-    ack_at_unix_ms = int(time.time() * 1000) + 200
-    # the acked duration includes the 1s ducked-silence tail: 2s of content
-    stream = _make_stream(ack=(ack_at_unix_ms, 3000))
-    members = _make_playing_group(stream)
-    member = members[0]
-    member.volume_level = 30
+async def test_volume_moves_inside_the_ducked_silence() -> None:
+    """
+    The volume is raised in the ducked lead-in and restored in the ducked tail.
 
-    with patch.object(announce, "_announce_with_session", new_callable=AsyncMock):
+    Both changes are timed on the acked start of the clip FILE: the raise lands
+    after that start but before the announcement audio at the end of the lead-in,
+    and the restore after that audio but before the file ends - so neither is ever
+    heard on the music, which is ducked for the whole file.
+    """
+    duration = 1.5
+    file_ms = int((AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration + AIRPLAY_ANNOUNCE_DUCK_TAIL_S) * 1000)
+    ack_at_unix_ms = 1_700_000_000_000
+    (member,) = _make_playing_group(_make_stream(ack=(ack_at_unix_ms, file_ms)))
+
+    with _timeline(member) as events:
         await announce.play_announcement(member, _make_announcement(), 55)
 
-    scheduled = member.mass.call_later.call_args_list
-    assert len(scheduled) == 2
-    bump, restore = scheduled
-    assert bump.args[1:] == (member.volume_set, 55)
-    assert restore.args[1:] == (member.volume_set, 30)
-    # the bump derives from the acked instant (~0.2s out) plus the 0.3s
-    # into-the-clip bias; the restore follows the CONTENT length (the acked
-    # duration minus the silence tail) plus the (zeroed) pad, so it lands
-    # inside the ducked cushion - 1.7s after the bump here
-    assert 0.2 < bump.args[0] <= 0.5
-    assert restore.args[0] - bump.args[0] == pytest.approx(1.7)
+    assert [name for name, _ in events] == ["hold", "volume", "hold", "volume", "hold"]
+    assert events[1][1] == 55
+    assert events[3][1] == 30  # the level the volume target carried before
+    raised_at, restored_at = events[0][1], events[2][1]
+    assert raised_at == ack_at_unix_ms + AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS
+    # inside the lead-in: the music is already ducked, nothing is being said yet
+    assert ack_at_unix_ms < raised_at < ack_at_unix_ms + AIRPLAY_ANNOUNCE_DUCK_LEAD_S * 1000
+    # inside the tail: the announcement is over, the clip file is not
+    assert (
+        ack_at_unix_ms + (AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration) * 1000
+        <= restored_at
+        < ack_at_unix_ms + file_ms
+    )
+
+
+@pytest.mark.asyncio
+async def test_short_clip_is_fully_covered_by_the_announcement_volume() -> None:
+    """
+    A clip shorter than the ducked lead-in still plays at the announcement volume.
+
+    The raise is timed on the lead-in, never on the clip's own length, so a short
+    announcement is at the announcement level from its first word (the regression
+    heard as a short announcement not playing at all).
+    """
+    duration = 0.4
+    file_ms = int((AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration + AIRPLAY_ANNOUNCE_DUCK_TAIL_S) * 1000)
+    ack_at_unix_ms = 1_700_000_000_000
+    (member,) = _make_playing_group(_make_stream(ack=(ack_at_unix_ms, file_ms)))
+    member.mass.streams.announcement_renderer.acquire = MagicMock(
+        return_value=_make_render(duration)
+    )
+
+    with _timeline(member) as events:
+        await announce.play_announcement(member, _make_announcement(), 55)
+
+    assert [name for name, _ in events] == ["hold", "volume", "hold", "volume", "hold"]
+    raised_at, restored_at = events[0][1], events[2][1]
+    # the raise still lands before a word is said, the restore only after the last
+    assert raised_at < ack_at_unix_ms + AIRPLAY_ANNOUNCE_DUCK_LEAD_S * 1000
+    assert restored_at >= ack_at_unix_ms + (AIRPLAY_ANNOUNCE_DUCK_LEAD_S + duration) * 1000
+
+
+@pytest.mark.asyncio
+async def test_announcement_volume_lands_on_the_protocol_parent() -> None:
+    """
+    The announcement volume is set on the control that owns the member's output.
+
+    An AirPlay child of a native player must not write the receiver's own level:
+    the command travels through the controller to the parent, on the parent's scale.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    parent = _make_player("parent")
+    parent.state.volume_level = 20
+    parent.mass = member.mass
+    member.protocol_parent_id = "parent"
+    member.mass.players.get_player = MagicMock(return_value=parent)
+
+    with _timeline(member):
+        await announce.play_announcement(member, _make_announcement(), 55)
+
+    # the parent's own level is bumped and restored; the child is never addressed
+    assert member.mass.players.cmd_volume_set.await_args_list == [
+        call("parent", 55),
+        call("parent", 20),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_armed_members_ignore_their_own_volume_echoes() -> None:
+    """
+    Every armed member ignores the device's volume reports until its clip is over.
+
+    The receiver echoes each level it is handed back over DACP; an echo read as the
+    user reaching for the volume would be written straight back to the device.
+    """
+    # taken WITH the wall clock the ack is built from, so the window below is
+    # bracketed exactly however slow the run itself is
+    now_ms = int(time.time() * 1000)
+    file_ms = 3000
+    (member,) = _make_playing_group(_make_stream(ack=(now_ms + 300, file_ms)))
+
+    with _timeline(member):
+        await announce.play_announcement(member, _make_announcement(), 55)
+    elapsed = time.time() - now_ms / 1000
+
+    audible_end_s = (300 + file_ms) / 1000
+    window = member.suppress_volume_reports.call_args.args[0]
+    assert audible_end_s + AIRPLAY_VOLUME_ECHO_GRACE_S - elapsed <= window
+    assert window <= audible_end_s + AIRPLAY_VOLUME_ECHO_GRACE_S
 
 
 def test_member_duck_compensates_the_volume_bump() -> None:
@@ -298,175 +419,159 @@ def test_member_duck_compensates_the_volume_bump() -> None:
     down shallows it symmetrically, and without a bump the base duck applies.
     """
     member = _make_player("m")
-    member.volume_level = 38
+    member.state.volume_level = 38
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
     assert announce._member_duck_db(member, 18) == pytest.approx(-12.0)
     assert announce._member_duck_db(member, None) == pytest.approx(-18.0)
     assert announce._member_duck_db(member, 38) == pytest.approx(-18.0)
     # extreme bumps clamp to the binary's usable range (never boost the music)
-    member.volume_level = 0
+    member.state.volume_level = 0
     assert announce._member_duck_db(member, 100) == pytest.approx(-48.0)
     assert announce._member_duck_db(member, 0) == pytest.approx(-18.0)
-    member.volume_level = 100
+    member.state.volume_level = 100
     assert announce._member_duck_db(member, 0) == pytest.approx(0.0)
+
+
+def test_member_duck_compensates_the_volume_target_bump() -> None:
+    """The compensation follows the level of the control the bump is applied to."""
+    member = _make_player("child")
+    member.state.volume_level = 100
+    parent = _make_player("parent")
+    parent.state.volume_level = 38
+    member.protocol_parent_id = "parent"
+    member.mass.players.get_player = MagicMock(return_value=parent)
+
+    assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
+
+
+def test_member_duck_compensates_the_bump_the_device_actually_gets() -> None:
+    """
+    The compensation is made of the DEVICE levels, not the logical ones.
+
+    A volume limit configured on the target scales every logical level down before it
+    reaches the device, so the music rises by less than the logical delta says and a
+    duck deepened by that delta would bury it.
+    """
+    member = _make_player("m")
+    member.state.volume_level = 30
+    # max_volume 60: logical 30 lands on device 18, logical 55 on device 33
+    member.mass.players.scale_volume_to_device = MagicMock(
+        side_effect=lambda _player_id, level: (level * 60) // 100
+    )
+
+    # +15 device points is +4.5 dB, where the logical +25 would read as +7.5 dB
+    assert announce._member_duck_db(member, 55) == pytest.approx(-22.5)
+
+
+def test_volume_target_is_the_protocol_parent() -> None:
+    """The volume of a member with a protocol parent is owned by that parent."""
+    member = _make_player("child")
+    parent = _make_player("parent")
+    member.protocol_parent_id = "parent"
+    member.mass.players.get_player = MagicMock(return_value=parent)
+
+    assert announce._volume_target(member) is parent
+    # a member without one owns its own volume
+    member.protocol_parent_id = None
+    assert announce._volume_target(member) is member
 
 
 @pytest.mark.asyncio
 async def test_no_volume_level_leaves_the_volume_alone() -> None:
-    """Without an announcement volume nothing is scheduled on any member."""
+    """Without an announcement volume no level is touched on any member."""
     members = _make_playing_group(_make_stream())
 
-    with patch.object(announce, "_announce_with_session", new_callable=AsyncMock):
-        await announce.play_announcement(members[0], _make_announcement(), None)
+    await announce.play_announcement(members[0], _make_announcement(), None)
 
-    members[0].mass.call_later.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_session_path_plays_the_clip_and_restores_the_volume() -> None:
-    """The dedicated session serves the clip to the configured group at the given volume."""
-    player = _make_player("solo")
-    player.playback_state = PlaybackState.IDLE
-    player.volume_level = 25
-    player._get_sync_clients = MagicMock(return_value=[player])
-    player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
-    announcement = _make_announcement()
-    render = _make_render(duration=0.01)
-    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    events: list[tuple[str, float]] = []
-
-    with (
-        patch.object(announce, "AirPlayStreamSession") as session_cls,
-        patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 100),
-        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.4),
-    ):
-        started = time.monotonic()
-        player.volume_set = AsyncMock(
-            side_effect=lambda level: events.append((f"volume={level}", time.monotonic() - started))
-        )
-        session = session_cls.return_value
-        session.start = AsyncMock()
-        session.stop = AsyncMock(
-            side_effect=lambda: events.append(("stop", time.monotonic() - started))
-        )
-        session.start_time = 0.0
-        await announce.play_announcement(player, announcement, 60)
-
-    assert session_cls.call_args.args == (
-        player.provider,
-        [player],
-        AIRPLAY_PCM_FORMAT,
-        announcement,
-    )
-    session.start.assert_awaited_once()
-    session.stop.assert_awaited_once()
-    # An AirPlay volume only reaches the receiver over a running stream, so the
-    # restore has to land on the clip's audible end (+ the 0.1s pad), well
-    # inside the 0.4s drain the session is stopped after.
-    assert [name for name, _ in events] == ["volume=60", "volume=25", "stop"]
-    _, restored_at = events[1]
-    _, stopped_at = events[2]
-    assert 0.1 <= restored_at < 0.3
-    assert stopped_at >= 0.4
-    # the player ends idle without still showing media (like player.stop())
-    assert player._attr_current_media is None
-    player.update_state.assert_called()
+    members[0].mass.players.cmd_volume_set.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_session_path_restores_the_volume_when_the_clip_is_cut_short() -> None:
-    """An announcement cancelled mid-clip hands the speaker back its own volume."""
-    player = _make_player("solo")
-    player.playback_state = PlaybackState.IDLE
-    player.volume_level = 25
-    player._get_sync_clients = MagicMock(return_value=[player])
-    player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
-    render = _make_render(duration=30)
-    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    events: list[str] = []
-    player.volume_set = AsyncMock(side_effect=lambda level: events.append(f"volume={level}"))
+async def test_cancelled_announcement_hands_the_bumped_volume_back() -> None:
+    """
+    An announcement cancelled after the raise still puts the previous level back.
 
-    with patch.object(announce, "AirPlayStreamSession") as session_cls:
-        started = asyncio.Event()
-        session = session_cls.return_value
-        session.start = AsyncMock(side_effect=lambda _source: started.set())
-        session.stop = AsyncMock(side_effect=lambda: events.append("stop"))
-        session.start_time = 0.0
+    The music plays on, so the speaker must not be left sitting at the announcement
+    level. The restore runs from a task of its own, since an await in the cancelled
+    call would be cancelled right along with it.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    spawned = _record_spawned_tasks(member)
+    raised = asyncio.Event()
+    parked = asyncio.Event()
+    member.mass.players.cmd_volume_set = AsyncMock(side_effect=lambda *_args: raised.set())
+
+    async def hold_until(_unix_ms: float) -> None:
+        if not raised.is_set():
+            return
+        # the hold in the ducked tail, where the cancel lands
+        parked.set()
+        await asyncio.Event().wait()
+
+    with patch.object(announce, "_hold_until", hold_until):
         announcing = asyncio.create_task(
-            announce.play_announcement(player, _make_announcement(), 60)
+            announce.play_announcement(member, _make_announcement(), 55)
         )
-        # the session is up; the cancel lands in the clip wait that follows
-        await started.wait()
+        await parked.wait()
         announcing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await announcing
+    await asyncio.gather(*spawned)
 
-    # the session is still up here, so the restore reaches the receiver
-    assert events == ["volume=60", "volume=25", "stop"]
+    assert member.mass.players.cmd_volume_set.await_args_list == [
+        call("member_0", 55),
+        call("member_0", 30),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_session_path_serves_the_clip_with_its_silence_tail() -> None:
-    """The dedicated session keeps feeding past the clip, so the volume restore lands in time."""
+async def test_completed_announcement_leaves_nothing_to_restore() -> None:
+    """
+    An announcement that ran its course needs no restore behind it.
+
+    Its own timeline put the level back inline, so the teardown's safety net finds
+    nothing left to hand over and never spawns a second restore.
+    """
+    (member,) = _make_playing_group(_make_stream())
+    spawned = _record_spawned_tasks(member)
+
+    with _timeline(member):
+        await announce.play_announcement(member, _make_announcement(), 55)
+
+    assert spawned == []
+    assert member.mass.players.cmd_volume_set.await_args_list == [
+        call("member_0", 55),
+        call("member_0", 30),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_keeps_its_level_for_a_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A level that could not be restored stays behind for a later call, and is logged.
+
+    Dropping it would leave the speaker at the announcement level with nothing left
+    that knows what to put back.
+    """
     player = _make_player("solo")
-    player.playback_state = PlaybackState.IDLE
-    player._get_sync_clients = MagicMock(return_value=[player])
-    player._get_session_pcm_format = AsyncMock(return_value=HIRES_PCM_FORMAT)
-    render = _make_render(duration=0.01)
-    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    served = bytearray()
-
-    with (
-        patch.object(announce, "AirPlayStreamSession") as session_cls,
-        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
-    ):
-
-        async def start(source: AsyncGenerator[bytes]) -> None:
-            async for chunk in source:
-                served.extend(chunk)
-
-        session = session_cls.return_value
-        session.start = AsyncMock(side_effect=start)
-        session.stop = AsyncMock()
-        session.start_time = 0.0
-        await announce.play_announcement(player, _make_announcement(), None)
-
-    # the tail is sized on the content type: this format carries 24 bit over an
-    # s32le wire, so a bit_depth-derived size would come out a quarter short
-    tail_bytes = (
-        int(HIRES_PCM_FORMAT.sample_rate * AIRPLAY_ANNOUNCE_DUCK_TAIL_S)
-        * 4
-        * HIRES_PCM_FORMAT.channels
+    bumped = {"solo": 30, "other": 40}
+    player.mass.players.cmd_volume_set = AsyncMock(
+        side_effect=[RuntimeError("device unreachable"), None]
     )
-    assert served == b"\xff" * 64 + bytes(tail_bytes)
 
+    with caplog.at_level(logging.WARNING):
+        await announce._restore_announcement_volume(player, bumped)
 
-@pytest.mark.asyncio
-async def test_session_path_stops_a_parked_session_first() -> None:
-    """A parked (paused) session is stopped before the dedicated announcement session."""
-    parked_stream = _make_stream()
-    player = _make_player("solo", stream=parked_stream)
-    player.playback_state = PlaybackState.PAUSED
-    player._get_sync_clients = MagicMock(return_value=[player])
-    player._get_session_pcm_format = AsyncMock(return_value=AIRPLAY_PCM_FORMAT)
-    parked_session = parked_stream.session
-    parked_session.stop = AsyncMock()
-    render = _make_render(duration=0.01)
-    player.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+    assert bumped == {"solo": 30}
+    assert "Could not restore the volume of solo" in caplog.text
 
-    with (
-        patch.object(announce, "AirPlayStreamSession") as session_cls,
-        patch.object(announce, "AIRPLAY_ANNOUNCE_SESSION_DRAIN_S", 0.0),
-    ):
-        session = session_cls.return_value
-        session.start = AsyncMock()
-        session.stop = AsyncMock()
-        session.start_time = 0.0
-        await announce.play_announcement(player, _make_announcement(), None)
+    player.mass.players.cmd_volume_set = AsyncMock()
+    await announce._restore_announcement_volume(player, bumped)
 
-    parked_session.stop.assert_awaited_once()
-    assert player.stream is None
-    session.start.assert_awaited_once()
+    assert bumped == {}
+    player.mass.players.cmd_volume_set.assert_awaited_once_with("solo", 30)
 
 
 @pytest.mark.asyncio
@@ -489,16 +594,19 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
         if member is not leader:
             member.synced_to = leader.player_id
         member.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-    # the second member reports a far larger span: the shared instant must
-    # clear it for every sibling arm
-    streams[1].latency_lead_ms = 2000
+    # the second member reports a span past the fallback the others assume:
+    # the shared instant must clear the LARGEST one for every sibling arm
+    largest_span_ms = AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS + 1000
+    streams[1].latency_lead_ms = largest_span_ms
     announcement = _make_announcement()
 
+    before_ms = int(time.time() * 1000)
     await asyncio.gather(
         announce.play_announcement(leader, announcement, None),
         announce.play_announcement(member_1, announcement, None),
         announce.play_announcement(member_2, announcement, None),
     )
+    after_ms = time.time() * 1000
 
     instants = set()
     for stream in streams:
@@ -506,8 +614,10 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
         stream.wait_announce_done.assert_awaited_once()
         instants.add(stream.announce.await_args.args[1])
     assert len(instants) == 1
-    # the shared instant cleared the largest member span (2s + margin)
-    assert next(iter(instants)) >= int(time.time() * 1000) + 2000
+    # the instant is computed inside the call, so the clock reads either side
+    # of it bracket the lead however long the fan-out itself takes
+    expected_lead = largest_span_ms + AIRPLAY_ANNOUNCE_AT_MARGIN_MS
+    assert before_ms + expected_lead <= next(iter(instants)) <= after_ms + expected_lead
 
 
 @pytest.mark.asyncio
@@ -571,22 +681,23 @@ async def test_member_announced_directly_arms_itself() -> None:
 @pytest.mark.asyncio
 async def test_synced_member_without_live_playback_is_refused() -> None:
     """
-    A parked group member must not announce by tearing down the shared session.
+    A parked group member has nothing to mix into, so its announcement is refused.
 
-    Its stream belongs to the leader's parked session; stopping that for a
-    single-member announcement would silence every room in the group.
+    Its stream belongs to the leader's parked session, which is left untouched:
+    stopping it for a single-member announcement would silence the whole group.
     """
     parked_stream = _make_stream()
     members = _make_playing_group(parked_stream)
     member = members[0]
     member.synced_to = "some_leader"
-    member.playback_state = PlaybackState.PAUSED
+    member.has_live_audio = False
     parked_session = parked_stream.session
     parked_session.stop = AsyncMock()
 
-    with pytest.raises(PlayerCommandFailed, match="without live playback"):
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
         await announce.play_announcement(member, _make_announcement(), None)
 
+    parked_stream.announce.assert_not_awaited()
     parked_session.stop.assert_not_awaited()
 
 
@@ -598,14 +709,16 @@ async def test_return_holds_until_the_audible_end() -> None:
     announce_done reports MIX completion at the delivery head - ahead of
     audibility - and the caller re-mutes muted players the moment this returns.
     """
+    # taken WITH the wall clock the ack is built from, so the hold is measured
+    # from that same instant however slow the setup below runs
+    started = time.monotonic()
     now_unix_ms = int(time.time() * 1000)
     stream = _make_stream(ack=(now_unix_ms + 250, 100))
     members = _make_playing_group(stream)
 
     with patch.object(announce, "AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS", 100):
-        started = time.monotonic()
         await announce.play_announcement(members[0], _make_announcement(), None)
-        elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - started
 
     # audible end = acked instant + clip duration (0.35s out) + the 0.1s pad
     assert elapsed >= 0.4
@@ -646,20 +759,23 @@ async def test_bridge_configured_player_mixes_over_its_own_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bridge_streaming_player_never_runs_a_session_fallback() -> None:
-    """A player whose bridge owns the live stream fails instead of seizing the device."""
-    player = _make_player("bridged")
-    player.playback_state = PlaybackState.IDLE
-    bridge = MagicMock(owns_airplay_stream=True)
+async def test_bridged_player_without_a_stream_to_mix_into_is_refused() -> None:
+    """
+    A bridged player Sendspin is not streaming through is refused, not seized.
+
+    Neither its own session nor the bridge is rendering audio here, so there is
+    nothing to mix the clip into and the device is left to whatever owns it.
+    """
+    stream = _make_stream()
+    stream.session = None
+    player = _make_player("bridged", stream=stream)
+    bridge = MagicMock(owns_airplay_stream=False)
     player.provider.bridge_manager.get_bridge = MagicMock(return_value=bridge)
 
-    with (
-        patch.object(announce, "AirPlayStreamSession") as session_cls,
-        pytest.raises(PlayerCommandFailed, match="Sendspin bridge"),
-    ):
+    with pytest.raises(PlayerCommandFailed, match="no live playback"):
         await announce.play_announcement(player, _make_announcement(), None)
 
-    session_cls.assert_not_called()
+    stream.announce.assert_not_awaited()
 
 
 @pytest.mark.asyncio
