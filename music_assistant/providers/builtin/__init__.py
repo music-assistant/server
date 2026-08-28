@@ -1006,7 +1006,17 @@ class BuiltinProvider(MusicProvider):
         failed_provider_instances: set[str],
     ) -> _ImportTrackMatchResult:
         """Resolve one imported playlist entry against the allowed providers."""
-        media_item = construct_media_item_from_playlist_item(item, self.mass)
+        # a bare URI without #EXTMA metadata (e.g. a hand-written or foreign M3U entry)
+        # would otherwise default to Track; a radio:// path (or similar) must still be
+        # recognized as non-Track so it is retained rather than searched/substituted
+        default_media_type = MediaType.TRACK
+        with suppress(InvalidProviderURI, InvalidProviderID):
+            parsed_media_type, _, _ = await parse_uri(item.path)
+            if parsed_media_type != MediaType.UNKNOWN:
+                default_media_type = parsed_media_type
+        media_item = construct_media_item_from_playlist_item(
+            item, self.mass, default_media_type=default_media_type
+        )
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)

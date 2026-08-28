@@ -278,6 +278,28 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
     assert "| Retained | 1 |" in report_markdown
 
 
+async def test_bare_radio_uri_without_extma_is_not_matched_as_track() -> None:
+    """A bare radio:// entry with no #EXTMA metadata must not be searched as a Track."""
+    prov = _make_provider(
+        loaded_provider_domains={"radiobrowser"},
+        get_provider_item=AsyncMock(side_effect=MediaNotFoundError("gone")),
+    )
+    item = PlaylistItem(path="radiobrowser://radio/xyz123", title="Live Station", length=None)
+    assert item.metadata is None
+    assert not item.providers
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "radiobrowser")
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
 async def test_search_narrowing_does_not_affect_source_validation() -> None:
     """Narrowing the search targets must not make a playable original look unavailable."""
     prov = _make_provider(loaded_provider_domains={"spotify", "qobuz"})
