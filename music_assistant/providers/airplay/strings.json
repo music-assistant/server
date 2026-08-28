@@ -2,7 +2,11 @@
   "config_entries": {
     "streaming_mode": {
       "label": "Streaming mode",
-      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nMusic Assistant automatically pins a safer route after a conclusive failure: 'AirPlay 2 - NTP timing' when an offered PTP clock never answers, or 'AirPlay 2 - compatibility mode' when the native control channel repeatedly fails. The next playback uses that route; set it back to Automatic to retry the original route."
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nWhen an automatic route conclusively fails, a warning in the log points at this setting; Music Assistant never changes it by itself. Pick one of the offered modes to work around a failing route, or set it back to Automatic to retry the original one."
+    },
+    "enable_hires": {
+      "label": "24-bit audio (hi-res)",
+      "description": "Stream 24-bit (hi-res) audio to this device when the source provides it. \nOn some devices this can cause intermittent crackling or static noises during playback, especially on wireless connections; disable this option if you hear such noises."
     },
     "encryption": {
       "label": "Enable encryption",

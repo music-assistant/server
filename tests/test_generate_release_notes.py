@@ -77,6 +77,7 @@ class FakePR:
         title: str = "",
         author: str = "someone",
         labels: tuple[str, ...] = (),
+        body: str = "",
     ) -> None:
         """Initialize fake pull request."""
         self.number = number
@@ -85,6 +86,7 @@ class FakePR:
         self.title = title
         self.user = types.SimpleNamespace(login=author)
         self.labels = [types.SimpleNamespace(name=label) for label in labels]
+        self.body = body
         self.html_url = f"https://github.com/music-assistant/server/pull/{number}"
 
 
@@ -310,3 +312,49 @@ def test_notes_are_shrunk_to_fit_body_limit(
         assert f"#{number})" in notes
     assert 0 < len(maintenance) < 40
     assert "compare/2.9.13...2.10.0" in notes
+
+
+def test_categorize_prs_excludes_title_prefixes(generate_notes: types.ModuleType) -> None:
+    """PRs matching an excluded title prefix never appear in the notes."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    config = {
+        "categories": [{"title": "🐛 Bugfixes", "labels": ["bugfix"]}],
+        "exclude-title-prefixes": ["Lokalise", "[Backport to stable]"],
+    }
+    prs = [
+        FakePR(1, merged_at, "Fix a bug", labels=("bugfix",)),
+        FakePR(2, merged_at, "Lokalise translations update"),
+        FakePR(3, merged_at, "Lokalise: Translations update"),
+        FakePR(4, merged_at, "[Backport to stable] 2.9.4"),
+        FakePR(5, merged_at, "Add a feature"),
+    ]
+
+    categories, uncategorized = generate_notes.categorize_prs(prs, config)
+
+    assert [pr.number for pr in categories["🐛 Bugfixes"]] == [1]
+    assert [pr.number for pr in uncategorized] == [5]
+
+
+def test_extract_frontend_changes_skips_lokalise_bullets(
+    generate_notes: types.ModuleType,
+) -> None:
+    """Lokalise translation-sync bullets in frontend PR bodies are skipped."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    prs = [
+        FakePR(
+            1,
+            merged_at,
+            "⬆️ Update music-assistant-frontend to 2.17.294",
+            body=(
+                "## What's changed\n"
+                "- Fix the player card layout (by @someone in #100)\n"
+                "- Lokalise translations update (by @github-actions[bot] in #101)\n"
+                "- Lokalise: Translations update (by @marcelveldt in #102)\n"
+            ),
+        ),
+    ]
+
+    changes, contributors = generate_notes.extract_frontend_changes(prs)
+
+    assert changes == ["- Fix the player card layout (by @someone in #100)"]
+    assert contributors == {"someone"}

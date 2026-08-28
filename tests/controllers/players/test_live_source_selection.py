@@ -20,6 +20,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.controller import AUDIO_SOURCE_CLAIM_TIMEOUT
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.plugin import PluginProvider
 
@@ -712,6 +713,121 @@ async def test_a_source_that_fails_to_start_is_not_left_on_the_player() -> None:
 
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_a_failed_handover_leaves_the_source_on_the_old_player() -> None:
+    """
+    A move that never starts leaves the source where it was.
+
+    Evicting the displaced player before the new one has started would leave the
+    source on neither player when the start fails.
+    """
+    controller, provider, _player = _controller(_source())
+    old_session = controller._start_audio_source_session("player_2", _source(), PROVIDER_INSTANCE)
+    controller._handle_play_media = AsyncMock(side_effect=PlayerCommandFailed("no route"))
+
+    with pytest.raises(PlayerCommandFailed):
+        await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    assert controller.get_audio_source_session("player_2") is old_session
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    # the rollback releases the new player only, which plugins ignore per contract:
+    # they still hold the old player
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_a_successful_handover_evicts_the_old_player_on_the_stream_claim() -> None:
+    """
+    The displaced player keeps the source until a stream request claims the new session.
+
+    That claim is the plugin's commit to the new player (on_source_selected), so the
+    eviction is deliberately silent: no release reaches the plugin for it.
+    """
+    controller, provider, _player = _controller(_source())
+    old_session = controller._start_audio_source_session("player_2", _source(), PROVIDER_INSTANCE)
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    new_session = controller.get_audio_source_session(PLAYER_ID)
+    assert new_session is not None
+    assert controller.get_audio_source_session("player_2") is old_session
+    provider.on_source_released.assert_not_awaited()
+
+    assert (
+        controller.claim_audio_source_session(new_session, new_session.playback_session_id, "tok-1")
+        is True
+    )
+
+    assert controller.get_audio_source_session("player_2") is None
+    assert controller.get_audio_source_session(PLAYER_ID) is new_session
+    provider.on_source_released.assert_not_awaited()
+
+
+async def test_starting_a_source_arms_the_never_claimed_release() -> None:
+    """A started source schedules the check that releases it if no stream ever claims it."""
+    controller, _provider, _player = _controller(_source())
+
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    controller.mass.call_later.assert_called_once_with(
+        AUDIO_SOURCE_CLAIM_TIMEOUT,
+        controller._release_unclaimed_audio_source,
+        PLAYER_ID,
+        session,
+        session.playback_session_id,
+        task_id=f"release_unclaimed_audio_source_{PLAYER_ID}",
+    )
+
+
+async def test_a_source_never_claimed_is_released_after_the_grace_period() -> None:
+    """A renderer that never fetched the stream does not hold the source forever."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+
+    await controller._release_unclaimed_audio_source(
+        PLAYER_ID, session, session.playback_session_id
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is None
+    provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+    controller._handle_cmd_stop.assert_awaited_once()
+
+
+async def test_a_claimed_source_survives_the_grace_period_check() -> None:
+    """A source whose stream was claimed in time is left playing."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    # what a stream request claiming the session stamps
+    session.stream_session_id = "tok-1"
+
+    await controller._release_unclaimed_audio_source(
+        PLAYER_ID, session, session.playback_session_id
+    )
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
+
+
+async def test_a_reselected_source_is_not_released_by_a_stale_grace_period_check() -> None:
+    """A check armed for an earlier selection cannot release a newer one."""
+    controller, provider, _player = _controller(_source())
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    session = controller.get_audio_source_session(PLAYER_ID)
+    assert session is not None
+    stale_playback_session_id = session.playback_session_id
+
+    # the re-select re-stamps the playback token, making the armed check stale
+    await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+    await controller._release_unclaimed_audio_source(PLAYER_ID, session, stale_playback_session_id)
+
+    assert controller.get_audio_source_session(PLAYER_ID) is session
+    provider.on_source_released.assert_not_awaited()
 
 
 async def test_an_announcement_does_not_take_the_source_off_the_player() -> None:

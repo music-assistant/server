@@ -216,12 +216,16 @@ def categorize_prs(prs, config) -> tuple[dict[str, list[Any]], list[Any]]:
     include_labels = config.get("include-labels")
     if include_labels:
         include_labels = set(include_labels)
+    exclude_title_prefixes = tuple(config.get("exclude-title-prefixes", []))
 
     for pr in prs:
         # Check if PR should be excluded
         pr_labels = {label.name for label in pr.labels}
 
         if exclude_labels and pr_labels & exclude_labels:
+            continue
+
+        if exclude_title_prefixes and pr.title.startswith(exclude_title_prefixes):
             continue
 
         if include_labels and not (pr_labels & include_labels):
@@ -312,6 +316,9 @@ def extract_frontend_changes(prs) -> tuple[list[str], set[str]]:
                     continue
                 # Skip "No changes" entries
                 if re.match(r"^[•\-\*]\s*No changes\s*$", stripped_line, re.IGNORECASE):
+                    continue
+                # Skip translation-sync noise
+                if re.match(r"^[•\-\*]\s*Lokalise", stripped_line, re.IGNORECASE):
                     continue
 
                 # Add the change

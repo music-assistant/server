@@ -216,8 +216,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    # the checksum invalidates entries cached before search was authenticated
-    @use_cache(3600 * 24 * 7, cache_checksum="authenticated_search_v1")  # Cache for 7 days
+    # the checksum invalidates entries cached before the search was pinned to English
+    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -250,7 +250,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            language=self.language,
             user=self._yt_user,
         )
         parsed_results = SearchResults()
