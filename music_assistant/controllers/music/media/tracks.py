@@ -1185,10 +1185,17 @@ class TracksController(MediaControllerBase[Track]):
                     return track.album
         for candidate_instance in candidate_instances:
             try:
-                return await self.mass.music.albums.get(
+                if library_item := await self.mass.music.albums.get_library_item_by_prov_id(
+                    track.album.item_id, candidate_instance
+                ):
+                    # prefer the library's own copy over a fresh provider fetch,
+                    # matching the library-first preference of the shared get()
+                    return library_item
+                return await self.mass.music.albums.get_provider_item(
                     track.album.item_id,
                     candidate_instance,
-                    allow_update_metadata=False,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
                 )
             except (
                 InvalidDataError,

@@ -1198,14 +1198,13 @@ class BuiltinProvider(MusicProvider):
             except InvalidDataError:
                 if provider_item_id.startswith(
                     BUILTIN_URL_SCHEMES
-                ) and not await self._stream_url_confirmed_gone(provider_item_id):
-                    # ffprobe wraps a transient failure (DNS, timeout, 5xx) in the
-                    # same error as a genuinely dead stream - only a confirmed
-                    # terminal HTTP status proves this one is actually gone
-                    return True, None
-                # confirmed unusable, e.g. an unreadable stream with no way to
-                # verify its status, or one that is verified terminally gone
-                continue
+                ) and await self._stream_url_confirmed_gone(provider_item_id):
+                    # a confirmed terminal HTTP status (404/410) proves this stream
+                    # is actually gone - anything else this error can mean (a DNS
+                    # hiccup, a timeout, a 5xx response, or - for a catalog id - a
+                    # provider's own API/HTTP fault) does not prove deletion
+                    continue
+                return True, None
             except (
                 ResourceTemporarilyUnavailable,
                 ProviderUnavailableError,

@@ -354,6 +354,33 @@ async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
     assert "| Retained | 1 |" not in report_markdown
 
 
+async def test_catalog_item_api_error_retains_original_without_confirmation() -> None:
+    """A provider API error must not be treated as proof a catalog id was deleted."""
+    prov = _make_provider(
+        loaded_provider_domains={"qobuz--1"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("Error 500 while handling")),
+    )
+    item = _make_playlist_item(
+        path="qobuz://track/12345",
+        providers=[
+            ProviderMappingInfo(
+                domain="qobuz", instance_id="qobuz--1", item_id="12345", content_type=""
+            )
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
+
+
 async def test_bare_radio_uri_without_extma_is_not_matched_as_track() -> None:
     """A bare radio:// entry with no #EXTMA metadata must not be searched as a Track."""
     prov = _make_provider(

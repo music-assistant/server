@@ -363,14 +363,42 @@ async def test_full_track_album_falls_back_after_transient_failure(
         media_type=MediaType.ALBUM,
     )
 
-    with patch.object(
-        music.albums,
-        "get",
-        AsyncMock(side_effect=error),
+    with (
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums,
+            "get_provider_item",
+            AsyncMock(side_effect=error),
+        ),
     ):
         result = await music.tracks._get_full_track_album(track)
 
     assert result is track.album
+
+
+async def test_full_track_album_prefers_library_item_over_provider_fetch(
+    music: MusicController,
+) -> None:
+    """A library copy of the album is preferred over a fresh provider fetch."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        item_id="album",
+        provider="qobuz_1",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    library_album = create_album("library", "album_db_id", name="Album")
+
+    with (
+        patch.object(
+            music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=library_album)
+        ),
+        patch.object(music.albums, "get_provider_item", AsyncMock()) as get_provider_item,
+    ):
+        result = await music.tracks._get_full_track_album(track)
+
+    assert result is library_album
+    get_provider_item.assert_not_called()
 
 
 async def test_full_track_album_domain_only_tries_every_allowed_instance(
@@ -401,13 +429,18 @@ async def test_full_track_album_domain_only_tries_every_allowed_instance(
         # the runtime registry resolves the bare "qobuz" domain to whichever instance
         # happens to be registered first ("qobuz_1"), regardless of allow-listing
         patch.object(music.mass, "get_provider", side_effect=get_provider),
-        patch.object(music.albums, "get", AsyncMock(return_value=album)) as albums_get,
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums, "get_provider_item", AsyncMock(return_value=album)
+        ) as albums_get,
     ):
         result = await music.tracks._get_full_track_album(
             track, allowed_provider_instances={"qobuz_2"}
         )
 
-    albums_get.assert_awaited_once_with("album", "qobuz_2", allow_update_metadata=False)
+    albums_get.assert_awaited_once_with(
+        "album", "qobuz_2", allow_fallback=False, strict_provider_instance=True
+    )
     assert result is album
 
 
@@ -448,7 +481,10 @@ async def test_full_track_album_domain_only_falls_back_after_instance_failure(
 
     with (
         patch.object(music.mass, "get_provider", side_effect=get_provider),
-        patch.object(music.albums, "get", AsyncMock(side_effect=albums_get_side_effect)) as get_,
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums, "get_provider_item", AsyncMock(side_effect=albums_get_side_effect)
+        ) as get_,
     ):
         result = await music.tracks._get_full_track_album(
             track, allowed_provider_instances={"qobuz_1", "qobuz_2"}
@@ -456,8 +492,8 @@ async def test_full_track_album_domain_only_falls_back_after_instance_failure(
 
     assert result is album
     assert get_.await_args_list == [
-        call("album", "qobuz_1", allow_update_metadata=False),
-        call("album", "qobuz_2", allow_update_metadata=False),
+        call("album", "qobuz_1", allow_fallback=False, strict_provider_instance=True),
+        call("album", "qobuz_2", allow_fallback=False, strict_provider_instance=True),
     ]
 
 
