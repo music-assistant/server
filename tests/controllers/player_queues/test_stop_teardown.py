@@ -97,6 +97,29 @@ async def test_a_player_that_cannot_be_stopped_still_loses_its_session() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_stop_with_no_session_of_its_own_tears_nothing_down() -> None:
+    """
+    A stop on a queue that was not playing owns none of the audio it finds.
+
+    The device can still hang for the thirty seconds the playback lock waits, and playback
+    that starts in that window must not be taken down by a stop that stopped nothing.
+    """
+    fake = _fake_controller()
+    fake._queue_data["q"].session_id = None
+
+    async def _start_a_session(_queue_id: str) -> None:
+        fake._queue_data["q"].session_id = "sess-2"
+
+    fake.mass.players._handle_cmd_stop.side_effect = _start_a_session
+
+    await _stop(fake)
+
+    assert fake._queue_data["q"].session_id == "sess-2"
+    fake.mass.streams.audio_processing.clear.assert_not_called()
+    fake._cleanup_queue_audio_data.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> None:
     """Playback that restarted while the stop ran keeps its own session."""
     fake = _fake_controller()
