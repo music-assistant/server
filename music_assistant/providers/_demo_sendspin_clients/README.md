@@ -54,10 +54,12 @@ the button is only needed for a first pairing.
 | Short PIN Speaker | Four-digit PIN, which is gesture-gated |
 | Static PIN Speaker | Fixed eight-digit PIN, always gesture-gated |
 | Dual PIN Speaker | Both PIN methods, so setup first asks which to use |
-| Token Speaker | Pairing token found on the device |
-| Managed Speaker | Pairing token handed out by an administrator |
+| Unpairable Speaker | Only the server-side token method, so setup can only refuse |
 | Locked Speaker | Nothing on offer, so setup can only abort |
 | Everything Speaker | Guest access plus every method, on both PIN out-channels |
 | Line-In Speaker | Adds an audio input, and with it the line-in decision step |
+
+Every device except the two edge cases also carries the server-side token method, as real
+speakers do. It is never offered as a pairing choice, so it changes nothing on screen.
 
 Audio is decoded and dropped, so the players are usable playback targets too.

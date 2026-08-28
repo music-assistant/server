@@ -91,6 +91,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         unpaired_access=True,
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin",
@@ -99,6 +100,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Dynamic PIN only, shown on a display. Six digits, no button press needed.",
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin_spoken",
@@ -107,6 +109,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Dynamic PIN only, spoken out loud instead of displayed (a device with no screen).",
         dynamic_pin=True,
         pin_channel=PinChannel.SPEAKER,
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin_long",
@@ -116,6 +119,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
         min_pin_length=8,
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin_short",
@@ -125,6 +129,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
         min_pin_length=4,
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="static_pin",
@@ -133,6 +138,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Fixed eight-digit PIN printed on the device. Always needs the button pressed first.",
         static_pin=True,
         secret_locations=("device",),
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="both_pins",
@@ -143,22 +149,17 @@ SCENARIOS: tuple[Scenario, ...] = (
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
         secret_locations=("leaflet",),
+        pairing_psk=True,
     ),
     Scenario(
         scenario_id="token",
-        name="Demo Token Speaker",
-        product_name="Token Speaker",
-        description="Pairing token only, printed on the device. Copy the token below into setup.",
+        name="Demo Unpairable Speaker",
+        product_name="Unpairable Speaker",
+        description=(
+            "Only the server-side token method, which no operator can carry out. "
+            "Setup can only report that the device cannot be paired."
+        ),
         pairing_psk=True,
-        secret_locations=("device",),
-    ),
-    Scenario(
-        scenario_id="token_operator",
-        name="Demo Managed Speaker",
-        product_name="Managed Speaker",
-        description="Pairing token only, handed out by whoever administers the device.",
-        pairing_psk=True,
-        secret_locations=("operator",),
     ),
     Scenario(
         scenario_id="locked",
@@ -187,6 +188,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
         source_role=True,
+        pairing_psk=True,
     ),
 )
 

@@ -50,11 +50,21 @@ def test_matrix_covers_every_pairing_method() -> None:
     assert any(scenario.pin_channel.has_speaker for scenario in SCENARIOS)
 
 
-def test_token_scenarios_offer_no_pin_method() -> None:
-    """The setup flow only offers token pairing when no PIN method is offered."""
+def test_real_speakers_carry_the_token_alongside_a_pin_method() -> None:
+    """Every pairable device also offers the server-side token, as real speakers do."""
     for scenario in SCENARIOS:
-        if scenario.pairing_psk and not (scenario.static_pin or scenario.dynamic_pin):
-            assert scenario.secret_locations, f"{scenario.scenario_id} needs a secret location"
+        if scenario.static_pin or scenario.dynamic_pin:
+            assert scenario.pairing_psk, f"{scenario.scenario_id} should also offer the token"
+
+
+def test_exactly_one_device_offers_only_the_token() -> None:
+    """One device covers the unpairable case: the token is never operator-facing."""
+    token_only = [
+        scenario
+        for scenario in SCENARIOS
+        if scenario.pairing_psk and not (scenario.static_pin or scenario.dynamic_pin)
+    ]
+    assert [scenario.scenario_id for scenario in token_only] == ["token"]
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.scenario_id)
