@@ -225,6 +225,8 @@ def _player_with_volume(mass: MagicMock, volume_level: int) -> MagicMock:
     """Make player lookups on the mass mock return a player with the given volume."""
     player = MagicMock()
     player.state.volume_level = volume_level
+    # group_volume mirrors the player's own volume for anything that is not a group
+    player.state.group_volume = volume_level
     mass.players.get_player.return_value = player
     return player
 

@@ -547,3 +547,31 @@ def _install_fake_soloist(
             return returncode
 
     monkeypatch.setattr(spotify_helpers, "AsyncProcess", _FakePairProcess)
+
+
+@pytest.mark.parametrize(
+    ("stored", "account_id", "differs"),
+    [
+        # the engine records the canonical (lowercased) signed-in id
+        ("u1", "u1", False),
+        ("u2", "u1", True),
+        # non-ASCII usernames come back percent-encoded; still the same account
+        ("us%C3%A9rnam%C3%A9", "usérnamé", False),
+        # and a percent-encoded name that decodes to someone else is still spotted
+        ("s%C3%B6meone_else", "usérnamé", True),
+        # nothing stored, or no signed-in id: never block the setup
+        (None, "u1", False),
+        ("u1", None, False),
+    ],
+)
+async def test_paired_account_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stored: str | None,
+    account_id: str | None,
+    differs: bool,
+) -> None:
+    """A soloist session paired by another Spotify account is spotted, and only that."""
+    monkeypatch.setattr(setup_flow, "soloist_session_account", MagicMock(return_value=stored))
+
+    assert await setup_flow._paired_account_differs(tmp_path, account_id) is differs
