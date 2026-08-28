@@ -11,7 +11,7 @@ class TestIsValidUuid:
     """Test UUID validation."""
 
     @pytest.mark.parametrize(
-        ("uuid, expected"),
+        ("uuid", "expected"),
         [
             ("uuid:00000000-1234-4321-ABCD-56789ABCDEF0", True),
             ("00000000-1234-4321-ABCD-56789ABCDEF0", True),
@@ -22,7 +22,7 @@ class TestIsValidUuid:
             (None, False),
         ],
     )
-    def test_is_valid_uuid(self, uuid, expected) -> None:
+    def test_is_valid_uuid(self, uuid: str | None, expected:bool) -> None:
         """Test valid UUID detection."""
         actual = OpenHomePlayer.is_valid_uuid(uuid)
         assert actual is expected
@@ -32,13 +32,13 @@ class TestMacFromUuid:
     """Test MAC address extraction from UUID."""
 
     @pytest.mark.parametrize(
-        ("uuid, expected"),
+        ("uuid", "expected"),
         [
             ("uuid:00000000-1234-4321-ABCD-56789ABCDEF0", "12:34:43:21:AB:CD"),
             ("00000000-1234-4321-ABCD-56789ABCDEF0", "12:34:43:21:AB:CD"),
         ],
     )
-    def test_get_mac_from_uuid(self, uuid, expected) -> None:
+    def test_get_mac_from_uuid(self, uuid: str, expected: str) -> None:
         """Test MAC extraction from valid UUID format."""
         actual = OpenHomePlayer.get_mac_from_uuid(uuid)
         assert actual == expected
@@ -48,7 +48,7 @@ class TestTransportStateConversion:
     """Test transport state to playback state mapping."""
 
     @pytest.mark.parametrize(
-        ("transport_state,expected_playback"),
+        ("transport_state", "expected_playback"),
         [
             (TransportStateAllowedValues.PLAYING, PlaybackState.PLAYING),
             (TransportStateAllowedValues.PAUSED, PlaybackState.PAUSED),
@@ -59,7 +59,7 @@ class TestTransportStateConversion:
             ("UnknownState", PlaybackState.UNKNOWN),
         ],
     )
-    def test_transport_state_to_playback_state(self, transport_state, expected_playback) -> None:
+    def test_transport_state_to_playback_state(self, transport_state:TransportStateAllowedValues, expected_playback: PlaybackState) -> None:
         """Test conversion from device transport state to MA playback state."""
         result = OpenHomePlayer._transport_state_to_playback_state(transport_state)
         assert result == expected_playback
@@ -145,7 +145,7 @@ class TestSourceList:
         assert result[0].name == "Visible Source"
 
     @pytest.mark.parametrize("visibility_value", ["true", "True", "TRUE", "1", " true "])
-    def test_visibility_true_variations(self, visibility_value) -> None:
+    def test_visibility_true_variations(self, visibility_value: str) -> None:
         """Test various reasonable 'true' value representations are recognized as visible."""
         xml = f"""<Sources>
             <Source>
@@ -163,7 +163,7 @@ class TestSourceList:
         assert result[0].name == "Test Source"
 
     @pytest.mark.parametrize("visibility_value", ["false", "False", "0", "", "unknown"])
-    def test_visibility_false_variations(self, visibility_value) -> None:
+    def test_visibility_false_variations(self, visibility_value: str) -> None:
         """Test various non-visible values filter out sources."""
         xml = f"""<Sources>
             <Source>

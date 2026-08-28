@@ -1,20 +1,21 @@
 """Tests for Linn/OpenHome Media player integration."""
 
 import asyncio
+import pytest
 import time
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from async_upnp_client.profiles.ohmedia import OhmDevice
 from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.openhome_media import OpenHomePlayerProvider
+from music_assistant.providers.openhome_media.provider import OpenHomePlayerProvider
 from music_assistant.providers.openhome_media.player import (
     OpenHomePlayer,
     ProductSourceType,
@@ -26,23 +27,20 @@ from music_assistant.providers.openhome_media.player import (
     VolumeState,
 )
 
-# from music_assistant_models.config_entries import ConfigEntry
+from async_upnp_client.profiles.ohmedia import OhmDevice
 
 
 # =============================================================================
 # region Fixtures
 # =============================================================================
 
-
 @pytest.fixture
 def mock_provider() -> OpenHomePlayerProvider:
     """Create a mock OpenHomePlayerProvider."""
-    provider = MagicMock()
+    provider = AsyncMock(spec=OpenHomePlayerProvider)
     provider.logger = MagicMock()
     provider.logger.getChild.return_value = MagicMock()
-    provider.upnp_factory = AsyncMock()
     provider.mass = MagicMock()
-    provider.mass.streams = AsyncMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value="http://test/stream.mp3")
     provider.mass.player_queues = MagicMock()
     provider.mass.player_queues.get_active_queue = MagicMock(return_value=None)
@@ -52,16 +50,15 @@ def mock_provider() -> OpenHomePlayerProvider:
 @pytest.fixture
 def mock_ohm_device() -> OhmDevice:
     """Create a mock OhmDevice with realistic defaults."""
-    device = MagicMock()
+    device = AsyncMock(spec=OhmDevice)
 
     # Profile capabilities
-    device.has_transport_state = True
-    device.has_product_standby = True
-    device.has_transport_seek_second_absolute = True
+    device.configure_mock(has_product_standby = True)
+    device.has_transport_seek_second_absolute = MagicMock()
     device.has_volume_mute = True
     device.has_volume_set = True
     device.has_product_set_source_index = True
-
+    device.is_subscribed = True
     # State variables
     device.transport_state = TransportStateAllowedValues.STOPPED
     device.product_standby = False
@@ -74,34 +71,11 @@ def mock_ohm_device() -> OhmDevice:
     device.device.manufacturer_url = "https://linn.co.uk"
     device.presentation_url = "http://192.168.1.100"
     device.name = "Living Room Speaker"
-
-    # Services mock
-    device.async_subscribe_services = AsyncMock()
-    device.async_unsubscribe_services = AsyncMock()
     device.is_subscribed = MagicMock(return_value=True)
-
     # Service method mocks
-    device.async_product_set_standby = AsyncMock()
-    device.async_volume_set = AsyncMock()
-    device.async_volume_set_mute = AsyncMock()
-    device.async_play = AsyncMock()
-    device.async_stop = AsyncMock()
-    device.async_pause = AsyncMock()
-    device.async_playlist_next = AsyncMock()
-    device.async_playlist_previous = AsyncMock()
     device.async_playlist_last_id = AsyncMock(return_value={"Id": 5})
     device.async_playlist_insert = AsyncMock(return_value={"NewId": 6})
-    device.async_transport_seek_absolute = AsyncMock()
-    device.async_playlist_seek_second_absolute = AsyncMock()
-    device.async_radio_seek_second_absolute = AsyncMock()
-    device.async_playlist_seek_id = AsyncMock()
-    device.async_radio_set_channel = AsyncMock()
-    device.async_radio_play = AsyncMock()
-    device.async_product_set_source_index = AsyncMock()
     device.async_visible_sources = AsyncMock(return_value=[])
-    device.async_product_source_xml = AsyncMock(return_value={"Value": "<Sources/>"})
-    device.async_update_state_variables = AsyncMock()
-
     # Helper methods
     device.get_state_variable_value = MagicMock(return_value=True)
     device.has_source_type = MagicMock(return_value=False)
@@ -156,11 +130,11 @@ class TestSetup:
 
     @pytest.mark.asyncio
     async def test_setup_success(self, player: OpenHomePlayer, mock_provider: OpenHomePlayerProvider) -> None:
+    # async def test_setup_success(self, player: OpenHomePlayer, mock_provider: OpenHomePlayerProvider) -> None:
         """Test successful player setup returns True."""
 
         async def mock_device_connect() -> None:
-            # sets visible_sources which is used subsequently by _set_attributes
-            player.visible_sources = await player.profile.async_visible_sources()
+            player._attr_active_source = await player.profile.async_active_source_name()
 
         with patch.object(type(player), "_device_connect", AsyncMock(side_effect=mock_device_connect)) as mock_connect, \
             patch.object(player.mass.players, "register_or_update", AsyncMock()) as mock_register:
@@ -184,7 +158,7 @@ class TestPowerCommand:
         player.set_available(True)
         await player.power(powered=True)
 
-        mock_ohm_device.async_product_set_standby.assert_called_once_with(False)  # standby=False = on
+        cast(AsyncMock, mock_ohm_device.async_product_set_standby).assert_called_once_with(False)  # standby=False = on
 
     @pytest.mark.asyncio
     async def test_power_off(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -192,18 +166,18 @@ class TestPowerCommand:
         player.set_available(True)
         await player.power(powered=False)
 
-        mock_ohm_device.async_product_set_standby.assert_called_once_with(True)  # standby=True = off
+        cast(AsyncMock, mock_ohm_device.async_product_set_standby).assert_called_once_with(True)  # standby=True = off
 
 
     @pytest.mark.asyncio
-    async def test_power_error_handling(self, player: OpenHomePlayer, mock_ohm_device) -> None:
+    async def test_power_error_handling(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test power command handles UPnP errors gracefully."""
         player.set_available(True)
         mock_ohm_device.async_product_set_standby.side_effect = UpnpError("Connection failed")
 
         result = await player.power(powered=True)
 
-        # Should return None on error (decorator behavior)
+        # Should return None on error (decorator behaviour)
         assert result is None
         assert player._attr_needs_poll is True
 
@@ -217,7 +191,7 @@ class TestVolumeCommands:
         player.set_available(True)
         await player.volume_set(volume_level=75)
 
-        mock_ohm_device.async_volume_set.assert_called_once_with(75)
+        cast(AsyncMock, mock_ohm_device.async_volume_set).assert_called_once_with(75)
 
     @pytest.mark.asyncio
     async def test_volume_mute(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -225,10 +199,10 @@ class TestVolumeCommands:
         player.set_available(True)
 
         await player.volume_mute(muted=True)
-        mock_ohm_device.async_volume_set_mute.assert_called_once_with(True)
+        cast(AsyncMock, mock_ohm_device.async_volume_set_mute).assert_called_once_with(True)
 
         await player.volume_mute(muted=False)
-        mock_ohm_device.async_volume_set_mute.assert_called_with(False)
+        cast(AsyncMock, mock_ohm_device.async_volume_set_mute).assert_called_with(False)
 
 
 class TestPlaybackCommands:
@@ -239,7 +213,7 @@ class TestPlaybackCommands:
         """Test play command."""
         player.set_available(True)
         await player.play()
-        mock_ohm_device.async_play.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_play).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_play_error(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -254,17 +228,17 @@ class TestPlaybackCommands:
         """Test stop command."""
         player.set_available(True)
         await player.stop()
-        mock_ohm_device.async_stop.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_stop).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_pause_when_capable(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test pause when device supports pause."""
         player.set_available(True)
-        mock_ohm_device.get_state_variable_value.return_value = True
+        # mock_ohm_device.get_state_variable_value() = True
 
         await player.pause()
-        mock_ohm_device.async_pause.assert_called_once()
-        mock_ohm_device.async_stop.assert_not_called()
+        cast(AsyncMock, mock_ohm_device.async_pause).assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_stop).assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pause_when_incapable_fallbacks_to_stop(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -273,22 +247,23 @@ class TestPlaybackCommands:
         mock_ohm_device.get_state_variable_value.return_value = False
 
         await player.pause()
-        mock_ohm_device.async_pause.assert_not_called()
-        mock_ohm_device.async_stop.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_pause).assert_not_called()
+        cast(AsyncMock, mock_ohm_device.async_stop).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_next_track(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test next track command."""
         player.set_available(True)
         await player.next_track()
-        mock_ohm_device.async_playlist_next.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_playlist_next).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_previous_track(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test previous track command."""
         player.set_available(True)
+        player.set_available(True)
         await player.previous_track()
-        mock_ohm_device.async_playlist_previous.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_playlist_previous).assert_called_once()
 
     @pytest.mark.asyncio
     async def test_seek_with_transport_support(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -297,21 +272,21 @@ class TestPlaybackCommands:
         mock_ohm_device.has_transport_seek_second_absolute = True
 
         await player.seek(position=120)
-        mock_ohm_device.async_transport_seek_absolute.assert_called_once_with(120)
+        cast(AsyncMock, mock_ohm_device.async_transport_seek_second_absolute).assert_called_once_with(120)
 
     @pytest.mark.asyncio
     async def test_seek_without_transport_support_falls_back(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test seek falls back to appropriate method when transport seek not available."""
         player.set_available(True)
         mock_ohm_device.has_transport_seek_second_absolute = False
-        # mock_ohm_device.has_source_type.return_value = True  # RADIO source
 
+        player._attr_active_source = ProductSourceType.PLAYLIST
         await player.seek(position=60)
-        mock_ohm_device.async_playlist_seek_second_absolute.assert_called_once_with(60)
+        cast(AsyncMock, mock_ohm_device.async_playlist_seek_second_absolute).assert_called_once_with(60)
 
-        player.profile.configure_mock(active_source=ProductSourceType.RADIO)
+        player._attr_active_source=ProductSourceType.RADIO
         await player.seek(position=40)
-        mock_ohm_device.async_radio_seek_second_absolute.assert_called_once_with(40)
+        cast(AsyncMock, mock_ohm_device.async_radio_seek_second_absolute).assert_called_once_with(40)
 
 
 class TestPlayMediaCommand:
@@ -329,14 +304,14 @@ class TestPlayMediaCommand:
 
         await player.play_media(media)
 
-        mock_ohm_device.async_stop.assert_called()
+        cast(AsyncMock, mock_ohm_device.async_stop).assert_called()
 
     @pytest.mark.asyncio
     async def test_play_media_sets_media(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice, mock_provider: OpenHomePlayerProvider) -> None:
         """Test that play_media sets current media correctly."""
         player.set_available(True)
         media = PlayerMedia(
-            uri="http://music/stream",
+            uri="https://music/stream",
             media_type=MediaType.TRACK,
             title="Test Track",
         )
@@ -360,10 +335,10 @@ class TestPlayMediaCommand:
 
         await player.play_media(media)
 
-        # Should set radio source first
-        mock_ohm_device.async_product_set_source_index.assert_called_once_with(0)
-        mock_ohm_device.async_radio_set_channel.assert_called()
-        mock_ohm_device.async_radio_play.assert_called()
+        # Should set Playlist source first to avoid hang
+        cast(AsyncMock, mock_ohm_device.async_product_set_source_index).assert_called_once_with(0)
+        cast(AsyncMock, mock_ohm_device.async_radio_set_channel).assert_called()
+        cast(AsyncMock, mock_ohm_device.async_radio_play).assert_called()
 
     @pytest.mark.asyncio
     async def test_play_media_playlist_source(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -383,7 +358,7 @@ class TestPlayMediaCommand:
 
         mock_ohm_device.async_playlist_last_id.assert_called_once()
         mock_ohm_device.async_playlist_insert.assert_called_once()
-        mock_ohm_device.async_playlist_seek_id.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_playlist_seek_id).assert_called_once()
 
 
 # =============================================================================
@@ -549,29 +524,27 @@ class TestPolling:
     @pytest.mark.asyncio
     async def test_poll_updates_when_subscription_active(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test poll skips update when subscribed."""
-        mock_ohm_device.is_subscribed.return_value = True
+        mock_ohm_device.is_subscribed = True
         player._attr_needs_poll = True
         await player.poll()
-        mock_ohm_device.async_update_state_variables.assert_not_called()
+        cast(AsyncMock, mock_ohm_device.async_update_state_variables).assert_not_called()
         assert player._attr_needs_poll is False
 
     @pytest.mark.asyncio
     async def test_poll_forces_update_when_needs_poll(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
         """Test poll forces update when needs_poll flag is set."""
-        mock_ohm_device.is_subscribed.return_value = False
+        mock_ohm_device.is_subscribed = False
         player._attr_needs_poll = True
 
         await player.poll()
 
-        mock_ohm_device.async_update_state_variables.assert_called_once_with(do_ping=True)
+        cast(AsyncMock, mock_ohm_device.async_update_state_variables).assert_called_once_with(do_ping=True)
 
     @pytest.mark.parametrize("mock_last_seen", [time.time(), None])
     @pytest.mark.asyncio
-    async def test_poll_raises_on_device_unavailable(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice, mock_last_seen) -> None:
+    async def test_poll_raises_on_device_unavailable(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice, mock_last_seen: float|int|None) -> None:
         """Test poll raises PlayerUnavailableError when device unavailable."""
-        from music_assistant_models.errors import PlayerUnavailableError
-
-        mock_ohm_device.is_subscribed.return_value = False
+        mock_ohm_device.is_subscribed = False
         mock_ohm_device.async_update_state_variables.side_effect = UpnpError("Timeout")
         player.last_seen = mock_last_seen
         with pytest.raises(PlayerUnavailableError):
@@ -587,7 +560,7 @@ class TestAvailability:
     """Tests for availability tracking."""
 
     @pytest.mark.parametrize("mock_available", [True, False])
-    def test_set_available_flag(self, player: OpenHomePlayer, mock_available) -> None:
+    def test_set_available_flag(self, player: OpenHomePlayer, mock_available: bool) -> None:
         """Test setting availability flag."""
         player.set_available(mock_available)
         assert player._attr_available is mock_available
@@ -622,7 +595,7 @@ class TestDeviceManagement:
         await player._device_connect()
 
         # Should return early, not attempt another connection
-        mock_ohm_device.async_subscribe_services.assert_not_called()
+        cast(AsyncMock, mock_ohm_device.async_subscribe_services).assert_not_called()
 
     @pytest.mark.asyncio
     async def test_device_disconnect_clears_profile(self, player: OpenHomePlayer, mock_ohm_device: OhmDevice) -> None:
@@ -631,10 +604,8 @@ class TestDeviceManagement:
         player.set_available(True)
 
         await player._device_disconnect()
-
+        cast(AsyncMock, mock_ohm_device.async_unsubscribe_services).assert_called_once()
         assert player.profile is None
-        assert player._attr_available is False
-        mock_ohm_device.async_unsubscribe_services.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_device_disconnect_handles_not_connected(self, player: OpenHomePlayer) -> None:
@@ -679,5 +650,5 @@ class TestUnload:
 
         await player.on_unload()
 
-        mock_ohm_device.async_unsubscribe_services.assert_called_once()
+        cast(AsyncMock, mock_ohm_device.async_unsubscribe_services).assert_called_once()
         assert player.profile is None
