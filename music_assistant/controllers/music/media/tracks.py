@@ -860,10 +860,20 @@ class TracksController(MediaControllerBase[Track]):
             failed_providers=failed_providers,
             known_dead_mappings=known_dead_mappings,
         )
-        provider_matches, domain_ambiguous_providers = self._select_best_match_per_domain(
-            provider_matches
-        )
+        (
+            provider_matches,
+            domain_ambiguous_providers,
+            domain_ambiguous_confidence,
+        ) = self._select_best_match_per_domain(provider_matches)
         ambiguous_providers.extend(domain_ambiguous_providers)
+        if domain_ambiguous_confidence is not None and (
+            ambiguous_confidence is None or domain_ambiguous_confidence > ambiguous_confidence
+        ):
+            # a same-domain tie that could not be resolved (e.g. two personal
+            # accounts disagreeing) is evidence just as unresolved as a cross-provider
+            # tie - a weaker tier from another provider must not be quietly accepted
+            # over it either
+            ambiguous_confidence = domain_ambiguous_confidence
         accepted, tier_ambiguous_providers = self._resolve_confident_matches(
             provider_matches, unresolved_confidence=ambiguous_confidence
         )
@@ -1209,7 +1219,9 @@ class TracksController(MediaControllerBase[Track]):
 
     def _select_best_match_per_domain(
         self, provider_matches: list[tuple[MusicProvider, TrackProviderMatch]]
-    ) -> tuple[list[tuple[MusicProvider, TrackProviderMatch]], list[str]]:
+    ) -> tuple[
+        list[tuple[MusicProvider, TrackProviderMatch]], list[str], TrackMatchConfidence | None
+    ]:
         """
         Reduce matches from multiple instances of the same provider domain to one.
 
@@ -1218,10 +1230,14 @@ class TracksController(MediaControllerBase[Track]):
         mapping can be stored per domain. The highest-confidence match is kept; tied
         top-confidence candidates that disagree with each other are reported as
         ambiguous, and compatible ties are resolved by mapping quality rather than
-        picked arbitrarily by instance order.
+        picked arbitrarily by instance order. The highest confidence tier discarded to
+        an unresolved same-domain tie is also returned, so a caller combining this with
+        cross-provider ambiguity does not let a weaker tier from another domain be
+        quietly accepted over evidence that is itself unresolved at a higher tier.
         """
         best: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
+        ambiguous_confidence: TrackMatchConfidence | None = None
         for _, domain_iter in groupby(
             sorted(provider_matches, key=lambda pm: pm[0].domain), key=lambda pm: pm[0].domain
         ):
@@ -1232,9 +1248,11 @@ class TracksController(MediaControllerBase[Track]):
                 [match for _, match in top_tier], best_confidence
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in top_tier)
+                if ambiguous_confidence is None or best_confidence > ambiguous_confidence:
+                    ambiguous_confidence = best_confidence
                 continue
             best.append(max(top_tier, key=lambda pm: pm[1].mapping.quality))
-        return best, ambiguous_providers
+        return best, ambiguous_providers, ambiguous_confidence
 
     def _resolve_confident_matches(
         self,

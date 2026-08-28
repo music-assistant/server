@@ -667,8 +667,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param limit: Maximum results per media type.
         :param allowed_provider_instances: Explicit provider scope for deferred work.
         """
+        domain_in_scope = False
         if allowed_provider_instances is not None:
-            available_providers = [
+            allowed_providers = [
                 provider
                 for provider_instance_id in sorted(allowed_provider_instances)
                 if isinstance(
@@ -679,8 +680,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     MusicProvider,
                 )
                 and provider.instance_id == provider_instance_id
-                and provider.available
             ]
+            # a domain is "in scope" once any allowed instance resolves to it, even if
+            # every one of them is currently unavailable - that is a temporary outage
+            # of an account the user actually has, not an absent provider
+            domain_in_scope = any(
+                provider.domain == provider_instance_id_or_domain for provider in allowed_providers
+            )
+            available_providers = [provider for provider in allowed_providers if provider.available]
         else:
             available_providers = self.providers
         provider = next(
@@ -691,13 +698,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ),
             None,
         ) or next(
-            (item for item in available_providers if item.domain == provider_instance_id_or_domain),
+            (
+                item
+                for item in available_providers
+                if item.domain == provider_instance_id_or_domain and item.available
+            ),
             None,
         )
         if provider is None:
-            if (
-                allowed_provider_instances is not None
-                and provider_instance_id_or_domain in allowed_provider_instances
+            if allowed_provider_instances is not None and (
+                provider_instance_id_or_domain in allowed_provider_instances or domain_in_scope
             ):
                 raise ResourceTemporarilyUnavailable(
                     f"Provider {provider_instance_id_or_domain} is unavailable"

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
@@ -213,6 +213,57 @@ async def test_search_provider_does_not_substitute_unavailable_scoped_instance()
     controller.mass.get_provider.assert_called_once_with(
         "qobuz_1",
         return_unavailable=True,
+    )
+
+
+async def test_search_provider_scoped_domain_all_unavailable_raises() -> None:
+    """A domain lookup within scope raises rather than looking like an empty result."""
+    unavailable_a = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_a.available = False
+    unavailable_b = _make_search_provider("qobuz_2", domain="qobuz")
+    unavailable_b.available = False
+    controller = _make_controller([unavailable_a, unavailable_b])
+    controller.mass.get_provider = Mock(  # type: ignore[method-assign]
+        side_effect=lambda instance_id, **_kwargs: next(
+            (p for p in (unavailable_a, unavailable_b) if p.instance_id == instance_id), None
+        )
+    )
+    controller._search_provider = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceTemporarilyUnavailable, match="qobuz"):
+        await controller.search_provider(
+            "My Song",
+            "qobuz",
+            [MediaType.TRACK],
+            allowed_provider_instances={"qobuz_1", "qobuz_2"},
+        )
+
+    controller._search_provider.assert_not_awaited()
+
+
+async def test_search_provider_unscoped_domain_skips_unavailable_sibling() -> None:
+    """An unscoped domain lookup does not let an unavailable instance mask a sibling."""
+    unavailable_first = _make_search_provider("qobuz_1", domain="qobuz")
+    unavailable_first.available = False
+    available_second = _make_search_provider("qobuz_2", domain="qobuz")
+    for provider in (unavailable_first, available_second):
+        provider.type = ProviderType.MUSIC
+    controller = _make_controller([unavailable_first, available_second])
+    controller._apply_user_provider_filter = Mock(  # type: ignore[method-assign]
+        return_value=[unavailable_first, available_second]
+    )
+    expected = SearchResults(tracks=[_make_track("track1", "qobuz_2", "My Song")])
+    controller._search_provider = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+
+    result = await controller.search_provider("My Song", "qobuz", [MediaType.TRACK])
+
+    assert result == expected
+    controller._search_provider.assert_awaited_once_with(
+        "My Song",
+        "qobuz_2",
+        [MediaType.TRACK],
+        limit=10,
+        strict_provider_instance=True,
     )
 
 

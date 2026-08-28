@@ -1834,6 +1834,94 @@ async def test_enrich_provider_mappings_treats_conflicting_exact_release_evidenc
     assert deezer_mapping not in result.track.provider_mappings
 
 
+async def test_enrich_provider_mappings_same_domain_tie_blocks_weaker_cross_domain_match(
+    music: MusicController,
+) -> None:
+    """An unresolved same-domain tie at EXACT blocks a weaker match from another domain."""
+    source = create_track("spotify_1", "source")
+    # two personal accounts on the same domain each independently match as EXACT but
+    # reference a different MusicBrainz release track, so _select_best_match_per_domain
+    # discards both as an unresolved same-domain tie - deezer's confident but merely
+    # LIKELY match must not be quietly accepted in their place afterwards
+    qobuz_a_track = create_track("qobuz_a", "qobuz-a-track")
+    qobuz_a_track.external_ids.add((ExternalID.MB_TRACK, "11111111-1111-1111-1111-111111111111"))
+    qobuz_a_mapping = next(iter(qobuz_a_track.provider_mappings))
+    qobuz_b_track = create_track("qobuz_b", "qobuz-b-track")
+    qobuz_b_track.external_ids.add((ExternalID.MB_TRACK, "22222222-2222-2222-2222-222222222222"))
+    qobuz_b_mapping = next(iter(qobuz_b_track.provider_mappings))
+    deezer_track = create_track("deezer_1", "deezer-track")
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    qobuz_a_provider = MagicMock(spec=MusicProvider)
+    qobuz_a_provider.name = "Qobuz A"
+    qobuz_a_provider.instance_id = "qobuz_a"
+    qobuz_a_provider.domain = "qobuz"
+    qobuz_a_provider.available = True
+    qobuz_a_provider.is_streaming_provider = True
+    qobuz_b_provider = MagicMock(spec=MusicProvider)
+    qobuz_b_provider.name = "Qobuz B"
+    qobuz_b_provider.instance_id = "qobuz_b"
+    qobuz_b_provider.domain = "qobuz"
+    qobuz_b_provider.available = True
+    qobuz_b_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    qobuz_a_match = TrackProviderMatch(
+        track=qobuz_a_track, mapping=qobuz_a_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    qobuz_b_match = TrackProviderMatch(
+        track=qobuz_b_track, mapping=qobuz_b_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.LIKELY
+    )
+    results = {
+        "qobuz_a": TrackProviderMatchResult(match=qobuz_a_match),
+        "qobuz_b": TrackProviderMatchResult(match=qobuz_b_match),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_a": qobuz_a_provider,
+                "qobuz_b": qobuz_b_provider,
+                "deezer_1": deezer_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_a", "qobuz_b", "deezer_1"},
+        )
+
+    assert result.matches == ()
+    assert "Deezer" in result.ambiguous_providers
+    assert deezer_mapping not in result.track.provider_mappings
+
+
 async def test_enrich_provider_mappings_rejects_weaker_match_when_stronger_tier_is_ambiguous(
     music: MusicController,
 ) -> None:
