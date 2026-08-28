@@ -3,7 +3,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 Brotli>=1.0.9
-aioaudiobookshelf==0.1.24
+aioaudiobookshelf==0.1.25
 aiodns>=4.0.4
 aiofiles==24.1.0
 aiohttp==3.14.3
