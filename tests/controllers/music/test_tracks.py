@@ -1163,7 +1163,7 @@ def test_tied_loose_matches_require_pairwise_compatibility() -> None:
         for track in tracks
     ]
 
-    assert TracksController._matches_are_compatible(matches) is False
+    assert TracksController._matches_are_compatible(matches, TrackMatchConfidence.LOOSE) is False
 
 
 async def test_enrich_provider_mappings_uses_library_without_mutating_it(
@@ -1521,11 +1521,16 @@ async def test_enrich_provider_mappings_prefers_higher_quality_among_compatible_
 ) -> None:
     """Compatible top-tier matches on sibling accounts are resolved by mapping quality."""
     source = create_track("spotify_1", "source")
-    # same ISRC on both, so the two candidates are compatible (same recording), not ambiguous
+    # a shared MB_TRACK id makes the two candidates EXACT-compatible with each other -
+    # required for an EXACT tie-break now that same tier requires same-release evidence,
+    # not just an agreeing ISRC, between the tied candidates themselves
+    mb_track = (ExternalID.MB_TRACK, "12345678-1234-1234-1234-123456789abc")
     lossy_track = create_track("qobuz_1", "lossy-track")
+    lossy_track.external_ids.add(mb_track)
     lossy_mapping = next(iter(lossy_track.provider_mappings))
     lossy_mapping.audio_format = AudioFormat(content_type=ContentType.MP3)
     lossless_track = create_track("qobuz_2", "lossless-track")
+    lossless_track.external_ids.add(mb_track)
     lossless_mapping = next(iter(lossless_track.provider_mappings))
     lossless_mapping.audio_format = AudioFormat(content_type=ContentType.FLAC)
     first_provider = MagicMock(spec=MusicProvider)
@@ -1652,6 +1657,83 @@ async def test_enrich_provider_mappings_treats_tied_conflicting_matches_as_ambig
 
     # neither can be trusted over the other at the same confidence - a tie-break
     # would otherwise pick one arbitrarily based on which provider was visited first
+    assert result.matches == ()
+    assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
+    assert qobuz_mapping not in result.track.provider_mappings
+    assert deezer_mapping not in result.track.provider_mappings
+
+
+async def test_enrich_provider_mappings_treats_conflicting_exact_release_evidence_as_ambiguous(
+    music: MusicController,
+) -> None:
+    """Two independently EXACT candidates with conflicting MB_TRACK IDs are ambiguous."""
+    source = create_track("spotify_1", "source")
+    # same ISRC/duration ties the two candidates at LIKELY release evidence, but each
+    # references a different MusicBrainz release track - they cannot both be the
+    # authoritative EXACT release, even though each independently matched as EXACT
+    qobuz_track = create_track("qobuz_1", "qobuz-track")
+    qobuz_track.external_ids.add((ExternalID.MB_TRACK, "11111111-1111-1111-1111-111111111111"))
+    qobuz_mapping = next(iter(qobuz_track.provider_mappings))
+    deezer_track = create_track("deezer_1", "deezer-track")
+    deezer_track.external_ids.add((ExternalID.MB_TRACK, "22222222-2222-2222-2222-222222222222"))
+    deezer_mapping = next(iter(deezer_track.provider_mappings))
+    qobuz_provider = MagicMock(spec=MusicProvider)
+    qobuz_provider.name = "Qobuz"
+    qobuz_provider.instance_id = "qobuz_1"
+    qobuz_provider.domain = "qobuz"
+    qobuz_provider.available = True
+    qobuz_provider.is_streaming_provider = True
+    deezer_provider = MagicMock(spec=MusicProvider)
+    deezer_provider.name = "Deezer"
+    deezer_provider.instance_id = "deezer_1"
+    deezer_provider.domain = "deezer"
+    deezer_provider.available = True
+    deezer_provider.is_streaming_provider = True
+    qobuz_match = TrackProviderMatch(
+        track=qobuz_track, mapping=qobuz_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    deezer_match = TrackProviderMatch(
+        track=deezer_track, mapping=deezer_mapping, confidence=TrackMatchConfidence.EXACT
+    )
+    results = {
+        "qobuz_1": TrackProviderMatchResult(match=qobuz_match),
+        "deezer_1": TrackProviderMatchResult(match=deezer_match),
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_library_match",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(
+                side_effect=lambda _track, provider, **_kwargs: results[provider.instance_id]
+            ),
+        ),
+        patch.object(
+            music.mass,
+            "get_provider",
+            side_effect=lambda provider_instance_id, **_kwargs: {
+                "qobuz_1": qobuz_provider,
+                "deezer_1": deezer_provider,
+            }[provider_instance_id],
+        ),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1", "deezer_1"},
+        )
+
+    # a shared ISRC/duration only ties them at LIKELY once their conflicting release
+    # evidence is considered - neither can be trusted as the selected EXACT release
     assert result.matches == ()
     assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
     assert qobuz_mapping not in result.track.provider_mappings

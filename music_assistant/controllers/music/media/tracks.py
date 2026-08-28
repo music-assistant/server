@@ -766,7 +766,7 @@ class TracksController(MediaControllerBase[Track]):
         best_matches = [
             (rank, match) for rank, match in candidates if match.confidence == best_confidence
         ]
-        if not self._matches_are_compatible([match for _, match in best_matches]):
+        if not self._matches_are_compatible([match for _, match in best_matches], best_confidence):
             # missing source evidence (e.g. no explicitness tag) can let unrelated
             # candidates tie at the same confidence - checked at every tier, not just
             # LOOSE, since a quality tie-break would otherwise pick one arbitrarily
@@ -1219,11 +1219,25 @@ class TracksController(MediaControllerBase[Track]):
         return track.album
 
     @staticmethod
-    def _matches_are_compatible(matches: list[TrackProviderMatch]) -> bool:
-        """Return whether tied loose matches identify the same recording."""
+    def _matches_are_compatible(
+        matches: list[TrackProviderMatch], tier: TrackMatchConfidence
+    ) -> bool:
+        """
+        Return whether tied matches at the given confidence tier identify the same release.
+
+        An EXACT tier requires every pair to compare as EXACT: a looser recording-level
+        agreement (e.g. matching ISRC but a different MB_TRACK/release) must not tie at
+        EXACT, since that would let the importer persist one candidate's release evidence
+        while the Exact policy is free to later select a conflicting one. Lower tiers only
+        require agreement at LIKELY, since that is already their "same recording" floor.
+        """
+        required = (
+            TrackMatchConfidence.EXACT
+            if tier is TrackMatchConfidence.EXACT
+            else TrackMatchConfidence.LIKELY
+        )
         return all(
-            compare_track_evidence(base_match.track, compare_match.track)
-            >= TrackMatchConfidence.LIKELY
+            compare_track_evidence(base_match.track, compare_match.track) >= required
             for index, base_match in enumerate(matches)
             for compare_match in matches[index + 1 :]
         )
@@ -1250,7 +1264,7 @@ class TracksController(MediaControllerBase[Track]):
             best_confidence = max(match.confidence for _, match in domain_matches)
             top_tier = [pm for pm in domain_matches if pm[1].confidence == best_confidence]
             if len(top_tier) > 1 and not self._matches_are_compatible(
-                [match for _, match in top_tier]
+                [match for _, match in top_tier], best_confidence
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in top_tier)
                 continue
@@ -1275,16 +1289,16 @@ class TracksController(MediaControllerBase[Track]):
         """
         accepted: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
-        for _, tier_iter in groupby(
+        for tier_confidence, tier_iter in groupby(
             sorted(provider_matches, key=lambda pm: pm[1].confidence, reverse=True),
             key=lambda pm: pm[1].confidence,
         ):
             tier = list(tier_iter)
             tier_matches = [match for _, match in tier]
-            if not self._matches_are_compatible(tier_matches) or (
+            if not self._matches_are_compatible(tier_matches, tier_confidence) or (
                 accepted
                 and not self._matches_are_compatible(
-                    [*(match for _, match in accepted), *tier_matches]
+                    [*(match for _, match in accepted), *tier_matches], tier_confidence
                 )
             ):
                 ambiguous_providers.extend(provider.name for provider, _ in tier)

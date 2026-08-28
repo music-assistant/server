@@ -1053,11 +1053,25 @@ class BuiltinProvider(MusicProvider):
             # now - either way there is nothing to substitute
             normalized_entry = None
             if confirmed_mapping is not None:
-                # a bare URI without #EXTPROV metadata was just confirmed playable -
-                # persist the resolved mapping so this entry keeps resolving to it on
-                # future loads too, instead of leaving one that can never attach a
-                # provider mapping of its own again
-                normalized_entry = replace(item, providers=[confirmed_mapping])
+                # a bare URI (no #EXTPROV metadata at all) or a domain-only reference
+                # was just confirmed playable - persist the resolved mapping so this
+                # entry keeps resolving to the exact same instance on future loads too,
+                # instead of leaving one that can never attach an instance-pinned
+                # mapping, or that would re-guess the first registered account, again
+                normalized_entry = replace(
+                    item,
+                    providers=[
+                        confirmed_mapping
+                        if (
+                            pm.domain == confirmed_mapping.domain
+                            and pm.item_id == confirmed_mapping.item_id
+                            and not pm.instance_id
+                        )
+                        else pm
+                        for pm in item.providers
+                    ]
+                    or [confirmed_mapping],
+                )
             return _ImportTrackMatchResult(label=label, retained=True, entry=normalized_entry)
         if not media_item.artists:
             # foreign M3U8 files only carry a combined "Artist - Title" EXTINF string;
@@ -1156,24 +1170,30 @@ class BuiltinProvider(MusicProvider):
         initiating user's own provider instances, so a domain-only reference can never
         reach an inaccessible account.
 
-        Returns the confirmed provider mapping alongside the playable verdict when the
-        entry carried no ``#EXTPROV`` metadata of its own and is a bare Music Assistant
-        provider URI, so the caller can persist it - a raw stream URL already
-        reconstructs its own builtin mapping from the path alone and needs nothing
-        written back, and an entry that already carries ``#EXTPROV`` metadata already
-        resolves correctly on its own.
+        Returns the confirmed provider mapping alongside the playable verdict whenever
+        the entry needs it written back to keep resolving on its own next time: a bare
+        Music Assistant provider URI with no ``#EXTPROV`` metadata at all, or a
+        domain-only ``#EXTPROV`` reference that was just confirmed on one specific
+        allowed instance. A raw builtin stream URL already reconstructs its own mapping
+        from the path alone and needs nothing written back, and an ``#EXTPROV``
+        reference that already names an exact instance already resolves correctly on
+        its own.
         """
-        candidates: list[tuple[str, str]] = []
+        candidates: list[tuple[str, str, bool]] = []
         seen: set[tuple[str, str]] = set()
         for prov_info in item.providers:
+            # a domain-only reference (no pinned instance id) is not yet tied to one
+            # specific account; once resolved, normalize it to whichever allowed
+            # instance actually confirmed it, so a later load doesn't fall back to
+            # guessing the first registered account of that domain again
+            needs_provider_metadata = not prov_info.instance_id
             for instance_id in self._allowed_instances_for(
                 prov_info.instance_id or prov_info.domain, allowed_provider_instances
             ):
                 key = (instance_id, prov_info.item_id)
                 if key not in seen:
                     seen.add(key)
-                    candidates.append(key)
-        needs_provider_metadata = False
+                    candidates.append((instance_id, prov_info.item_id, needs_provider_metadata))
         if not item.providers:
             # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
             # metadata at all needs this path parsed - an entry that does carry
@@ -1191,8 +1211,8 @@ class BuiltinProvider(MusicProvider):
                 for instance_id in self._allowed_instances_for(
                     provider_instance_or_domain, allowed_provider_instances
                 ):
-                    candidates.append((instance_id, raw_item_id))
-        for provider_instance, provider_item_id in candidates:
+                    candidates.append((instance_id, raw_item_id, needs_provider_metadata))
+        for provider_instance, provider_item_id, needs_provider_metadata in candidates:
             provider = self.mass.get_provider(provider_instance, return_unavailable=True)
             if provider is None or not provider.available:
                 # every candidate here already passed the allowed-instances snapshot, so
@@ -1234,9 +1254,10 @@ class BuiltinProvider(MusicProvider):
             else:
                 if not needs_provider_metadata:
                     return True, None
-                # a bare URI without #EXTPROV would otherwise stay unresolvable to a
-                # provider mapping on every future load - persist what was just
-                # confirmed so the entry keeps resolving after this pass
+                # a bare URI without #EXTPROV, or a domain-only reference not yet
+                # pinned to one instance, would otherwise stay unresolvable or keep
+                # guessing the wrong account on every future load - persist what was
+                # just confirmed so the entry keeps resolving after this pass
                 own_mapping = next(
                     (
                         pm

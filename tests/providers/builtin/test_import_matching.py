@@ -834,7 +834,15 @@ async def test_domain_only_reference_tries_every_allowed_instance() -> None:
             _allowed(prov, "spotify--1", "spotify--2"),
         )
 
-    prov_any._write_m3u_file.assert_not_awaited()
+    # the domain-only reference is normalized to the instance that actually confirmed
+    # it, so a later load resolves straight to spotify--2 instead of guessing the
+    # first registered account (spotify--1, which just proved this id gone) again
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 1
+    assert written_items[0].providers == [
+        ProviderMappingInfo(domain="spotify", instance_id="spotify--2", item_id="abc123")
+    ]
     assert prov_any.mass.music.tracks.get_provider_item.await_count == 2
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
