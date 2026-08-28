@@ -164,6 +164,13 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
 
+# Player types that must be detached from their (sync)group when they power off.
+# A stereo pair joins a group and leads a sync session exactly like a single speaker does.
+# A GROUP player has no group of its own to leave: its members are released by its own
+# power off, and ungrouping one is defined as powering it off - which is what already
+# brought it here.
+UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
+
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
 
@@ -2964,7 +2971,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # through cmd_ungroup which also transfers leadership when it is a sync leader.
         if (
             changed_values.get(ATTR_POWERED) == (True, False)
-            and player.state.type == PlayerType.PLAYER
+            and player.state.type in UNGROUP_ON_POWER_OFF_TYPES
             and (player.state.synced_to or player.state.active_group or player.state.group_members)
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
@@ -3946,7 +3953,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
         if (
             (player_was_sync_child or player.group_members)
-            and player.type == PlayerType.PLAYER
+            and player.type in UNGROUP_ON_POWER_OFF_TYPES
             and not powered
         ):
             # ungroup player if it is synced (or is a sync leader itself)
@@ -3963,7 +3970,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 await self._stop_player_or_its_queue(player)
 
         # power off all synced childs when player is a sync leader
-        elif not powered and player_state.type == PlayerType.PLAYER and player_state.group_members:
+        elif (
+            not powered
+            and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
+            and player_state.group_members
+        ):
             async with TaskManager(self.mass) as tg:
                 for member in self.iter_group_members(player, True):
                     if member.power_control == PLAYER_CONTROL_NONE:
