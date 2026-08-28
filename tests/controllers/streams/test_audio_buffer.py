@@ -1084,6 +1084,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
     mass_minimal.player_queues = SimpleNamespace(  # type: ignore[assignment]
         get_active_queue=lambda _queue_id: None,
         prepare_next_audio_buffer=lambda _queue_id: None,
+        queue_data_or_none=lambda _queue_id: None,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
