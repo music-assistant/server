@@ -367,8 +367,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         Import a playlist from M3U8 format.
 
         Creates a new builtin playlist from the provided M3U data. Entries whose original
-        provider is still available are kept as-is; a background task then searches other
-        providers for a substitute for the remaining entries, when requested.
+        source is confirmed still playable - available and, once probed, still
+        resolvable, or merely unreachable right now - are kept as-is; a background task
+        then searches other providers for a substitute for entries whose original source
+        is confirmed missing, when requested.
 
         :param m3u_data: The M3U8 playlist data as a string.
         :param library_matching: Deprecated, use match_policy instead. When True and
@@ -376,7 +378,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param match_providers: Optional list of provider instance IDs or domains to search
             when matching runs. Defaults to all providers available to the current user.
         :param match_policy: Lowest track-match confidence accepted for a substitute when
-            an entry's original provider is unavailable. Leave unset together with
+            an entry's original source is confirmed missing. Leave unset together with
             library_matching=False to skip matching and leave those entries unresolved.
         """
         provider = self.mass.get_provider("builtin")

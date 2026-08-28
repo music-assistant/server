@@ -1092,6 +1092,55 @@ async def test_delete_playlist_waits_for_global_file_lock() -> None:
                 delete_task.cancel()
 
 
+async def test_read_m3u_file_existence_check_is_atomic_with_delete() -> None:
+    """A read's existence check and file open cannot be split by a concurrent delete."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    file_exists = True
+
+    def fake_isfile(_path: str) -> bool:
+        return file_exists
+
+    class _FakeM3uFile:
+        """Stand-in for aiofiles' open() that only succeeds while the file still exists."""
+
+        async def __aenter__(self) -> Self:
+            if not file_exists:
+                raise FileNotFoundError(self)
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def read(self) -> str:
+            return "#EXTM3U"
+
+    with (
+        patch("music_assistant.providers.builtin.os.path.isfile", side_effect=fake_isfile),
+        patch("music_assistant.providers.builtin.aiofiles.open", return_value=_FakeM3uFile()),
+    ):
+        # hold the global file-I/O lock as if a concurrent operation is already in flight,
+        # so the read's existence check cannot yet run ahead of a delete that is about to
+        # remove the file
+        await prov_any._playlist_lock.acquire()
+        read_task = asyncio.ensure_future(prov._read_m3u_file("playlist_1"))
+        try:
+            await asyncio.sleep(0.1)
+            assert not read_task.done()
+            # the file is removed while the read is still waiting for the lock
+            file_exists = False
+            prov_any._playlist_lock.release()
+            result = await asyncio.wait_for(read_task, timeout=2)
+        finally:
+            if not read_task.done():
+                read_task.cancel()
+
+    # the existence check must be re-evaluated under the lock rather than trusting a
+    # stale result from before the file was removed
+    assert result == ""
+
+
 async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:
     """A structured-artist entry matched at EXACT confidence is substituted and reported."""
     prov = _make_provider()

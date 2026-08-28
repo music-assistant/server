@@ -640,10 +640,12 @@ class BuiltinProvider(MusicProvider):
         """
         Match imported playlist tracks against available providers.
 
-        Entries whose original provider is still available are left untouched. For the
-        remaining entries, other providers are searched for a substitute meeting
-        ``match_policy``'s minimum confidence; matched entries are replaced in-place so the
-        playlist keeps its original order and duplicates.
+        Entries whose original source is confirmed still playable - available and, once
+        probed, still resolvable, or merely unreachable right now - are left untouched.
+        For the remaining entries, whose original source is confirmed missing or
+        genuinely no longer available, other providers are searched for a substitute
+        meeting ``match_policy``'s minimum confidence; matched entries are replaced
+        in-place so the playlist keeps its original order and duplicates.
 
         :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
         :param match_policy: Lowest track-match confidence accepted for a substitute.
@@ -1604,14 +1606,15 @@ class BuiltinProvider(MusicProvider):
     async def _read_m3u_file(self, playlist_id: str) -> str:
         """Read the raw M3U file content for a playlist."""
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        if not await asyncio.to_thread(os.path.isfile, playlist_file):
-            return ""
-        async with (
-            self._playlist_lock,
-            aiofiles.open(playlist_file, encoding="utf-8") as _file,
-        ):
-            result: str = await _file.read()
-            return result
+        # the existence check and the open must happen while holding the same lock a
+        # concurrent delete uses, or a delete slipping in between the two could still
+        # remove the file after it was seen to exist but before it was opened
+        async with self._playlist_lock:
+            if not await asyncio.to_thread(os.path.isfile, playlist_file):
+                return ""
+            async with aiofiles.open(playlist_file, encoding="utf-8") as _file:
+                result: str = await _file.read()
+                return result
 
     async def _write_m3u_file(
         self,
