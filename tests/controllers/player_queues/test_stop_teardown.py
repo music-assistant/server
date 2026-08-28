@@ -74,7 +74,7 @@ async def test_stop_ends_the_session_and_clears_the_buffers() -> None:
     fake.mass.players._handle_cmd_stop.assert_awaited_once_with("q")
     assert fake._queue_data["q"].session_id is None
     fake.mass.streams.audio_processing.clear.assert_called_once_with("q", "sess-1")
-    fake._cleanup_queue_audio_data.assert_called_once_with("q")
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,46 @@ async def test_a_player_that_cannot_be_stopped_still_loses_its_session() -> None
 
     assert fake._queue_data["q"].session_id is None
     fake.mass.streams.audio_processing.clear.assert_called_once_with("q", "sess-1")
-    fake._cleanup_queue_audio_data.assert_called_once_with("q")
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_cancels_the_prewarm_still_running() -> None:
+    """
+    A prewarm in flight would attach its buffer after the teardown has already run.
+
+    It is cancelled before the device is told to stop, so the queue cannot be left holding
+    a provider's stream. The prewarm releases its own half-filled source on cancellation.
+    """
+    fake = _fake_controller()
+
+    await _stop(fake)
+
+    cancelled = {call.args[0] for call in fake.mass.cancel_task.call_args_list}
+    assert "prepare_next_audio_buffer_q" in cancelled
+
+
+@pytest.mark.asyncio
+async def test_a_stop_with_no_session_of_its_own_tears_nothing_down() -> None:
+    """
+    A stop on a queue that was not playing owns none of the audio it finds.
+
+    The device can still hang for the thirty seconds the playback lock waits, and playback
+    that starts in that window must not be taken down by a stop that stopped nothing.
+    """
+    fake = _fake_controller()
+    fake._queue_data["q"].session_id = None
+
+    async def _start_a_session(_queue_id: str) -> None:
+        fake._queue_data["q"].session_id = "sess-2"
+
+    fake.mass.players._handle_cmd_stop.side_effect = _start_a_session
+
+    await _stop(fake)
+
+    assert fake._queue_data["q"].session_id == "sess-2"
+    fake.mass.streams.audio_processing.clear.assert_not_called()
+    fake._cleanup_queue_audio_data.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -109,3 +148,6 @@ async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> N
     await _stop(fake)
 
     assert fake._queue_data["q"].session_id == "sess-2"
+    # the cleanup is handed the stopped session, so it tears down that session's audio
+    # without touching what the replacement already prepared
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
