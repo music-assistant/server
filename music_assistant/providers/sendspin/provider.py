@@ -1570,7 +1570,7 @@ class SendspinProvider(PlayerProvider):
             if not self.mass.config.get_raw_player_config_value(client_id, CONF_ENABLED, True):
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
-            await self._auto_trust_guest_access(client_id, sendspin_client)
+            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             existing_player = self.mass.players.get_player(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
@@ -1625,7 +1625,7 @@ class SendspinProvider(PlayerProvider):
         return False
 
     async def _auto_trust_guest_access(
-        self, client_id: str, sendspin_client: SendspinClient
+        self, client_id: str, sendspin_client: SendspinClient, event_version: int
     ) -> None:
         """
         Approve a device that offers guest access, so it plays without any setup step.
@@ -1636,16 +1636,23 @@ class SendspinProvider(PlayerProvider):
 
         :param client_id: The connected client to approve.
         :param sendspin_client: That client, for its hello and negotiated roles.
+        :param event_version: The client event this runs for, re-checked before writing.
         """
         info = sendspin_client.info_or_none
         if info is None or not info.unpaired_access.enabled:
             return
+        # A live long-term handshake is the only proof of a pairing: a record can outlive the
+        # client's own half, and that device reconnects as a guest needing approval again.
+        security = sendspin_client.connection_security
+        if security is not None and security.psk_category is PskCategory.LONG_TERM:
+            return
         if all(role_requires_pairing(role_id) for role_id in sendspin_client.negotiated_role_ids):
             return
-        store = self.server_api.pairing_store
-        if await store.record_by_client_id(client_id) is not None:
+        if await self.server_api.pairing_store.trusted_unpaired(client_id) is not None:
             return
-        if await store.trusted_unpaired(client_id) is not None:
+        if not self._is_current_client_event(client_id, event_version):
+            # the store reads above suspended; the hello this decision rests on may be gone
+            self.logger.debug("Skipping stale guest approval for %s", client_id)
             return
         self.logger.debug("Approving guest access for %s", client_id)
         await self.server_api.trust_unpaired(client_id)
@@ -1692,6 +1699,7 @@ class SendspinProvider(PlayerProvider):
             previous_device_info = existing_player.device_info
             previous_type = existing_player.type
             existing_player._refresh_client_info(sendspin_client)
+            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             if isinstance(existing_player, SendspinPlayer):
                 existing_player.restore_bridge_identity(previous_device_info, previous_type)
             await self._apply_hass_esphome_enrichment([existing_player])

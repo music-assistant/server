@@ -152,11 +152,11 @@
       "label": "Audio input",
       "options": {
         "pair": "Pair the device",
-        "dismiss": "Keep guest access"
+        "dismiss": "Don't use audio input"
       },
       "option_descriptions": {
         "pair": "Sets up a verified connection, which is required before the device may send audio to Music Assistant.",
-        "dismiss": "Playback keeps working over guest access. Music Assistant will stop offering this device's audio input."
+        "dismiss": "Playback is unaffected. Music Assistant will stop offering this device's audio input."
       }
     },
     "connect_method": {
