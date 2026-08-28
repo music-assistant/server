@@ -219,6 +219,11 @@ def test_with_handling_in_titles() -> None:
         ("Rockin' Around (With You)", ()),
         ("The Catastrophe (Good Luck with That Man)", ()),
         ("Great Song (feat:Alice)", ("Alice",)),
+        # a bare credit marker with no title text before it is part of the title
+        # itself, not an actual credit annotation
+        ("Featuring Alice", ()),
+        ("Featuring Bob", ()),
+        ("Ft Bob", ()),
     ],
 )
 def test_extract_title_artist_credits(title: str, expected: tuple[str, ...]) -> None:
@@ -240,6 +245,19 @@ def test_bare_colon_feature_credit_stripped_for_search() -> None:
         "Great Song feat:Alice",
         strip_for_search=True,
     ) == ("Great Song", "")
+
+
+def test_bare_credit_marker_without_leading_title_is_not_stripped() -> None:
+    """A title that starts with a bare credit marker keeps its full text, not an empty title."""
+    assert util.parse_title_and_version(
+        "Featuring Alice",
+        strip_for_search=True,
+    ) == ("Featuring Alice", "")
+    # two different such titles must not normalize to the same (empty) search title
+    assert util.parse_title_and_version(
+        "Featuring Bob",
+        strip_for_search=True,
+    ) == ("Featuring Bob", "")
 
 
 async def test_uri_parsing() -> None:

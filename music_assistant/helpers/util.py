@@ -581,7 +581,10 @@ WITH_TITLE_WORDS = (
     "no",
 )
 _TITLE_FEATURED_CREDIT_PATTERN = re.compile(
-    r"(?:\(|\[)?\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
+    # a bare (unbracketed) credit marker must have preceding title text before it -
+    # otherwise a title that simply starts with "Featuring"/"Ft" (no credit actually
+    # being annotated) would be treated as an empty title plus a bogus artist credit
+    r"(?:[(\[]|(?<=\s))\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
     r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
     re.IGNORECASE,
 )
