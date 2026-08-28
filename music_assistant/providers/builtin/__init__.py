@@ -87,7 +87,7 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
-from music_assistant.helpers.uri import parse_uri
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -687,6 +687,10 @@ class BuiltinProvider(MusicProvider):
         # confidence-count key for each pending_substitutions entry, same index - lets the
         # report be reconciled against what _apply_import_substitutions actually wrote
         substitution_tiers: list[str] = []
+        # retained entries whose bare-URI original carried no #EXTPROV of its own - written
+        # back with the provider mapping confirmed playable during this pass, so they keep
+        # resolving on future loads too, without being reported as substitutions
+        pending_metadata_updates: list[tuple[PlaylistItem, PlaylistItem]] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
         # results are cached by the entry's full content (not just its path) so a track
@@ -719,6 +723,7 @@ class BuiltinProvider(MusicProvider):
                 provider_issues,
                 pending_substitutions,
                 substitution_tiers,
+                pending_metadata_updates,
             )
 
         if pending_substitutions:
@@ -732,6 +737,14 @@ class BuiltinProvider(MusicProvider):
                 counts[substitution_tiers[entry_index]] -= 1
                 counts["concurrent_edit"] += 1
                 del substitutions[entry_index]
+
+        if pending_metadata_updates:
+            not_applied = await self._apply_import_substitutions(
+                prov_playlist_id, pending_metadata_updates
+            )
+            for _entry_index in not_applied:
+                counts["retained"] -= 1
+                counts["concurrent_edit"] += 1
 
         set_current_task_report(
             _build_import_report(
@@ -949,6 +962,7 @@ class BuiltinProvider(MusicProvider):
         provider_issues: list[tuple[str, str]],
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
         substitution_tiers: list[str],
+        pending_metadata_updates: list[tuple[PlaylistItem, PlaylistItem]],
     ) -> None:
         """
         Record a resolved track match result into the running import report state.
@@ -961,6 +975,8 @@ class BuiltinProvider(MusicProvider):
         :param provider_issues: Provider-level issue rows, appended in place.
         :param pending_substitutions: Accepted (original, replacement) pairs, appended in place.
         :param substitution_tiers: Counts key for each pending_substitutions entry, same index.
+        :param pending_metadata_updates: Retained (original, normalized) pairs whose bare-URI
+            entry gained a confirmed provider mapping, appended in place.
         """
         for provider_name in result.failed_providers:
             issue = f"Matching failed on {provider_name}"
@@ -972,6 +988,8 @@ class BuiltinProvider(MusicProvider):
             provider_issues.append((result.label, issue))
         if result.retained:
             counts["retained"] += 1
+            if result.entry is not None:
+                pending_metadata_updates.append((item, result.entry))
             return
         if result.error:
             report_current_task_failure(f"{result.label}: {result.error}")
@@ -1020,10 +1038,20 @@ class BuiltinProvider(MusicProvider):
         if not isinstance(media_item, Track):
             return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
         label = _entry_label(media_item)
-        if await self._original_source_is_playable(item, allowed_provider_instances):
+        is_playable, confirmed_mapping = await self._original_source_is_playable(
+            item, allowed_provider_instances
+        )
+        if is_playable:
             # the original source still resolves, or its provider is merely down right
             # now - either way there is nothing to substitute
-            return _ImportTrackMatchResult(label=label, retained=True)
+            normalized_entry = None
+            if confirmed_mapping is not None:
+                # a bare URI without #EXTPROV metadata was just confirmed playable -
+                # persist the resolved mapping so this entry keeps resolving to it on
+                # future loads too, instead of leaving one that can never attach a
+                # provider mapping of its own again
+                normalized_entry = replace(item, providers=[confirmed_mapping])
+            return _ImportTrackMatchResult(label=label, retained=True, entry=normalized_entry)
         if not media_item.artists:
             # foreign M3U8 files only carry a combined "Artist - Title" EXTINF string;
             # the shared matcher needs a structured artist to search and compare with
@@ -1093,7 +1121,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _original_source_is_playable(
         self, item: PlaylistItem, allowed_provider_instances: Mapping[str, str]
-    ) -> bool:
+    ) -> tuple[bool, ProviderMappingInfo | None]:
         """
         Check whether an imported entry's original source is still usable.
 
@@ -1111,6 +1139,13 @@ class BuiltinProvider(MusicProvider):
         permanent substitution. Candidates are only ever expanded within the
         initiating user's own provider instances, so a domain-only reference can never
         reach an inaccessible account.
+
+        Returns the confirmed provider mapping alongside the playable verdict when the
+        entry carried no ``#EXTPROV`` metadata of its own and is a bare Music Assistant
+        provider URI, so the caller can persist it - a raw stream URL already
+        reconstructs its own builtin mapping from the path alone and needs nothing
+        written back, and an entry that already carries ``#EXTPROV`` metadata already
+        resolves correctly on its own.
         """
         candidates: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
@@ -1122,6 +1157,9 @@ class BuiltinProvider(MusicProvider):
                 if key not in seen:
                     seen.add(key)
                     candidates.append(key)
+        needs_provider_metadata = not item.providers and not item.path.startswith(
+            BUILTIN_URL_SCHEMES
+        )
         if not item.providers:
             # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
             # metadata at all needs this path parsed - an entry that does carry
@@ -1141,9 +1179,9 @@ class BuiltinProvider(MusicProvider):
                 # a missing/unavailable provider is a configured source that is merely
                 # down or failed setup right now, not one the user removed - a transient
                 # outage must not trigger a permanent substitution
-                return True
+                return True, None
             try:
-                await self.mass.music.tracks.get_provider_item(
+                hydrated = await self.mass.music.tracks.get_provider_item(
                     provider_item_id,
                     provider.instance_id,
                     force_refresh=True,
@@ -1162,10 +1200,35 @@ class BuiltinProvider(MusicProvider):
             ):
                 # could not verify right now (network blip) - assume it is still fine
                 # rather than substitute it
-                return True
+                return True, None
             else:
-                return True
-        return False
+                if not needs_provider_metadata:
+                    return True, None
+                # a bare URI without #EXTPROV would otherwise stay unresolvable to a
+                # provider mapping on every future load - persist what was just
+                # confirmed so the entry keeps resolving after this pass
+                own_mapping = next(
+                    (
+                        pm
+                        for pm in hydrated.provider_mappings
+                        if pm.provider_instance == provider.instance_id
+                    ),
+                    None,
+                )
+                # audio format details are only known when the hydrated item actually
+                # carried its own mapping - otherwise leave them unset rather than
+                # writing a guessed/default format into the persisted metadata
+                audio_format = own_mapping.audio_format if own_mapping else None
+                return True, ProviderMappingInfo(
+                    domain=provider.domain,
+                    item_id=provider_item_id,
+                    instance_id=provider.instance_id,
+                    content_type=audio_format.content_type.value if audio_format else "",
+                    sample_rate=audio_format.sample_rate if audio_format else 0,
+                    bit_depth=audio_format.bit_depth if audio_format else 0,
+                    bit_rate=(audio_format.bit_rate or 0) if audio_format else 0,
+                )
+        return False, None
 
     def _allowed_instances_for(
         self, provider_instance_or_domain: str, allowed_provider_instances: Mapping[str, str]

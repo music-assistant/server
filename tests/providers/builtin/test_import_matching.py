@@ -262,7 +262,7 @@ async def test_available_original_is_retained_without_search() -> None:
 
 
 async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
-    """A plain M3U entry with a bare MA URI, but no #EXTPROV metadata, is still retained."""
+    """A plain M3U entry with a bare MA URI, but no #EXTPROV metadata, is retained."""
     prov = _make_provider(loaded_provider_domains={"spotify"})
     item = PlaylistItem(path="spotify://track/abc123", title="Test", length="120")
     assert not item.providers
@@ -273,7 +273,15 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
             "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify", "qobuz--1")
         )
 
-    prov_any._write_m3u_file.assert_not_awaited()
+    # written back once so the entry keeps resolving to a provider mapping on future
+    # loads too, since a bare URI with no #EXTPROV can otherwise never attach one -
+    # it is still counted and reported as retained though, not as a substitution
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 1
+    assert written_items[0].providers == [
+        ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify")
+    ]
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
 
@@ -316,7 +324,13 @@ async def test_search_narrowing_does_not_affect_source_validation() -> None:
         )
 
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
-    prov_any._write_m3u_file.assert_not_awaited()
+    # written back once so the entry keeps resolving to a provider mapping on future
+    # loads too, but the search narrowing itself must not have been touched
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert written_items[0].providers == [
+        ProviderMappingInfo(domain="spotify", item_id="abc123", instance_id="spotify")
+    ]
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
 
