@@ -56,7 +56,7 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "Pairing method",
+      "label": "",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
@@ -173,9 +173,16 @@
         "dismiss": "Playback keeps working over guest access. Music Assistant will stop offering this device's audio input."
       }
     },
-    "pair_device": {
-      "label": "Pair this device",
-      "description": "Sets up a permanent, verified connection with this device."
+    "connect_method": {
+      "label": "",
+      "options": {
+        "unpaired": "Connect unpaired",
+        "pair": "Pair device"
+      },
+      "option_descriptions": {
+        "unpaired": "No pairing needed. Quick and easy, but less secure.",
+        "pair": "Sets up a permanent, secure connection with this device."
+      }
     }
   },
   "setup_flow": {
@@ -184,7 +191,7 @@
     },
     "approve_device": {
       "title": "Allow this device",
-      "description": "This device can be used without pairing. The connection is encrypted, but the device is not verified. Press Finish to start using it, or pair it first for a permanent, verified connection."
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection is still encrypted, but the device is not verified, so any server on your network could reach it."
     },
     "source_input": {
       "title": "Audio input available",
@@ -225,6 +232,10 @@
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
       "timed_out": "The device did not respond in time. Run the setup again to retry."
+    },
+    "approve_device_source": {
+      "title": "Allow this device",
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection is still encrypted, but the device is not verified, so any server on your network could reach it. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
     }
   },
   "manifest": {

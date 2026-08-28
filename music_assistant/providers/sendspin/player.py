@@ -89,7 +89,7 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
     CONF_ACTION_UNPAIR,
-    CONF_PAIR_DEVICE,
+    CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
@@ -97,6 +97,8 @@ from .constants import (
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
+    CONNECT_METHOD_PAIR,
+    CONNECT_METHOD_UNPAIRED,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
@@ -582,23 +584,30 @@ class SendspinBasePlayer(Player):
     async def _run_consent_step(
         self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
     ) -> bool:
-        """Show the one-time consent step; return True when the user opted into pairing."""
+        """Show the one-time consent step; return True when the user chose to pair instead."""
         entries = []
         if offer_pairing:
             entries.append(
                 ConfigEntry(
-                    key=CONF_PAIR_DEVICE,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
+                    key=CONF_CONNECT_METHOD,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    options=[
+                        ConfigValueOption(value=CONNECT_METHOD_UNPAIRED),
+                        ConfigValueOption(value=CONNECT_METHOD_PAIR),
+                    ],
+                    expanded_options=True,
                 )
             )
-        values = await session.form(entries, step_id="approve_device", last_step=True)
-        if offer_pairing and bool(values.get(CONF_PAIR_DEVICE)):
+        # A device with an audio input needs its own wording; the rest of the page is shared.
+        step_id = "approve_device_source" if self._source_input_pending else "approve_device"
+        values = await session.form(entries, step_id=step_id, last_step=True)
+        if offer_pairing and values.get(CONF_CONNECT_METHOD) == CONNECT_METHOD_PAIR:
             return True
-        # record the input decline only once the grant actually took effect
-        declines_input = self._source_input_pending
+        # Connecting unpaired settles the audio input as well, so the device stops asking.
+        input_settled = self._source_input_pending
         await provider.set_trusted_unpaired(self.player_id, enabled=True)
-        if declines_input:
+        if input_settled:
             self.mass.config.set_raw_player_config_value(
                 self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
             )

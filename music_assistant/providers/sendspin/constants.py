@@ -19,8 +19,10 @@ PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
 PAIR_METHOD_TOKEN = "token"
-# The consent step's opt-in checkbox for pairing a device that allows unpaired use.
-CONF_PAIR_DEVICE = "pair_device"
+# The consent step's choice between connecting straight away and pairing first.
+CONF_CONNECT_METHOD = "connect_method"
+CONNECT_METHOD_UNPAIRED = "unpaired"
+CONNECT_METHOD_PAIR = "pair"
 
 # The setup flow step for a device whose audio input awaits a decision.
 CONF_SOURCE_INPUT_ACTION = "source_input_action"
