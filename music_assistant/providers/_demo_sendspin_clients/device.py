@@ -64,6 +64,7 @@ class FakeSendspinDevice:
         self._storage_path = storage_dir / f"{scenario.scenario_id}.json"
         self._server_url = server_url
         self._client: SendspinClient | None = None
+        self._stopped = False
         self._task: asyncio.Task[None] | None = None
         self._disconnected = asyncio.Event()
 
@@ -84,6 +85,7 @@ class FakeSendspinDevice:
 
     async def start(self) -> None:
         """Build the client from the scenario profile and keep it connected."""
+        self._stopped = False
         store = await FileClientPairingStore.open(self._storage_path)
         config = await store.get_pairing_config()
         await store.store_pairing_config(
@@ -104,7 +106,7 @@ class FakeSendspinDevice:
         roles = [Roles.PLAYER]
         if self.scenario.source_role:
             roles.append(Roles.SOURCE)
-        self._client = SendspinClient(
+        client = SendspinClient(
             self.identity,
             self.scenario.name,
             roles,
@@ -128,13 +130,20 @@ class FakeSendspinDevice:
             ),
             pairing_support=self._pairing_support(),
         )
-        self._client.add_disconnect_listener(self._disconnected.set)
-        self._client.add_pairing_abort_listener(self._on_pairing_abort)
+        if self._stopped:
+            # ``stop`` ran while this was still coming up, and it had no task to cancel
+            # yet; starting one now would reconnect forever under an identity the next
+            # load reuses, and the two would displace each other on every attempt.
+            return
+        self._client = client
+        client.add_disconnect_listener(self._disconnected.set)
+        client.add_pairing_abort_listener(self._on_pairing_abort)
         self._task = asyncio.create_task(self._connect_loop())
         self._task.add_done_callback(self._log_task_result)
 
     async def stop(self) -> None:
-        """Disconnect the device and stop its reconnect loop."""
+        """Disconnect the device and stop its reconnect loop, including one still starting."""
+        self._stopped = True
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
@@ -98,3 +99,19 @@ def test_pin_channel_flags() -> None:
     assert PinChannel.BOTH.has_speaker
     assert not PinChannel.NONE.has_display
     assert not PinChannel.NONE.has_speaker
+
+
+async def test_stop_during_start_leaves_nothing_running(tmp_path: Path) -> None:
+    """
+    A stop landing mid-start must not leave a reconnect loop behind.
+
+    An escaped loop keeps dialling under an identity the next load reuses, and the two
+    connections then displace each other on every attempt.
+    """
+    device = FakeSendspinDevice(SCENARIOS[0], tmp_path, "ws://127.0.0.1:1/sendspin")
+    starting = asyncio.create_task(device.start())
+    await asyncio.sleep(0)
+    await device.stop()
+    await starting
+    assert device._task is None
+    assert device._client is None

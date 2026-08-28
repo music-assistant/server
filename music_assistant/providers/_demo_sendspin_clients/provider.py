@@ -103,11 +103,21 @@ class DemoSendspinClientsProvider(PluginProvider):
         server_url = self._server_url()
         for scenario in self._selected_scenarios():
             device = FakeSendspinDevice(scenario, storage_dir, server_url)
+            # registered before it starts, so a teardown that begins meanwhile can see it
             self._devices[scenario.scenario_id] = device
             await device.start()
+            if self.unloading:
+                # ``unload`` already swept whatever it could see, and every device left
+                # running would keep reconnecting under an identity the next load reuses
+                await self._stop_devices()
+                return
 
     async def unload(self, is_removed: bool = False) -> None:
         """Disconnect every fake device."""
+        await self._stop_devices()
+
+    async def _stop_devices(self) -> None:
+        """Disconnect and forget every running device."""
         devices = list(self._devices.values())
         self._devices.clear()
         await asyncio.gather(*(device.stop() for device in devices), return_exceptions=True)
