@@ -162,6 +162,34 @@ async def test_a_buffer_attached_while_it_is_released_is_kept() -> None:
     assert stopped.streamdetails.buffer is replacement_buffer
 
 
+async def test_a_session_that_starts_mid_cleanup_keeps_what_it_attaches() -> None:
+    """
+    The session playing now is re-read for every buffer, not decided once up front.
+
+    Releasing a buffer suspends, so playback can start while the cleanup is part way
+    through and claim items it has not reached yet.
+    """
+    first = _item("first", "sess-1")
+    later = _item("later", "sess-1")
+    ctrl = _controller([first, later])
+
+    async def _start_a_session() -> None:
+        # the queue is idle until this runs, so nothing was protected when the loop began
+        ctrl._queue_data[QUEUE_ID].session_id = "sess-2"
+        later.streamdetails.queue_session_id = "sess-2"  # type: ignore[union-attr]
+
+    first.streamdetails.buffer.clear = AsyncMock(  # type: ignore[union-attr]
+        side_effect=_start_a_session
+    )
+
+    await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
+
+    assert first.streamdetails is not None
+    assert first.streamdetails.buffer is None
+    assert later.streamdetails is not None
+    assert later.streamdetails.buffer is not None
+
+
 async def test_pending_crossfade_data_is_always_dropped() -> None:
     """A restarted session starts its first track from scratch, with nothing to fade from."""
     ctrl = _controller([_item("a", "sess-2")], playing="sess-2")

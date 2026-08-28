@@ -279,22 +279,21 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         queue_data = self._queue_data.get(queue_id)
         queue_items = queue_data.items if queue_data else []
-        # a session id only protects audio while that session is the one playing. Sessions
-        # rotate without a stop (starting another item mints a new one), so a claim that is
-        # no longer current marks audio nobody will come back for.
-        playing_session = queue_data.session_id if queue_data else None
-        protected_session = (
-            playing_session
-            if session_id is not None and playing_session not in (None, session_id)
-            else None
-        )
         buffers_cleared = 0
 
         for item in queue_items:
             if not (streamdetails := item.streamdetails) or not (buffer := streamdetails.buffer):
                 continue
-            if protected_session is not None and (
-                streamdetails.queue_session_id == protected_session
+            # read the playing session per item rather than once: releasing a buffer suspends,
+            # and a session that starts during one of those waits owns what it attaches after.
+            # A session id only protects audio while that session is the one playing - sessions
+            # rotate without a stop, so a claim that is no longer current marks audio nobody
+            # will come back for.
+            playing_session = queue_data.session_id if queue_data else None
+            if (
+                session_id is not None
+                and playing_session not in (None, session_id)
+                and streamdetails.queue_session_id == playing_session
             ):
                 # playback restarted here while this stop was still running; killing its
                 # producer would strand the session that is playing now
