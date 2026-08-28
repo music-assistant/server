@@ -346,13 +346,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         """
         Load the CLAP model so provider.available only goes True once analysis can run.
 
-        Setup completes only when the model is resident, which is what the
-        AudioAnalysisController honors when scheduling work. While idle the model is
-        later unloaded and reloaded on demand.
-
-        :raises SetupFailedError: When the model is not ready within the grace period, or
-            loading it failed. The load carries on either way, so the next attempt joins
-            it rather than downloading the checkpoint again.
+        :raises SetupFailedError: When the model is not ready within the grace period,
+            or loading it failed.
         """
         await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -452,11 +447,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         """
         Load and return the CLAP model, text embeddings, and prompt ordering.
 
-        Downloads the checkpoint on first use, so only ever call this off the event loop.
+        Downloads the checkpoint on first use, so only call this off the event loop.
 
         :raises SetupFailedError: When the checkpoint could not be downloaded, or the
-            shipped prompt embeddings are missing or no longer match the prompts they
-            were computed from.
+            prompt embeddings are missing or stale.
         """
         # Not an HTTP client of ours: httpx comes in with huggingface-hub, which pins it,
         # and is named here only for the exception types hub re-raises (see below).

@@ -28,11 +28,9 @@ SETUP_TASK_ID = "sonic_analysis.model_setup.instance-1"
 
 class _FakeMass:
     """
-    Stand-in for MusicAssistant, reproducing the ``create_task`` dedupe setup relies on.
+    Stand-in for MusicAssistant reproducing the ``create_task`` dedupe setup relies on.
 
-    A plain MagicMock would return a MagicMock from ``create_task``, which ``join_task``
-    walks straight through while the coroutine is never awaited — leaving the behaviour
-    these tests exist for unexercised.
+    A MagicMock would return one from ``create_task``, leaving the coroutine unawaited.
     """
 
     def __init__(self) -> None:
@@ -68,8 +66,7 @@ def _make_provider(mass: _FakeMass | None = None) -> SonicAnalysisProvider:
     """
     Construct a SonicAnalysisProvider with mocked MA infrastructure.
 
-    :param mass: Shared MusicAssistant stand-in, for tests needing two provider instances
-        to see the same task registry — as consecutive load attempts do.
+    :param mass: Shared stand-in, for tests needing two providers on one task registry.
     """
     manifest = MagicMock()
     manifest.domain = "sonic_analysis"
@@ -140,13 +137,7 @@ async def test_completed_load_populates_state() -> None:
 
 @pytest.mark.asyncio
 async def test_load_failure_propagates() -> None:
-    """
-    Load failures must propagate, not be swallowed.
-
-    The AudioAnalysisController gates work on ``provider.available``, which stays False
-    only if ``handle_async_init`` raises. Swallowing here would flip the provider to
-    available=True despite ``_clap_model is None``.
-    """
+    """Load failures must propagate, so the provider is left unavailable."""
     provider = _make_provider()
 
     with (
@@ -161,12 +152,7 @@ async def test_load_failure_propagates() -> None:
 
 @pytest.mark.asyncio
 async def test_load_is_offloaded_to_a_thread() -> None:
-    """
-    The load must run off the event loop.
-
-    It downloads ~690MB and then builds the model, and ``create_task`` starts the task
-    eagerly — so anything before the first await would run on the loop.
-    """
+    """The download and model build must run off the event loop."""
     provider = _make_provider()
 
     with patch(
@@ -182,12 +168,7 @@ async def test_load_is_offloaded_to_a_thread() -> None:
 
 @pytest.mark.asyncio
 async def test_unsupported_system_fails_before_any_download() -> None:
-    """
-    An unsupported host must fail before the checkpoint is fetched.
-
-    UnsupportedSystemError is the one setup failure MA treats as permanent, so ordering
-    the gate first is what keeps an incapable host from pulling 690MB on a loop.
-    """
+    """An unsupported host must fail before the checkpoint is fetched."""
     provider = _make_provider()
 
     with (
@@ -205,12 +186,7 @@ async def test_unsupported_system_fails_before_any_download() -> None:
 
 @pytest.mark.asyncio
 async def test_slow_load_fails_setup_but_keeps_running() -> None:
-    """
-    A load that outlives the grace period must fail setup without being cancelled.
-
-    Cancelling would not stop the worker thread anyway, and would mean the next attempt
-    starts the download from scratch.
-    """
+    """A load that outlives the grace period fails setup but keeps running."""
     mass = _FakeMass()
     provider = _make_provider(mass)
 
@@ -234,14 +210,7 @@ async def test_slow_load_fails_setup_but_keeps_running() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_joins_the_running_load_and_gets_its_result() -> None:
-    """
-    A retry must join the load already running and come away with its result.
-
-    MA builds a fresh provider instance per load attempt, so the instance that completes
-    setup is never the one that started the load. Were the result not carried back
-    through the task, the retry would download and build the model a second time —
-    concurrently with the first, which is a whole extra model in memory.
-    """
+    """A retry joins the running load and comes away with its result."""
     mass = _FakeMass()
     release = asyncio.Event()
     models = _fake_models()
@@ -283,13 +252,7 @@ async def test_retry_joins_the_running_load_and_gets_its_result() -> None:
     ids=["oserror", "httpx_connect"],
 )
 def test_download_failures_become_retryable_setup_errors(err: Exception) -> None:
-    """
-    A failed download must reach MA as a typed error, which is what gets it retried.
-
-    huggingface_hub streams the body through httpx and re-raises its transport errors
-    verbatim once its own retries are spent; those are not OSError, so letting them
-    through would leave MA treating a flaky link as a bug and never retrying.
-    """
+    """A failed download must reach MA as a typed error, which is what gets it retried."""
     provider = _make_provider()
 
     with (
@@ -304,12 +267,7 @@ def test_download_failures_become_retryable_setup_errors(err: Exception) -> None
 
 
 def test_missing_prompt_embeddings_fail_instead_of_downloading_a_text_encoder() -> None:
-    """
-    Missing or stale prompt embeddings must fail, not fall back to the text encoder.
-
-    That fallback builds a text-enabled CLAP, which downloads the GPT2 text model — a
-    second unbounded fetch inside the step this whole change exists to bound.
-    """
+    """Missing or stale prompt embeddings must fail, not fall back to the text encoder."""
     provider = _make_provider()
 
     with (
@@ -330,12 +288,7 @@ def test_missing_prompt_embeddings_fail_instead_of_downloading_a_text_encoder() 
 
 @pytest.mark.asyncio
 async def test_start_analysis_declines_while_clap_is_unavailable() -> None:
-    """
-    ``_start_analysis`` must decline tracks while CLAP is unavailable.
-
-    Defensive: the normal path keeps ``_clap_model`` populated whenever the provider is
-    available. This guards being invoked after ``unload`` cleared state.
-    """
+    """``_start_analysis`` must decline tracks while CLAP is unavailable."""
     provider = _make_provider()
     provider._clap_model = None
 
@@ -364,12 +317,7 @@ async def test_start_analysis_proceeds_when_clap_loaded() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration", [None, 0, 0.0])
 async def test_start_analysis_declines_without_duration(duration: float | None) -> None:
-    """
-    ``_start_analysis`` must decline tracks without a usable duration.
-
-    Without duration, CLAP windows can't be planned and the resulting record would be
-    librosa-only. Rejecting at start keeps the retry path open for a later attempt.
-    """
+    """``_start_analysis`` must decline tracks without a usable duration."""
     provider = _make_provider()
     provider._clap_model = MagicMock(name="clap_model")
 
