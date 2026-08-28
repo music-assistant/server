@@ -372,6 +372,44 @@ async def test_full_track_album_falls_back_after_transient_failure(
     assert result is track.album
 
 
+async def test_full_track_album_domain_only_tries_every_allowed_instance(
+    music: MusicController,
+) -> None:
+    """A bare domain album reference tries every allowed instance of that domain."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        # a domain, not an instance id, as reconstructed from imported #EXTALBUM metadata
+        item_id="album",
+        provider="qobuz",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    qobuz_1 = MagicMock(spec=MusicProvider)
+    qobuz_1.instance_id = "qobuz_1"
+    qobuz_1.domain = "qobuz"
+    qobuz_2 = MagicMock(spec=MusicProvider)
+    qobuz_2.instance_id = "qobuz_2"
+    qobuz_2.domain = "qobuz"
+    providers = {"qobuz": qobuz_1, "qobuz_1": qobuz_1, "qobuz_2": qobuz_2}
+    album = create_album("qobuz_2", "album", name="Album")
+
+    def get_provider(provider_instance_or_domain: str, **_kwargs: Any) -> MusicProvider | None:
+        return providers.get(provider_instance_or_domain)
+
+    with (
+        # the runtime registry resolves the bare "qobuz" domain to whichever instance
+        # happens to be registered first ("qobuz_1"), regardless of allow-listing
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+        patch.object(music.albums, "get", AsyncMock(return_value=album)) as albums_get,
+    ):
+        result = await music.tracks._get_full_track_album(
+            track, allowed_provider_instances={"qobuz_2"}
+        )
+
+    albums_get.assert_awaited_once_with("album", "qobuz_2", allow_update_metadata=False)
+    assert result is album
+
+
 async def test_find_provider_match_classifies_library_mapping_against_source(
     music: MusicController,
 ) -> None:

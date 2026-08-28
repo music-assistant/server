@@ -1149,10 +1149,24 @@ class TracksController(MediaControllerBase[Track]):
             provider = self.mass.get_provider(
                 provider_instance_id_or_domain, return_unavailable=True
             )
-            if provider is None or provider.instance_id not in allowed_provider_instances:
-                # can't verify this account is one the initiating user has access to
-                return track.album
-            provider_instance_id_or_domain = provider.instance_id
+            if provider is not None and provider.instance_id in allowed_provider_instances:
+                provider_instance_id_or_domain = provider.instance_id
+            else:
+                # a bare domain resolves to its first registered instance, which may
+                # not be the one this user is allowed to use even though a sibling
+                # instance of the same domain is; try every allowed instance instead
+                # of giving up on that single, arbitrary first match
+                domain = provider.domain if provider is not None else provider_instance_id_or_domain
+                resolved_instance: str | None = None
+                for candidate_id in allowed_provider_instances:
+                    candidate = self.mass.get_provider(candidate_id, return_unavailable=True)
+                    if candidate is not None and candidate.domain == domain:
+                        resolved_instance = candidate.instance_id
+                        break
+                if resolved_instance is None:
+                    # can't verify this account is one the initiating user has access to
+                    return track.album
+                provider_instance_id_or_domain = resolved_instance
         try:
             return await self.mass.music.albums.get(
                 track.album.item_id,
