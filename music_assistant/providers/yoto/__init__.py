@@ -286,7 +286,7 @@ class YotoProvider(MusicProvider):
         """Get all PodcastEpisodes for given podcast id."""
         card = await self._get_card(prov_podcast_id)
         podcast = self._parse_podcast(card)
-        for idx, episode in enumerate(card.chapters.values()):
+        for idx, episode in enumerate(reversed(card.chapters.values()), start=1):
             parsed_episode = self._parse_podcast_episode(prov_podcast_id, episode, idx, podcast)
             yield parsed_episode
 
@@ -595,9 +595,9 @@ class YotoProvider(MusicProvider):
         return PodcastEpisode(
             item_id=episode_id,
             provider=self.instance_id,
-            name=episode.title or track.title or f"Episode {idx + 1}",
+            name=episode.title or track.title or f"Episode {idx}",
             duration=chapter_duration,
-            position=idx + 1,
+            position=idx,
             podcast=ItemMapping(
                 item_id=card_id,
                 provider=self.instance_id,
