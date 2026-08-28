@@ -271,24 +271,33 @@ class StreamFeederMixin(_PlayerQueuesBase):
         - Any pending crossfade data for the queue
 
         :param queue_id: The queue ID to clean up.
-        :param session_id: Only clear buffers claimed by this playback session, leaving those
-            another session claimed alone. None clears every buffer.
+        :param session_id: The playback session being stopped. Audio the queue's currently
+            playing session claimed is left alone; everything else is released, including
+            what sessions that ended earlier left behind. None clears every buffer.
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
+        queue_data = self._queue_data.get(queue_id)
+        queue_items = queue_data.items if queue_data else []
+        # a session id only protects audio while that session is the one playing. Sessions
+        # rotate without a stop (starting another item mints a new one), so a claim that is
+        # no longer current marks audio nobody will come back for.
+        playing_session = queue_data.session_id if queue_data else None
+        protected_session = (
+            playing_session
+            if session_id is not None and playing_session not in (None, session_id)
+            else None
+        )
         buffers_cleared = 0
 
         for item in queue_items:
             if not (streamdetails := item.streamdetails) or not (buffer := streamdetails.buffer):
                 continue
-            if (
-                session_id is not None
-                and streamdetails.queue_session_id is not None
-                and streamdetails.queue_session_id != session_id
+            if protected_session is not None and (
+                streamdetails.queue_session_id == protected_session
             ):
-                # a stop only ever runs for its own session, so another session's claim means
-                # playback restarted here; killing its producer would strand that playback
+                # playback restarted here while this stop was still running; killing its
+                # producer would strand the session that is playing now
                 continue
             # detach before releasing: clearing suspends on the producer's cancellation, and a
             # session starting in that window attaches its own buffer here

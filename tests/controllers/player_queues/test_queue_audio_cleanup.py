@@ -48,11 +48,18 @@ def _item(item_id: str, session_id: str | None) -> QueueItem:
     return queue_item
 
 
-def _controller(items: list[QueueItem]) -> PlayerQueuesController:
-    """Build a bare controller holding one queue with the given items."""
+def _controller(items: list[QueueItem], playing: str | None = None) -> PlayerQueuesController:
+    """
+    Build a bare controller holding one queue with the given items.
+
+    :param items: The queue's items.
+    :param playing: Session the queue is playing now, or None once the stop cleared it.
+    """
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
-    ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=MagicMock(), items=items)}
+    ctrl._queue_data = {
+        QUEUE_ID: PlayerQueueData(queue=MagicMock(), items=items, session_id=playing)
+    }
     ctrl.mass = MagicMock()
     return ctrl
 
@@ -61,7 +68,7 @@ async def test_a_stop_leaves_a_newer_sessions_buffers_alone() -> None:
     """Playback that restarted before the teardown ran keeps the audio it prepared."""
     stopped = _item("stopped", "sess-1")
     replacement = _item("replacement", "sess-2")
-    ctrl = _controller([stopped, replacement])
+    ctrl = _controller([stopped, replacement], playing="sess-2")
 
     await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
 
@@ -85,20 +92,23 @@ async def test_a_stop_still_kills_every_buffer_of_its_own_session() -> None:
         assert item.streamdetails.buffer is None
 
 
-async def test_a_stop_clears_a_buffer_claimed_by_an_earlier_session() -> None:
+async def test_a_stop_clears_what_a_session_that_already_ended_left_behind() -> None:
     """
-    A session only skips audio it does not own, never audio it left behind itself.
+    Audio of a session that is no longer playing is nobody's to come back for.
 
-    Every buffer records the session that asked for it, so a stamp that differs from the
-    stopping session belongs to playback that came after it, not to a leftover of its own.
+    Sessions rotate without a stop - starting another item mints a new one - and a buffer
+    that finished filling is left attached, so a claim from an ended session would never
+    be released again if a differing stamp alone were enough to skip it.
     """
-    leftover = _item("leftover", "sess-1")
-    ctrl = _controller([leftover])
+    leftover = _item("leftover", "sess-0")
+    own = _item("own", "sess-1")
+    ctrl = _controller([leftover, own], playing="sess-2")
 
     await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
 
-    assert leftover.streamdetails is not None
-    assert leftover.streamdetails.buffer is None
+    for item in (leftover, own):
+        assert item.streamdetails is not None
+        assert item.streamdetails.buffer is None
 
 
 async def test_a_buffer_without_a_session_is_cleared_by_a_stop() -> None:
@@ -137,7 +147,7 @@ async def test_a_buffer_attached_while_it_is_released_is_kept() -> None:
     run and attach its own buffer to the same stream details while that is in flight.
     """
     stopped = _item("stopped", "sess-1")
-    ctrl = _controller([stopped])
+    ctrl = _controller([stopped], playing="sess-2")
     assert stopped.streamdetails is not None
     replacement_buffer = MagicMock(spec=AudioBuffer)
 
@@ -154,7 +164,7 @@ async def test_a_buffer_attached_while_it_is_released_is_kept() -> None:
 
 async def test_pending_crossfade_data_is_always_dropped() -> None:
     """A restarted session starts its first track from scratch, with nothing to fade from."""
-    ctrl = _controller([_item("a", "sess-2")])
+    ctrl = _controller([_item("a", "sess-2")], playing="sess-2")
 
     await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
 
