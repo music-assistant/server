@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.dashboard import DashboardDevice
-from music_assistant_models.enums import DashboardType
+from music_assistant_models.enums import DashboardType, PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
 
@@ -134,6 +134,7 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = False
+    castplayer.playback_state = PlaybackState.IDLE
     dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
     url = "https://mass.example.com?path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
@@ -143,7 +144,7 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     ) as mock_send_show_dashboard:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
-    # no tracked cast: always launch, the receiver may be backgrounded (Android TV)
+    # no tracked cast and nothing playing: launch, the receiver may be backgrounded
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=True)
     # the url carries the endpoint's dashboard id so the viewer can identify its session
     dashboards.mass.dashboard.resolve_dashboard_url.assert_called_once_with(
@@ -160,8 +161,34 @@ async def test_on_show_swaps_without_relaunch_on_an_active_dashboard() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = False
+    castplayer.playback_state = PlaybackState.IDLE
     dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
     dashboards._active_casts[str(device_uuid)] = MagicMock()
+    url = "https://mass.example.com?path=%2Fparty"
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
+
+    with patch(
+        "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
+    ) as mock_send_show_dashboard:
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
+
+    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
+
+
+@pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+async def test_on_show_never_relaunches_a_device_holding_a_media_session(
+    playback_state: PlaybackState,
+) -> None:
+    """Forcing a launch on a device playing through MA would tear its own playback down."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    connected_chromecast = MagicMock()
+    connected_chromecast.socket_client.is_connected = True
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = connected_chromecast
+    castplayer.app_quit_sent = False
+    castplayer.playback_state = playback_state
+    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
     url = "https://mass.example.com?path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
@@ -203,6 +230,7 @@ async def test_on_show_forces_a_launch_when_a_release_is_on_the_wire(
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.cc = connected_chromecast
     castplayer.app_quit_sent = app_quit_sent
+    castplayer.playback_state = PlaybackState.IDLE
     dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
     # an active tracked cast, so only the on-the-wire release decides the force
     dashboards._active_casts[str(device_uuid)] = MagicMock()

@@ -23,8 +23,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 CONF_SHOW_ON_DASHBOARDS = "show_on_dashboards"
-CONF_COMMAND = "milkdrop_visualizer/config"
+CONFIG_COMMAND = "milkdrop_visualizer/config"
 CAPABILITY_COMMAND = "milkdrop_visualizer/report_capability"
+# viewer-reported strings go straight into the server log, cap what a display can write
+MAX_REPORT_FIELD_LEN = 500
 
 
 class MilkdropVisualizerProvider(PluginProvider):
@@ -63,14 +65,16 @@ class MilkdropVisualizerProvider(PluginProvider):
         """Register the relay route once fully loaded."""
         await super().loaded_in_mass()
         self._relay.setup()
-        # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these.
-        # loaded_in_mass runs as a background task, so a fast reload can leave a stale
-        # instance's registration in place; registering a taken name raises, drop it first.
+        # loaded_in_mass runs as a background task, so a reload can still run this for an
+        # instance that is already on its way out; it would take the live one's commands
+        # and then tear them down with itself, as unregistering is by command name.
+        if self.unloading:
+            return
+        # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these
         for command, handler in (
-            (CONF_COMMAND, self.get_visualizer_config),
+            (CONFIG_COMMAND, self.get_visualizer_config),
             (CAPABILITY_COMMAND, self.report_capability),
         ):
-            self.mass.command_handlers.pop(command, None)
             self._unregister_handles.append(
                 self.mass.register_api_command(
                     command,
@@ -81,7 +85,6 @@ class MilkdropVisualizerProvider(PluginProvider):
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
-        # read live config: a stale instance may still own the command
         value = await self.mass.config.get_provider_config_value(
             self.instance_id, CONF_SHOW_ON_DASHBOARDS, default=False
         )
@@ -108,16 +111,18 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param user_agent: The display browser's user agent string.
         :param gpu: What the display's GL context reports it draws with.
         :param render: Measured render performance, for displays whose quality adapts.
+        :param error: Failure the display hit, logged as a warning instead of a report.
         """
+        user_agent = _trim(user_agent)
         if error is not None:
-            self.logger.warning("Viewer error: %s (user_agent=%s)", str(error)[:500], user_agent)
+            self.logger.warning("Viewer error: %s (user_agent=%s)", _trim(error), user_agent)
             return
         if render is None:
             self.logger.info(
                 "Viewer capability: webgl2=%s renderer=%s gpu=%s user_agent=%s",
                 webgl2,
-                renderer,
-                gpu,
+                _trim(renderer),
+                _trim(gpu),
                 user_agent,
             )
             return
@@ -126,12 +131,12 @@ class MilkdropVisualizerProvider(PluginProvider):
         late_pct = round(late_ratio * 100) if isinstance(late_ratio, (int, float)) else 0
         blocked_ratio = render.get("blocked_ratio")
         blocked_pct = round(blocked_ratio * 100) if isinstance(blocked_ratio, (int, float)) else 0
-        gpu = ""
+        gpu_part = ""
         if render.get("gpu_warp") is not None:
-            gpu = (
+            gpu_part = (
                 f" gpu={render.get('gpu_warp')}/{render.get('gpu_blur')}/{render.get('gpu_comp')}ms"
             )
-        preset = render.get("preset") or ""
+        preset = _trim(render.get("preset") or "")
         preset_part = f' preset="{preset}"' if preset else ""
         self.logger.info(
             "Viewer render %s: level=%s pixels=%s fps=%s/%s late=%s%% blocked=%s%% render=%sms%s%s",
@@ -143,7 +148,7 @@ class MilkdropVisualizerProvider(PluginProvider):
             late_pct,
             blocked_pct,
             render.get("render_ms"),
-            gpu,
+            gpu_part,
             preset_part,
         )
 
@@ -157,3 +162,10 @@ class MilkdropVisualizerProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         await self._relay.close()
+
+
+def _trim(value: str | None) -> str | None:
+    """Cap a viewer-reported string and flatten newlines, so it cannot forge log lines."""
+    if value is None:
+        return None
+    return str(value).replace("\n", " ").replace("\r", " ")[:MAX_REPORT_FIELD_LEN]

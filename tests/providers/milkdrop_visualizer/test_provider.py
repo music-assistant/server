@@ -6,7 +6,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 from music_assistant.providers.milkdrop_visualizer.provider import (
+    CAPABILITY_COMMAND,
     CONF_SHOW_ON_DASHBOARDS,
+    CONFIG_COMMAND,
+    MAX_REPORT_FIELD_LEN,
     MilkdropVisualizerProvider,
 )
 
@@ -23,6 +26,35 @@ def _provider() -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
     mocked.config = Mock()
     mocked.mass = mass
     return provider, logger, config_value
+
+
+async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
+    """A stale instance must not take the live one's commands on its way out."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.unloading = True
+    mocked._relay = Mock()
+    mocked._unregister_handles = []
+
+    await provider.loaded_in_mass()
+
+    mocked.mass.register_api_command.assert_not_called()
+    assert provider._unregister_handles == []
+
+
+async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
+    """A live instance exposes both viewer-facing commands and keeps their unregister handles."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.unloading = False
+    mocked._relay = Mock()
+    mocked._unregister_handles = []
+
+    await provider.loaded_in_mass()
+
+    registered = [call.args[0] for call in mocked.mass.register_api_command.call_args_list]
+    assert registered == [CONFIG_COMMAND, CAPABILITY_COMMAND]
+    assert len(provider._unregister_handles) == 2
 
 
 async def test_visualizer_config_reflects_dashboard_setting() -> None:
@@ -60,3 +92,12 @@ async def test_capability_report_tolerates_malformed_render_fields() -> None:
     await provider.report_capability(render={"note": "steady", "late_ratio": "not-a-number"})
     assert logger.info.called
     assert 0 in logger.info.call_args.args
+
+
+async def test_capability_report_flattens_and_caps_viewer_strings() -> None:
+    """A viewer cannot forge log lines or flood the log through the fields it reports."""
+    provider, logger, _config_value = _provider()
+    await provider.report_capability(error="boom\nViewer error: forged", user_agent="x" * 900)
+    logged_args = logger.warning.call_args.args
+    assert logged_args[1] == "boom Viewer error: forged"
+    assert logged_args[2] == "x" * MAX_REPORT_FIELD_LEN
