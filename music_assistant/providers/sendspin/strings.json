@@ -56,7 +56,7 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "",
+      "label": "Which pairing code does the device use?",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
@@ -174,7 +174,7 @@
       }
     },
     "connect_method": {
-      "label": "",
+      "label": "How do you want to connect?",
       "options": {
         "unpaired": "Connect unpaired",
         "pair": "Pair device"
