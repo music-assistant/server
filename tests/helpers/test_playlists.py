@@ -956,6 +956,45 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert result.path == "tidal://track/t2"
 
 
+def test_media_item_to_playlist_item_ties_are_broken_deterministically() -> None:
+    """Equal-quality provider mappings resolve to the same primary URI every time."""
+    tied_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, bit_rate=1000
+    )
+    track = Track(
+        item_id="t1",
+        provider="zulu",
+        name="Tied Quality Track",
+        duration=200,
+        provider_mappings={
+            ProviderMapping(
+                item_id="z1",
+                provider_domain="zulu",
+                provider_instance="zulu_1",
+                audio_format=tied_format,
+            ),
+            ProviderMapping(
+                item_id="a1",
+                provider_domain="alpha",
+                provider_instance="alpha_1",
+                audio_format=tied_format,
+            ),
+            ProviderMapping(
+                item_id="m1",
+                provider_domain="mid",
+                provider_instance="mid_1",
+                audio_format=tied_format,
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(track)
+
+    # provider_mappings is a set: without a tie-break, equal-quality mappings would
+    # resolve to whichever the set happens to iterate first
+    assert result.path == "alpha://track/a1"
+
+
 def test_radio_entries_round_trip() -> None:
     """Test that radio entries survive generation and parsing unchanged."""
     items = [

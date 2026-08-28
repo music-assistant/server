@@ -1577,6 +1577,24 @@ def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
     )
 
 
+def test_compare_track_evidence_matches_composite_primary_artist() -> None:
+    """A composite band name credited as the sole primary artist still matches itself."""
+    base = _provider_track(
+        "base",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Simon & Garfunkel",),
+    )
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Simon & Garfunkel",),
+    )
+
+    assert compare.compare_track_evidence(base, candidate) != compare.TrackMatchConfidence.NO_MATCH
+
+
 def test_compare_track_evidence_ranks_recording_identifiers() -> None:
     """Release-track IDs are exact while recording IDs identify alternate releases."""
     mb_track = (

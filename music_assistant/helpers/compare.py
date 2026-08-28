@@ -1141,7 +1141,13 @@ def _artist_credit_groups_cover(
 def _artist_credited(name: str, credit_groups: set[frozenset[str]]) -> bool:
     """Return whether an artist name is represented, alone or within a group, among credits."""
     key = _artist_credit_key(name)
-    return any(key in group for group in credit_groups)
+    if any(key in group for group in credit_groups):
+        return True
+    # a composite band name (e.g. "Simon & Garfunkel") splits into several credited
+    # components; it is still represented when the credits carry that same combined
+    # group, or every one of its components separately
+    own_group = _artist_credit_group(name)
+    return len(own_group) > 1 and _artist_credit_groups_cover({own_group}, credit_groups)
 
 
 def _artist_credit_key(name: str) -> str:
