@@ -52,9 +52,7 @@ def _controller(items: list[QueueItem]) -> PlayerQueuesController:
     """Build a bare controller holding one queue with the given items."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = MagicMock()
-    ctrl._queue_data = {
-        QUEUE_ID: PlayerQueueData(queue=MagicMock(), items=items, session_id="sess-2")
-    }
+    ctrl._queue_data = {QUEUE_ID: PlayerQueueData(queue=MagicMock(), items=items)}
     ctrl.mass = MagicMock()
     return ctrl
 
@@ -85,6 +83,22 @@ async def test_a_stop_still_kills_every_buffer_of_its_own_session() -> None:
     for item in (playing, preloaded):
         assert item.streamdetails is not None
         assert item.streamdetails.buffer is None
+
+
+async def test_a_stop_clears_a_buffer_claimed_by_an_earlier_session() -> None:
+    """
+    A session only skips audio it does not own, never audio it left behind itself.
+
+    Every buffer records the session that asked for it, so a stamp that differs from the
+    stopping session belongs to playback that came after it, not to a leftover of its own.
+    """
+    leftover = _item("leftover", "sess-1")
+    ctrl = _controller([leftover])
+
+    await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
+
+    assert leftover.streamdetails is not None
+    assert leftover.streamdetails.buffer is None
 
 
 async def test_a_buffer_without_a_session_is_cleared_by_a_stop() -> None:

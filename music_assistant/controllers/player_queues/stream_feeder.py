@@ -268,8 +268,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
         - Any pending crossfade data for the queue
 
         :param queue_id: The queue ID to clean up.
-        :param session_id: Only clear buffers belonging to this playback session, leaving
-            those a later session already claimed alone. None clears every buffer.
+        :param session_id: Only clear buffers claimed by this playback session, leaving those
+            another session claimed alone. None clears every buffer.
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
@@ -284,8 +284,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 and streamdetails.queue_session_id is not None
                 and streamdetails.queue_session_id != session_id
             ):
-                # a session that started while this teardown was still running owns this
-                # audio now; killing its producer would strand the playback that replaced us
+                # a stop only ever runs for its own session, so another session's claim means
+                # playback restarted here; killing its producer would strand that playback
                 continue
             # detach before releasing: clearing suspends on the producer's cancellation, and a
             # session starting in that window attaches its own buffer here
