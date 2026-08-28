@@ -737,6 +737,13 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                 player.player_id, CONF_SENDSPIN_OPT_OUT_PENDING, True
             )
         await super().evaluate_bridge(player)
+        if client_id and self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_SENDSPIN_UNSUPPORTED
+        ):
+            # Denied for good, so leave nothing of the output behind: a config that
+            # survived a failed cleanup keeps it listed with no way to get rid of it.
+            await self.remove_bridge(player.player_id, permanent=True)
+            return
         if not client_id or not self._has_bridge(player.player_id):
             return
         if self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE):

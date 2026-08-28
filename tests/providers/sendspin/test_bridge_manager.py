@@ -645,6 +645,29 @@ class TestCastBridgeOptIn:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_leftover_config_of_a_rejected_device_is_cleaned_up(self) -> None:
+        """Test a rejected device keeps nothing on the settings page after a failed cleanup."""
+        manager, mass, cast_player, player_configs, _, _ = self._make_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        player_configs[f"players/{cast_player.player_id}"] = {
+            "enabled": True,
+            "values": {CONF_SENDSPIN_UNSUPPORTED: True},
+        }
+        # left behind: the device is rejected but its bridge config outlived the removal
+        player_configs[f"players/{client_id}"] = {
+            "enabled": True,
+            "values": {"protocol_parent_id": "parent_1"},
+        }
+        mass.players.get_player = MagicMock(return_value=None)
+        manager._client_ids[cast_player.player_id] = client_id
+
+        with patch.object(SendspinBridgeManagerBase, "evaluate_bridge", new=AsyncMock()):
+            await manager.evaluate_bridge(cast_player)
+
+        mass.players.delete_player_config.assert_called_once_with(client_id)
+
+    @pytest.mark.asyncio
     async def test_bridge_gone_after_the_wait_is_not_written_to(self) -> None:
         """Test a bridge that went away is not switched off, since its config may be gone."""
         manager, mass, cast_player, player_configs, _, _ = self._make_environment()
