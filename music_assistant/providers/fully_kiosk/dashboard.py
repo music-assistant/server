@@ -96,7 +96,7 @@ class FullyKioskDashboards:
             raise PlayerUnavailableError(f"Fully Kiosk device {player_id} is no longer available")
         client = player.fully_kiosk
         url = await self.mass.dashboard.resolve_dashboard_url(
-            dashboard, target_player_id, prefer_local=True
+            dashboard, target_player_id, dashboard_id=player_id, prefer_local=True
         )
         # never log the resolved url: it embeds a one-time viewer code
         self.logger.debug("Showing %s dashboard on %s", dashboard.value, player.display_name)
