@@ -94,6 +94,22 @@ def _make_provider(
     return prov
 
 
+def _allowed(prov: BuiltinProvider, *instance_ids: str) -> tuple[tuple[str, str], ...]:
+    """
+    Build an allowed-instances snapshot for the given instance ids.
+
+    The domain for each id is taken from the provider's mocked registry when it is
+    present there (loaded or unavailable); an id deliberately absent from the registry,
+    simulating one that is configured but did not load at all, keeps its own string as
+    a stand-in domain, which is fine since none of those tests exercise domain-only
+    expansion.
+    """
+    domains = {provider.instance_id: provider.domain for provider in prov.mass.providers}
+    return tuple(
+        (instance_id, domains.get(instance_id, instance_id)) for instance_id in instance_ids
+    )
+
+
 def _make_track(
     name: str,
     artists: list[str] | None = None,
@@ -237,7 +253,7 @@ async def test_available_original_is_retained_without_search() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("builtin", "qobuz--1")
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "builtin", "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -254,7 +270,7 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify", "qobuz--1")
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify", "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -273,7 +289,7 @@ async def test_search_narrowing_does_not_affect_source_validation() -> None:
         await prov.match_imported_playlist_tracks(
             "playlist_1",
             PlaylistMatchPolicy.BEST_EFFORT,
-            ("spotify", "qobuz--1"),
+            _allowed(prov, "spotify", "qobuz--1"),
             ("qobuz--1",),
         )
 
@@ -298,7 +314,7 @@ async def test_configured_but_unavailable_provider_is_retained() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "qobuz--1")
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--1", "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -324,7 +340,7 @@ async def test_configured_but_unloaded_provider_is_retained() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "qobuz--1")
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--1", "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -374,7 +390,7 @@ async def test_available_provider_with_dead_item_id_is_matched() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_awaited_once()
@@ -419,7 +435,7 @@ async def test_dead_url_is_matched_instead_of_retained() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_awaited_once()
@@ -467,7 +483,7 @@ async def test_original_source_outside_allowed_instances_is_not_trusted() -> Non
     # it must never be trusted (or even probed) just because some account can resolve it
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_awaited_once()
@@ -494,7 +510,7 @@ async def test_original_source_probe_bypasses_cached_provider_details() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report"):
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1",)
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--1")
         )
 
     # cached (possibly stale) details are never good enough for this check - a
@@ -526,7 +542,9 @@ async def test_domain_only_reference_tries_every_allowed_instance() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "spotify--2")
+            "playlist_1",
+            PlaylistMatchPolicy.BEST_EFFORT,
+            _allowed(prov, "spotify--1", "spotify--2"),
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -564,7 +582,7 @@ async def test_exact_instance_reference_never_widens_to_sibling_instance() -> No
     prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--1", "spotify--2")
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--1", "spotify--2")
     )
 
     prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
@@ -598,13 +616,41 @@ async def test_extprov_naming_disallowed_instance_does_not_fall_back_to_path() -
     prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--2",)
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--2")
     )
 
     # the entry's own #EXTPROV data already names a provider reference, so a bare-path
     # guess must never be tried against an unrelated allowed sibling instance
     prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+
+
+async def test_domain_only_reference_to_unloaded_instance_is_retained() -> None:
+    """A domain-only reference expands from the configured snapshot, not the live registry."""
+    # spotify--1 is deliberately absent from the registry (failed setup), but it is
+    # still part of the allowed snapshot together with its configured domain - a
+    # domain-only reference must be able to find it there, not just among instances
+    # mass.get_provider_instances happens to know about right now
+    prov = _make_provider(loaded_provider_domains={"qobuz--1"})
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="", item_id="abc123"),
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.BEST_EFFORT,
+            (("spotify--1", "spotify"), ("qobuz--1", "qobuz")),
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
 
 
 async def test_duplicate_original_entries_are_resolved_only_once() -> None:
@@ -647,7 +693,9 @@ async def test_duplicate_original_entries_are_resolved_only_once() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1", "spotify--1")
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "qobuz--1", "spotify--1"),
         )
 
     enrich_mock.assert_awaited_once()
@@ -723,7 +771,7 @@ async def test_duplicate_path_with_different_metadata_is_resolved_independently(
     prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
     )
 
     # a metadata-poor or different first duplicate must not suppress resolution of the
@@ -755,7 +803,7 @@ async def test_unmatched_stale_mapping_does_not_crash_or_get_reused() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -796,7 +844,7 @@ async def test_matched_entry_excludes_unmatched_stale_mapping() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
         )
 
     written_items = prov_any._write_m3u_file.await_args.args[2]
@@ -872,7 +920,7 @@ async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, ("opensubsonic--abc123",)
+            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "opensubsonic--abc123")
         )
 
     prov_any._write_m3u_file.assert_awaited_once()
@@ -903,7 +951,7 @@ async def test_ambiguous_match_is_reported_and_not_substituted() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -931,7 +979,7 @@ async def test_no_acceptable_match_is_reported_as_unmatched() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.EXACT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.EXACT, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()
@@ -953,7 +1001,7 @@ async def test_provider_error_is_reported_as_unmatched_with_issue() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
         )
 
     report_markdown = set_report.call_args.args[0]
@@ -994,7 +1042,7 @@ async def test_extinf_title_without_structured_artist_is_split_for_matching() ->
     prov_any.mass.music.tracks.enrich_provider_mappings = enrich_mock
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
     )
 
     enrich_mock.assert_awaited_once()
@@ -1016,7 +1064,7 @@ async def test_missing_artist_metadata_is_unmatched_without_search() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
         )
 
     enrich_mock.assert_not_awaited()
@@ -1062,7 +1110,7 @@ async def test_order_and_duplicates_preserved_across_mixed_results() -> None:
     prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "qobuz--1")
     )
 
     written_items = prov_any._write_m3u_file.await_args.args[2]
@@ -1113,7 +1161,7 @@ async def test_concurrent_edit_during_matching_is_preserved() -> None:
     prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
 
     await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.EXACT, ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.EXACT, _allowed(prov, "qobuz--1")
     )
 
     written_items = prov_any._write_m3u_file.await_args.args[2]
@@ -1162,7 +1210,7 @@ async def test_concurrent_deletion_during_matching_is_reflected_in_report() -> N
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.EXACT, ("qobuz--1",)
+            "playlist_1", PlaylistMatchPolicy.EXACT, _allowed(prov, "qobuz--1")
         )
 
     prov_any._write_m3u_file.assert_not_awaited()

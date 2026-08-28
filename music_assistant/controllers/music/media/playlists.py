@@ -400,12 +400,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # configured and enabled, not just the ones currently loaded, so a provider
             # that failed setup or is temporarily down is not mistaken for one the user
             # removed - only actually searching for a substitute needs a loaded provider.
+            # Each instance is snapshotted together with its domain so a domain-only
+            # reference can also be expanded from this configured set, independent of
+            # whether that instance happens to be loaded right now.
             user_provider_filter = user.provider_filter if user else None
             configured_providers = await self.mass.config.get_provider_configs(
                 provider_type=ProviderType.MUSIC
             )
             allowed_provider_instances = {
-                conf.instance_id
+                conf.instance_id: conf.domain
                 for conf in configured_providers
                 if conf.enabled
                 and (not user_provider_filter or conf.instance_id in user_provider_filter)
@@ -425,7 +428,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id,
                     effective_match_policy,
-                    tuple(sorted(allowed_provider_instances)),
+                    tuple(sorted(allowed_provider_instances.items())),
                     tuple(sorted(search_provider_instances)),
                 ),
                 translation_key="import_playlist_matching",

@@ -105,7 +105,7 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.SAME_RECORDING,
-        ("qobuz--1", "spotify--1"),
+        (("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1", "spotify--1"),
     )
 
@@ -138,7 +138,7 @@ async def test_import_with_library_matching_true_defaults_to_best_effort() -> No
     assert call_kwargs["metadata"]["match_policy"] == "best_effort"
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("qobuz--1",), ("qobuz--1",)
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, (("qobuz--1", "qobuz"),), ("qobuz--1",)
     )
 
 
@@ -212,7 +212,7 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.BEST_EFFORT,
-        ("qobuz--1", "spotify--1"),
+        (("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1",),
     )
 
@@ -253,7 +253,7 @@ async def test_import_source_validation_includes_configured_but_unloaded_provide
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.BEST_EFFORT,
-        ("qobuz--1", "spotify--1"),
+        (("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1",),
     )
 
@@ -289,7 +289,7 @@ async def test_import_source_validation_excludes_disabled_provider() -> None:
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.BEST_EFFORT,
-        ("qobuz--1",),
+        (("qobuz--1", "qobuz"),),
         ("qobuz--1",),
     )
 
@@ -334,6 +334,6 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         PlaylistMatchPolicy.BEST_EFFORT,
-        ("qobuz--1",),
+        (("qobuz--1", "qobuz"),),
         ("qobuz--1", "spotify--1"),
     )

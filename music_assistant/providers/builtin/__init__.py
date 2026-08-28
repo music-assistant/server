@@ -630,7 +630,7 @@ class BuiltinProvider(MusicProvider):
         self,
         prov_playlist_id: str,
         match_policy: PlaylistMatchPolicy,
-        allowed_provider_instances: tuple[str, ...],
+        allowed_provider_instances: tuple[tuple[str, str], ...],
         search_provider_instances: tuple[str, ...] | None = None,
     ) -> None:
         """
@@ -643,11 +643,13 @@ class BuiltinProvider(MusicProvider):
 
         :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
         :param match_policy: Lowest track-match confidence accepted for a substitute.
-        :param allowed_provider_instances: Provider instances snapshotted from the user
-            that requested the import, used to validate whether an entry's original
+        :param allowed_provider_instances: (instance_id, domain) pairs snapshotted from the
+            user that requested the import, used to validate whether an entry's original
             source is still playable. Always the user's full accessible set, independent
             of any search narrowing, so a valid original outside that narrowing is never
-            treated as unavailable.
+            treated as unavailable. Carrying the domain alongside each instance allows a
+            domain-only reference to be expanded from this snapshot directly, without
+            depending on whether the provider is currently loaded.
         :param search_provider_instances: Provider instances to search for a substitute.
             Defaults to ``allowed_provider_instances`` when not narrowed by the caller.
         """
@@ -658,9 +660,9 @@ class BuiltinProvider(MusicProvider):
         playlist = await self.get_playlist(prov_playlist_id)
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
-        allowed_provider_instance_set = set(allowed_provider_instances)
+        allowed_provider_instance_map = dict(allowed_provider_instances)
         search_provider_instance_set = (
-            allowed_provider_instance_set
+            set(allowed_provider_instance_map)
             if search_provider_instances is None
             else set(search_provider_instances)
         )
@@ -703,7 +705,7 @@ class BuiltinProvider(MusicProvider):
                 result = await self._resolve_import_track(
                     item,
                     minimum_confidence,
-                    allowed_provider_instance_set,
+                    allowed_provider_instance_map,
                     search_provider_instance_set,
                     failed_provider_instances,
                 )
@@ -999,7 +1001,7 @@ class BuiltinProvider(MusicProvider):
         self,
         item: PlaylistItem,
         minimum_confidence: TrackMatchConfidence,
-        allowed_provider_instances: set[str],
+        allowed_provider_instances: Mapping[str, str],
         search_provider_instances: set[str],
         failed_provider_instances: set[str],
     ) -> _ImportTrackMatchResult:
@@ -1075,7 +1077,7 @@ class BuiltinProvider(MusicProvider):
         )
 
     async def _original_source_is_playable(
-        self, item: PlaylistItem, allowed_provider_instances: set[str]
+        self, item: PlaylistItem, allowed_provider_instances: Mapping[str, str]
     ) -> bool:
         """
         Check whether an imported entry's original source is still usable.
@@ -1151,7 +1153,7 @@ class BuiltinProvider(MusicProvider):
         return False
 
     def _allowed_instances_for(
-        self, provider_instance_or_domain: str, allowed_provider_instances: set[str]
+        self, provider_instance_or_domain: str, allowed_provider_instances: Mapping[str, str]
     ) -> list[str]:
         """
         Expand an entry's provider reference to allowed instance ids.
@@ -1159,18 +1161,17 @@ class BuiltinProvider(MusicProvider):
         An exact instance id is kept as-is, and only if it is in the caller's own
         snapshot; a bare domain is expanded to every one of the caller's allowed
         instances of that domain instead of the single, arbitrary instance the
-        shared library would otherwise resolve it to. The snapshot itself covers
-        every instance the caller has configured, whether or not it is currently
-        loaded, so this never depends on the provider's current load state.
+        shared library would otherwise resolve it to. The snapshot maps every
+        instance the caller has configured to its domain, whether or not the
+        instance is currently loaded, so this never depends on the provider's
+        current load state - including for the domain-only expansion.
         """
         if provider_instance_or_domain in allowed_provider_instances:
             return [provider_instance_or_domain]
         return [
-            provider.instance_id
-            for provider in self.mass.get_provider_instances(
-                provider_instance_or_domain, return_unavailable=True
-            )
-            if provider.instance_id in allowed_provider_instances
+            instance_id
+            for instance_id, domain in allowed_provider_instances.items()
+            if domain == provider_instance_or_domain
         ]
 
     def _get_stored_item(
