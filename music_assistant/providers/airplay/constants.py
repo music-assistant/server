@@ -197,8 +197,9 @@ AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
 # replacement, which is bounded by the queue's own buffer prepare
 # (BUFFER_READY_TIMEOUT, 15s) rather than by the provider call alone; the margin
 # on top keeps a slow but real seek from being cut short into a cold restart.
-# The capacity path can run longer still, but ends by stopping the queue, which
-# tears this session down anyway.
+# A load that still overruns this - one whose buffer also waits out a provider
+# source slot - is not left broken by the EOF: it only loses the warm path, and
+# the replacement cold-restarts the session as it did before that was possible.
 AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 20.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)

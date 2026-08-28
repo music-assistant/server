@@ -1126,24 +1126,41 @@ async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
     """
     Nothing may still own the cli stdin when a withheld EOF is finally sent.
 
-    A member that joined while the EOF was held has an ffmpeg of its own writing
+    A member that joins while the EOF is held gets an ffmpeg of its own writing
     into that same stdin, so closing only this end would leave the binary waiting
     on a pipe that never ends.
     """
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queues.queue_data_or_none = MagicMock(
+        return_value=MagicMock(session_id="session-2", transitioning=True)
+    )
     order: list[str] = []
     player.stream.write_audio_eof = AsyncMock(side_effect=lambda: order.append("eof"))
-    ffmpeg = MagicMock(closed=False)
-    ffmpeg.kill = AsyncMock(side_effect=lambda: order.append("kill"))
-    session._player_ffmpeg[player.player_id] = ffmpeg
+    retired = MagicMock(closed=False)
+    retired.kill = AsyncMock(side_effect=lambda: order.append("retired-kill"))
+    session._player_ffmpeg[player.player_id] = retired
+
+    no_chunks: list[bytes] = []
+
+    async def exhausted_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
 
     with patch(
-        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0.05
     ):
-        await session._end_stream_if_no_replacement_lands()
+        streamer = asyncio.create_task(session._audio_streamer(exhausted_source()))
+        # the source is out and its ffmpeg retired; the EOF is now being held
+        await asyncio.sleep(0.01)
+        joined = MagicMock(closed=False)
+        joined.kill = AsyncMock(side_effect=lambda: order.append("joiner-kill"))
+        session._player_ffmpeg[player.player_id] = joined
+        await streamer
 
-    assert order == ["kill", "eof"]
+    assert order == ["retired-kill", "joiner-kill", "eof"]
     assert not session._player_ffmpeg
 
 
