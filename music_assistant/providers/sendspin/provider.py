@@ -22,6 +22,7 @@ from aiosendspin.models.types import (
     AudioCodec,
     ManagementResult,
     PairAbortReason,
+    PairingCodeFormat,
     PairMethod,
     PlayerCommand,
     role_family,
@@ -34,7 +35,7 @@ from aiosendspin.noise.pairing import (
     PairingError,
     PairingTimeoutError,
 )
-from aiosendspin.noise.pairing_token import decode_token
+from aiosendspin.noise.pairing_token import decode_psk_token
 from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
 from aiosendspin.server import (
     ClientAddedEvent,
@@ -91,18 +92,14 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
-    CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
-    DEFAULT_MIN_PIN_LENGTH,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
     error_alert,
-    negotiated_pin_length,
-    pair_method_descriptor,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -144,24 +141,24 @@ WEB_PLAYER_CONNECT_TIMEOUT = 10.0
 # Grace period so a network blip keeps the pairing record.
 SESSION_PAIRING_EVICTION_GRACE = 120.0
 
-PIN_REQUEST_FEEDBACK_TIMEOUT = 2
-PIN_RETRY_IDLE_TIMEOUT = 300
+PAIRING_CODE_REQUEST_FEEDBACK_TIMEOUT = 2
+PAIRING_CODE_RETRY_IDLE_TIMEOUT = 300
 MANAGEMENT_REQUEST_TIMEOUT = 10
 MANAGEMENT_IDLE_TIMEOUT = 300
 
 
 @dataclass
-class PinPairingSession:
-    """State of an operator PIN pairing session for one client, across retry-in-place attempts."""
+class PairingCodeSession:
+    """State of an operator PAIRING_CODE pairing session for one client, across retry-in-place attempts."""
 
     client_id: str
     method: PairMethod
-    pin_future: asyncio.Future[str]
+    pairing_code_future: asyncio.Future[str]
     verify: bool = False
     static: bool = False
-    pin_length: int | None = None
+    pairing_format: PairingCodeFormat | None = None
     task: asyncio.Task[None] | None = None
-    pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pairing_code_request_event: asyncio.Event = field(default_factory=asyncio.Event)
     gesture_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
     retryable: bool = False
@@ -178,7 +175,7 @@ class PinPairingSession:
         return (
             self.attempt_running
             and not self.gesture_event.is_set()
-            and not self.pin_request_event.is_set()
+            and not self.pairing_code_request_event.is_set()
         )
 
     @property
@@ -187,21 +184,21 @@ class PinPairingSession:
         return (
             self.attempt_running
             and self.gesture_event.is_set()
-            and not self.pin_request_event.is_set()
+            and not self.pairing_code_request_event.is_set()
         )
 
     @property
-    def awaiting_pin(self) -> bool:
-        """Whether the attempt is waiting for the operator to submit a PIN."""
-        return self.attempt_running and not self.pin_future.done()
+    def awaiting_pairing_code(self) -> bool:
+        """Whether the attempt is waiting for the operator to submit a PAIRING_CODE."""
+        return self.attempt_running and not self.pairing_code_future.done()
 
     async def wait_first_message(self) -> None:
-        """Resolve once the client asks for a gesture or the PIN, or the attempt ends."""
-        await self._wait_events(self.gesture_event, self.pin_request_event)
+        """Resolve once the client asks for a gesture or the PAIRING_CODE, or the attempt ends."""
+        await self._wait_events(self.gesture_event, self.pairing_code_request_event)
 
-    async def wait_pin_request(self) -> None:
-        """Resolve once the client asks for the PIN, or the attempt ends."""
-        await self._wait_events(self.pin_request_event)
+    async def wait_pairing_code_request(self) -> None:
+        """Resolve once the client asks for the PAIRING_CODE, or the attempt ends."""
+        await self._wait_events(self.pairing_code_request_event)
 
     @property
     def can_retry(self) -> bool:
@@ -254,7 +251,7 @@ def _evict_session_pairing_task_id(client_id: str) -> str:
     return f"sendspin_evict_session_pairing_{client_id}"
 
 
-def _pin_idle_task_id(client_id: str) -> str:
+def _pairing_code_idle_task_id(client_id: str) -> str:
     """Timer/task id for a client's pairing-retry idle timeout."""
     return f"sendspin_pin_idle_{client_id}"
 
@@ -387,7 +384,7 @@ class SendspinProvider(PlayerProvider):
         self._client_event_versions = {}
         self._client_event_task_counts = {}
         self._virtual_players = {}
-        self._pin_sessions: dict[str, PinPairingSession] = {}
+        self._pairing_code_sessions: dict[str, PairingCodeSession] = {}
         self._pending_pairing_evictions: set[str] = set()
         self._running_pairing_evictions: set[asyncio.Task[None]] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
@@ -407,12 +404,6 @@ class SendspinProvider(PlayerProvider):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_MIN_PIN_LENGTH,
-                type=ConfigEntryType.INTEGER,
-                range=(4, 12),
-                default_value=DEFAULT_MIN_PIN_LENGTH,
             ),
         )
 
@@ -468,9 +459,6 @@ class SendspinProvider(PlayerProvider):
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
             allow_noncompliant_clients=allow_legacy_clients,
-            min_pin_length=cast(
-                "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
-            ),
         )
         # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
         # still very mixed, needs more testing. Disable it globally for now to
@@ -746,45 +734,45 @@ class SendspinProvider(PlayerProvider):
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
 
-    def get_pin_session(self, client_id: str) -> PinPairingSession | None:
-        """Return the in-flight or just-finished PIN pairing session for a client."""
-        return self._pin_sessions.get(client_id)
+    def get_pairing_code_session(self, client_id: str) -> PairingCodeSession | None:
+        """Return the in-flight or just-finished PAIRING_CODE pairing session for a client."""
+        return self._pairing_code_sessions.get(client_id)
 
-    def clear_pin_session(self, client_id: str) -> None:
-        """Drop a finished PIN pairing session (after its outcome has been shown)."""
-        session = self._pin_sessions.get(client_id)
+    def clear_pairing_code_session(self, client_id: str) -> None:
+        """Drop a finished PAIRING_CODE pairing session (after its outcome has been shown)."""
+        session = self._pairing_code_sessions.get(client_id)
         if session is not None and session.finished:
-            self._cancel_pin_idle_timeout(client_id)
-            self._pin_sessions.pop(client_id, None)
+            self._cancel_pairing_code_idle_timeout(client_id)
+            self._pairing_code_sessions.pop(client_id, None)
             if session.opened_management:
                 self.exit_management(client_id)
 
-    async def start_pin_pairing(
+    async def start_pairing_code_pairing(
         self, client_id: str, *, verify: bool = False, static: bool = False
-    ) -> PinPairingSession:
+    ) -> PairingCodeSession:
         """
-        Begin (or retry in place) an operator PIN pairing attempt with a connected client.
+        Begin (or retry in place) an operator PAIRING_CODE pairing attempt with a connected client.
 
-        Returns once the client has asked for the PIN, the attempt has failed, or a short
+        Returns once the client has asked for the PAIRING_CODE, the attempt has failed, or a short
         feedback window has elapsed, so the caller's first render reflects whether the
-        device-side pairing gesture is still pending. The attempt keeps running until the PIN
-        is supplied via submit_pin (or it times out / is cancelled). A session left retryable
+        device-side pairing gesture is still pending. The attempt keeps running until the PAIRING_CODE
+        is supplied via submit_pairing_code (or it times out / is cancelled). A session left retryable
         by a failed attempt is resumed in place, preserving the chosen method and verify mode.
 
-        :param verify: Re-verify an already-paired device's presence (dynamic PIN only).
-        :param static: Pair with the static PIN even when a dynamic PIN is offered.
+        :param verify: Re-verify an already-paired device's presence (dynamic PAIRING_CODE only).
+        :param static: Pair with the static PAIRING_CODE even when a dynamic PAIRING_CODE is offered.
         """
-        session = self._pin_sessions.get(client_id)
+        session = self._pairing_code_sessions.get(client_id)
         if session is not None and (session.verify != verify or session.static != static):
             # a stale session from an earlier run never resumes; the caller's
             # static/verify choice must win
             if session.attempt_running:
                 raise SecurityActionError("pairing_error_concurrent")
-            await self.cancel_pin_pairing(client_id)
+            await self.cancel_pairing_code_pairing(client_id)
             session = None
         if session is not None and session.can_retry:
-            self._begin_pin_attempt(session)
-            await self._pin_request_feedback(session)
+            self._begin_pairing_code_attempt(session)
+            await self._pairing_code_request_feedback(session)
             return session
         if session is not None and session.attempt_running:
             return session
@@ -794,45 +782,37 @@ class SendspinProvider(PlayerProvider):
         if info is None:
             raise SecurityActionError("pairing_error_not_connected")
         offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))
-        method = self._pick_pin_method(offered, verify=verify, static=static)
-        pin_length = (
-            # From the hello advertisement, not the live config: that is what the server's own
-            # negotiation reads, so the predicted length matches the PIN the device derives.
-            negotiated_pin_length(
-                pair_method_descriptor(info.supported_pair_methods or (), PairMethod.DYNAMIC_PIN),
-                self.server_api.min_pin_length,
-            )
-            if method is PairMethod.DYNAMIC_PIN
-            else None
+        method, pairing_format = self._pick_pairing_code_method(
+            offered, verify=verify, static=static
         )
-        session = PinPairingSession(
+        session = PairingCodeSession(
             client_id=client_id,
             method=method,
-            pin_future=self.mass.loop.create_future(),
+            pairing_code_future=self.mass.loop.create_future(),
             verify=verify,
             static=static,
-            pin_length=pin_length,
+            pairing_format=pairing_format,
             opened_management=await self._open_pairing_window(client_id),
         )
-        self._pin_sessions[client_id] = session
-        self._begin_pin_attempt(session)
-        await self._pin_request_feedback(session)
+        self._pairing_code_sessions[client_id] = session
+        self._begin_pairing_code_attempt(session)
+        await self._pairing_code_request_feedback(session)
         return session
 
-    def submit_pin(self, client_id: str, pin: str) -> None:
-        """Deliver the operator-entered PIN to the in-flight pairing attempt."""
-        session = self._pin_sessions.get(client_id)
+    def submit_pairing_code(self, client_id: str, pairing_code: str) -> None:
+        """Deliver the operator-entered PAIRING_CODE to the in-flight pairing attempt."""
+        session = self._pairing_code_sessions.get(client_id)
         if session is None or session.task is None:
-            raise SecurityActionError("pairing_error_no_pin_session")
-        if not session.pin_future.done():
-            session.pin_future.set_result(pin.strip())
+            raise SecurityActionError("pairing_error_no_pairing_code_session")
+        if not session.pairing_code_future.done():
+            session.pairing_code_future.set_result(pairing_code.strip())
 
-    async def cancel_pin_pairing(self, client_id: str) -> None:
-        """Abort an in-flight or parked PIN pairing session, restoring normal service."""
-        session = self._pin_sessions.pop(client_id, None)
+    async def cancel_pairing_code_pairing(self, client_id: str) -> None:
+        """Abort an in-flight or parked PAIRING_CODE pairing session, restoring normal service."""
+        session = self._pairing_code_sessions.pop(client_id, None)
         if session is None:
             return
-        self._cancel_pin_idle_timeout(client_id)
+        self._cancel_pairing_code_idle_timeout(client_id)
         await self._end_pairing_quietly(client_id)
         if session.task is not None:
             with suppress(Exception):
@@ -852,11 +832,11 @@ class SendspinProvider(PlayerProvider):
         :param owner: Application-defined authorization id to bind the pairing to;
             ``None`` is a standalone pairing.
         """
-        session = self._pin_sessions.get(client_id)
+        session = self._pairing_code_sessions.get(client_id)
         if session is not None and session.attempt_running:
             raise SecurityActionError("pairing_error_concurrent")
         try:
-            token = decode_token(token_value)
+            token = decode_psk_token(token_value)
         except ValueError as err:
             raise SecurityActionError("pairing_error_token_invalid") from err
         if token.client_id != client_id:
@@ -900,7 +880,7 @@ class SendspinProvider(PlayerProvider):
         # The token names the client it belongs to, so this works on every transport,
         # including Ingress where the session carries no client id at all.
         try:
-            client_id = decode_token(pairing_token).client_id
+            client_id = decode_psk_token(pairing_token).client_id
         except ValueError as err:
             raise InvalidCommand(
                 "The pairing token is not valid",
@@ -1090,11 +1070,11 @@ class SendspinProvider(PlayerProvider):
         """
         self._unloading = True
         # call_later timers are not swept by mass.stop(), so cancel them explicitly here.
-        for session in self._pin_sessions.values():
+        for session in self._pairing_code_sessions.values():
             if session.task is not None:
                 session.task.cancel()
-            self._cancel_pin_idle_timeout(session.client_id)
-        self._pin_sessions.clear()
+            self._cancel_pairing_code_idle_timeout(session.client_id)
+        self._pairing_code_sessions.clear()
         for client_id in self._pending_pairing_evictions:
             self.mass.cancel_timer(_evict_session_pairing_task_id(client_id))
         self._pending_pairing_evictions.clear()
@@ -1266,27 +1246,25 @@ class SendspinProvider(PlayerProvider):
         return player
 
     @staticmethod
-    def _pick_pin_method(
+    def _pick_pairing_code_method(
         offered: list[PairMethodDescriptor], *, verify: bool = False, static: bool = False
-    ) -> PairMethod:
-        """
-        Select the preferred usable PIN method from the client's offer.
-
-        :param verify: Restrict to dynamic PIN, the only method that proves device presence.
-        :param static: Restrict to static PIN, overriding the dynamic-first default.
-        """
-        wanted: tuple[PairMethod, ...]
-        if verify:
-            wanted = (PairMethod.DYNAMIC_PIN,)
-        elif static:
-            wanted = (PairMethod.STATIC_PIN,)
-        else:
-            wanted = (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-        offered_methods = {descriptor.method for descriptor in offered}
-        for method in wanted:
-            if method in offered_methods:
-                return method
-        raise SecurityActionError("pairing_error_no_pin_method")
+    ) -> tuple[PairMethod, PairingCodeFormat | None]:
+        """Select digits dynamic pairing when offered, or fall back to static pairing."""
+        offered_descriptors = {descriptor.method: descriptor for descriptor in offered}
+        dynamic = offered_descriptors.get(PairMethod.DYNAMIC_PAIRING_CODE)
+        static_descriptor = offered_descriptors.get(PairMethod.STATIC_PAIRING_CODE)
+        if not static:
+            if dynamic is not None and PairingCodeFormat.DIGITS.value in (dynamic.formats or ()):
+                return PairMethod.DYNAMIC_PAIRING_CODE, PairingCodeFormat.DIGITS
+            if verify:
+                if dynamic is not None:
+                    raise SecurityActionError("pairing_error_format_unsupported")
+                raise SecurityActionError("pairing_error_no_pairing_code_method")
+        if not verify and static_descriptor is not None:
+            return PairMethod.STATIC_PAIRING_CODE, None
+        if dynamic is not None and PairingCodeFormat.DIGITS.value not in (dynamic.formats or ()):
+            raise SecurityActionError("pairing_error_format_unsupported")
+        raise SecurityActionError("pairing_error_no_pairing_code_method")
 
     async def _open_pairing_window(self, client_id: str) -> bool:
         """
@@ -1310,34 +1288,34 @@ class SendspinProvider(PlayerProvider):
                 self.exit_management(client_id)
         return keep
 
-    def _begin_pin_attempt(self, session: PinPairingSession) -> None:
+    def _begin_pairing_code_attempt(self, session: PairingCodeSession) -> None:
         """Start or restart a pairing attempt for the session, resetting per-attempt state."""
-        self._cancel_pin_idle_timeout(session.client_id)
+        self._cancel_pairing_code_idle_timeout(session.client_id)
         session.error = None
         session.retryable = False
-        session.pin_request_event.clear()
+        session.pairing_code_request_event.clear()
         session.gesture_event.clear()
-        if session.pin_future.done():
-            session.pin_future = self.mass.loop.create_future()
-        session.task = self.mass.create_task(self._run_pin_pairing(session))
+        if session.pairing_code_future.done():
+            session.pairing_code_future = self.mass.loop.create_future()
+        session.task = self.mass.create_task(self._run_pairing_code_pairing(session))
 
-    async def _pin_request_feedback(self, session: PinPairingSession) -> None:
-        """Wait briefly for the attempt to reach the PIN wait (or end), for an accurate render."""
+    async def _pairing_code_request_feedback(self, session: PairingCodeSession) -> None:
+        """Wait briefly for the attempt to reach the PAIRING_CODE wait (or end), for an accurate render."""
         if session.task is None:
             return
         waiter = self.mass.create_task(session.wait_first_message())
         try:
-            await asyncio.wait((waiter,), timeout=PIN_REQUEST_FEEDBACK_TIMEOUT)
+            await asyncio.wait((waiter,), timeout=PAIRING_CODE_REQUEST_FEEDBACK_TIMEOUT)
         finally:
             waiter.cancel()
 
-    async def _run_pin_pairing(self, session: PinPairingSession) -> None:
-        """Run one PIN pairing attempt, classifying the outcome for the UI."""
+    async def _run_pairing_code_pairing(self, session: PairingCodeSession) -> None:
+        """Run one PAIRING_CODE pairing attempt, classifying the outcome for the UI."""
 
-        def pin_provider() -> asyncio.Future[str]:
+        def pairing_code_provider() -> asyncio.Future[str]:
             # Invoked only once the client's pair-init has arrived (post-gesture).
-            session.pin_request_event.set()
-            return session.pin_future
+            session.pairing_code_request_event.set()
+            return session.pairing_code_future
 
         def on_pair_pending() -> None:
             session.gesture_event.set()
@@ -1347,11 +1325,12 @@ class SendspinProvider(PlayerProvider):
                 session.client_id,
                 PairingAttempt(
                     session.method,
-                    pin_provider=pin_provider,
+                    pairing_code_provider=pairing_code_provider,
+                    pairing_format=session.pairing_format,
                     verify=session.verify,
                     on_pair_pending=on_pair_pending,
-                    languages=self._spoken_pin_languages()
-                    if session.method is PairMethod.DYNAMIC_PIN
+                    languages=self._spoken_pairing_code_languages()
+                    if session.method is PairMethod.DYNAMIC_PAIRING_CODE
                     else (),
                 ),
             )
@@ -1359,9 +1338,9 @@ class SendspinProvider(PlayerProvider):
             # The device never answered; aiosendspin cancelled the attempt in band and left
             # pairing, so the connection is still usable and a retry can start afresh.
             session.error = err
-            self.logger.debug("PIN pairing with %s timed out: %s", session.client_id, err)
+            self.logger.debug("PAIRING_CODE pairing with %s timed out: %s", session.client_id, err)
             session.retryable = True
-            self._arm_pin_idle_timeout(session)
+            self._arm_pairing_code_idle_timeout(session)
         except PairingAbortError as err:
             if (
                 isinstance(err, LocalPairingAbortError)
@@ -1370,22 +1349,22 @@ class SendspinProvider(PlayerProvider):
                 # Our own end_pairing cancelled this attempt; the connection is already restored.
                 return
             session.error = err
-            self.logger.debug("PIN pairing with %s aborted: %s", session.client_id, err)
+            self.logger.debug("PAIRING_CODE pairing with %s aborted: %s", session.client_id, err)
             session.retryable = True
-            self._arm_pin_idle_timeout(session)
+            self._arm_pairing_code_idle_timeout(session)
         except Exception as err:
             # A non-abort failure: the server has already disconnected the client.
             session.error = err
-            self.logger.debug("PIN pairing with %s failed: %s", session.client_id, err)
+            self.logger.debug("PAIRING_CODE pairing with %s failed: %s", session.client_id, err)
         else:
             await self._refresh_player(session.client_id)
         finally:
-            if not session.pin_future.done():
-                session.pin_future.cancel()
+            if not session.pairing_code_future.done():
+                session.pairing_code_future.cancel()
 
-    def _spoken_pin_languages(self) -> tuple[str, ...]:
+    def _spoken_pairing_code_languages(self) -> tuple[str, ...]:
         """
-        Return the language preference for a spoken dynamic PIN, most preferred first.
+        Return the language preference for a spoken dynamic PAIRING_CODE, most preferred first.
 
         The metadata locale is the only server-wide language setting, so it stands in for the
         operator's own preference.
@@ -1394,22 +1373,22 @@ class SendspinProvider(PlayerProvider):
         language = locale.split("-")[0]
         return (locale, language) if language != locale else (locale,)
 
-    def _arm_pin_idle_timeout(self, session: PinPairingSession) -> None:
+    def _arm_pairing_code_idle_timeout(self, session: PairingCodeSession) -> None:
         """Schedule restoration of the connection if a failed attempt is left unretried."""
         self.mass.call_later(
-            PIN_RETRY_IDLE_TIMEOUT,
-            self._pin_idle_timeout,
+            PAIRING_CODE_RETRY_IDLE_TIMEOUT,
+            self._pairing_code_idle_timeout,
             session,
-            task_id=_pin_idle_task_id(session.client_id),
+            task_id=_pairing_code_idle_task_id(session.client_id),
         )
 
-    def _cancel_pin_idle_timeout(self, client_id: str) -> None:
+    def _cancel_pairing_code_idle_timeout(self, client_id: str) -> None:
         """Cancel a pairing idle timeout, whether still pending or already firing."""
-        task_id = _pin_idle_task_id(client_id)
+        task_id = _pairing_code_idle_task_id(client_id)
         self.mass.cancel_timer(task_id)
         self.mass.cancel_task(task_id)
 
-    async def _pin_idle_timeout(self, session: PinPairingSession) -> None:
+    async def _pairing_code_idle_timeout(self, session: PairingCodeSession) -> None:
         """Terminate an abandoned retryable session, restoring the connection to service."""
         session.retryable = False
         session.error = TimeoutError("timed out waiting for a pairing retry")
