@@ -196,7 +196,14 @@ class AsyncProcess:
             return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
-        """Write data to process stdin."""
+        """
+        Write data to process stdin.
+
+        Data handed over after :meth:`write_eof` is dropped rather than queued:
+        the transport closed the pipe behind that eof and it cannot be reopened.
+
+        :param data: Bytes to write.
+        """
         if self._close_called or self.proc is None:
             return
         if self.proc.stdin is None:
@@ -238,12 +245,12 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called or self._stdin_eof or self.proc is None:
-            return
-        if self.proc.stdin is None:
+        if self._close_called or self.proc is None or self.proc.stdin is None:
             return
         async with self._stdin_lock:
-            if not self.proc.stdin.can_write_eof():
+            # checked under the lock, like write(): a second end of file that
+            # waited here has nothing left to close
+            if self._stdin_eof or not self.proc.stdin.can_write_eof():
                 return
             # whatever the write below does, stdin is spent: the transport closes
             # the pipe on eof, and every error it raises is a pipe already gone

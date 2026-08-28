@@ -188,6 +188,20 @@ AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
 # lock, so a producer that neither delivers nor gives up would otherwise hold
 # every command for the player behind it.
 AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
+# Hard cap on how long the stdin EOF withheld for a predicted replacement stream
+# is held. What normally releases that wait is the queue itself: it clears the
+# transition on any failure between rotating its stream session and the
+# play_media that carries the replacement (an item that fails to load, a
+# provider error), and that is the signal no replacement is coming. This only
+# covers a transition that neither completes nor clears. It sits past the load
+# that carries a replacement - the queue's buffer prepare (BUFFER_READY_TIMEOUT,
+# 15s) plus the provider source slot its producer may wait out first - so a slow
+# but real seek is never cut short into a cold restart.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 35.0
+# How often the queue is asked whether it is still loading that replacement.
+# It only bounds how quickly a cleared transition is noticed, so it trades no
+# accuracy for a poll this cheap (one dict lookup).
+AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
