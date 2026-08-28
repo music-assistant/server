@@ -1288,6 +1288,12 @@ class TracksController(MediaControllerBase[Track]):
                 isinstance(candidate, MusicProvider)
                 and candidate.instance_id == provider_instance_id
             ):
+                # the instance has fully unloaded (no provider object left at all) -
+                # report it as failed too, using its instance id as display name,
+                # instead of silently dropping it and letting callers retry it forever
+                if failed_provider_instances is not None:
+                    failed_provider_instances.add(provider_instance_id)
+                failed_providers.append(provider_instance_id)
                 continue
             if not candidate.available:
                 # allowed but currently unreachable - report it so a caller building a

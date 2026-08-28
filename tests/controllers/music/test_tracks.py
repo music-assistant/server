@@ -1703,6 +1703,33 @@ async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(
     assert failed_provider_instances == {"qobuz_1"}
 
 
+async def test_enrich_provider_mappings_reports_fully_unloaded_allowed_provider(
+    music: MusicController,
+) -> None:
+    """An allowed instance that has fully unloaded is reported, not silently skipped."""
+    source = create_track("spotify_1", "source")
+    failed_provider_instances: set[str] = set()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", AsyncMock()) as find_match,
+        # no provider object left at all for this instance - fully unregistered
+        patch.object(music.mass, "get_provider", return_value=None),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            failed_provider_instances=failed_provider_instances,
+        )
+
+    # never queried - the caller should still learn this instance couldn't be tried,
+    # using its instance id as display name since no provider object remains
+    find_match.assert_not_awaited()
+    assert result.failed_providers == ("qobuz_1",)
+    assert failed_provider_instances == {"qobuz_1"}
+
+
 async def test_overwrite_update_keeps_artists_when_none_are_given(
     mass: MusicAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
