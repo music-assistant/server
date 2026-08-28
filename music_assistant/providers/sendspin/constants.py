@@ -22,9 +22,6 @@ PAIR_METHOD_TOKEN = "token"
 # The consent step's opt-in checkbox for pairing a device that allows unpaired use.
 CONF_PAIR_DEVICE = "pair_device"
 
-# Consent-page note that pairing is what enables the device's audio input.
-CONF_SOURCE_INPUT_NOTE = "source_input_note"
-
 # The setup flow step for a device whose audio input awaits a decision.
 CONF_SOURCE_INPUT_ACTION = "source_input_action"
 SOURCE_INPUT_PAIR = "pair"

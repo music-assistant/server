@@ -175,10 +175,7 @@
     },
     "pair_device": {
       "label": "Pair this device",
-      "description": "Sets up a verified, permanent connection. Also required before the device may send its audio input to Music Assistant."
-    },
-    "source_input_note": {
-      "label": "This device can send its audio (such as a line-in) to Music Assistant, which needs pairing. Without it the device still plays through guest access and the input stays off."
+      "description": "Sets up a permanent, verified connection with this device."
     }
   },
   "setup_flow": {
@@ -186,8 +183,8 @@
       "title": "Pair this device"
     },
     "approve_device": {
-      "title": "Allow this new device",
-      "description": "This device is new to Music Assistant. Continuing allows it to play without pairing; the connection is encrypted but not authenticated."
+      "title": "Allow this device",
+      "description": "This device accepts connections without pairing, which is how most devices connect. The connection is encrypted, but the device is not verified, so any server on your network could reach it. You can optionally pair it for a permanent, verified connection. Press Finish to trust the device and allow playback to it."
     },
     "source_input": {
       "title": "Audio input available",
@@ -228,6 +225,10 @@
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
       "timed_out": "The device did not respond in time. Run the setup again to retry."
+    },
+    "approve_device_source": {
+      "title": "Allow this device",
+      "description": "This device accepts connections without pairing, which is how most devices connect. The connection is encrypted, but the device is not verified, so any server on your network could reach it. This device also has an audio input, and pairing is what lets it send audio to Music Assistant. Pair it for a permanent, verified connection, or press Finish to trust it for playback only."
     }
   },
   "manifest": {

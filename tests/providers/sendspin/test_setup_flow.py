@@ -31,7 +31,6 @@ from music_assistant.providers.sendspin.constants import (
     CONF_PAIRING_TOKEN,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
-    CONF_SOURCE_INPUT_NOTE,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -484,8 +483,9 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
     mass = _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
-    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE, CONF_SOURCE_INPUT_NOTE]
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE]
+    assert step.last_step is True
     session.handle_submit({})
 
     await _wait_for(lambda: session.finished)
@@ -556,8 +556,9 @@ async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> N
     mass = _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
-    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE, CONF_SOURCE_INPUT_NOTE]
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE]
+    assert step.last_step is True
     session.handle_submit({CONF_PAIR_DEVICE: False})
 
     await _wait_for(lambda: session.finished)
@@ -609,7 +610,7 @@ async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> N
     _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
     session.handle_submit({CONF_PAIR_DEVICE: True})
 
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")

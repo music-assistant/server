@@ -97,7 +97,6 @@ from .constants import (
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
-    CONF_SOURCE_INPUT_NOTE,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
@@ -401,6 +400,20 @@ class SendspinBasePlayer(Player):
         """Return the reason this device needs setup (pairing), or None when it does not."""
         return "pairing_required" if self.needs_setup else None
 
+    @property
+    def setup_flow_available(self) -> bool:
+        """Whether the flow would do anything but abort: pair, decide, or explain a dead end."""
+        if self._is_bridge_or_web_player or self.api.connection_security is None:
+            return False
+        provider = cast("SendspinProvider", self.provider)
+        # needs_setup keeps the flow reachable for a device that offers nothing at all, so
+        # the abort can explain why it cannot be used rather than leaving a bare badge.
+        return (
+            bool(self._pairing_method_options(provider))
+            or self._source_input_pending
+            or self.needs_setup
+        )
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries = await super().get_config_entries()
@@ -579,11 +592,10 @@ class SendspinBasePlayer(Player):
                     default_value=False,
                 )
             )
-        if self._source_input_pending:
-            # pairing is what enables the audio input, so the consent page carries the
-            # note and a plain allow declines the input (revisable by pairing later)
-            entries.append(ConfigEntry(key=CONF_SOURCE_INPUT_NOTE, type=ConfigEntryType.LABEL))
-        values = await session.form(entries, step_id="approve_device")
+        # The audio input is what the page has to explain differently, and a plain allow
+        # declines it (revisable by pairing later), so each case gets its own wording.
+        step_id = "approve_device_source" if self._source_input_pending else "approve_device"
+        values = await session.form(entries, step_id=step_id, last_step=True)
         if offer_pairing and bool(values.get(CONF_PAIR_DEVICE)):
             return True
         # record the input decline only once the grant actually took effect
