@@ -1010,3 +1010,53 @@ async def test_concurrent_edit_during_matching_is_preserved() -> None:
     assert len(written_items) == 2
     assert written_items[0].providers[0].domain == "qobuz"
     assert written_items[1].path == "https://example.com/new.mp3"
+
+
+async def test_concurrent_deletion_during_matching_is_reflected_in_report() -> None:
+    """A track removed from the playlist while matching runs is reported, not double-counted."""
+    prov = _make_provider()
+    to_match = _make_playlist_item(
+        path="spotify:track:original",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    initial_m3u = generate_m3u("Imported", [to_match])
+    prov_any = _prepare(prov, initial_m3u)
+    # the user removed the only entry while the (possibly long-running) matching pass was
+    # still running: the second read - taken under the lock, right before the write - no
+    # longer has it, so the resolved substitute must not be written or reported as applied
+    edited_m3u = generate_m3u("Imported", [])
+    prov_any._read_m3u_file = AsyncMock(side_effect=[initial_m3u, edited_m3u])
+
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.EXACT, ("qobuz--1",)
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Exact release | 0 |" in report_markdown
+    assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
+    assert "Substitutions" not in report_markdown

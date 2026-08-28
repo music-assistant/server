@@ -738,8 +738,6 @@ class TracksController(MediaControllerBase[Track]):
                         mapping=candidate_mapping,
                         confidence=confidence,
                     )
-                    if confidence == TrackMatchConfidence.EXACT:
-                        return TrackProviderMatchResult(match=mapped_match)
         if ProviderFeature.SEARCH not in provider.supported_features:
             return TrackProviderMatchResult(match=mapped_match)
         if MediaType.TRACK not in provider.supported_media_types:
@@ -816,23 +814,8 @@ class TracksController(MediaControllerBase[Track]):
         matches: list[TrackProviderMatch] = []
         provider_matches: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
-        failed_providers: list[str] = []
-        providers = (
-            [
-                provider
-                for provider_instance_id in sorted(provider_instance_ids)
-                if isinstance(
-                    provider := self.mass.get_provider(
-                        provider_instance_id,
-                        return_unavailable=True,
-                    ),
-                    MusicProvider,
-                )
-                and provider.instance_id == provider_instance_id
-                and provider.available
-            ]
-            if provider_instance_ids is not None
-            else self.mass.music.providers
+        providers, failed_providers = self._resolve_allowed_providers(
+            provider_instance_ids, failed_provider_instances
         )
         mapping_source = library_track or track
         for provider in providers:
@@ -1001,7 +984,7 @@ class TracksController(MediaControllerBase[Track]):
         allow_item_id_match: bool,
         mapped_match: TrackProviderMatch | None,
     ) -> list[tuple[int, TrackProviderMatch]]:
-        """Return ranked provider candidates, stopping when an exact match is found."""
+        """Return ranked provider candidates, stopping once a search page yields an exact match."""
         search_queries = list(
             dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
         )
@@ -1022,6 +1005,7 @@ class TracksController(MediaControllerBase[Track]):
                 if candidates:
                     break
                 raise
+            found_exact = False
             for search_result in search_results.tracks:
                 if not isinstance(search_result, Track):
                     continue
@@ -1076,7 +1060,12 @@ class TracksController(MediaControllerBase[Track]):
                 )
                 candidates.append((len(candidates), candidate_match))
                 if confidence == TrackMatchConfidence.EXACT:
-                    return candidates
+                    # an already-fetched page may hold another, conflicting exact
+                    # candidate, so the remaining results are still worth checking;
+                    # only further (costlier) search queries are skipped from here
+                    found_exact = True
+            if found_exact:
+                break
         return candidates
 
     async def _get_match_confidence(
@@ -1247,6 +1236,46 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             accepted.extend(tier)
         return accepted, ambiguous_providers
+
+    def _resolve_allowed_providers(
+        self,
+        provider_instance_ids: set[str] | None,
+        failed_provider_instances: set[str] | None,
+    ) -> tuple[list[MusicProvider], list[str]]:
+        """
+        Return the providers to query and any allowed instance that cannot be queried.
+
+        :param provider_instance_ids: Provider instances available to the initiating user,
+            or ``None`` to query every loaded provider.
+        :param failed_provider_instances: Provider instances to skip as already failed,
+            updated in place with any instance found unavailable here.
+        """
+        if provider_instance_ids is None:
+            return list(self.mass.music.providers), []
+        providers: list[MusicProvider] = []
+        failed_providers: list[str] = []
+        for provider_instance_id in sorted(provider_instance_ids):
+            if (
+                failed_provider_instances is not None
+                and provider_instance_id in failed_provider_instances
+            ):
+                continue
+            candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
+            if not (
+                isinstance(candidate, MusicProvider)
+                and candidate.instance_id == provider_instance_id
+            ):
+                continue
+            if not candidate.available:
+                # allowed but currently unreachable - report it so a caller building a
+                # report can retry, instead of silently treating this as "no candidates
+                # found" for the rest of the pass
+                if failed_provider_instances is not None:
+                    failed_provider_instances.add(candidate.instance_id)
+                failed_providers.append(candidate.name)
+                continue
+            providers.append(candidate)
+        return providers, failed_providers
 
     async def _add_library_item(self, item: Track, overwrite_existing: bool = False) -> int:
         """Add a new item record to the database."""

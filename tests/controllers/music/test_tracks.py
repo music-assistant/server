@@ -486,6 +486,64 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
     assert search_provider.await_count == 1
 
 
+async def test_exact_mapped_candidate_still_checked_against_search_results(
+    music: MusicController,
+) -> None:
+    """An already-exact mapped candidate does not skip the search-based comparison."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    source = create_track("spotify_1", "source")
+    source.external_ids.add(mb_track)
+    library_track = create_track("spotify_1", "library")
+    mapped_candidate = create_track("qobuz_1", "mapped")
+    mapped_candidate.external_ids.add(mb_track)
+    library_track.provider_mappings.add(next(iter(mapped_candidate.provider_mappings)))
+    likely_candidate = create_track("qobuz_1", "likely", isrc="OTHER")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+    candidates = {
+        "mapped": mapped_candidate,
+        "likely": likely_candidate,
+    }
+
+    with (
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            AsyncMock(side_effect=lambda item_id, *_args, **_kwargs: candidates[item_id]),
+        ),
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[likely_candidate])),
+        ) as search_provider,
+        patch.object(
+            music.tracks,
+            "_get_full_track_album",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+            mapping_source=library_track,
+            allowed_provider_instances={"qobuz_1"},
+        )
+
+    # the mapped candidate is already exact (shared mb_track), but search must still run
+    # so a conflicting or better candidate isn't silently missed
+    assert search_provider.await_count == 1
+    assert result.match is not None
+    assert result.match.track.item_id == "mapped"
+    assert result.match.confidence == TrackMatchConfidence.EXACT
+
+
 async def test_find_provider_match_prefers_exact_candidate(
     music: MusicController,
 ) -> None:
@@ -1442,6 +1500,37 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
     assert find_match.await_count == 1
     assert first_result.failed_providers == ("Qobuz",)
     assert second_result.failed_providers == ()
+
+
+async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(
+    music: MusicController,
+) -> None:
+    """An allowed instance that is currently unreachable is reported, not silently skipped."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.name = "Qobuz"
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.available = False
+    provider.is_streaming_provider = True
+    failed_provider_instances: set[str] = set()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", AsyncMock()) as find_match,
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"qobuz_1"},
+            failed_provider_instances=failed_provider_instances,
+        )
+
+    # never queried - the caller should still learn this instance couldn't be tried
+    find_match.assert_not_awaited()
+    assert result.failed_providers == ("Qobuz",)
+    assert failed_provider_instances == {"qobuz_1"}
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(

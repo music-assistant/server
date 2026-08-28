@@ -655,12 +655,24 @@ class BuiltinProvider(MusicProvider):
         failed_provider_instances: set[str] = set()
         total = len(parsed_items)
         counts = dict.fromkeys(
-            ("retained", "exact", "same_recording", "best_effort", "ambiguous", "unmatched"), 0
+            (
+                "retained",
+                "exact",
+                "same_recording",
+                "best_effort",
+                "ambiguous",
+                "unmatched",
+                "concurrent_edit",
+            ),
+            0,
         )
         substitutions: list[tuple[str, str, str]] = []
         # (original, replacement) pairs, applied against a freshly re-read playlist below so
         # edits made elsewhere while this (possibly long-running) pass was searching aren't lost
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
+        # confidence-count key for each pending_substitutions entry, same index - lets the
+        # report be reconciled against what _apply_import_substitutions actually wrote
+        substitution_tiers: list[str] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
         # results are cached by the entry's full content (not just its path) so a track
@@ -691,10 +703,20 @@ class BuiltinProvider(MusicProvider):
                 unmatched_items,
                 provider_issues,
                 pending_substitutions,
+                substitution_tiers,
             )
 
         if pending_substitutions:
-            await self._apply_import_substitutions(prov_playlist_id, pending_substitutions)
+            not_applied = await self._apply_import_substitutions(
+                prov_playlist_id, pending_substitutions
+            )
+            # the report is built from tallies collected before this write - reconcile any
+            # substitution the playlist no longer had an original for (a concurrent edit)
+            # so counts and detail rows only reflect what was actually applied
+            for entry_index in sorted(not_applied, reverse=True):
+                counts[substitution_tiers[entry_index]] -= 1
+                counts["concurrent_edit"] += 1
+                del substitutions[entry_index]
 
         set_current_task_report(
             _build_import_report(
@@ -857,7 +879,7 @@ class BuiltinProvider(MusicProvider):
         self,
         prov_playlist_id: str,
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
-    ) -> None:
+    ) -> set[int]:
         """
         Write resolved substitutes into the playlist's current contents.
 
@@ -867,31 +889,39 @@ class BuiltinProvider(MusicProvider):
 
         :param prov_playlist_id: The provider-side playlist ID to update.
         :param pending_substitutions: (original, replacement) pairs found during matching.
+        :return: Indices into `pending_substitutions` whose original entry was no longer in
+            the playlist (e.g. removed by a concurrent edit) and so were not applied.
         """
         async with self._get_playlist_lock(prov_playlist_id):
             current_items = parse_m3u(await self._read_m3u_file(prov_playlist_id))
-            remaining = list(pending_substitutions)
+            remaining = list(enumerate(pending_substitutions))
             updated_items: list[PlaylistItem] = []
             changed = False
             for current_item in current_items:
                 match_index = next(
-                    (i for i, (original, _) in enumerate(remaining) if original == current_item),
+                    (
+                        i
+                        for i, (_, (original, _)) in enumerate(remaining)
+                        if original == current_item
+                    ),
                     None,
                 )
                 if match_index is None:
                     updated_items.append(current_item)
                     continue
-                updated_items.append(remaining.pop(match_index)[1])
+                _, (_, replacement) = remaining.pop(match_index)
+                updated_items.append(replacement)
                 changed = True
-            if not changed:
-                return
-            playlist = await self.get_playlist(prov_playlist_id)
-            await self._write_m3u_file(
-                prov_playlist_id,
-                playlist.name,
-                updated_items,
-                self._get_playlist_image_url(playlist),
-            )
+            not_applied = {original_index for original_index, _ in remaining}
+            if changed:
+                playlist = await self.get_playlist(prov_playlist_id)
+                await self._write_m3u_file(
+                    prov_playlist_id,
+                    playlist.name,
+                    updated_items,
+                    self._get_playlist_image_url(playlist),
+                )
+            return not_applied
 
     def _tally_import_track_result(
         self,
@@ -902,6 +932,7 @@ class BuiltinProvider(MusicProvider):
         unmatched_items: list[tuple[str, str]],
         provider_issues: list[tuple[str, str]],
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+        substitution_tiers: list[str],
     ) -> None:
         """
         Record a resolved track match result into the running import report state.
@@ -913,6 +944,7 @@ class BuiltinProvider(MusicProvider):
         :param unmatched_items: Ambiguous/unmatched rows, appended in place.
         :param provider_issues: Provider-level issue rows, appended in place.
         :param pending_substitutions: Accepted (original, replacement) pairs, appended in place.
+        :param substitution_tiers: Counts key for each pending_substitutions entry, same index.
         """
         for provider_name in result.failed_providers:
             issue = f"Matching failed on {provider_name}"
@@ -947,6 +979,7 @@ class BuiltinProvider(MusicProvider):
         substitutions.append(
             (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
         )
+        substitution_tiers.append(tier)
 
     async def _resolve_import_track(
         self,
@@ -1814,6 +1847,10 @@ def _build_import_report(
         f"| Ambiguous | {counts['ambiguous']} |",
         f"| Unmatched | {counts['unmatched']} |",
     ]
+    if counts["concurrent_edit"]:
+        lines.append(
+            f"| Skipped (playlist changed during matching) | {counts['concurrent_edit']} |"
+        )
     _add_report_table(lines, "Substitutions", ("Original", "Substitute", "Match"), substitutions)
     _add_report_table(lines, "Unmatched items", ("Item", "Reason"), unmatched_items)
     _add_report_table(lines, "Provider lookup issues", ("Track", "Issue"), provider_issues)
