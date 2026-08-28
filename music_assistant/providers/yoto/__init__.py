@@ -41,7 +41,6 @@ from yoto_api import Card as YotoCard
 from yoto_api import Chapter as YotoChapter
 from yoto_api import YotoAPIError, YotoClient, YotoError
 
-from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .setup_flow import CONF_CLIENT_ID, CONF_REFRESH_TOKEN
@@ -111,7 +110,6 @@ class YotoProvider(MusicProvider):
         ):
             yield self._parse_album(card)
 
-    @use_cache(3600 * 7)
     async def get_album(self, prov_album_id: str) -> Album:
         """
         Get full album details by id.
@@ -145,16 +143,12 @@ class YotoProvider(MusicProvider):
 
         :param prov_album_id: Provider's album ID.
         """
-        await self._handle_yoto_api_call(self.client.update_card_detail(prov_album_id))
-        card = self.client.library.get(prov_album_id)
-        if not card:
-            raise MediaNotFoundError(f"Card {prov_album_id} not found")
+        card = await self._get_card(prov_album_id)
         album = self._parse_album(card)
-
-        tracks: list[Track] = []
-        for idx, chapter in enumerate(card.chapters.values()):
-            tracks.append(self._parse_track(prov_album_id, chapter, idx, album))
-        return tracks
+        return [
+            self._parse_track(prov_album_id, chapter, idx, album)
+            for idx, chapter in enumerate(card.chapters.values())
+        ]
 
     async def get_track(self, prov_track_id: str) -> Track:
         """
@@ -165,8 +159,7 @@ class YotoProvider(MusicProvider):
         if ":" not in prov_track_id:
             raise InvalidProviderID(f"Invalid track ID format: {prov_track_id}")
         card_id, _chapter_key = prov_track_id.split(":", 1)
-        album_tracks = await self.get_album_tracks(card_id)
-        for track in album_tracks:
+        for track in await self.get_album_tracks(card_id):
             if track.item_id == prov_track_id:
                 return track
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
@@ -263,10 +256,10 @@ class YotoProvider(MusicProvider):
         """Retrieve library audiobooks from the provider."""
         await self._handle_yoto_api_call(self.client.update_library())
         for card in filter(lambda card: card.category == "stories", self.client.library.values()):
+            # we update audiobooks explicitly as we need chapters preloaded
             await self._handle_yoto_api_call(self.client.update_card_detail(card.id))
-            yield self._parse_audiobook(card)
+            yield self._parse_audiobook(await self._get_card(card.id))
 
-    @use_cache(3600 * 24 * 7)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         card: YotoCard | None = None
@@ -292,7 +285,7 @@ class YotoProvider(MusicProvider):
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         card = await self._get_card(prov_podcast_id)
-        podcast = self._parse_podcast(await self._get_card(prov_podcast_id))
+        podcast = self._parse_podcast(card)
         for idx, episode in enumerate(card.chapters.values()):
             parsed_episode = self._parse_podcast_episode(prov_podcast_id, episode, idx, podcast)
             yield parsed_episode
@@ -302,11 +295,9 @@ class YotoProvider(MusicProvider):
         if ":" not in prov_episode_id:
             raise InvalidProviderID(f"Invalid episode ID format: {prov_episode_id}")
         card_id, _chapter_key = prov_episode_id.split(":", 1)
-        card = await self._get_card(card_id)
-        podcast = self._parse_podcast(card)
-        for idx, chapter in enumerate(card.chapters.values()):
-            if f"{card_id}:{chapter.key}" == prov_episode_id:
-                return self._parse_podcast_episode(card_id, chapter, idx, podcast)
+        async for episode in self.get_podcast_episodes(card_id):
+            if episode.item_id == prov_episode_id:
+                return episode
         raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
@@ -319,6 +310,8 @@ class YotoProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
+        if ":" not in prov_radio_id:
+            raise InvalidProviderID(f"Invalid track ID format: {prov_radio_id}")
         card_id, _station_id = prov_radio_id.split(":", 1)
         async for station in self._parse_radio_stations(await self._get_card(card_id)):
             if station.item_id == prov_radio_id:
@@ -327,11 +320,15 @@ class YotoProvider(MusicProvider):
 
     async def _get_card(self, card_id: str) -> YotoCard:
         """Get a Yoto card from the provider."""
+        # Sync library if empty (library sync includes card but not chapters)
         if len(self.client.library) == 0:
             await self._handle_yoto_api_call(self.client.update_library())
 
-        # if card_id in self.client.library:
-        #    return self.client.library[card_id]
+        # check that that card exists (library sync includes card) _AND_ that the chapter list is not empty(`update_card_detail` has been called on the card)
+        if card_id in self.client.library and self.client.library[card_id].chapters.values():
+            return self.client.library[card_id]
+
+        # we didn't hit a cached card
         await self._handle_yoto_api_call(self.client.update_card_detail(card_id))
         card = self.client.library.get(card_id)
         if not card:
@@ -382,7 +379,7 @@ class YotoProvider(MusicProvider):
         :param card: Yoto Card instance.
         """
         card_id = card.id
-        title = card.title or "Unknown Card"
+        title = card.title or f"Unknown Album {card_id}"
         author = card.author
 
         artists: list[Artist | ItemMapping] = []
@@ -498,7 +495,7 @@ class YotoProvider(MusicProvider):
         chapters: list[MediaItemChapter] = []
         total_duration = 0
         for idx, chapter in enumerate(card.chapters.values(), start=1):
-            track = next(iter(chapter.tracks.values()))
+            track = next(iter(chapter.tracks.values()), None)
             if track and (chapter.duration or track.duration):
                 chapter_title = chapter.title or track.title or f"Chapter {idx}"
                 chapter_duration = chapter.duration or track.duration or 0
@@ -644,7 +641,7 @@ class YotoProvider(MusicProvider):
                 yield Radio(
                     item_id=item_id,
                     provider=self.instance_id,
-                    name=stream.title or f"Station {idx}",
+                    name=stream.title or f"Station {station.key}:{idx}",
                     provider_mappings={
                         ProviderMapping(
                             item_id=item_id,
