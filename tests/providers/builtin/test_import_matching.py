@@ -572,6 +572,41 @@ async def test_exact_instance_reference_never_widens_to_sibling_instance() -> No
     assert called_instance == "spotify--1"
 
 
+async def test_extprov_naming_disallowed_instance_does_not_fall_back_to_path() -> None:
+    """An #EXTPROV entry outside the allowed snapshot must not resolve via a sibling instance."""
+    prov = _make_provider(
+        # spotify--2 is an allowed, loaded sibling that does have the item - but the
+        # entry's own #EXTPROV names spotify--1, which is not in the allowed snapshot
+        provider_entries=[("spotify", "spotify--2", True)],
+        get_provider_item=AsyncMock(return_value=MagicMock()),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        providers=[
+            ProviderMappingInfo(domain="spotify", instance_id="spotify--1", item_id="abc123"),
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    await prov.match_imported_playlist_tracks(
+        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, ("spotify--2",)
+    )
+
+    # the entry's own #EXTPROV data already names a provider reference, so a bare-path
+    # guess must never be tried against an unrelated allowed sibling instance
+    prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+
+
 async def test_duplicate_original_entries_are_resolved_only_once() -> None:
     """A track that repeats in the playlist is probed and searched only once."""
     prov = _make_provider(

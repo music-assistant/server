@@ -1105,7 +1105,12 @@ class BuiltinProvider(MusicProvider):
                 if key not in seen:
                     seen.add(key)
                     candidates.append(key)
-        if not candidates:
+        if not item.providers:
+            # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
+            # metadata at all needs this path parsed - an entry that does carry
+            # #EXTPROV references but none of them fall within the allowed snapshot
+            # must not fall back to guessing an allowed sibling instance of the same
+            # domain, since that sibling is not actually the entry's original source
             with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
                 _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
                 for instance_id in self._allowed_instances_for(
