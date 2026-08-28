@@ -66,6 +66,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
 from music_assistant.models.player import LinkedOutputProtocol, Player
@@ -2028,16 +2029,18 @@ class TestExternalPowerOffEndsTheQueue:
     @staticmethod
     def _standalone_playing_player(
         mock_mass: MagicMock,
+        player_type: PlayerType = PlayerType.PLAYER,
     ) -> tuple[PlayerController, MockPlayer, AsyncMock]:
         """
         Build an ungrouped player that is powered on and playing its own queue.
 
         :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param player_type: The type to register the player as.
         :return: The controller, the player and the stubbed queue stop.
         """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
-        player = MockPlayer(provider, "p1", "Player")
+        player = MockPlayer(provider, "p1", "Player", player_type=player_type)
         # advertise POWER so the player resolves to native power control and its
         # reported power state is the one that flips
         player._attr_supported_features.add(PlayerFeature.POWER)
@@ -2056,9 +2059,14 @@ class TestExternalPowerOffEndsTheQueue:
         mock_mass.player_queues._handle_stop = queue_stop
         return controller, player, queue_stop
 
-    def test_power_off_schedules_the_queue_stop(self, mock_mass: MagicMock) -> None:
+    # a stereo pair renders audio and owns a queue just like a single speaker does,
+    # and an MA power off ends its queue without looking at the type either
+    @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
+    def test_power_off_schedules_the_queue_stop(
+        self, mock_mass: MagicMock, player_type: PlayerType
+    ) -> None:
         """An on->off power transition on a playing player ends its queue."""
-        controller, player, _queue_stop = self._standalone_playing_player(mock_mass)
+        controller, player, _queue_stop = self._standalone_playing_player(mock_mass, player_type)
 
         controller.signal_player_state_update(player, {"powered": (True, False)})
 
@@ -2145,6 +2153,34 @@ class TestExternalPowerOffEndsTheQueue:
         controller, _player, queue_stop = self._standalone_playing_player(mock_mass)
 
         await controller._stop_queue_on_external_power_off("p1")
+
+        queue_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_power_on_that_overlaps_the_wait_keeps_its_playback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A power on running while the stop waits must not have its playback stopped.
+
+        cmd_power holds the playback lock while it powers the player on and resumes
+        the queue, and the player only reports itself powered somewhere in there.
+        """
+        controller, player, queue_stop = self._standalone_playing_player(mock_mass)
+        player._attr_powered = False
+        player.update_state(signal_event=False)
+
+        async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK):
+            stopper = asyncio.create_task(controller._stop_queue_on_external_power_off("p1"))
+            # let the stop run up to the lock it has to wait for
+            for _ in range(5):
+                await asyncio.sleep(0)
+            queue_stop.assert_not_awaited()
+            # the power on lands before it hands the lock over
+            player._attr_powered = True
+            player.update_state(signal_event=False)
+
+        await stopper
 
         queue_stop.assert_not_awaited()
 

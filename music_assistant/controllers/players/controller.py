@@ -160,8 +160,9 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # How long a player must stay powered off before the queue it was playing is ended.
 # Home Assistant reports an entity that is (briefly) unavailable or unknown as off, so an
 # external power control can report a power off that comes straight back - which must not
-# stop the music.
-EXTERNAL_POWER_OFF_STOP_DELAY = 5
+# stop the music. Long enough to sit out a reloading integration or a device missing a
+# poll, short enough that a real power off is not left streaming.
+EXTERNAL_POWER_OFF_STOP_DELAY = 15
 
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
@@ -2976,7 +2977,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """End the queue of a player whose power was turned off outside of MA."""
         if (
             changed_values.get(ATTR_POWERED) != (True, False)
-            or player.state.type != PlayerType.PLAYER
+            or player.state.type not in PLAYBACK_TARGET_TYPES
         ):
             return
         if player.state.synced_to or player.state.active_group or player.state.group_members:
@@ -3006,16 +3007,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player_id: The player whose power was turned off outside of MA.
         """
-        if not (player := self.get_player(player_id)) or player.state.powered is not False:
-            # the power came back on while we were waiting it out
-            return
-        # only the player's own queue: get_active_queue resolves to another player's
-        # queue as soon as this one is hearing someone else's audio
-        active_queue = self.get_active_queue(player)
-        if active_queue is None or active_queue.queue_id != player_id:
-            return
-        with suppress(PlayerUnavailableError):
-            await self.mass.player_queues._handle_stop(player_id)
+        # hold the playback lock across the checks: a power on that overlaps the wait
+        # holds it while it resumes the queue, and reading the power state before that
+        # completes would stop the playback it just started (the lock is re-entrant per
+        # task, so the stop below re-acquiring it is a no-op)
+        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            if not (player := self.get_player(player_id)) or player.state.powered is not False:
+                # the power came back on while we were waiting it out
+                return
+            # only the player's own queue: get_active_queue resolves to another player's
+            # queue as soon as this one is hearing someone else's audio
+            active_queue = self.get_active_queue(player)
+            if active_queue is None or active_queue.queue_id != player_id:
+                return
+            # a player gone unavailable along with its power cannot be told to stop,
+            # but the queue teardown that matters here runs regardless
+            with suppress(PlayerUnavailableError):
+                await self.mass.player_queues._handle_stop(player_id)
 
     async def _cleanup_player_memberships(self, player_id: str) -> None:
         """Ensure a player is detached from any groups or syncgroups."""
