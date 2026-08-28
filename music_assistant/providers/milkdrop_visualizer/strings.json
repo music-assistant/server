@@ -1,8 +1,8 @@
 {
   "config_entries": {
     "color_tint": {
-      "label": "Tint with track color",
-      "description": "Recolor the visualizer toward the current track's dominant artwork color."
+      "label": "Recolor with artwork colors",
+      "description": "Send the current track's color palette to the visualizer, which recolors the picture with it. Off means no artwork coloring at all, whichever recoloring option a viewer has chosen."
     },
     "show_on_dashboards": {
       "label": "Show on dashboards and cast displays",
