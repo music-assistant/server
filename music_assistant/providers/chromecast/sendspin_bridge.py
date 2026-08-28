@@ -455,8 +455,8 @@ class SendspinChromecastBridge:
         """
         Process fatal audio error on the event loop.
 
-        Switches the Sendspin output off for this device and records why, so it is not
-        offered again until the user turns it back on.
+        Removes this device's Sendspin output and records that it cannot run the client,
+        so the device is never offered Sendspin again.
         """
         self.logger.error(
             "Cast device %s does not support AudioContext — audio playback unavailable",
