@@ -1974,7 +1974,9 @@ async def test_enrich_provider_mappings_stops_after_provider_failure(
     assert failed_provider_instances == {"qobuz_1"}
     assert find_match.await_count == 1
     assert first_result.failed_providers == ("Qobuz",)
-    assert second_result.failed_providers == ()
+    # the second call skips querying (already confirmed failed) but must still report
+    # the instance as failed, or this entry would be misattributed as "no match found"
+    assert second_result.failed_providers == ("qobuz_1",)
 
 
 async def test_enrich_provider_mappings_reports_unavailable_allowed_provider(

@@ -1309,6 +1309,10 @@ class TracksController(MediaControllerBase[Track]):
                 failed_provider_instances is not None
                 and provider_instance_id in failed_provider_instances
             ):
+                # already confirmed failed for an earlier entry in this pass - report it
+                # again here too, so a caller building a report attributes every entry
+                # this instance was skipped for, not just the one that first found it down
+                failed_providers.append(provider_instance_id)
                 continue
             candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
             if not (
