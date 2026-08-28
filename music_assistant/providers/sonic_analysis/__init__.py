@@ -12,9 +12,11 @@ import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
+    join_task,
     system_meets_requirements,
     verify_system_meets_requirements,
 )
@@ -83,6 +85,10 @@ RECOMMENDED_RAM_GB: float = 6.0
 RECOMMENDED_CPU_CORES: int = 4
 
 MODEL_FAILURE_RETRY_DELAY: timedelta = timedelta(hours=24)
+
+# Bounds the wait, not the load: a slower first download keeps running and the
+# next setup attempt joins it rather than starting over.
+MODEL_SETUP_GRACE_SECONDS: int = 200
 
 
 @dataclass
@@ -336,12 +342,12 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """
-        Load the CLAP model synchronously so provider.available gates analysis until ready.
+        Async initialization of the provider.
 
-        Blocks the provider's setup until the model is loaded (first-run downloads
-        ~500MB). On failure the exception propagates and the provider stays
-        available=False, which the AudioAnalysisController already honors when
-        scheduling work. While idle the model is later unloaded and reloaded on demand.
+        Loads the CLAP model so provider.available only goes True once analysis can run.
+
+        :raises SetupFailedError: When the model is not ready within the grace period,
+            or loading it failed.
         """
         await verify_system_meets_requirements(
             feature_name="Sonic Analysis",
@@ -351,7 +357,24 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         # Configure the inference runtime before loading the model (see the controller method).
         self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
-        await self._load_models()
+        # The ~690MB first load outlives an attempt that gives up: cancelling would not stop
+        # the worker thread, and the task_id makes the next attempt join this same load.
+        task = self.mass.create_task(
+            asyncio.to_thread(self._load_clap),
+            task_id=f"sonic_analysis.model_setup.{self.instance_id}",
+        )
+        try:
+            # The result comes back through the task: a retry is a different instance.
+            models = await join_task(task, timeout=MODEL_SETUP_GRACE_SECONDS)
+        except TimeoutError:
+            raise SetupFailedError(
+                "The Sonic Analysis model is still being prepared. "
+                "It keeps running in the background; reload the provider once it has "
+                "had time to finish.",
+                translation_key="model_setup_pending",
+                translation_owner=self.translation_owner,
+            ) from None
+        self._clap_model, self._clap_text_embeddings, self._clap_prompt_order = models
         self._models_loaded = True
 
     async def cancel(self, session_id: str) -> None:
@@ -408,10 +431,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self._clap_text_embeddings,
             self._clap_prompt_order,
         ) = await asyncio.to_thread(self._load_clap)
-        self.logger.info(
-            "CLAP model loaded; %d prompt pairs ready",
-            len(self._clap_prompt_order),
-        )
 
     def _free_models(self) -> None:
         """Release the CLAP model and prompt embeddings."""
@@ -421,7 +440,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
-        """Load and return the CLAP model, text embeddings, and prompt ordering."""
+        """
+        Load and return the CLAP model, text embeddings, and prompt ordering.
+
+        Downloads the checkpoint on first use, so only call this off the event loop.
+
+        :raises SetupFailedError: When the checkpoint could not be downloaded.
+        :raises UnsupportedSystemError: When the shipped prompt embeddings are unusable.
+        """
+        # httpx arrives with huggingface-hub; named only for the errors it re-raises below.
+        import httpx  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
         from .vendored_clap import CLAP  # noqa: PLC0415
@@ -429,16 +457,26 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
 
         cached = self._try_load_cached_prompt_embeddings()
-        if cached is not None:
+        if cached is None:
+            # Falling back to a text-enabled model here would download the GPT2 encoder.
+            raise UnsupportedSystemError(
+                "The precomputed CLAP prompt embeddings are missing or out of date. "
+                "Re-run scripts/precompute_clap_prompt_embeddings.py to regenerate them.",
+                translation_key="prompt_embeddings_unavailable",
+                translation_owner=self.translation_owner,
+            )
+        try:
             model = CLAP(version="2023", use_cuda=False, text_enabled=False)
-            return model, torch.from_numpy(cached), prompt_order
-
-        model = CLAP(version="2023", use_cuda=False, text_enabled=True)
-        flat_prompts: list[str] = []
-        for _scalar, (pos, neg) in prompt_order:
-            flat_prompts.extend([pos, neg])
-        text_embeddings = model.get_text_embeddings(flat_prompts)  # type: ignore[no-untyped-call]
-        return model, text_embeddings, prompt_order
+        except (OSError, httpx.HTTPError) as err:
+            # The hub reports most failures as OSError, but re-raises httpx transport errors
+            # verbatim once its resume attempts are spent; only typed errors get retried.
+            raise SetupFailedError(
+                f"Failed to download the Sonic Analysis model: {err}",
+                translation_key="model_assets_download_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+        self.logger.info("CLAP model loaded; %d prompt pairs ready", len(prompt_order))
+        return model, torch.from_numpy(cached), prompt_order
 
     def _try_load_cached_prompt_embeddings(self) -> np.ndarray | None:
         """Return shipped prompt embeddings if present and hash-current, else None."""
@@ -448,7 +486,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
         except FileNotFoundError:
             self.logger.warning(
-                "Precomputed CLAP prompt embeddings missing at %s; loading full text encoder",
+                "Precomputed CLAP prompt embeddings missing at %s; "
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 PRECOMPUTED_EMBEDDINGS_PATH,
             )
             return None
@@ -456,7 +495,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if cached_hash != expected_hash:
             self.logger.warning(
                 "Precomputed CLAP prompt embeddings hash mismatch (%s != %s); "
-                "loading full text encoder. Re-run scripts/precompute_clap_prompt_embeddings.py.",
+                "re-run scripts/precompute_clap_prompt_embeddings.py",
                 cached_hash[:12],
                 expected_hash[:12],
             )
