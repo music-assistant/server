@@ -93,7 +93,6 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
     CONF_ACTION_REVOKE_UNPAIRED,
     CONF_ACTION_UNPAIR,
-    CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_PAIR_DEVICE,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
@@ -1647,17 +1646,6 @@ class SendspinPlayer(SendspinBasePlayer):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
-        # Show alert if this Cast device is known to lack AudioContext support
-        if self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
-        ):
-            entries.append(
-                ConfigEntry(
-                    key="cast_audio_unsupported",
-                    type=ConfigEntryType.ALERT,
-                    required=False,
-                )
-            )
         entries.extend(await super().get_config_entries())
         # Build dynamic format options from player's supported formats
         player_role = self._player_role

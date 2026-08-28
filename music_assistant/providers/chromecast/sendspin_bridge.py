@@ -461,11 +461,9 @@ class SendspinChromecastBridge:
             "Cast device %s does not support AudioContext — audio playback unavailable",
             self.cast_player.display_name,
         )
-        self.mass.config.set_raw_player_config_value(
-            self._bridge_client_id, CONF_CAST_AUDIO_UNSUPPORTED, True
-        )
-        # the key doubles as the translation key of the warning shown on the (now
-        # switched off) output, replacing the generic "this is experimental" one
+        # the key doubles as the translation key of the warning shown on the output, and
+        # replaces the generic "this is experimental" one for good: a device that reported
+        # this keeps saying so, even after the user switches it back on
         self.mass.config.set_raw_player_config_value(
             self._bridge_client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, CONF_CAST_AUDIO_UNSUPPORTED
         )
@@ -730,9 +728,8 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         await super().evaluate_bridge(player)
         if not client_id or not self._has_bridge(player.player_id):
             return
-        note_missing = (
-            self.mass.config.get_raw_player_config_value(client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE)
-            != SENDSPIN_CAST_EXPERIMENTAL_NOTE
+        note_missing = not self.mass.config.get_raw_player_config_value(
+            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE
         )
         if never_offered or note_missing:
             self.mass.create_task(
@@ -1090,17 +1087,17 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         if not self._has_bridge(player_id):
             # the bridge went away while we waited - its config may be gone with it
             return
+        if disable:
+            self.logger.info(
+                "Sendspin over Cast is experimental: leaving it switched off for %s "
+                "until it is enabled in the player settings",
+                client_id,
+            )
+            await self.mass.config.save_player_config(client_id, {CONF_ENABLED: False})
+        # written last: a missing note is what makes the next evaluation retry all of this
         self.mass.config.set_raw_player_config_value(
-            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, SENDSPIN_CAST_EXPERIMENTAL_NOTE
+            client_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE, self._experimental_note(client_id)
         )
-        if not disable:
-            return
-        self.logger.info(
-            "Sendspin over Cast is experimental: leaving it switched off for %s "
-            "until it is enabled in the player settings",
-            client_id,
-        )
-        await self.mass.config.save_player_config(client_id, {CONF_ENABLED: False})
 
     async def _wait_for_protocol_link(self, client_id: str) -> bool:
         """
@@ -1116,5 +1113,20 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             if parent_id and self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"):
                 return True
             await asyncio.sleep(SENDSPIN_LINK_WAIT_INTERVAL)
-        self.logger.debug("Sendspin bridge %s was not linked to a parent player", client_id)
+        self.logger.warning(
+            "Sendspin bridge %s was not linked to a parent player in time; "
+            "its output stays switched on for now",
+            client_id,
+        )
         return False
+
+    def _experimental_note(self, client_id: str) -> str:
+        """
+        Return the warning to show on a Cast device's Sendspin output.
+
+        :param client_id: The Sendspin client_id of the bridge.
+        """
+        if self.mass.config.get_raw_player_config_value(client_id, CONF_CAST_AUDIO_UNSUPPORTED):
+            # recorded by an older release, before the note carried the reason itself
+            return CONF_CAST_AUDIO_UNSUPPORTED
+        return SENDSPIN_CAST_EXPERIMENTAL_NOTE

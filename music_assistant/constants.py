@@ -171,7 +171,8 @@ CONF_UNDERLYING_PLAYER_ID: Final[str] = (
     "underlying_player_id"  # player this (bridge) protocol player is derived from
 )
 # Translation key of the warning a provider stores on a protocol player it considers
-# experimental. Its presence also makes the output default to disabled.
+# experimental. Its presence also makes the output's enable entry default to disabled;
+# a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)

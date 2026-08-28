@@ -1,6 +1,8 @@
 """Tests for the shared Sendspin bridge manager lifecycle reconciliation."""
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +15,7 @@ from music_assistant.providers.chromecast.constants import SENDSPIN_CAST_EXPERIM
 from music_assistant.providers.chromecast.sendspin_bridge import (
     SendspinBridgeManager as CastSendspinBridgeManager,
 )
+from music_assistant.providers.sendspin import constants as sendspin_constants
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.constants import CONF_CAST_AUDIO_UNSUPPORTED
 
@@ -206,6 +209,23 @@ class TestBridgeLifecycleReconciliation:
 
         mass.config.save_player_config.assert_awaited_once_with("spb_player_1", {"enabled": True})
         assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_experimental_opt_out_is_never_healed(self) -> None:
+        """Test an opt-out of an experimental output survives losing its parent link."""
+        manager, mass, player, _, player_configs = _make_environment()
+        # a parent that goes away permanently clears the link, which normally reads as
+        # an orphaned cascade-disable - but for an experimental output the disable is
+        # the user declining to opt in
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {CONF_PROTOCOL_EXPERIMENTAL_NOTE: "sendspin_cast_experimental"},
+        }
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_not_awaited()
+        assert manager.get_bridge("player_1") is None
 
     @pytest.mark.asyncio
     async def test_stale_disabled_client_without_parent_link_reenabled(self) -> None:
@@ -425,16 +445,18 @@ class TestCastBridgeOptIn:
 
     @staticmethod
     def _make_environment() -> tuple[
-        CastSendspinBridgeManager, MagicMock, MagicMock, dict[str, Any], list[Any]
+        CastSendspinBridgeManager, MagicMock, MagicMock, dict[str, Any], list[Any], list[str]
     ]:
         """
         Build a cast bridge manager with dict-backed player configs.
 
-        :return: Tuple of (manager, mass, cast_player, player_configs, scheduled tasks).
+        :return: Tuple of (manager, mass, cast_player, player_configs, scheduled, write_order).
         """
         manager, mass, cast_player = TestCastBridgePolicy._make_cast_environment()
         player_configs: dict[str, Any] = {}
         scheduled: list[Any] = []
+        # both config writes land in one log, so a test can assert their relative order
+        write_order: list[str] = []
 
         def get_raw(player_id: str, key: str, default: Any = None) -> Any:
             values = (player_configs.get(f"players/{player_id}") or {}).get("values", {})
@@ -443,9 +465,12 @@ class TestCastBridgeOptIn:
         def set_raw(player_id: str, key: str, value: Any) -> None:
             conf = player_configs.setdefault(f"players/{player_id}", {})
             conf.setdefault("values", {})[key] = value
+            if key == CONF_PROTOCOL_EXPERIMENTAL_NOTE:
+                write_order.append("note")
 
         async def save(player_id: str, values: dict[str, Any]) -> None:
             player_configs.setdefault(f"players/{player_id}", {}).update(values)
+            write_order.append("save")
 
         mass.config.get = MagicMock(
             side_effect=lambda key, default=None: player_configs.get(key, default)
@@ -456,12 +481,12 @@ class TestCastBridgeOptIn:
         mass.create_task = MagicMock(
             side_effect=lambda target, *_a, **_kw: scheduled.append(target)
         )
-        return manager, mass, cast_player, player_configs, scheduled
+        return manager, mass, cast_player, player_configs, scheduled, write_order
 
     @pytest.mark.asyncio
     async def test_new_device_is_flagged_and_left_switched_off(self) -> None:
         """Test a device that never had the bridge keeps it off for the user to opt in."""
-        manager, _, cast_player, player_configs, scheduled = self._make_environment()
+        manager, _, cast_player, player_configs, scheduled, order = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
 
@@ -484,11 +509,13 @@ class TestCastBridgeOptIn:
             player_configs[f"players/{client_id}"]["values"][CONF_PROTOCOL_EXPERIMENTAL_NOTE]
             == SENDSPIN_CAST_EXPERIMENTAL_NOTE
         )
+        # the note is what stops the next evaluation from retrying, so it must come last
+        assert order == ["save", "note"]
 
     @pytest.mark.asyncio
     async def test_device_that_already_had_the_bridge_keeps_it_on(self) -> None:
         """Test an existing setup is flagged as experimental but not switched off."""
-        manager, mass, cast_player, player_configs, scheduled = self._make_environment()
+        manager, mass, cast_player, player_configs, scheduled, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         player_configs[f"players/{client_id}"] = {
@@ -511,7 +538,7 @@ class TestCastBridgeOptIn:
     @pytest.mark.asyncio
     async def test_already_flagged_device_is_left_alone(self) -> None:
         """Test a device that carries the warning already does no further work."""
-        manager, _, cast_player, player_configs, scheduled = self._make_environment()
+        manager, mass, cast_player, player_configs, scheduled, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         player_configs[f"players/{client_id}"] = {
@@ -527,11 +554,41 @@ class TestCastBridgeOptIn:
             await manager.evaluate_bridge(cast_player)
 
         assert not scheduled
+        mass.config.set_raw_player_config_value.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_known_failure_survives_being_switched_back_on(self) -> None:
+        """Test re-enabling a device that cannot run the receiver keeps saying so."""
+        manager, _, cast_player, player_configs, _, _ = self._make_environment()
+        client_id = manager._bridge_client_id(cast_player)
+        assert client_id is not None
+        player_configs[f"players/{client_id}"] = {
+            "enabled": True,
+            "values": {
+                "protocol_parent_id": "parent_1",
+                CONF_CAST_AUDIO_UNSUPPORTED: True,
+            },
+        }
+        player_configs["players/parent_1"] = {"enabled": True}
+        manager._bridges[cast_player.player_id] = MagicMock()
+
+        await manager._flag_bridge_experimental(cast_player.player_id, client_id, disable=False)
+
+        values = player_configs[f"players/{client_id}"]["values"]
+        assert values[CONF_PROTOCOL_EXPERIMENTAL_NOTE] == CONF_CAST_AUDIO_UNSUPPORTED
+        # both notes are rendered as alerts, so guard the authored strings against drift
+        strings = json.loads(
+            (Path(sendspin_constants.__file__).resolve().parent / "strings.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert CONF_CAST_AUDIO_UNSUPPORTED in strings["config_entries"]
+        assert SENDSPIN_CAST_EXPERIMENTAL_NOTE in strings["config_entries"]
 
     @pytest.mark.asyncio
     async def test_bridge_without_a_persisted_link_is_not_switched_off(self) -> None:
         """Test the bridge stays as-is while there is no toggle to opt back in with."""
-        manager, mass, cast_player, player_configs, _ = self._make_environment()
+        manager, mass, cast_player, player_configs, _, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         player_configs[f"players/{client_id}"] = {"enabled": True}
@@ -550,9 +607,9 @@ class TestCastBridgeOptIn:
         mass.config.save_player_config.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_bridge_removed_while_waiting_is_not_written_to(self) -> None:
-        """Test a bridge that went away during the wait is not switched off afterwards."""
-        manager, mass, cast_player, player_configs, _ = self._make_environment()
+    async def test_bridge_gone_after_the_wait_is_not_written_to(self) -> None:
+        """Test a bridge that went away is not switched off, since its config may be gone."""
+        manager, mass, cast_player, player_configs, _, _ = self._make_environment()
         client_id = manager._bridge_client_id(cast_player)
         assert client_id is not None
         player_configs[f"players/{client_id}"] = {
@@ -575,9 +632,13 @@ class TestCastFatalAudioError:
         """Test the output is turned off and says why, instead of failing again next time."""
         raw_values: dict[tuple[str, str], Any] = {}
         saved: dict[str, Any] = {}
+        # the resolve and the save share one log: the save tears the bridge down, which
+        # cancels the future the play command waits on, so it has to come second
+        order: list[str] = []
 
         async def save(player_id: str, values: dict[str, Any]) -> None:
             saved[player_id] = values
+            order.append("save")
 
         mass = MagicMock()
         mass.config.set_raw_player_config_value = MagicMock(
@@ -594,16 +655,20 @@ class TestCastFatalAudioError:
         bridge.cast_player = MagicMock()
         bridge.cast_player.display_name = "Cast Speaker"
         resolved: list[BaseException | None] = []
-        bridge._resolve_cast_app_ready = MagicMock(side_effect=resolved.append)
+
+        def resolve(error: BaseException | None) -> None:
+            resolved.append(error)
+            order.append("resolve")
+
+        bridge._resolve_cast_app_ready = MagicMock(side_effect=resolve)
 
         await bridge_module.SendspinChromecastBridge._handle_fatal_audio_error(bridge)
 
-        assert raw_values[("spb_aabbccddeeff", CONF_CAST_AUDIO_UNSUPPORTED)] is True
-        # the same key doubles as the translation key of the warning on the disabled output
+        # the key doubles as the translation key of the warning on the disabled output
         assert (
             raw_values[("spb_aabbccddeeff", CONF_PROTOCOL_EXPERIMENTAL_NOTE)]
             == CONF_CAST_AUDIO_UNSUPPORTED
         )
         assert saved == {"spb_aabbccddeeff": {"enabled": False}}
-        # the waiting play command has to hear about it before the bridge is torn down
         assert isinstance(resolved[0], PlayerCommandFailed)
+        assert order == ["resolve", "save"]
