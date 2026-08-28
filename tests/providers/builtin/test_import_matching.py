@@ -244,8 +244,8 @@ async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     assert args[3] == "https://img.example.com/cover.jpg"
 
 
-class _FakeHeadResponse:
-    """Stand-in for an aiohttp HEAD response carrying a fixed status code."""
+class _FakeHttpResponse:
+    """Stand-in for an aiohttp HEAD/GET response carrying a fixed status code."""
 
     def __init__(self, status: int) -> None:
         self.status = status
@@ -324,6 +324,8 @@ async def test_share_url_without_extprov_is_persisted_as_provider_mapping() -> N
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
 
+
+async def test_transient_stream_failure_retains_original_without_confirmation() -> None:
     """A network blip during the ffprobe check must not substitute a live stream."""
     prov = _make_provider(
         loaded_provider_domains={"builtin"},
@@ -333,7 +335,7 @@ async def test_share_url_without_extprov_is_persisted_as_provider_mapping() -> N
     prov_any = _prepare(prov, generate_m3u("Imported", [item]))
     # a 500 response does not prove the stream is gone - ffprobe wraps both a
     # transient server error and a genuinely dead stream in the same error
-    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHeadResponse(500))
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHttpResponse(500))
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
@@ -347,7 +349,7 @@ async def test_share_url_without_extprov_is_persisted_as_provider_mapping() -> N
 
 
 async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
-    """A confirmed terminal HTTP status proves the stream is actually gone."""
+    """A HEAD and corroborating GET both reporting terminal status prove the stream is gone."""
     prov = _make_provider(
         loaded_provider_domains={"builtin"},
         get_provider_item=AsyncMock(side_effect=InvalidDataError("ffprobe failed")),
@@ -356,7 +358,8 @@ async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
         path="https://example.com/stream.mp3", title="Artist - Live Stream", length=None
     )
     prov_any = _prepare(prov, generate_m3u("Imported", [item]))
-    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHeadResponse(404))
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHttpResponse(404))
+    prov_any.mass.http_session.get = MagicMock(return_value=_FakeHttpResponse(404))
     enrichment = TrackProviderEnrichment(
         track=cast("Any", MagicMock()),
         matches=(),
@@ -374,6 +377,29 @@ async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" not in report_markdown
+
+
+async def test_head_404_alone_does_not_confirm_a_stream_is_gone() -> None:
+    """A server that rejects HEAD but still serves GET must not have its stream substituted."""
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        get_provider_item=AsyncMock(side_effect=InvalidDataError("ffprobe failed")),
+    )
+    item = PlaylistItem(path="https://example.com/stream.mp3", title="Live Stream", length=None)
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    # some servers reply 404 to HEAD for endpoints they do serve correctly on GET
+    prov_any.mass.http_session.head = MagicMock(return_value=_FakeHttpResponse(404))
+    prov_any.mass.http_session.get = MagicMock(return_value=_FakeHttpResponse(200))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "builtin", "qobuz--1")
+        )
+
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
 
 
 async def test_catalog_item_api_error_retains_original_without_confirmation() -> None:
@@ -543,9 +569,14 @@ async def test_available_provider_with_dead_item_id_is_matched() -> None:
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
         await prov.match_imported_playlist_tracks(
-            "playlist_1", PlaylistMatchPolicy.SAME_RECORDING, _allowed(prov, "qobuz--1")
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "spotify--1", "qobuz--1"),
         )
 
+    # the configured source must actually be probed authoritatively - it must not be
+    # skipped as if it were simply out of scope
+    prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
     prov_any._write_m3u_file.assert_awaited_once()
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 0 |" in report_markdown

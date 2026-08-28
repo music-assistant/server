@@ -1255,14 +1255,29 @@ class BuiltinProvider(MusicProvider):
         ffprobe reports a transient failure (a DNS hiccup, a timeout, a 5xx
         response) with the same error as a genuinely deleted stream, so only a
         terminal HTTP status confirms deletion. A scheme this cannot check (e.g.
-        ``rtsp://``/``rtmp://``) is never treated as confirmed gone.
+        ``rtsp://``/``rtmp://``) is never treated as confirmed gone. A HEAD
+        404/410 is corroborated with a minimal ranged GET before being treated
+        as terminal, since some servers reject HEAD requests they would still
+        serve on GET.
         """
         if not url.startswith(("http://", "https://")):
             return False
+        encoded_url = encoded_request_url(url)
+        head_status: int | None = None
         with suppress(ClientError, TimeoutError):
             async with self.mass.http_session.head(
-                encoded_request_url(url),
+                encoded_url,
                 allow_redirects=True,
+                timeout=ClientTimeout(total=10),
+            ) as resp:
+                head_status = resp.status
+        if head_status not in (404, 410):
+            return False
+        with suppress(ClientError, TimeoutError):
+            async with self.mass.http_session.get(
+                encoded_url,
+                allow_redirects=True,
+                headers={"Range": "bytes=0-0"},
                 timeout=ClientTimeout(total=10),
             ) as resp:
                 return resp.status in (404, 410)
