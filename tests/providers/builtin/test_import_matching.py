@@ -1919,6 +1919,102 @@ async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten
     assert "Substitutions" not in report_markdown
 
 
+async def test_match_discards_substitution_when_recreated_between_read_and_capture() -> None:
+    """
+    A recreate landing between the M3U read and generation capture is still caught.
+
+    The initial read and the generation capture happen under the same per-playlist lock
+    that ``library_remove`` takes before unlinking a playlist's file, so a concurrent
+    recreate can only complete *after* that pair has been captured together - closing the
+    narrower race where old content could otherwise be paired with a fresh generation and
+    incorrectly accepted by the write-back check.
+    """
+    prov = _make_provider()
+    prov_playlist_id = "playlist_1"
+    to_match = _make_playlist_item(
+        path="spotify:track:original",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    m3u_data = generate_m3u("Imported", [to_match])
+    prov_any = _prepare(prov, m3u_data, playlist_name="Imported")
+
+    generation = 1
+    content_read = asyncio.Event()
+    recreated = asyncio.Event()
+    generation_calls = 0
+
+    async def read_m3u(_playlist_id: str) -> str:
+        content_read.set()
+        # yield control so the concurrent recreate below gets a chance to attempt the
+        # per-playlist lock before this pass's own generation capture happens
+        await asyncio.sleep(0)
+        return m3u_data
+
+    async def get_generation(_playlist_id: str) -> int:
+        nonlocal generation_calls
+        generation_calls += 1
+        if generation_calls == 2:
+            # this is the write-back's final check - wait for the concurrent recreate
+            # to actually finish so this reads its bumped value deterministically,
+            # rather than depending on incidental task-scheduling order
+            await recreated.wait()
+        return generation
+
+    async def race_recreate() -> None:
+        nonlocal generation
+        await content_read.wait()
+        # mirrors library_remove, which takes this same per-playlist lock before
+        # unlinking the file - it can only proceed once the read+capture pair below
+        # releases the lock
+        async with prov._get_playlist_lock(prov_playlist_id):
+            generation += 1
+        recreated.set()
+
+    prov_any._read_m3u_file = AsyncMock(side_effect=read_m3u)
+    prov_any._get_playlist_generation = AsyncMock(side_effect=get_generation)
+
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    race_task = asyncio.ensure_future(race_recreate())
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            prov_playlist_id, PlaylistMatchPolicy.EXACT, _allowed(prov, "qobuz--1")
+        )
+    await race_task
+
+    # the recreate genuinely raced in and completed - this isn't passing by mere
+    # absence of contention
+    assert recreated.is_set()
+    assert generation == 2
+    # the substitution was matched against the pre-recreate content, so it must be
+    # discarded rather than written into the recreated playlist
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
+    assert "Substitutions" not in report_markdown
+
+
 async def test_create_playlist_generation_survives_inode_reuse(tmp_path: Path) -> None:
     """
     A recreate under the same ID gets a new generation, even with the same inode.

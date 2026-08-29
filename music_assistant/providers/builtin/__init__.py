@@ -667,16 +667,23 @@ class BuiltinProvider(MusicProvider):
         :param search_provider_instances: Provider instances to search for a substitute.
             Defaults to ``allowed_provider_instances`` when not narrowed by the caller.
         """
-        m3u_data = await self._read_m3u_file(prov_playlist_id)
-        parsed_items = parse_m3u(m3u_data)
-        if not parsed_items:
-            return
-        playlist = await self.get_playlist(prov_playlist_id)
-        # this pass can run for a while; if the playlist is deleted and a new one is
-        # created that reuses the same sanitized ID before it finishes, this generation
-        # lets the later write-back tell the two apart instead of writing stale matches
-        # into an unrelated playlist that merely happens to share its ID
-        original_generation = await self._get_playlist_generation(prov_playlist_id)
+        # the initial content read and generation capture must happen atomically under
+        # the per-playlist lock: library_remove takes this same lock before unlinking
+        # the file, so holding it here prevents a delete-and-recreate from landing in
+        # between - which would otherwise pair this pass's old (pre-delete) content
+        # with the *new* playlist's generation, defeating the write-back check below
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            parsed_items = parse_m3u(m3u_data)
+            if not parsed_items:
+                return
+            playlist = await self.get_playlist(prov_playlist_id)
+            # this pass can run for a while; if the playlist is deleted and a new one
+            # is created that reuses the same sanitized ID before it finishes, this
+            # generation lets the later write-back tell the two apart instead of
+            # writing stale matches into an unrelated playlist that merely happens to
+            # share its ID
+            original_generation = await self._get_playlist_generation(prov_playlist_id)
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
         allowed_provider_instance_map = dict(allowed_provider_instances)
