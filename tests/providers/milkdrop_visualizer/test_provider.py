@@ -41,7 +41,7 @@ def _session(dashboard_id: str) -> Mock:
 
 
 async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
-    """A stale instance must not take the live one's commands on its way out."""
+    """A stale instance must not take the live one's route or commands on its way out."""
     provider, _logger, _config_value = _provider()
     mocked = cast("Any", provider)
     mocked.unloading = True
@@ -50,6 +50,8 @@ async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
 
     await provider.loaded_in_mass()
 
+    # the relay route unregisters by name too, and this instance is past its own close()
+    mocked._relay.setup.assert_not_called()
     mocked.mass.register_api_command.assert_not_called()
     assert provider._unregister_handles == []
 
@@ -64,6 +66,7 @@ async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
 
     await provider.loaded_in_mass()
 
+    mocked._relay.setup.assert_called_once_with()
     registered = [call.args[0] for call in mocked.mass.register_api_command.call_args_list]
     assert registered == [CONFIG_COMMAND, CAPABILITY_COMMAND]
     assert len(provider._unregister_handles) == 2

@@ -154,12 +154,12 @@ class ChromecastDashboards:
             release_on_the_wire = castplayer.app_quit_sent
         # also launch fresh when we track no active cast on the device: an "already
         # running" receiver may be backgrounded (Android TV's launcher hides it) and
-        # only a real launch brings it back to the foreground. never force past a live
-        # media session though: relaunching tears the playback down with it, and a
-        # device that is playing is showing the receiver anyway
-        holds_media = castplayer is not None and castplayer.playback_state != PlaybackState.IDLE
+        # only a real launch brings it back to the foreground. never force past playback
+        # though: relaunching tears it down, and a playing device is showing the receiver
+        # anyway. a paused one may well be backgrounded, so it is worth the relaunch
+        is_playing = castplayer is not None and castplayer.playback_state == PlaybackState.PLAYING
         force_launch = release_on_the_wire or (
-            device_id not in self._active_casts and not holds_media
+            device_id not in self._active_casts and not is_playing
         )
         url = await self.mass.dashboard.resolve_dashboard_url(
             dashboard, player_id, dashboard_id=f"chromecast_{device_id}"

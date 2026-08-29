@@ -65,12 +65,12 @@ class MilkdropVisualizerProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register the relay route once fully loaded."""
         await super().loaded_in_mass()
-        self._relay.setup()
         # loaded_in_mass runs as a background task, so a reload can still run this for an
-        # instance that is already on its way out; it would take the live one's commands
-        # and then tear them down with itself, as unregistering is by command name.
+        # instance that is already on its way out; it would take the live one's route and
+        # commands and then tear them down with itself, as both unregister by name.
         if self.unloading:
             return
+        self._relay.setup()
         # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these
         for command, handler in (
             (CONFIG_COMMAND, self.get_visualizer_config),

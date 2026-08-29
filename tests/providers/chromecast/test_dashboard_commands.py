@@ -175,11 +175,21 @@ async def test_on_show_swaps_without_relaunch_on_an_active_dashboard() -> None:
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
 
 
-@pytest.mark.parametrize("playback_state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
-async def test_on_show_never_relaunches_a_device_holding_a_media_session(
-    playback_state: PlaybackState,
+@pytest.mark.parametrize(
+    ("playback_state", "expected_force_launch"),
+    [
+        # a playing device is showing the receiver already, and a relaunch would tear
+        # its own playback down
+        (PlaybackState.PLAYING, False),
+        # a paused device may just as well be backgrounded, and nothing else brings the
+        # receiver back to the foreground
+        (PlaybackState.PAUSED, True),
+    ],
+)
+async def test_on_show_relaunch_depends_on_what_the_device_is_playing(
+    playback_state: PlaybackState, expected_force_launch: bool
 ) -> None:
-    """Forcing a launch on a device playing through MA would tear its own playback down."""
+    """Only live playback is worth keeping a backgrounded receiver backgrounded for."""
     dashboards = _make_dashboards()
     device_uuid = uuid4()
     connected_chromecast = MagicMock()
@@ -197,7 +207,9 @@ async def test_on_show_never_relaunches_a_device_holding_a_media_session(
     ) as mock_send_show_dashboard:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
-    mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
+    mock_send_show_dashboard.assert_called_once_with(
+        connected_chromecast, url, force_launch=expected_force_launch
+    )
 
 
 async def test_on_show_keeps_the_player_from_releasing_the_device() -> None:

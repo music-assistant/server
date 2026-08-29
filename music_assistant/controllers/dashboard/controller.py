@@ -136,8 +136,8 @@ class DashboardController(CoreController):
             raise InvalidCommand(msg)
 
         del self._dashboards[dashboard_id]
-        self._signal_dashboards_updated()
         self._session_owners.pop(dashboard_id, None)
+        self._signal_dashboards_updated()
         if self._sessions.pop(dashboard_id, None) is not None:
             self._signal_sessions_updated()
 
@@ -314,8 +314,8 @@ class DashboardController(CoreController):
 
         def unregister() -> None:
             self._dashboards.pop(dashboard_id, None)
-            self._signal_dashboards_updated()
             self._session_owners.pop(dashboard_id, None)
+            self._signal_dashboards_updated()
             if self._sessions.pop(dashboard_id, None) is not None:
                 self._signal_sessions_updated()
 
