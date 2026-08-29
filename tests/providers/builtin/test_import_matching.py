@@ -6,7 +6,7 @@ import asyncio
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import ExternalID, ImageType, MediaType
+from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -19,7 +19,6 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.controllers.music.media.playlists import PlaylistMatchPolicy
 from music_assistant.controllers.music.media.tracks import (
     TrackProviderEnrichment,
     TrackProviderMatch,

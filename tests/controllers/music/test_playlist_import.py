@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from music_assistant_models.enums import PlaylistMatchPolicy
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
-from music_assistant.controllers.music.media.playlists import (
-    PlaylistController,
-    PlaylistMatchPolicy,
-)
+from music_assistant.controllers.music.media.playlists import PlaylistController
 
 
 def _make_controller() -> PlaylistController:

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaylistMatchPolicy,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderURI,
@@ -66,27 +70,13 @@ def _update_stage_progress(
     update_current_task_progress(min(progress, end), text)
 
 
-class PlaylistMatchPolicy(StrEnum):
-    """
-    Allowed fallback depth when matching a playlist track on another provider.
-
-    Shared between playlist import and (future) playlist migration: both only fall back to a
-    provider search once a track's own reference (its original URI, or its library mapping)
-    is no longer available.
-
-    EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
-    specific release, not just the underlying recording. M3U playlists exported by a current
-    Music Assistant persist this evidence when the source track carries it, so imports of
-    those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
-    or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
-    """
-
-    EXACT = "exact"
-    SAME_RECORDING = "same_recording"
-    BEST_EFFORT = "best_effort"
-
-
-# minimum TrackMatchConfidence accepted for each policy tier
+# minimum TrackMatchConfidence accepted for each policy tier.
+#
+# EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
+# specific release, not just the underlying recording. M3U playlists exported by a current
+# Music Assistant persist this evidence when the source track carries it, so imports of
+# those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
+# or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
 _MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConfidence]] = {
     PlaylistMatchPolicy.EXACT: TrackMatchConfidence.EXACT,
     PlaylistMatchPolicy.SAME_RECORDING: TrackMatchConfidence.LIKELY,

@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    PlaylistMatchPolicy,
     ProviderFeature,
     StreamType,
 )
@@ -58,7 +59,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.media.playlists import (
-    PlaylistMatchPolicy,
     match_policy_minimum_confidence,
 )
 from music_assistant.controllers.tasks.context import (
