@@ -45,6 +45,58 @@ def is_remotely_accessible_artwork_url(url: str) -> bool:
     return BLOBSTORE_DOMAIN not in hostname
 
 
+def format_artwork_url(attributes: dict[str, Any]) -> str | None:
+    """
+    Return the artwork URL from a raw api item object's (resolved) attributes, if any.
+
+    :param attributes: The attributes dict of the raw api item object.
+    """
+    if not (artwork := attributes.get("artwork")):
+        return None
+    if not (url := artwork.get("url")):
+        return None
+    if artwork.get("width") and artwork.get("height"):
+        url = url.format(
+            w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
+            h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
+        )
+    return cast("str", url)
+
+
+def parse_artwork_image(
+    provider: AppleMusicProvider,
+    media_type: MediaType,
+    item_id: str,
+    attributes: dict[str, Any],
+) -> MediaItemImage | None:
+    """
+    Parse the artwork of a raw api item object into a MediaItemImage, if any.
+
+    :param provider: The Apple Music provider instance.
+    :param media_type: The media type of the item the artwork belongs to.
+    :param item_id: The provider item id of the item the artwork belongs to.
+    :param attributes: The (resolved) attributes dict of the raw api item object.
+    """
+    if (url := format_artwork_url(attributes)) is None:
+        return None
+    if is_remotely_accessible_artwork_url(url):
+        return MediaItemImage(
+            provider=provider.instance_id,
+            type=ImageType.THUMB,
+            path=url,
+            remotely_accessible=True,
+        )
+    # blobstore artwork URLs are presigned with a ~24h expiry and must never be
+    # persisted: store a stable token instead, which is resolved to a freshly
+    # signed URL on demand (see AppleMusicProvider.resolve_image)
+    return MediaItemImage(
+        provider=provider.instance_id,
+        type=ImageType.THUMB,
+        path=f"{media_type.value}/{item_id}",
+        remotely_accessible=False,
+    )
+
+
 def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Artist | ItemMapping:
     """Parse artist object to generic layout."""
     relationships = artist_obj.get("relationships", {})
@@ -79,21 +131,8 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
             )
         },
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        artist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=is_remotely_accessible_artwork_url(url),
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.ARTIST, artist_id, attributes):
+        artist.metadata.add_image(image)
     if genres := attributes.get("genreNames"):
         artist.metadata.genres = set(genres)
     if notes := attributes.get("editorialNotes"):
@@ -150,27 +189,14 @@ def parse_album(
         album.year = int(release_date.split("-")[0])
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        album.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=is_remotely_accessible_artwork_url(url),
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
+        album.metadata.add_image(image)
     if album_copyright := attributes.get("copyright"):
         album.metadata.copyright = album_copyright
     if record_label := attributes.get("recordLabel"):
         album.metadata.label = record_label
     if upc := attributes.get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + upc))
+        album.external_ids.add((ExternalID.BARCODE, upc))
     if notes := attributes.get("editorialNotes"):
         album.metadata.description = notes.get("standard") or notes.get("short")
     if content_rating := attributes.get("contentRating"):
@@ -235,9 +261,9 @@ def parse_track(
     if track_number := attributes.get("trackNumber"):
         track.track_number = track_number
     # Prefer catalog information over library information for artists.
-    if "artists" in relationships:
-        artists = relationships["artists"]
-        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
+    # The artists relationship is empty when the artists are not in the user's library.
+    if artists_data := relationships.get("artists", {}).get("data"):
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists_data])
     elif artist_name := normalize_unicode(
         attributes.get("artistName") or raw_attributes.get("artistName")
     ):
@@ -265,21 +291,8 @@ def parse_track(
             provider=provider.instance_id,
             name=album_name,
         )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        track.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=is_remotely_accessible_artwork_url(url),
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.TRACK, track_id, attributes):
+        track.metadata.add_image(image)
     if genres := attributes.get("genreNames"):
         track.metadata.genres = set(genres)
     if composers := attributes.get("composerName"):
@@ -326,21 +339,8 @@ def parse_playlist(
         },
         is_editable=is_editable,
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork["width"] and artwork["height"]:
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        playlist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.PLAYLIST, playlist_id, attributes):
+        playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
     playlist.favorite = is_favourite or False
@@ -368,21 +368,8 @@ def parse_station_as_playlist(
             )
         },
     )
-    if artwork := attributes.get("artwork"):
-        url = artwork["url"]
-        if artwork.get("width") and artwork.get("height"):
-            url = url.format(
-                w=min(artwork["width"], MAX_ARTWORK_DIMENSION),
-                h=min(artwork["height"], MAX_ARTWORK_DIMENSION),
-            )
-        playlist.metadata.add_image(
-            MediaItemImage(
-                provider=provider.instance_id,
-                type=ImageType.THUMB,
-                path=url,
-                remotely_accessible=True,
-            )
-        )
+    if image := parse_artwork_image(provider, MediaType.PLAYLIST, station_id, attributes):
+        playlist.metadata.add_image(image)
     return playlist
 
 

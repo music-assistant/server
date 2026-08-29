@@ -16,18 +16,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from music_assistant.providers.airplay.constants import StreamingProtocol
-from music_assistant.providers.airplay.protocols.airplay2 import AirPlay2Stream
-from music_assistant.providers.airplay.protocols.raop import RaopStream
+from music_assistant.providers.airplay.stream import AirPlayStream
 
 
 def _make_stream(
-    stream_cls: type[AirPlay2Stream | RaopStream],
     group_members: list[str],
-) -> tuple[AirPlay2Stream | RaopStream, MagicMock, MagicMock]:
+) -> tuple[AirPlayStream, MagicMock, MagicMock]:
     """
-    Build a protocol stream wired to a mock player whose CLI process has died.
+    Build an AirPlay stream wired to a mock player whose CLI process has died.
 
-    :param stream_cls: The protocol stream class to instantiate.
     :param group_members: The player's group_members (non-empty marks a sync leader).
     """
     player = MagicMock()
@@ -42,10 +39,13 @@ def _make_stream(
     mass = MagicMock()
     mass.create_task = MagicMock()
     mass.players.cmd_ungroup = MagicMock(return_value="ungroup-coro")
+    mass.players.cmd_set_members = MagicMock(return_value="set-members-coro")
+    mass.players.get_player = MagicMock(return_value=None)
     player.provider.mass = mass
     player.provider.logger = logging.getLogger("test.airplay.prov")
 
-    stream = stream_cls(player)
+    stream = AirPlayStream(player)
+    player.stream = stream
 
     # Mock a CLI process whose stderr is already exhausted: the reader loop
     # exits immediately without seeing an end-of-stream marker, i.e. an
@@ -61,13 +61,11 @@ def _make_stream(
     return stream, player, mass
 
 
-@pytest.mark.parametrize("stream_cls", [AirPlay2Stream, RaopStream])
 @pytest.mark.asyncio
-async def test_crash_on_sync_leader_defers_idle_and_ungroups(
-    stream_cls: type[AirPlay2Stream | RaopStream],
-) -> None:
+async def test_crash_on_sync_leader_defers_idle_and_ungroups() -> None:
     """A crashed sync leader is ungrouped but NOT pre-marked idle (lets controller transfer)."""
-    stream, player, mass = _make_stream(stream_cls, group_members=["apaabbccddeeff", "member"])
+    stream, player, mass = _make_stream(group_members=["apaabbccddeeff", "member"])
+    player.synced_to = None
 
     await stream._stderr_reader()
 
@@ -77,17 +75,21 @@ async def test_crash_on_sync_leader_defers_idle_and_ungroups(
     player.set_state_from_stream.assert_not_called()
 
 
-@pytest.mark.parametrize("stream_cls", [AirPlay2Stream, RaopStream])
 @pytest.mark.asyncio
-async def test_crash_on_member_idles_and_ungroups(
-    stream_cls: type[AirPlay2Stream | RaopStream],
-) -> None:
-    """A crashed non-leader member (no group_members) is marked idle and ungrouped."""
-    stream, player, mass = _make_stream(stream_cls, group_members=[])
+async def test_crash_on_member_idles_and_ungroups() -> None:
+    """A crashed non-leader member (no group_members) is marked idle and dropped natively."""
+    stream, player, mass = _make_stream(group_members=[])
+    player.synced_to = "leader"
 
     await stream._stderr_reader()
 
-    mass.players.cmd_ungroup.assert_called_once_with(player.player_id)
+    # a synced member is dropped from its native sync leader, never via
+    # cmd_ungroup (which resolves a protocol player to its visible parent and
+    # acts at the group level)
+    mass.players.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    mass.players.cmd_ungroup.assert_not_called()
     mass.create_task.assert_called_once()
     # Members / standalone players are reflected idle right away.
     player.set_state_from_stream.assert_called_once()

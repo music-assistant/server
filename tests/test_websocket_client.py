@@ -10,6 +10,14 @@ from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_client_id,
+    get_current_token,
+    get_current_user,
+    set_current_client_id,
+    set_current_token,
+    set_current_user,
+)
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
 
@@ -31,6 +39,7 @@ def _create_client(user_role: UserRole | None, handler: APICommandHandler) -> An
     )
     client._current_token = "token" if user_role else None
     client._sendspin_player_id = None
+    client.client_id = "test_client"
     client._send_message = AsyncMock()
     return client
 
@@ -96,6 +105,30 @@ async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
+async def test_users_read_command_rejects_non_service(role: UserRole) -> None:
+    """Reading user accounts is off limits for regular users and guests."""
+    client = _create_client(role, _command_handler(required_scope=Scope.USERS_READ))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) == PERMISSION_DENIED
+    client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [UserRole.SERVICE, UserRole.ADMIN])
+async def test_users_read_command_allows_service_and_admin(role: UserRole) -> None:
+    """The Home Assistant integration runs as a service account and may read user accounts."""
+    client = _create_client(role, _command_handler(required_scope=Scope.USERS_READ))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    client.mass.create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_authenticated_command_without_scope_allows_guest() -> None:
     """Guests may invoke authenticated commands that require no specific scope."""
     client = _create_client(UserRole.GUEST, _command_handler(required_scope=None))
@@ -115,3 +148,38 @@ async def test_scoped_command_rejects_unauthenticated_socket() -> None:
 
     assert _sent_error_code(client) is not None
     client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authenticated", [True, False])
+async def test_command_sets_client_id_in_context(authenticated: bool) -> None:
+    """
+    Every dispatched command exposes the connection's client id, authenticated or not.
+
+    Unauthenticated handlers such as the join code exchange throttle per connection and
+    would otherwise see the id of whatever ran on this connection before them.
+
+    :param authenticated: Whether the dispatched command requires authentication.
+    """
+    set_current_client_id("stale_client")
+    role = UserRole.GUEST if authenticated else None
+    client = _create_client(role, _command_handler(authenticated=authenticated))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    assert get_current_client_id() == "test_client"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_command_does_not_inherit_a_user() -> None:
+    """An unauthenticated command must not see the user of a command that ran before it."""
+    set_current_user(User(user_id="user_1", username="tester", role=UserRole.ADMIN))
+    set_current_token("stale_token")
+    client = _create_client(None, _command_handler(authenticated=False))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    assert get_current_user() is None
+    assert get_current_token() is None

@@ -1,10 +1,11 @@
 {
   "type": "plugin",
-  "stage": "experimental",
+  "stage": "beta",
   "domain": "hue_entertainment",
   "name": "Hue Lights Sync",
   "description": "Sync Philips Hue lights to music using Entertainment Mode.",
   "codeowners": ["@music-assistant"],
+  "depends_on": "sendspin",
   "requirements": ["hue-entertainment==0.1.2"],
   "documentation": "https://music-assistant.io/plugins/hue-entertainment/",
   "multi_instance": true,

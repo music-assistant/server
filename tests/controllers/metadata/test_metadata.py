@@ -7,19 +7,11 @@ from typing import TYPE_CHECKING
 import pytest
 from music_assistant_models.media_items import MediaItemPalette
 
-from music_assistant.controllers.metadata import MetaDataController
-
 if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
+    from music_assistant.controllers.metadata import MetaDataController
 
-
-@pytest.fixture
-async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataController:
-    """Construct a MetaDataController with the minimal MA fixture."""
-    await mass_minimal.cache._setup_database()
-    controller = MetaDataController(mass_minimal)
-    mass_minimal.metadata = controller
-    return controller
+# every test here registers image ids, which are persisted to the cache database
+pytestmark = pytest.mark.usefixtures("cache_database")
 
 
 async def test_get_image_palette_resolves_registered_id(

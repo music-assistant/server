@@ -15,10 +15,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -36,6 +34,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -52,6 +51,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
+from ytmusicapi.parsers.podcasts import Description
 
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
@@ -59,8 +59,14 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
+from music_assistant.helpers.util import (
+    import_module_in_thread,
+    infer_album_type,
+    install_package,
+    parse_title_and_version,
+)
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .helpers import (
     YTMSearchFilter,
@@ -88,7 +94,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -158,37 +164,7 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, required=True),
-        ConfigEntry(
-            key=CONF_COOKIE,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PO_TOKEN_SERVER_URL,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_PO_TOKEN_SERVER_URL,
-            required=True,
-        ),
-    )
-
-
-class YoutubeMusicProvider(MusicProvider):
+class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
     _headers: dict[str, str]
@@ -199,13 +175,22 @@ class YoutubeMusicProvider(MusicProvider):
     _cookie: str
     _yt_dlp_module = None
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """YouTube Music serves one stream per account session."""
+        return 1
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         await self._install_packages()
-        self._cookie = str(self.config.get_value(CONF_COOKIE))
+        self._cookie = str(self.get_setup_value(CONF_COOKIE))
         self._po_token_server_url = (
-            self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
+            self.get_setup_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
         if not await self._verify_po_token_url():
             raise LoginFailed(
@@ -213,7 +198,7 @@ class YoutubeMusicProvider(MusicProvider):
                 "Make sure you have installed the YT Music PO Token Generator "
                 "and that it is running."
             )
-        yt_username = str(self.config.get_value(CONF_USERNAME))
+        yt_username = str(self.get_setup_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
@@ -231,7 +216,8 @@ class YoutubeMusicProvider(MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    # the checksum invalidates entries cached before the search was pinned to English
+    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -260,7 +246,11 @@ class YoutubeMusicProvider(MusicProvider):
                 # bit of an edge case but still good to handle
                 return parsed_results
         results = await search(
-            query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
+            query=search_query,
+            headers=self._headers,
+            ytm_filter=ytm_filter,
+            limit=limit,
+            user=self._yt_user,
         )
         parsed_results = SearchResults()
         artists: list[Artist | ItemMapping] = []
@@ -293,6 +283,17 @@ class YoutubeMusicProvider(MusicProvider):
         parsed_results.tracks = tracks
         parsed_results.podcasts = podcasts
         return parsed_results
+
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        try:
+            await super().sync_library(media_type)
+        except LoginFailed as err:
+            # Every following sync fails the same way until the cookie is replaced,
+            # so hand the provider back to the user for re-authentication.
+            if self.available:
+                self.unload_with_error(err)
+            raise
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
@@ -511,10 +512,12 @@ class YoutubeMusicProvider(MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
-        for index, episode_obj in enumerate(podcast_obj.get("episodes", []), start=1):
+        episodes = podcast_obj.get("episodes", [])
+        total = len(episodes)
+        # API lists newest-first; number down so bigger position = newer
+        for idx, episode_obj in enumerate(episodes):
             episode = self._parse_podcast_episode(episode_obj, podcast)
-            ep_index = episode_obj.get("index") or index
-            episode.position = ep_index
+            episode.position = total - idx
             yield episode
 
     @use_cache(3600 * 3)  # Cache for 3 hours
@@ -683,9 +686,34 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.audio_format.sample_rate = int(asr)
         return stream_details
 
-    @use_cache(3600)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(
+            RecommendationFolder(
+                name="Mixed for you",
+                translation_key="mixed_for_you",
+                item_id=f"{self.instance_id}_mixed_for_you",
+                provider=self.instance_id,
+                icon="mdi:shuffle-variant",
+            )
+        )
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == f"{self.instance_id}_mixed_for_you":
+            return (await self._get_mixed_for_you_folder()).items
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the home feed and parse its sections into recommendation folders with items."""
         recommendations = await get_home(self._headers, self.language, user=self._yt_user)
 
         def _parse_sections() -> list[RecommendationFolder]:
@@ -735,19 +763,14 @@ class YoutubeMusicProvider(MusicProvider):
                         continue
                     else:
                         self.logger.warning(
-                            "Unknown item type in recommendation folder: %s", recommended_item
+                            "Unknown item type in recommendation folder: %s",
+                            recommended_item,
                         )
                         continue
                 folders.append(folder)
             return folders
 
-        folders = await asyncio.to_thread(_parse_sections)
-        # Also add personalized mixes if available
-        mixed_for_you_folder = await self._get_mixed_for_you_folder()
-        if mixed_for_you_folder.items:
-            folders.append(mixed_for_you_folder)
-
-        return folders
+        return await asyncio.to_thread(_parse_sections)
 
     @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
     async def _get_mixed_for_you_folder(self) -> RecommendationFolder:
@@ -943,7 +966,7 @@ class YoutubeMusicProvider(MusicProvider):
         raw_playlist_id = playlist_obj["id"]
         playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
-        is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
+        is_editable = playlist_obj.get("owned", playlist_obj.get("privacy", "") == "PRIVATE")
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
         # So suffix with the instance id to make them unique
         if playlist_id in YT_PERSONAL_PLAYLISTS:
@@ -1105,7 +1128,10 @@ class YoutubeMusicProvider(MusicProvider):
             duration_sec = parse_str_duration(duration)
             episode.duration = int(duration_sec)
         if description := episode_obj.get("description"):
-            episode.metadata.description = description
+            # the single episode endpoint returns a Description object instead of a string
+            episode.metadata.description = (
+                description.text if isinstance(description, Description) else description
+            )
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
@@ -1230,6 +1256,6 @@ class YoutubeMusicProvider(MusicProvider):
             await install_package(package_name)
         # verify if the yt_dlp package is usable
         try:
-            await asyncio.to_thread(importlib.import_module, "yt_dlp")
+            await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")

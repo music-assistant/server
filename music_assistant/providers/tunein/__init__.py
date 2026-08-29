@@ -6,9 +6,7 @@ import random
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -19,6 +17,7 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNo
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     ProviderMapping,
@@ -37,7 +36,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -59,34 +58,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_USERNAME):
-        msg = "Username is invalid"
-        raise LoginFailed(msg)
-
     return TuneInProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-    )
 
 
 class TuneInProvider(MusicProvider):
@@ -95,11 +67,23 @@ class TuneInProvider(MusicProvider):
     _throttler: Throttler
     _browse_url_map: dict[str, str]
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=2)
         self._browse_url_map = {}
-        username = self.config.get_value(CONF_USERNAME)
+        username = self.get_setup_value(CONF_USERNAME)
+        if not username:
+            msg = "Username is invalid"
+            raise LoginFailed(msg)
         if isinstance(username, str) and "@" in username:
             self.logger.warning(
                 "Email address detected instead of username, "
@@ -190,43 +174,11 @@ class TuneInProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
-
-        async def parse_items(
-            items: list[dict[str, Any]], folder: str | None = None
-        ) -> AsyncGenerator[Radio]:
-            for item in items:
-                item_type = item.get("type", "")
-                if "unavailable" in item.get("key", ""):
-                    continue
-                if not item.get("is_available", True):
-                    continue
-                if item_type == "audio":
-                    if "preset_id" not in item:
-                        continue
-                    # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self._get_stream_info(item["preset_id"])
-                    yield self._parse_radio(item, stream_info, folder)
-                elif item_type == "link" and item.get("item") == "url":
-                    # custom url
-                    try:
-                        yield self._parse_radio(item)
-                    except InvalidDataError as err:
-                        # there may be invalid custom urls, ignore those
-                        self.logger.warning(str(err))
-                elif item_type == "link":
-                    # stations are in sublevel (new style)
-                    if sublevel := await self.__get_data(item["URL"], render="json"):
-                        async for subitem in parse_items(sublevel["body"], item["text"]):
-                            yield subitem
-                elif item.get("children"):
-                    # stations are in sublevel (old style ?)
-                    async for subitem in parse_items(item["children"], item["text"]):
-                        yield subitem
-
         data = await self.__get_data("Browse.ashx", c="presets")
-        if data and "body" in data:
-            async for item in parse_items(data["body"]):
-                yield item
+        if data is None or not isinstance(data.get("body"), list):
+            raise InvalidDataError("TuneIn preset response contains no item list")
+        async for item in self._parse_library_radio_items(data["body"]):
+            yield item
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -248,27 +200,50 @@ class TuneInProvider(MusicProvider):
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 3)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return trending stations as a recommendation folder."""
-        data = await self.__get_data("Browse.ashx", c="trending")
-        if not data or "body" not in data:
-            return []
-        all_stations = [
-            self._parse_radio_lazy(item)
-            for item in data["body"]
-            if item.get("type") == "audio" and "preset_id" in item
-        ]
-        stations: list[Radio] = random.sample(all_stations, min(20, len(all_stations)))
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
         return [
             RecommendationFolder(
                 item_id="trending",
                 provider=self.instance_id,
                 name="Trending",
                 translation_key="trending_stations",
-                items=UniqueList(stations),
             )
         ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "trending":
+            return UniqueList()
+        folder = await self._get_trending_folder()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_trending_folder(self) -> RecommendationFolder | None:
+        """Get the trending stations row with items, or None if unavailable."""
+        data = await self.__get_data("Browse.ashx", c="trending")
+        if not data or "body" not in data:
+            return None
+        all_stations = [
+            self._parse_radio_lazy(item)
+            for item in data["body"]
+            if item.get("type") == "audio" and "preset_id" in item
+        ]
+        return RecommendationFolder(
+            item_id="trending",
+            provider=self.instance_id,
+            name="Trending",
+            translation_key="trending_stations",
+            items=UniqueList(random.sample(all_stations, min(20, len(all_stations)))),
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a radio station."""
@@ -327,6 +302,102 @@ class TuneInProvider(MusicProvider):
                         break
         result.radio = radios
         return result
+
+    async def _parse_library_radio_items(
+        self, items: list[Any], folder: str | None = None
+    ) -> AsyncGenerator[Radio]:
+        """Parse playable radios from a TuneIn preset list."""
+        for item in items:
+            if not isinstance(item, dict):
+                self.report_skipped_sync_item(
+                    MediaType.RADIO,
+                    None,
+                    InvalidDataError("TuneIn preset listing contains a non-object entry"),
+                )
+                continue
+            item_type = item.get("type", "")
+            if "unavailable" in item.get("key", ""):
+                continue
+            if not item.get("is_available", True):
+                continue
+            if item_type == "audio":
+                preset_id = item.get("preset_id")
+                if not isinstance(preset_id, str) or not preset_id:
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn audio preset has no id"),
+                    )
+                    continue
+                item_text = item.get("text")
+                if not isinstance(item_text, str) or not item_text:
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        preset_id,
+                        InvalidDataError("TuneIn audio preset has no name"),
+                    )
+                    continue
+                # each radio station can have multiple streams add each one as different quality
+                stream_info = await self._get_stream_info(preset_id)
+                if not stream_info:
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        preset_id,
+                        InvalidDataError("TuneIn audio preset has no streams"),
+                    )
+                    continue
+                yield self._parse_radio(item, stream_info, folder)
+            elif item_type == "link":
+                item_url = item.get("URL")
+                item_text = item.get("text")
+                if (
+                    not isinstance(item_url, str)
+                    or not item_url
+                    or not isinstance(item_text, str)
+                    or not item_text
+                ):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn link preset has no URL or name"),
+                    )
+                    continue
+                if item.get("item") == "url":
+                    # custom url
+                    try:
+                        yield self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.report_skipped_sync_item(MediaType.RADIO, item_url, err)
+                    continue
+                # stations are in sublevel (new style)
+                sublevel = await self.__get_data(item_url, render="json")
+                if sublevel is None or not isinstance(sublevel.get("body"), list):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn preset folder contains no item list"),
+                    )
+                    continue
+                async for subitem in self._parse_library_radio_items(sublevel["body"], item_text):
+                    yield subitem
+            elif "children" in item:
+                # stations are in sublevel (old style ?)
+                children = item["children"]
+                item_text = item.get("text")
+                if (
+                    not isinstance(children, list)
+                    or not isinstance(item_text, str)
+                    or not item_text
+                ):
+                    self.report_skipped_sync_item(
+                        MediaType.RADIO,
+                        None,
+                        InvalidDataError("TuneIn preset folder contains no item list or name"),
+                    )
+                    continue
+                async for subitem in self._parse_library_radio_items(children, item_text):
+                    yield subitem
 
     @staticmethod
     def _browse_path_key(text: str) -> str:
@@ -485,7 +556,7 @@ class TuneInProvider(MusicProvider):
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
             kwargs["formats"] = "ogg,aac,wma,mp3,hls"
-            kwargs["username"] = self.config.get_value(CONF_USERNAME)
+            kwargs["username"] = self.get_setup_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         locale = self.mass.metadata.locale.replace("_", "-")

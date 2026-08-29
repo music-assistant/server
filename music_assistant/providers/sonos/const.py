@@ -78,17 +78,7 @@ UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
     "Play:1",
     "Play:3",
-    "Play:5 Gen2",
-    "One",
-    "One SL",
-    "Beam",
-    "Playbar",
-    "Playbase",
     "Connect",
     "Connect:Amp",
-    "Port",
-    "Amp",
-    "Move",
-    "Symfonisk Bookshelf",
-    "Symfonisk Table Lamp",
+    "Table lamp",
 )

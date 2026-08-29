@@ -7,6 +7,12 @@
       "label": "Authorization"
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Enter your SoundCloud credentials",
+      "description": "SoundCloud has no public app registration. Sign in to the SoundCloud web player, open your browser's developer tools, and copy the client_id from a network request and your OAuth token from the request headers, then paste them here."
+    }
+  },
   "media": {
     "recommendations": {
       "soundcloud_feed": {

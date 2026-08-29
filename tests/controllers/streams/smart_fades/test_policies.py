@@ -17,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
 from music_assistant.controllers.streams.smart_fades.planner.policies import (
     AnchorAlignmentPolicy,
     AudibleTrimPolicy,
+    DeadAirPolicy,
     OverlapPreferencePolicy,
     Verdict,
     VocalCollisionPolicy,
@@ -38,6 +39,9 @@ def _ctx(
     tier: TransitionTier = TransitionTier.FULL_BLEND,
     vocal_out_scoring: VocalMask | None = None,
     vocal_in_scoring: VocalMask | None = None,
+    natural_entry: float = 0.0,
+    outgoing_analysis: AudioAnalysisData | None = None,
+    buffer_offset: float = 0.0,
 ) -> TransitionContext:
     deck = Deck(
         analysis=AudioAnalysisData(),
@@ -45,13 +49,14 @@ def _ctx(
         beats=np.array([], dtype=np.float32),
         downbeats=np.array([], dtype=np.float32),
     )
+    outgoing = dataclasses.replace(deck, analysis=outgoing_analysis) if outgoing_analysis else deck
     return TransitionContext(
-        outgoing=deck,
+        outgoing=outgoing,
         incoming=deck,
         outgoing_profile=None,
         incoming_profile=None,
         buffer_duration=45.0,
-        buffer_offset=0.0,
+        buffer_offset=buffer_offset,
         audio_end=45.0,
         default_anchor=45.0,
         mix_out_anchor=None,
@@ -65,7 +70,7 @@ def _ctx(
         vocal_in_placement=None,
         vocal_out_scoring=vocal_out_scoring,
         vocal_in_scoring=vocal_in_scoring,
-        natural_entry=0.0,
+        natural_entry=natural_entry,
         protective_downbeats=(),
     )
 
@@ -266,7 +271,7 @@ class TestAudibleTrimPolicy:
 
 
 class TestOverlapPreferencePolicy:
-    """Prefer the tier's top rung, the context's chosen tier, and two-sided vocal relief."""
+    """Prefer the tier's top rung and the context's chosen tier."""
 
     policy = OverlapPreferencePolicy()
 
@@ -302,28 +307,9 @@ class TestOverlapPreferencePolicy:
 
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(0.0)
 
-    def test_one_sided_vocal_asymmetry(self) -> None:
-        """Relaxing on the outgoing side costs more (12.0) than the incoming side (5.0)."""
-        ctx = _ctx(tier=TransitionTier.FULL_BLEND)
-        incoming = _candidate(
-            bars=16, ideal=16, tier=TransitionTier.FULL_BLEND, one_sided="incoming"
-        )
-        outgoing = _candidate(
-            bars=16, ideal=16, tier=TransitionTier.FULL_BLEND, one_sided="outgoing"
-        )
-
-        incoming_penalty = self.policy.evaluate(incoming, ctx).penalty
-        outgoing_penalty = self.policy.evaluate(outgoing, ctx).penalty
-
-        assert incoming_penalty == pytest.approx(5.0)
-        assert outgoing_penalty == pytest.approx(12.0)
-        assert outgoing_penalty > incoming_penalty
-
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""
-        candidate = _candidate(
-            bars=1, ideal=16, tier=TransitionTier.QUICK_FADE, one_sided="outgoing"
-        )
+        candidate = _candidate(bars=1, ideal=16, tier=TransitionTier.QUICK_FADE)
         ctx = _ctx(tier=TransitionTier.FULL_BLEND)
 
         assert self.policy.evaluate(candidate, ctx).rejected is False
@@ -380,14 +366,66 @@ class TestAnchorAlignmentPolicy:
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(6.0)
 
 
-def test_default_policies_returns_the_five_standard_policies() -> None:
-    """The standard policy tuple contains one instance of each of the five policies."""
+def test_default_policies_returns_the_six_standard_policies() -> None:
+    """The standard policy tuple contains one instance of each of the six policies."""
     policies = default_policies()
 
     assert [type(p) for p in policies] == [
         VocalCollisionPolicy,
         VocalTruncationPolicy,
         AudibleTrimPolicy,
+        DeadAirPolicy,
         OverlapPreferencePolicy,
         AnchorAlignmentPolicy,
     ]
+
+
+class TestDeadAirPolicy:
+    """Penalize a handover that strands the listener before B's groove entry."""
+
+    def _hot_outgoing(self, tail_level: float = 0.9) -> AudioAnalysisData:
+        # peak mid-track; the tail level decides whether the pre-fade window is hot
+        rms = [0.9] * 1500 + [tail_level] * 300
+        return AudioAnalysisData(duration=220.0, rms_energy=rms)
+
+    def test_dead_air_beyond_grace_is_penalized_per_second(self) -> None:
+        """A hot outgoing into a late groove entry pays for every second past the grace."""
+        ctx = _ctx(natural_entry=19.2, outgoing_analysis=self._hot_outgoing(), buffer_offset=175.0)
+        candidate = _candidate(duration=2.0, fade_end=42.0)
+
+        verdict = DeadAirPolicy().evaluate(candidate, ctx)
+
+        assert verdict.penalty == pytest.approx(19.2 - 2.0 - 4.0)
+        assert not verdict.rejected
+
+    def test_trimming_to_the_groove_entry_clears_the_penalty(self) -> None:
+        """A candidate that enters at B's groove has no dead air to pay for."""
+        ctx = _ctx(natural_entry=19.2, outgoing_analysis=self._hot_outgoing(), buffer_offset=175.0)
+        candidate = _candidate(duration=2.0, fade_end=42.0, fadein_trim=19.2)
+
+        assert DeadAirPolicy().evaluate(candidate, ctx).penalty == 0.0
+
+    def test_gap_within_grace_is_free(self) -> None:
+        """Short breathing room after the fade stays unpenalized."""
+        ctx = _ctx(natural_entry=5.5, outgoing_analysis=self._hot_outgoing(), buffer_offset=175.0)
+        candidate = _candidate(duration=2.0, fade_end=42.0)
+
+        assert DeadAirPolicy().evaluate(candidate, ctx).penalty == 0.0
+
+    def test_quiet_outgoing_keeps_the_incoming_intro(self) -> None:
+        """An outgoing already faded to a whisper welcomes a slow ambient intro."""
+        ctx = _ctx(
+            natural_entry=19.2,
+            outgoing_analysis=self._hot_outgoing(tail_level=0.02),
+            buffer_offset=175.0,
+        )
+        candidate = _candidate(duration=2.0, fade_end=42.0)
+
+        assert DeadAirPolicy().evaluate(candidate, ctx).penalty == 0.0
+
+    def test_missing_outgoing_rms_still_penalizes(self) -> None:
+        """Without RMS data the hot-outgoing gate cannot clear the penalty."""
+        ctx = _ctx(natural_entry=19.2, outgoing_analysis=AudioAnalysisData(), buffer_offset=175.0)
+        candidate = _candidate(duration=2.0, fade_end=42.0)
+
+        assert DeadAirPolicy().evaluate(candidate, ctx).penalty > 0.0

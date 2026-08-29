@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from bandcamp_async_api import (
     BandcampAPIClient,
@@ -13,6 +13,7 @@ from bandcamp_async_api import (
     BandcampRateLimitError,
     SearchResultAlbum,
     SearchResultArtist,
+    SearchResultItem,
     SearchResultTrack,
 )
 from bandcamp_async_api.models import (
@@ -26,7 +27,7 @@ from bandcamp_async_api.models import (
     FollowingItem,
 )
 from mashumaro.exceptions import UnserializableDataError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
@@ -38,6 +39,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -61,6 +64,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
+from ._ids import make_artist_id, parse_artist_id, slugify_performer
 from .constants import (
     BROWSE_FANS,
     BROWSE_FEED,
@@ -77,7 +81,7 @@ from .constants import (
     PERSON_SUB_ROUTES,
     SUPPORTED_FEATURES,
 )
-from .converters import BandcampConverters
+from .converters import BandcampConverters, DiscographyItem
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -88,33 +92,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return BandcampProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-# noinspection PyTypeHints,PyUnusedLocal
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_IDENTITY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_IDENTITY) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_TOP_TRACKS_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
-            default_value=DEFAULT_TOP_TRACKS_LIMIT,
-            advanced=True,
-        ),
-    )
 
 
 def split_id(id_: str) -> tuple[int, int, int]:
@@ -148,9 +125,22 @@ class BandcampProvider(MusicProvider):
     )
     top_tracks_limit: int
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_TOP_TRACKS_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=DEFAULT_TOP_TRACKS_LIMIT,
+                advanced=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
-        identity = self.config.get_value(CONF_IDENTITY)
+        identity = self.get_setup_value(CONF_IDENTITY)
         self.top_tracks_limit = cast(
             "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )
@@ -184,7 +174,14 @@ class BandcampProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 50
     ) -> SearchResults:
-        """Perform search on music provider."""
+        """
+        Search Bandcamp for matching media.
+
+        :param search_query: Text to search for.
+        :param media_types: Media types to include in the results.
+        :param limit: Maximum number of results to return.
+        :returns: Matching Bandcamp media.
+        """
         results = SearchResults()
         if not media_types:
             return results
@@ -200,19 +197,241 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise InvalidDataError("Unexpected error during Bandcamp search") from error
 
-        for item in search_results[:limit]:
+        capped = search_results[:limit]
+        # Map band_id -> SearchResultArtist for cross-result dedup. When an
+        # album/track's `band_name` slug matches the band's own slug, the
+        # album is by the band itself and we use the plain `{band_id}` ID;
+        # otherwise we synthesize `{band_id}:{slug}`.
+        bands_by_id: dict[int, SearchResultArtist] = {
+            item.id: item for item in capped if isinstance(item, SearchResultArtist)
+        }
+        artist_id_by_item: dict[int, str] = await self._resolve_search_artist_ids(
+            capped, bands_by_id
+        )
+        artist_ids_seen: set[str] = set()
+        synthetic_artists: list[Artist] = []
+
+        for item in capped:
             try:
                 if isinstance(item, SearchResultTrack) and MediaType.TRACK in media_types:
-                    results.tracks = [*results.tracks, self._converters.track_from_search(item)]
+                    results.tracks = [
+                        *results.tracks,
+                        self._converters.track_from_search(
+                            item, artist_item_id=artist_id_by_item[id(item)]
+                        ),
+                    ]
                 elif isinstance(item, SearchResultAlbum) and MediaType.ALBUM in media_types:
-                    results.albums = [*results.albums, self._converters.album_from_search(item)]
+                    results.albums = [
+                        *results.albums,
+                        self._converters.album_from_search(
+                            item, artist_item_id=artist_id_by_item[id(item)]
+                        ),
+                    ]
                 elif isinstance(item, SearchResultArtist) and MediaType.ARTIST in media_types:
+                    artist_ids_seen.add(str(item.id))
                     results.artists = [*results.artists, self._converters.artist_from_search(item)]
             except BandcampAPIError as error:
                 self.logger.warning("Failed to convert search result item: %s", error)
                 continue
 
+        if MediaType.ARTIST in media_types:
+            for item in capped:
+                if not isinstance(item, (SearchResultAlbum, SearchResultTrack)):
+                    continue
+                if not item.artist_name:
+                    continue
+                artist_item_id = artist_id_by_item[id(item)]
+                if artist_item_id in artist_ids_seen:
+                    continue
+                artist_ids_seen.add(artist_item_id)
+                if ":" in artist_item_id:
+                    synthetic_artists.append(
+                        self._converters.synthetic_artist(
+                            band_id=item.artist_id,
+                            performer_name=item.artist_name,
+                            url=item.artist_url or None,
+                            image_url=item.image_url,
+                        )
+                    )
+                    continue
+                if int(artist_item_id) == item.artist_id:
+                    # Same band as the row's claimed page — its `b` row just
+                    # didn't make the cap; re-introducing it here would surface
+                    # a band the user wasn't searching for.
+                    continue
+                with suppress(MediaNotFoundError, ResourceTemporarilyUnavailable, RetriesExhausted):
+                    results.artists = [*results.artists, await self.get_artist(artist_item_id)]
+
+        if synthetic_artists:
+            results.artists = [*results.artists, *synthetic_artists][:limit]
+
         return results
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self._client.identity:
+            return []
+        return [
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Bandcamp Feed",
+                translation_key="feed",
+                icon="mdi-rss",
+                is_playable=True,
+            ),
+            RecommendationFolder(
+                item_id="wishlist",
+                provider=self.instance_id,
+                name="Wishlist",
+                translation_key="wishlist",
+                icon="mdi-heart",
+                is_playable=True,
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self._client.identity:
+            return UniqueList()
+        if item_id == "feed":
+            return UniqueList(await self._get_feed_tracks())
+        if item_id == "wishlist":
+            return UniqueList(await self._browse_person_content(None, CollectionType.WISHLIST))
+        return UniqueList()
+
+    async def _resolve_search_artist_ids(
+        self,
+        capped: Sequence[SearchResultItem],
+        bands_by_id: dict[int, SearchResultArtist],
+    ) -> dict[int, str]:
+        """
+        Resolve artist item IDs for album and track search results.
+
+        :param capped: Search results to resolve.
+        :param bands_by_id: Band results keyed by Bandcamp ID.
+        :returns: Artist item IDs keyed by search-result object identity.
+        """
+        rows: list[SearchResultAlbum | SearchResultTrack] = [
+            row for row in capped if isinstance(row, (SearchResultAlbum, SearchResultTrack))
+        ]
+        slug_to_name: dict[str, str] = {}
+        for row in rows:
+            performer = row.artist_name or ""
+            band = bands_by_id.get(row.artist_id)
+            if band and slugify_performer(band.name) == slugify_performer(performer):
+                continue
+            slug = slugify_performer(performer)
+            if slug:
+                slug_to_name.setdefault(slug, performer)
+
+        slug_to_real_id = await self._lookup_performer_band_ids_parallel(slug_to_name)
+
+        resolved: dict[int, str] = {}
+        for row in rows:
+            performer = row.artist_name or ""
+            band = bands_by_id.get(row.artist_id)
+            if band and slugify_performer(band.name) == slugify_performer(performer):
+                resolved[id(row)] = str(row.artist_id)
+                continue
+            real_id = slug_to_real_id.get(slugify_performer(performer))
+            if real_id is not None:
+                resolved[id(row)] = str(real_id)
+                continue
+            resolved[id(row)] = make_artist_id(row.artist_id, performer)
+        return resolved
+
+    async def _lookup_performer_band_ids_parallel(
+        self, names_by_slug: dict[str, str]
+    ) -> dict[str, int | None]:
+        """
+        Resolve performer names to Bandcamp artist IDs.
+
+        :param names_by_slug: Performer names keyed by normalized slug.
+        :returns: Resolved artist IDs, or ``None`` for unresolved performers.
+        """
+        if not names_by_slug:
+            return {}
+        slugs = list(names_by_slug)
+        raw_results = await asyncio.gather(
+            *(self._lookup_performer_band_id(names_by_slug[slug]) for slug in slugs),
+            return_exceptions=True,
+        )
+        out: dict[str, int | None] = {}
+        for slug, result in zip(slugs, raw_results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                self.logger.warning(
+                    "performer band lookup failed for %r: %s",
+                    names_by_slug[slug],
+                    result,
+                )
+                out[slug] = None
+            elif isinstance(result, BaseException):
+                raise result
+            else:
+                out[slug] = result
+        return out
+
+    async def _lookup_performer_band_id(self, performer_name: str) -> int | None:
+        """Find the band_id for a performer who has their own Bandcamp page."""
+        target_slug = slugify_performer(performer_name)
+        if not target_slug:
+            return None
+        cache_key = f"performer_band_id.{target_slug}"
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id)
+        if cached is not None:
+            try:
+                cached_int = int(cached)
+            except ValueError, TypeError:
+                self.logger.warning(
+                    "Discarding corrupt performer_band_id cache for %r: %r",
+                    target_slug,
+                    cached,
+                )
+            else:
+                # Negative results are persisted as 0 since the cache layer
+                # treats None as a miss.
+                return cached_int or None
+        band_id = await self._fetch_performer_band_id(performer_name, target_slug)
+        await self.mass.cache.set(
+            cache_key,
+            band_id or 0,
+            expiration=CACHE_METADATA,
+            provider=self.instance_id,
+        )
+        return band_id
+
+    @throttle_with_retries
+    async def _fetch_performer_band_id(self, performer_name: str, target_slug: str) -> int | None:
+        """Autocomplete-search for ``performer_name``; return the first non-label band match."""
+        try:
+            results = await self._client.search(performer_name)
+        except BandcampRateLimitError as error:
+            raise RateLimited(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            self.logger.warning(
+                "Bandcamp autocomplete failed for performer %r: %s", performer_name, error
+            )
+            raise
+        for item in results:
+            # Skip labels so a same-named label doesn't masquerade as the band page.
+            if (
+                isinstance(item, SearchResultArtist)
+                and not item.is_label
+                and slugify_performer(item.name) == target_slug
+            ):
+                return int(item.id)
+        return None
 
     @throttle_with_retries
     async def _fetch_collection_page(
@@ -344,10 +563,46 @@ class BandcampProvider(MusicProvider):
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get full artist details by id."""
+        """
+        Get full artist details by ID.
+
+        :param prov_artist_id: Bandcamp artist or synthetic artist ID.
+        :returns: The resolved Music Assistant artist.
+        :raises InvalidDataError: If the artist ID is malformed.
+        :raises MediaNotFoundError: If the artist cannot be resolved.
+        """
         try:
-            api_artist = await self._client.get_artist(prov_artist_id)
-            return self._converters.artist_from_api(api_artist)
+            band_id, performer_slug = parse_artist_id(prov_artist_id)
+        except ValueError as error:
+            raise InvalidDataError(f"Malformed Bandcamp artist ID: {prov_artist_id}") from error
+
+        if performer_slug is None:
+            try:
+                api_artist = await self._client.get_artist(band_id)
+                return self._converters.artist_from_api(api_artist)
+            except BandcampNotFoundError as error:
+                raise MediaNotFoundError(
+                    f"Artist {prov_artist_id} not found on Bandcamp"
+                ) from error
+            except BandcampRateLimitError as error:
+                raise RateLimited(
+                    "Bandcamp rate limit reached", backoff_time=error.retry_after
+                ) from error
+            except BandcampAPIError as error:
+                raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
+
+        # Synthetic: locate matching items in the band's discography and
+        # build an artist scoped to that performer. Falls back to the real
+        # band when the slug actually matches the band's own name (e.g.
+        # cached IDs constructed before disambiguation was reliable).
+        return await self._get_synthetic_artist(prov_artist_id, band_id, performer_slug)
+
+    async def _get_synthetic_artist(
+        self, prov_artist_id: str, band_id: int, performer_slug: str
+    ) -> Artist:
+        """Resolve a synthetic artist ID to a Music Assistant artist."""
+        try:
+            api_artist = await self._client.get_artist(band_id)
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
@@ -357,6 +612,82 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
 
+        # Resolve the hosting artist first so legacy owner-slug synthetic IDs
+        # collapse to the real artist before discography filtering.
+        if slugify_performer(api_artist.name) == performer_slug:
+            return self._converters.artist_from_api(api_artist)
+
+        # A synthetic performer is valid only when its explicit credit appears
+        # in the hosting page's discography.
+        try:
+            api_discography = await self._fetch_discography(band_id)
+        except BandcampNotFoundError as error:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
+        except BandcampRateLimitError as error:
+            raise RateLimited(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        except BandcampAPIError as error:
+            raise MediaNotFoundError(f"Failed to get artist {prov_artist_id}") from error
+
+        matching = self._filter_discography_by_performer(api_discography, performer_slug)
+        if not matching:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp")
+
+        first = matching[0]
+        performer_name = str(first.get("artist_name") or "")
+        if not performer_name or slugify_performer(performer_name) != performer_slug:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp")
+        art_id = first.get("art_id")
+        image_url = f"https://f4.bcbits.com/img/a{art_id}_0.jpg" if art_id else None
+        # The performer doesn't have their own Bandcamp page; surface the
+        # hosting band's URL so the artist tile links somewhere meaningful
+        # (matching what the search-emission path passes through).
+        return self._converters.synthetic_artist(
+            band_id=band_id,
+            performer_name=performer_name,
+            url=api_artist.url,
+            image_url=image_url,
+        )
+
+    @use_cache(CACHE_METADATA)
+    @throttle_with_retries
+    async def _fetch_discography(self, band_id: int) -> list[dict[str, Any]]:
+        """
+        Fetch a band's discography.
+
+        :param band_id: Bandcamp ID of the page owner.
+        :returns: Raw discography entries.
+        """
+        # Return type is `list[dict[str, Any]]` rather than
+        # `list[DiscographyItem]`: the cache controller's deserializer
+        # uses `isinstance` checks which TypedDict does not support.
+        # Callers cast at the converter boundary.
+        result: list[dict[str, Any]] = await self._client.get_artist_discography(band_id)
+        return result
+
+    @staticmethod
+    def _filter_discography_by_performer(
+        items: list[dict[str, Any]], performer_slug: str
+    ) -> list[dict[str, Any]]:
+        """Filter discography rows down to those credited to a given performer slug."""
+        return [
+            item
+            for item in items
+            if slugify_performer(str(item.get("artist_name") or "")) == performer_slug
+        ]
+
+    async def _resolve_artist_item_id(
+        self, *, band_id: int, performer: str | None, band_name: str
+    ) -> str:
+        """Resolve a single album/track's artist item_id (no batch context)."""
+        if not performer or slugify_performer(performer) == slugify_performer(band_name):
+            return str(band_id)
+        real_band_id = await self._lookup_performer_band_id(performer)
+        if real_band_id is not None:
+            return str(real_band_id)
+        return make_artist_id(band_id, performer)
+
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
@@ -364,7 +695,6 @@ class BandcampProvider(MusicProvider):
         artist_id, album_id, _ = split_id(prov_album_id)
         try:
             api_album = await self._client.get_album(artist_id, album_id)
-            return self._converters.album_from_api(api_album)
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
@@ -373,6 +703,12 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get album {prov_album_id}") from error
+        artist_item_id = await self._resolve_artist_item_id(
+            band_id=api_album.artist.id,
+            performer=api_album.tralbum_artist,
+            band_name=api_album.artist.name,
+        )
+        return self._converters.album_from_api(api_album, artist_item_id=artist_item_id)
 
     @throttle_with_retries
     async def _fetch_api_track(self, item_id: str) -> tuple[BCTrack, BCAlbum | None]:
@@ -412,17 +748,33 @@ class BandcampProvider(MusicProvider):
         """Get full track details by id."""
         api_track, api_album = await self._fetch_api_track(prov_track_id)
         if api_album:
+            artist_item_id = await self._resolve_artist_item_id(
+                band_id=api_album.artist.id,
+                performer=api_album.tralbum_artist,
+                band_name=api_album.artist.name,
+            )
             return self._converters.track_from_api(
                 track=api_track,
                 album_id=api_album.id,
                 album_name=api_album.title,
-                album_image_url=api_album.art_url,
+                album_image_url=api_album.art_url or "",
+                tralbum_artist=api_album.tralbum_artist,
+                artist_item_id=artist_item_id,
             )
+        # Standalone tracks (album_id=0) carry the performer credit on
+        # the track itself when fetched directly from tralbum_details.
+        artist_item_id = await self._resolve_artist_item_id(
+            band_id=api_track.artist.id,
+            performer=api_track.tralbum_artist,
+            band_name=api_track.artist.name,
+        )
         return self._converters.track_from_api(
             track=api_track,
             album_id=api_track.album.id if api_track.album else None,
             album_name=api_track.album.title if api_track.album else "",
-            album_image_url=api_track.album.art_url if api_track.album else "",
+            album_image_url=(api_track.album.art_url if api_track.album else "") or "",
+            tralbum_artist=api_track.tralbum_artist,
+            artist_item_id=artist_item_id,
         )
 
     @use_cache(CACHE_METADATA)
@@ -432,20 +784,6 @@ class BandcampProvider(MusicProvider):
         artist_id, album_id, _ = split_id(prov_album_id)
         try:
             api_album = await self._client.get_album(artist_id, album_id)
-            if api_album.tracks:
-                return [
-                    self._converters.track_from_api(
-                        track=track,
-                        album_id=album_id,
-                        album_name=api_album.title,
-                        album_image_url=api_album.art_url,
-                    )
-                    for track in api_album.tracks
-                    if track.streaming_url  # Only include tracks with streaming URLs
-                ]
-
-            return []
-
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Album tracks for {prov_album_id} not found on Bandcamp"
@@ -456,18 +794,62 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get albums tracks for {prov_album_id}") from error
+        if not api_album.tracks:
+            return []
+        artist_item_id = await self._resolve_artist_item_id(
+            band_id=api_album.artist.id,
+            performer=api_album.tralbum_artist,
+            band_name=api_album.artist.name,
+        )
+        return [
+            self._converters.track_from_api(
+                track=track,
+                album_id=album_id,
+                album_name=api_album.title,
+                album_image_url=api_album.art_url or "",
+                tralbum_artist=api_album.tralbum_artist,
+                artist_item_id=artist_item_id,
+            )
+            for track in api_album.tracks
+            if track.streaming_url  # Only include tracks with streaming URLs
+        ]
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get albums by an artist."""
+        """
+        Get albums by an artist.
+
+        For real artist IDs this returns the band's full discography (the
+        original behavior). For synthetic IDs (``{band_id}:{slug}``) this
+        filters the band's discography to only the items where the
+        performer matches.
+        """
         try:
-            api_discography = await self._client.get_artist_discography(prov_artist_id)
-            return [
-                self._converters.album_from_discography_item(item)
-                for item in api_discography
-                if item.get("item_type") == "album" and item.get("item_id")
-            ]
+            band_id, performer_slug = parse_artist_id(prov_artist_id)
+        except ValueError as error:
+            raise InvalidDataError(f"Malformed Bandcamp artist ID: {prov_artist_id}") from error
+
+        if performer_slug is not None:
+            try:
+                api_artist = await self._client.get_artist(band_id)
+            except BandcampNotFoundError as error:
+                raise MediaNotFoundError(
+                    f"Artist {prov_artist_id} albums not found on Bandcamp"
+                ) from error
+            except BandcampRateLimitError as error:
+                raise RateLimited(
+                    "Bandcamp rate limit reached", backoff_time=error.retry_after
+                ) from error
+            except BandcampAPIError as error:
+                raise MediaNotFoundError(
+                    f"Failed to get albums for artist {prov_artist_id}"
+                ) from error
+            if slugify_performer(api_artist.name) == performer_slug:
+                performer_slug = None
+
+        try:
+            api_discography = await self._fetch_discography(band_id)
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(
                 f"Artist {prov_artist_id} albums not found on Bandcamp"
@@ -478,6 +860,52 @@ class BandcampProvider(MusicProvider):
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get albums for artist {prov_artist_id}") from error
+
+        items = [
+            item
+            for item in api_discography
+            if item.get("item_type") == "album" and item.get("item_id")
+        ]
+        if performer_slug is not None:
+            items = self._filter_discography_by_performer(items, performer_slug)
+
+        # Pre-resolve so this listing's artist links match what `get_album`
+        # produces on click; otherwise list and detail views diverge for the
+        # same performer.
+        names_by_slug: dict[str, str] = {}
+        for item in items:
+            performer = str(item.get("artist_name") or "")
+            band_name = str(item.get("band_name") or "")
+            if not performer:
+                continue
+            slug = slugify_performer(performer)
+            if not slug or slug == slugify_performer(band_name):
+                continue
+            names_by_slug.setdefault(slug, performer)
+        slug_to_real_id = await self._lookup_performer_band_ids_parallel(names_by_slug)
+
+        return [
+            self._converters.album_from_discography_item(
+                cast("DiscographyItem", item),
+                artist_item_id=self._discography_artist_item_id(item, slug_to_real_id),
+            )
+            for item in items
+        ]
+
+    @staticmethod
+    def _discography_artist_item_id(
+        item: dict[str, Any], slug_to_real_id: dict[str, int | None]
+    ) -> str:
+        """Sync counterpart of ``_resolve_artist_item_id`` for a discography row."""
+        band_id = int(item.get("band_id") or 0)
+        performer = str(item.get("artist_name") or "")
+        band_name = str(item.get("band_name") or "")
+        if not performer or slugify_performer(performer) == slugify_performer(band_name):
+            return str(band_id)
+        real_id = slug_to_real_id.get(slugify_performer(performer))
+        if real_id is not None:
+            return str(real_id)
+        return make_artist_id(band_id, performer)
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
@@ -493,37 +921,6 @@ class BandcampProvider(MusicProvider):
                 break
 
         return tracks[: self.top_tracks_limit]
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Surface Bandcamp's personalised feed and wishlist as recommendations."""
-        if not self._client.identity:
-            return []
-        folders: list[RecommendationFolder] = []
-        if feed_tracks := await self._get_feed_tracks():
-            folders.append(
-                RecommendationFolder(
-                    item_id="feed",
-                    provider=self.instance_id,
-                    name="Bandcamp Feed",
-                    translation_key="feed",
-                    icon="mdi-rss",
-                    is_playable=True,
-                    items=UniqueList(feed_tracks),
-                )
-            )
-        if wishlist := await self._browse_person_content(None, CollectionType.WISHLIST):
-            folders.append(
-                RecommendationFolder(
-                    item_id="wishlist",
-                    provider=self.instance_id,
-                    name="Wishlist",
-                    translation_key="wishlist",
-                    icon="mdi-heart",
-                    is_playable=True,
-                    items=UniqueList(wishlist),
-                )
-            )
-        return folders
 
     @throttle_with_retries
     async def _fetch_feed(self) -> FeedResponse:
@@ -666,10 +1063,9 @@ class BandcampProvider(MusicProvider):
         """
         Resolve a path segment to a fan_id.
 
-        Checks the slug→fan_id cache first, then tries numeric parse.
-        For unknown slugs, rebuilds the cache from fan/follower lists and retries.
-        Returns None if the segment is neither a known slug nor a valid int,
-        or if it is a known sub-route name (e.g. "collection", "wishlist").
+        Returns None if the segment is neither a known slug nor a valid
+        int, or if it is a known sub-route name (e.g. "collection",
+        "wishlist").
         """
         if segment in self._slug_to_fan_id:
             return self._slug_to_fan_id[segment]
@@ -691,7 +1087,7 @@ class BandcampProvider(MusicProvider):
             (CollectionType.FOLLOWING_FANS, BROWSE_FANS),
             (CollectionType.FOLLOWERS, BROWSE_FOLLOWERS),
         ):
-            with suppress(Exception):
+            with suppress(LoginFailed, RateLimited, MediaNotFoundError, RetriesExhausted):
                 await self._browse_person_people(collection_type, f"{base}{folder_id}")
 
     @staticmethod
@@ -821,7 +1217,7 @@ class BandcampProvider(MusicProvider):
             )
             for item in collection:
                 try:
-                    artists.append(await self.get_artist(item.band_id))
+                    artists.append(await self.get_artist(str(item.band_id)))
                 except MediaNotFoundError:
                     self.logger.warning(
                         "Artist not found for band_id %s (%s)", item.band_id, item.name

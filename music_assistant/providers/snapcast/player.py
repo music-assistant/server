@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
@@ -22,7 +22,7 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
@@ -68,8 +68,9 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         super().__init__(provider, player_id)
 
-        # snapcast has fixed sample rate/bit depth
-        self._attr_supported_sample_rates = [(48000, 16)]
+        # Snapcast stream format is fixed for a provider instance (from advanced settings)
+        stream_format = provider.stream_audio_format
+        self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 
@@ -337,47 +338,53 @@ class SnapCastPlayer(Player):
         orig_volume_level: int | None = self.volume_level
 
         prev_stream = self.active_snap_ma_stream
+        # pin the music stream, else the idle timer stops it before the announcement ends
+        if prev_stream:
+            prev_stream.pin(self.player_id)
 
-        ma_stream = await self.snap_provider.get_snapcast_media_stream(
-            announcement, filter_settings_owner=self.player_id
-        )
-        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
-
-        if ma_stream is None or ma_stream.stream_id is None or player_group is None:
-            return
-
-        await player_group.set_stream(ma_stream.stream_id)
-
-        if self.snap_provider._use_builtin_server:
-            await asyncio.sleep(self.snap_provider._snapcast_server_buffer_size / 1000.0)
-
-        if volume_level is not None:
-            await self.volume_set(volume_level)
-
-        await ma_stream.start_stream()
-        await ma_stream.wait_for_stopped()
-
-        if self.volume_level == volume_level and orig_volume_level is not None:
-            await self.volume_set(orig_volume_level)
-
-        if was_synced_to:
-            if (
-                leader_group := await self.snap_provider.ensure_player_owned_group(was_synced_to)
-            ) is None:
-                return
-            await leader_group.add_client(self.snap_client.identifier)
-        else:
-            await player_group.set_stream(
-                prev_stream.stream_id
-                if prev_stream and prev_stream.stream_id is not None
-                else "default"
+        try:
+            ma_stream = await self.snap_provider.get_snapcast_media_stream(
+                announcement, filter_settings_owner=self.player_id
             )
+            player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+            if ma_stream is None or ma_stream.stream_id is None or player_group is None:
+                return
+
+            await player_group.set_stream(ma_stream.stream_id)
+
+            if self.snap_provider._use_builtin_server:
+                await asyncio.sleep(self.snap_provider._snapcast_server_buffer_size / 1000.0)
+
+            if volume_level is not None:
+                await self.volume_set(volume_level)
+
+            await ma_stream.start_stream()
+            await ma_stream.wait_for_stopped()
+
+            if self.volume_level == volume_level and orig_volume_level is not None:
+                await self.volume_set(orig_volume_level)
+
+            if was_synced_to:
+                if (
+                    leader_group := await self.snap_provider.ensure_player_owned_group(
+                        was_synced_to
+                    )
+                ) is None:
+                    return
+                await leader_group.add_client(self.snap_client.identifier)
+            else:
+                await player_group.set_stream(
+                    prev_stream.stream_id
+                    if prev_stream and prev_stream.stream_id is not None
+                    else "default"
+                )
+        finally:
+            if prev_stream:
+                prev_stream.unpin(self.player_id)
+                self.snap_provider.update_stream_usage()
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Player config."""
         return [
             # we don't use the http server for streaming

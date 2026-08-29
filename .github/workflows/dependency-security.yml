@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 0 # Need full history for diff
 
       - name: Set up Python
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.0.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -80,25 +80,6 @@ jobs:
             echo "✅ requirements_all.txt is properly synchronized" > sync_report.md
             rm requirements_all.txt.original
           fi
-
-      # Step 2: Run pip-audit for known vulnerabilities
-      - name: Run pip-audit on installed environment
-        id: pip_audit
-        continue-on-error: true
-        run: |
-          echo "## 🔍 Vulnerability Scan Results" > audit_report.md
-          echo "" >> audit_report.md
-
-          if .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1; then
-            echo "status=pass" >> $GITHUB_OUTPUT
-            echo "✅ No known vulnerabilities found" >> audit_report.md
-          else
-            echo "status=fail" >> $GITHUB_OUTPUT
-            echo "" >> audit_report.md
-            echo "⚠️  **Vulnerabilities detected! Please review the findings above.**" >> audit_report.md
-          fi
-
-          cat audit_report.md
 
       # Step 2: Detect new or changed dependencies
       - name: Detect dependency changes
@@ -148,7 +129,77 @@ jobs:
 
           cat deps_report.md
 
-      # Step 3: Check manifest.json changes
+      # Step 3: Resolve what both branches install, so findings can be split into ones
+      # this PR introduces and ones that already exist on the target branch. Resolving is
+      # enough, no second environment has to be installed. pip-audit is included because
+      # it is part of the audited environment. Both are resolved back to back so that a
+      # release published mid-run cannot make them disagree. On failure no file is written
+      # and the audit falls back to comparing the changed requirements.
+      - name: Resolve branch dependencies
+        continue-on-error: true
+        run: |
+          BASE_BRANCH="${{ github.base_ref }}"
+          git show origin/$BASE_BRANCH:requirements_all.txt > base_requirements.txt
+          echo "pip-audit" >> base_requirements.txt
+
+          # Step 1 leaves the PR's own requirements_all.txt in place, in sync or not
+          cp requirements_all.txt head_requirements.txt
+          echo "pip-audit" >> head_requirements.txt
+
+          uv pip compile --index-strategy unsafe-best-match --python .venv/bin/python \
+            --no-annotate --no-header base_requirements.txt -o base_closure.txt
+          uv pip compile --index-strategy unsafe-best-match --python .venv/bin/python \
+            --no-annotate --no-header head_requirements.txt -o head_closure.txt
+
+      # Step 4: Run pip-audit for known vulnerabilities. The audit covers the whole
+      # installed environment, so only findings this PR introduces gate it; the ones
+      # the target branch already has are reported for information.
+      - name: Run pip-audit on installed environment
+        id: pip_audit
+        run: |
+          echo "## 🔍 Vulnerability Scan Results" > audit_report.md
+          echo "" >> audit_report.md
+
+          .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1 || true
+          .venv/bin/pip-audit --format=json --output=audit.json || true
+
+          # Gate when the scan itself could not be completed, rather than pass silently.
+          # Only the status goes to stdout; stderr carries the findings that were not
+          # gated on, and is echoed back so it stays in the job log as well.
+          STATUS=$(python3 scripts/audit_changed_packages.py audit.json new_deps.txt base_closure.txt head_closure.txt 2>audit_notes.txt) || STATUS=scan_failed
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          cat audit_notes.txt >&2
+
+          echo "" >> audit_report.md
+          case "$STATUS" in
+            fail)
+              echo "⚠️  **Vulnerabilities detected in the dependencies this PR introduces!**" >> audit_report.md
+              ;;
+            preexisting)
+              echo "ℹ️  The findings above are not ones this PR introduces." >> audit_report.md
+              ;;
+            scan_failed)
+              echo "❌ The vulnerability scan could not be completed." >> audit_report.md
+              ;;
+            *)
+              echo "✅ No known vulnerabilities found" >> audit_report.md
+              ;;
+          esac
+
+          # On a failed scan stderr holds the traceback, which belongs in the log only
+          if [ "$STATUS" != "scan_failed" ] && [ -s audit_notes.txt ]; then
+            echo "" >> audit_report.md
+            echo "ℹ️  $(cat audit_notes.txt)" >> audit_report.md
+          fi
+
+          if [ "$STATUS" != "pass" ] && [ ! -s base_closure.txt ]; then
+            echo "" >> audit_report.md
+            echo "⚠️  The target branch could not be resolved, so only the dependencies this PR changes directly were compared." >> audit_report.md
+          fi
+
+          cat audit_report.md
+
+      # Step 5: Check manifest.json changes
       - name: Check provider manifest changes
         id: manifest_check
         run: |
@@ -196,7 +247,7 @@ jobs:
 
           cat manifest_report.md
 
-      # Step 4: Run package safety check on new dependencies
+      # Step 6: Run package safety check on new dependencies
       - name: Check new package safety
         id: safety_check
         if: steps.deps_check.outputs.has_changes == 'true'
@@ -255,7 +306,7 @@ jobs:
 
           cat safety_report.md
 
-      # Step 5: Persist analysis results for the reporting workflow.
+      # Step 7: Persist analysis results for the reporting workflow.
       # The report runs via workflow_run and cannot see this job's outputs, so
       # the result strings are passed via the artifact. This data is UNTRUSTED
       # (produced by fork code); the reporting workflow validates it and derives
@@ -274,10 +325,10 @@ jobs:
             echo "LICENSE=${{ steps.safety_check.outputs.license }}"
           } > status.env
 
-      # Step 6: Hand off report fragments and results to the reporting workflow
+      # Step 8: Hand off report fragments and results to the reporting workflow
       - name: Upload security reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: security-reports
           path: |

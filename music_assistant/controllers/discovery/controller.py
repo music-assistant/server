@@ -13,8 +13,8 @@ from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, EventType
 from zeroconf import (
     NonUniqueNameException,
     ServiceStateChange,
@@ -34,6 +34,7 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.event import MassEvent
 
     from music_assistant.models import ProviderInstanceType
 
@@ -94,19 +95,17 @@ class DiscoveryController(CoreController):
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
+        # the mdns record embeds the server info, so refresh it when that info
+        # changes (e.g. the server was renamed or its state/urls changed)
+        self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
         if self.mass.running_as_hass_addon:
             # (re)announce to HA supervisor to make sure that HA picks it up
             await self._announce_to_homeassistant()
             self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for the discovery controller."""
-        del action, values
         return (
             CONF_ENTRY_ZEROCONF_INTERFACES,
             ConfigEntry(
@@ -202,10 +201,11 @@ class DiscoveryController(CoreController):
 
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
+        library_log_level = (
+            logging.DEBUG if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else self.logger.level + 10
+        )
+        for logger_name in ("async_upnp_client", "zeroconf"):
+            logging.getLogger(logger_name).setLevel(library_log_level)
 
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
@@ -278,6 +278,12 @@ class DiscoveryController(CoreController):
             self.logger.error(
                 "Music Assistant instance with identical name present in the local network!"
             )
+
+    async def _on_core_state_updated(self, event: MassEvent) -> None:
+        """Refresh the advertised mdns record after the server info changed."""
+        if self._aiozc is None or self.mass.closing:
+            return
+        await self._register_mass_service()
 
     def _on_mdns_service_state_change(
         self,

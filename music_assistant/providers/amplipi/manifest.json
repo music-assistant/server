@@ -1,7 +1,7 @@
 {
   "type": "player",
   "domain": "amplipi",
-  "stage": "experimental",
+  "stage": "beta",
   "name": "AmpliPi",
   "description": "Control AmpliPi multi-zone audio controllers, exposing each zone as a Music Assistant player with native zone grouping and source management.",
   "codeowners": ["@micro-nova"],

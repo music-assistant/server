@@ -22,7 +22,7 @@ QUIZ_TYPES: dict[str, type[QuizType]] = {
 }
 
 
-def get_available_quiz_types(mass: MusicAssistant) -> list[str]:
+async def get_available_quiz_types(mass: MusicAssistant) -> list[str]:
     """
     Return quiz type identities currently available for game creation.
 
@@ -31,7 +31,7 @@ def get_available_quiz_types(mass: MusicAssistant) -> list[str]:
     return [
         quiz_type
         for quiz_type, quiz_type_class in QUIZ_TYPES.items()
-        if quiz_type_class.is_available(mass)
+        if await quiz_type_class.is_available(mass)
     ]
 
 

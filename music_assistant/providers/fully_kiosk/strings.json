@@ -20,7 +20,16 @@
       "description": "Optional SHA-256 hex fingerprint. When provided it must match the device certificate and overrides the verify setting."
     }
   },
+  "errors": {
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+  },
   "manifest": {
     "description": "Play audio on Fully Kiosk-enabled displays or Android devices."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Fully Kiosk",
+      "description": "Enter the password configured for the Fully Kiosk REST API on this device."
+    }
   }
 }

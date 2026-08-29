@@ -1,15 +1,17 @@
-"""Regression tests for universal player external-source delegation (#5443)."""
+"""Tests for the universal player."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
 
 from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -27,7 +29,7 @@ def _make_mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
@@ -49,8 +51,34 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    provider._universal_player_locks = {}
+    provider._lock = asyncio.Lock()
     return provider
+
+
+def _make_protocol_player(
+    player_id: str,
+    domain: str,
+    *,
+    needs_setup: bool = False,
+    setup_reason: str | None = None,
+) -> MagicMock:
+    """Return a reachable protocol player, optionally still awaiting its setup."""
+    player = MagicMock(spec=Player)
+    player.player_id = player_id
+    player.available = True
+    player.available_for_playback = not needs_setup
+    player.needs_setup = needs_setup
+    player.setup_reason = setup_reason
+    provider = MagicMock()
+    provider.domain = domain
+    player.provider = provider
+    return player
+
+
+def _register_players(mass: MagicMock, *players: MagicMock) -> None:
+    """Make the given players resolvable by id on the mass mock."""
+    registry = {player.player_id: player for player in players}
+    mass.players.get_player = MagicMock(side_effect=lambda pid, *_a, **_kw: registry.get(pid))
 
 
 def _make_chromecast_player(
@@ -61,22 +89,19 @@ def _make_chromecast_player(
     features: set[PlayerFeature],
 ) -> MagicMock:
     """Return a chromecast-domain protocol player with the given active source and features."""
-    player = MagicMock(spec=Player)
-    player.player_id = player_id
-    player.available = True
+    player = _make_protocol_player(player_id, "chromecast")
     player.active_source = active_source
     player.playback_state = PlaybackState.PLAYING
     player.supported_features = features
-    provider = MagicMock()
-    provider.domain = "chromecast"
-    player.provider = provider
     player.play = AsyncMock()
     player.pause = AsyncMock()
     player.stop = AsyncMock()
     player.next_track = AsyncMock()
     player.previous_track = AsyncMock()
     player.seek = AsyncMock()
-    mass.players.get_player = MagicMock(return_value=player)
+    player.set_shuffle = AsyncMock()
+    player.set_repeat = AsyncMock()
+    _register_players(mass, player)
     return player
 
 
@@ -157,6 +182,24 @@ async def test_transport_proxied_to_external_source(
     chromecast.pause.assert_awaited_once_with()
 
 
+async def test_ordering_proxied_to_external_source(
+    setup: tuple[UniversalPlayer, MagicMock],
+) -> None:
+    """
+    Shuffle and repeat reach the protocol player playing the source.
+
+    The source_list is taken from that player too, so the capability it declares and
+    the command that acts on it must arrive at the same place.
+    """
+    universal, chromecast = setup
+
+    await universal.set_shuffle(True)
+    await universal.set_repeat(RepeatMode.ALL)
+
+    chromecast.set_shuffle.assert_awaited_once_with(True)
+    chromecast.set_repeat.assert_awaited_once_with(RepeatMode.ALL)
+
+
 def test_no_features_without_external_source() -> None:
     """Without an active external source the universal player advertises nothing of its own."""
     mass = _make_mock_mass()
@@ -168,3 +211,70 @@ def test_no_features_without_external_source() -> None:
     )
     universal = _make_universal_player(mass, ["cc_1"])
     assert universal.supported_features == set()
+
+
+def test_native_feature_survives_external_source() -> None:
+    """
+    A protocol-backed subclass keeps its own native features during external playback.
+
+    The neutral base unions this player's native capabilities with the forwardable
+    transport controls of the active external source, so a subclass that owns e.g. native
+    grouping (SET_MEMBERS) still advertises it while a linked protocol plays Spotify.
+    """
+    mass = _make_mock_mass()
+    _make_chromecast_player(
+        mass,
+        "cc_1",
+        active_source="spotify_connect",
+        features={PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.VOLUME_SET},
+    )
+    provider = _make_universal_provider(mass)
+    base_cfg = MagicMock()
+    base_cfg.name = None
+    base_cfg.default_name = "Shell"
+    mass.config.get_base_player_config.return_value = base_cfg
+
+    class _NativeShell(ProtocolBackedPlayer):
+        def __init__(self) -> None:
+            super().__init__(provider, "shell_1")
+            self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+
+        def _backing_protocol_player_ids(self) -> list[str]:
+            return ["cc_1"]
+
+    shell = _NativeShell()
+    shell._cache.clear()
+    shell.set_initialized()
+    # native SET_MEMBERS survives, and the external source's forwardable transport is added
+    assert shell.supported_features == {
+        PlayerFeature.SET_MEMBERS,
+        PlayerFeature.PAUSE,
+        PlayerFeature.SEEK,
+    }
+
+
+def test_setup_needed_when_only_protocol_awaits_setup() -> None:
+    """A wrapper whose only protocol still needs setup reports it, including the reason."""
+    mass = _make_mock_mass()
+    airplay = _make_protocol_player(
+        "ap_1", "airplay", needs_setup=True, setup_reason="pairing_required"
+    )
+    _register_players(mass, airplay)
+    universal = _make_universal_player(mass, ["ap_1"])
+    assert universal.available is False
+    assert universal.needs_setup is True
+    assert universal.setup_reason == "pairing_required"
+
+
+def test_no_setup_needed_while_another_protocol_is_usable() -> None:
+    """A wrapper that can play through another protocol does not ask for setup."""
+    mass = _make_mock_mass()
+    airplay = _make_protocol_player(
+        "ap_1", "airplay", needs_setup=True, setup_reason="pairing_required"
+    )
+    chromecast = _make_protocol_player("cc_1", "chromecast")
+    _register_players(mass, airplay, chromecast)
+    universal = _make_universal_player(mass, ["ap_1", "cc_1"])
+    assert universal.available is True
+    assert universal.needs_setup is False
+    assert universal.setup_reason is None

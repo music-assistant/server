@@ -38,18 +38,9 @@ from music_assistant.providers.fastmcp_server.tools._common import (
     resolve_uri,
     to_brief_track,
 )
-from music_assistant.providers.fastmcp_server.tools.library import build_library_server
 from music_assistant.providers.fastmcp_server.tools.metadata import build_metadata_server
 
 from .media_fakes import fake_media_item
-
-
-@pytest.fixture
-def library_server(mock_mass: Any) -> FastMCP:
-    """Mount only the library sub-server."""
-    mcp: FastMCP = FastMCP(name="t")
-    mcp.mount(build_library_server(mock_mass), namespace="library")
-    return mcp
 
 
 @pytest.fixture

@@ -9,14 +9,21 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
+    JOIN_CODE_GLOBAL_FAILURE_CEILING,
+    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY,
     JOIN_CODE_LENGTH,
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_ACTIVITY_PERSIST_INTERVAL,
@@ -24,6 +31,7 @@ from music_assistant.controllers.webserver.auth import (
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
+    _mask_join_code,
 )
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -31,12 +39,19 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
     resolve_command_impersonation,
+    set_current_client_id,
+    set_current_peer_address,
     set_current_token,
     set_current_user,
     set_impersonated_user,
 )
-from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
+from music_assistant.controllers.webserver.helpers.auth_providers import (
+    PRUNE_THRESHOLD,
+    BuiltinLoginProvider,
+    LoginRateLimiter,
+)
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 
 
@@ -381,7 +396,7 @@ async def test_revoke_token(auth_manager: AuthenticationManager) -> None:
 
 async def test_list_users(auth_manager: AuthenticationManager) -> None:
     """
-    Test listing all users (admin only).
+    Test listing all users (requires the users.read scope).
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -703,6 +718,57 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
 
     assert len(providers) > 0
     assert any(p["provider_id"] == "builtin" for p in providers)
+
+
+class _FakeHassProvider:
+    """Minimal stand-in for the Home Assistant provider."""
+
+    domain = "hass"
+    available = True
+
+    def __init__(self, url: str | None) -> None:
+        self._url = url
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        return self._url
+
+
+async def test_get_login_providers_with_ha_provider(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that the HA OAuth login provider is registered when the HA provider has a URL.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+async def test_get_login_providers_ha_provider_without_url(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a HA provider without a URL does not break the login providers endpoint.
+
+    Regression test for the HA provider storing its URL in setup data instead of
+    config: builtin login must remain available and the endpoint must not raise.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "builtin" for p in providers)
+    assert not any(p["provider_id"] == "homeassistant" for p in providers)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:
@@ -1082,6 +1148,75 @@ async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManag
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     assert await auth_manager.database.get_row("auth_tokens", {"token_hash": token_hash}) is None
     assert await auth_manager.authenticate_with_token(token) is None
+
+
+async def test_access_revoked_subscription_hears_a_tokenless_revocation(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that subscribers are notified even when the user has no tokens left.
+
+    Credentials bound to a user's access can outlive its tokens (e.g. a guest token
+    that expired on its own), so the withdrawal must reach subscribers regardless.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="guestnotify", role=UserRole.GUEST)
+    seen: list[str] = []
+    unsubscribe = auth_manager.subscribe_user_access_revoked(lambda u: seen.append(u.user_id))
+
+    assert await auth_manager.revoke_tokens_for_user(user) == 0
+    await asyncio.sleep(0)
+    assert seen == [user.user_id]
+
+    unsubscribe()
+    await auth_manager.revoke_tokens_for_user(user)
+    await asyncio.sleep(0)
+    assert seen == [user.user_id]
+
+
+async def test_access_revoked_subscription_hears_a_user_deletion(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that deleting a user announces the access withdrawal to subscribers.
+
+    Deletion cascades the tokens away without revoke_tokens_for_user ever running,
+    so it is a separate access-ending path that must reach subscribers itself.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="notifyadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="guestdeleted", role=UserRole.GUEST)
+    seen: list[str] = []
+    auth_manager.subscribe_user_access_revoked(lambda u: seen.append(u.user_id))
+
+    set_current_user(admin)
+    await auth_manager.delete_user(user.user_id)
+    await asyncio.sleep(0)
+    assert seen == [user.user_id]
+
+
+async def test_access_revoked_subscription_hears_a_user_disable(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that disabling a user announces the access withdrawal to subscribers.
+
+    A disabled account's tokens stop authenticating without any revocation running,
+    so it is a separate access-ending path that must reach subscribers itself.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="disableadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="userdisabled", role=UserRole.USER)
+    seen: list[str] = []
+    auth_manager.subscribe_user_access_revoked(lambda u: seen.append(u.user_id))
+
+    set_current_user(admin)
+    await auth_manager.disable_user(user.user_id)
+    await asyncio.sleep(0)
+    assert seen == [user.user_id]
 
 
 async def test_short_lived_jwt_exp_carries_absolute_max(
@@ -1766,7 +1901,7 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
             ...
     # invalid username must raise
     set_current_user(admin_user)
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(UserNotFoundError):
         async with ImpersonatedUser(auth_manager.mass, "wrong_username"):
             ...
 
@@ -1877,10 +2012,10 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
-    Verify a successful exchange does not clear the failed-attempt counter.
+    Verify a successful exchange does not clear the shared failed-attempt counter.
 
-    The rate limit key is global, so clearing on success would let an attacker
-    holding any valid code reset the counter at will and bypass throttling.
+    Callers without a connection identity share one bucket, so clearing it on success
+    would let an attacker holding any valid code reset the counter for everyone.
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -1899,6 +2034,219 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     result = await auth_manager.exchange_join_code(code)
     assert result["success"] is False
     assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_is_per_connection(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify one throttled client does not lock out the other clients.
+
+    At a party every guest exchanges a join code over their own connection, so a guest
+    re-scanning an expired QR code must only ever throttle their own connection.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="partyguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    # One guest burns through the progressive delay threshold with a stale code.
+    set_current_client_id("connection-a")
+    for _ in range(3):
+        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
+    result = await auth_manager.exchange_join_code("EXPIRED12345")
+    assert "too many" in result["error"].lower()
+
+    # A second guest is unaffected, both for a bad code and for a valid one.
+    set_current_client_id("connection-b")
+    result = await auth_manager.exchange_join_code("EXPIRED12345")
+    assert "invalid" in result["error"].lower()
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+
+async def test_exchange_join_code_success_clears_connection_rate_limit(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify a successful exchange clears the counter of that connection only.
+
+    A per-connection counter can only be cleared by the connection that filled it, so a
+    valid code holder cannot lift the throttle for anyone else.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="clearingguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    set_current_client_id("connection-c")
+    for _ in range(2):
+        assert (await auth_manager.exchange_join_code("MISTYPED1234"))["success"] is False
+
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # Without the reset, the fourth failure overall would trip the threshold.
+    for _ in range(2):
+        result = await auth_manager.exchange_join_code("MISTYPED1234")
+        assert "invalid" in result["error"].lower()
+
+    # The shared bucket of connection-less callers is untouched by all of this.
+    set_current_client_id(None)
+    result = await auth_manager.exchange_join_code("MISTYPED1234")
+    assert "invalid" in result["error"].lower()
+
+
+async def test_exchange_join_code_global_ceiling_throttles_every_client(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify the server-wide ceiling still backstops the per-connection counters.
+
+    A client can open a fresh connection (and thus a fresh counter) at will, so the
+    ceiling is what bounds sustained abuse.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="ceilingguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    for _ in range(JOIN_CODE_GLOBAL_FAILURE_CEILING):
+        await auth_manager._join_code_global_rate_limiter.record_failed_attempt(
+            JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+        )
+
+    # An untouched connection is throttled, even when it presents a valid code.
+    set_current_client_id("connection-never-seen-before")
+    result = await auth_manager.exchange_join_code(code)
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_falls_back_to_peer_address(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify stateless API callers are told apart by the address they connect from.
+
+    The login page exchanges join codes over the JSON RPC endpoint, which carries no
+    connection identity, so without this every such caller would share one bucket.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="httpguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    set_current_peer_address("192.0.2.10")
+    for _ in range(3):
+        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
+    assert "too many" in (await auth_manager.exchange_join_code("EXPIRED12345"))["error"].lower()
+
+    # A caller from another address is unaffected.
+    set_current_peer_address("192.0.2.11")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # An address can be shared by everyone behind a proxy, so success must not clear it.
+    set_current_peer_address("192.0.2.10")
+    assert "too many" in (await auth_manager.exchange_join_code(code))["error"].lower()
+
+    # A websocket client id always wins over the peer address.
+    set_current_client_id("connection-e")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+
+def test_mask_join_code() -> None:
+    """Verify the log mask keeps a correlatable prefix but no usable code."""
+    assert _mask_join_code("abcdefghjklm") == "ABCD********"
+    assert _mask_join_code("abc") == "ABC"
+
+
+async def test_exchange_join_code_logs_identify_the_caller(
+    auth_manager: AuthenticationManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Verify a support log can tell a rejected code apart from a throttled client.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param caplog: Log capture fixture.
+    """
+    set_current_client_id("connection-d")
+    for _ in range(3):
+        await auth_manager.exchange_join_code("MISTYPED1234")
+    rejections = [record.getMessage() for record in caplog.records if "rejected" in record.message]
+    assert len(rejections) == 3
+    assert "client=connection-d" in rejections[0]
+    # the attempted code is only ever logged masked
+    assert "code=MIST********" in rejections[0]
+    assert "MISTYPED1234" not in rejections[0]
+
+    caplog.clear()
+    await auth_manager.exchange_join_code("MISTYPED1234")
+    throttles = [record.getMessage() for record in caplog.records if "throttled" in record.message]
+    assert len(throttles) == 1
+    assert "throttled by the client limit" in throttles[0]
+    assert "client=connection-d" in throttles[0]
+    assert "client_failures=3" in throttles[0]
+    assert "server_failures=3" in throttles[0]
+
+
+async def test_login_rate_limiter_default_tiers() -> None:
+    """Verify the default progressive delays escalate with the failed attempt count."""
+    limiter = LoginRateLimiter()
+
+    assert limiter.get_attempt_count("bob") == 0
+    for expected_count, expected_delay in ((2, 0), (3, 30), (6, 60), (10, 120), (15, 300)):
+        while limiter.get_attempt_count("bob") < expected_count:
+            await limiter.record_failed_attempt("bob")
+        assert limiter.get_delay("bob") == expected_delay
+
+    await limiter.clear_attempts("bob")
+    assert limiter.get_attempt_count("bob") == 0
+    assert limiter.get_delay("bob") == 0
+
+
+async def test_login_rate_limiter_custom_tiers() -> None:
+    """Verify a limiter can be configured with its own threshold and delay."""
+    limiter = LoginRateLimiter(delay_tiers=((3, 60),))
+
+    for _ in range(2):
+        await limiter.record_failed_attempt("key")
+    assert await limiter.check_rate_limit("key") == (True, 0)
+
+    await limiter.record_failed_attempt("key")
+    allowed, remaining_delay = await limiter.check_rate_limit("key")
+    assert allowed is False
+    assert 0 < remaining_delay <= 60
+
+
+async def test_login_rate_limiter_drops_attempts_outside_window() -> None:
+    """Verify attempts older than the tracking window stop counting."""
+    limiter = LoginRateLimiter(tracking_window=timedelta(seconds=0))
+
+    await limiter.record_failed_attempt("key")
+    assert limiter.get_attempt_count("key") == 0
+
+
+async def test_login_rate_limiter_prunes_expired_keys() -> None:
+    """
+    Verify expired keys do not pile up when they are never used again.
+
+    Keys are one-off by nature (a connection that gives up, a made-up username), so
+    without the sweep the bookkeeping would grow for as long as the server runs.
+    """
+    limiter = LoginRateLimiter(tracking_window=timedelta(seconds=0))
+
+    for index in range(PRUNE_THRESHOLD + 1):
+        await limiter.record_failed_attempt(f"key{index}")
+
+    # Every attempt is already outside this limiter's window, so the sweep drops them all.
+    assert len(limiter._failed_attempts) == 0
+
+    live = LoginRateLimiter()
+    for index in range(PRUNE_THRESHOLD + 1):
+        await live.record_failed_attempt(f"key{index}")
+
+    # Attempts inside the tracking window are never swept away.
+    assert len(live._failed_attempts) == PRUNE_THRESHOLD + 1
 
 
 async def test_resolve_command_impersonation(auth_manager: AuthenticationManager) -> None:
@@ -1936,10 +2284,78 @@ async def test_resolve_command_impersonation(auth_manager: AuthenticationManager
     assert resolved == standard_user
     assert args == {}
 
+    # the dict form with the builtin provider is equivalent to the plain string form
+    args = {"user": {"provider": "builtin", "user_id": "user_a"}}
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == standard_user
+
     # a caller without the users.impersonate scope may not impersonate another user
     set_current_user(standard_user)
     with pytest.raises(InsufficientPermissions):
         await resolve_command_impersonation(auth_manager.mass, {"user": "admin"})
+
+
+async def test_resolve_command_impersonation_provider_link(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test resolving the dict form of the user argument by provider link."""
+    service_user = await auth_manager.create_user(username="ha_service", role=UserRole.SERVICE)
+    linked_user = await auth_manager.create_user(username="linked", role=UserRole.USER)
+    await auth_manager.link_user_to_provider(
+        linked_user, AuthProviderType.HOME_ASSISTANT, "ha-user-1"
+    )
+    set_current_user(service_user)
+    set_impersonated_user(None)
+
+    # a linked HA user resolves to the mapped MA user and pops the argument
+    args: dict[str, object] = {
+        "queue_id": "abc",
+        "user": {"provider": "homeassistant", "user_id": "ha-user-1"},
+    }
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == linked_user
+    assert args == {"queue_id": "abc"}
+
+    # an unknown user is an error by default (required defaults to true)...
+    args = {"user": {"provider": "homeassistant", "user_id": "ha-user-unknown"}}
+    with pytest.raises(UserNotFoundError):
+        await resolve_command_impersonation(auth_manager.mass, args)
+
+    # ...but softly resolves to None (no impersonation) when not required
+    args = {"user": {"provider": "homeassistant", "user_id": "ha-user-unknown", "required": False}}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    assert args == {}
+
+    # required also applies to the builtin provider
+    args = {"user": {"provider": "builtin", "user_id": "nobody", "required": False}}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    args = {"user": {"provider": "builtin", "user_id": "nobody"}}
+    with pytest.raises(UserNotFoundError):
+        await resolve_command_impersonation(auth_manager.mass, args)
+
+    # a malformed dict form is rejected (unknown provider, missing user_id, non-bool required);
+    # notably an unknown provider must not fall back to builtin (enum coercion default)
+    for malformed in (
+        {"provider": "nonsense", "user_id": "ha-user-1"},
+        {"provider": None, "user_id": "ha-user-1"},
+        {"user_id": "ha-user-1"},
+        {"provider": "homeassistant"},
+        {"provider": "homeassistant", "user_id": ""},
+        {"provider": "homeassistant", "user_id": "ha-user-1", "required": "yes"},
+    ):
+        with pytest.raises(InvalidDataError):
+            await resolve_command_impersonation(auth_manager.mass, {"user": malformed})
+
+    # an empty dict is treated as "no impersonation requested"
+    assert await resolve_command_impersonation(auth_manager.mass, {"user": {}}) is None
+
+    # resolving another user by provider link requires the users.impersonate scope
+    standard_user = await auth_manager.create_user(username="plain", role=UserRole.USER)
+    set_current_user(standard_user)
+    with pytest.raises(InsufficientPermissions):
+        await resolve_command_impersonation(
+            auth_manager.mass, {"user": {"provider": "homeassistant", "user_id": "ha-user-1"}}
+        )
 
 
 def test_has_scope() -> None:
@@ -1962,10 +2378,32 @@ def test_has_scope() -> None:
     assert not has_scope(_user(UserRole.GUEST), Scope.CONFIG_CORE_READ)
     # service
     assert has_scope(_user(UserRole.SERVICE), Scope.USERS_IMPERSONATE)
+    assert has_scope(_user(UserRole.SERVICE), Scope.USERS_READ)
     assert has_scope(_user(UserRole.SERVICE), Scope.CONFIG_PLAYERS_WRITE)
     assert not has_scope(_user(UserRole.SERVICE), Scope.CONFIG_CORE_WRITE)
+    # reading user accounts does not imply managing them
+    assert not has_scope(_user(UserRole.SERVICE), Scope.USERS_MANAGE)
     # an unknown (custom) role id is fail-closed and grants no scopes at all
     assert not has_scope(_user("some_future_role"), Scope.LIBRARY_READ)
+
+
+async def test_homeassistant_system_user_may_read_users(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the Home Assistant integration may list users to resolve the calling user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    system_user = await auth_manager.get_homeassistant_system_user()
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+    guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
+    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
+        assert getattr(command, "api_required_scope", None) is Scope.USERS_READ
+    assert has_scope(system_user, Scope.USERS_READ)
+    # reading user accounts remains off limits for regular users and guests
+    assert not has_scope(standard_user, Scope.USERS_READ)
+    assert not has_scope(guest_user, Scope.USERS_READ)
 
 
 async def test_homeassistant_system_user_has_service_role(
@@ -1983,3 +2421,253 @@ async def test_homeassistant_system_user_has_service_role(
     migrated_user = await auth_manager.get_user(system_user.user_id)
     assert migrated_user is not None
     assert migrated_user.role == UserRole.SERVICE
+
+
+async def _get_filters(
+    auth_manager: AuthenticationManager, user_id: str
+) -> tuple[list[str], list[str]]:
+    """Read the raw provider and player filter of the given user from the database."""
+    row = await auth_manager.database.get_row("users", {"user_id": user_id})
+    assert row is not None
+    return json_loads(row["provider_filter"]), json_loads(row["player_filter"])
+
+
+async def test_remove_from_user_filters(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a removed provider/player is stripped from the access filters of all users.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="restricted",
+        provider_filter=["spotify--old", "jellyfin--live"],
+        player_filter=["player_gone", "player_live"],
+    )
+    unrestricted = await auth_manager.create_user(username="unrestricted")
+
+    await auth_manager.remove_from_user_filters(
+        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
+    )
+
+    provider_filter, player_filter = await _get_filters(auth_manager, user.user_id)
+    assert provider_filter == ["jellyfin--live"]
+    assert player_filter == ["player_live"]
+    # a user without restrictions must stay unrestricted
+    assert await _get_filters(auth_manager, unrestricted.user_id) == ([], [])
+
+
+async def test_remove_from_user_filters_lifts_restriction(
+    auth_manager: AuthenticationManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Test that a user whose filter loses its last entry ends up unrestricted.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param caplog: Pytest log capture fixture.
+    """
+    user = await auth_manager.create_user(username="onlyspotify", provider_filter=["spotify--old"])
+
+    with caplog.at_level(logging.WARNING):
+        await auth_manager.remove_from_user_filters(provider_instance_ids=["spotify--old"])
+
+    provider_filter, _ = await _get_filters(auth_manager, user.user_id)
+    assert provider_filter == []
+    assert "no longer restricted" in caplog.text
+
+
+async def test_remove_from_user_filters_in_parallel(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that removals running at the same time do not undo each other.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="twoplayers", player_filter=["player_one", "player_two"]
+    )
+
+    # removing a player provider wipes the config of each of its players on its own
+    await asyncio.gather(
+        auth_manager.remove_from_user_filters(player_ids=["player_one"]),
+        auth_manager.remove_from_user_filters(player_ids=["player_two"]),
+    )
+
+    assert await _get_filters(auth_manager, user.user_id) == ([], [])
+
+
+async def test_update_user_filters_updates_live_sessions(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that an admin restricting a user takes effect on their connected sessions.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    user = await auth_manager.create_user(username="unrestricted")
+    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
+    mass_minimal.webserver.clients.add(session)
+
+    await auth_manager.update_user_filters(user, ["kitchen"], None)
+
+    assert session._authenticated_user.player_filter == ["kitchen"]
+    # a filter that was not part of the update must be left alone
+    assert session._authenticated_user.provider_filter == []
+
+
+async def test_replace_player_in_user_filters(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a replaced player is swapped for its replacement in the access filters.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    only_wrapper = await auth_manager.create_user(username="onlywrapper", player_filter=["up_old"])
+    both = await auth_manager.create_user(
+        username="both", player_filter=["up_old", "sonos_1", "kitchen"]
+    )
+    unrestricted = await auth_manager.create_user(username="unrestricted")
+
+    await auth_manager.replace_player_in_user_filters(
+        "up_old", "sonos_1", removed_player_ids=["up_old"]
+    )
+
+    # a user restricted to the replaced player must follow it instead of losing the restriction
+    assert (await _get_filters(auth_manager, only_wrapper.user_id))[1] == ["sonos_1"]
+    # a user that already had access to both must not end up with the replacement twice
+    assert (await _get_filters(auth_manager, both.user_id))[1] == ["sonos_1", "kitchen"]
+    assert await _get_filters(auth_manager, unrestricted.user_id) == ([], [])
+
+
+async def test_replace_player_in_user_filters_drops_removed_players(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that players removed along with the replaced one are still dropped.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="restricted", player_filter=["up_old", "up_old_airplay", "kitchen"]
+    )
+
+    await auth_manager.replace_player_in_user_filters(
+        "up_old", "sonos_1", removed_player_ids=["up_old", "up_old_airplay"]
+    )
+
+    assert (await _get_filters(auth_manager, user.user_id))[1] == ["sonos_1", "kitchen"]
+
+
+async def test_user_filter_removal_updates_live_sessions(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a filter removal is applied to the sessions that are already connected.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    user = await auth_manager.create_user(
+        username="restricted",
+        provider_filter=["spotify--old", "jellyfin--live"],
+        player_filter=["player_gone", "player_live"],
+    )
+    bystander = await auth_manager.create_user(username="bystander", player_filter=["player_other"])
+    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
+    bystander_session = MagicMock(
+        _authenticated_user=await auth_manager.get_user(bystander.user_id)
+    )
+    mass_minimal.webserver.clients.update({session, bystander_session})
+
+    await auth_manager.remove_from_user_filters(
+        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
+    )
+
+    assert session._authenticated_user.provider_filter == ["jellyfin--live"]
+    assert session._authenticated_user.player_filter == ["player_live"]
+    # a session of another user must keep its own filters
+    assert bystander_session._authenticated_user.player_filter == ["player_other"]
+
+
+async def test_replace_player_in_user_filters_updates_live_sessions(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a replacement is applied to the sessions that are already connected.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    user = await auth_manager.create_user(username="onlywrapper", player_filter=["up_old"])
+    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
+    mass_minimal.webserver.clients.add(session)
+
+    await auth_manager.replace_player_in_user_filters(
+        "up_old", "sonos_1", removed_player_ids=["up_old"]
+    )
+
+    assert session._authenticated_user.player_filter == ["sonos_1"]
+
+
+async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that filter entries pointing at unknown providers/players are cleaned up on startup.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    auth_manager.mass.config.set(
+        f"{CONF_PROVIDERS}/spotify--live", {"instance_id": "spotify--live"}
+    )
+    auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
+    user = await auth_manager.create_user(
+        username="stale",
+        provider_filter=["spotify--old", "spotify--live"],
+        player_filter=["player_gone", "player_live"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (
+        ["spotify--live"],
+        ["player_live"],
+    )
+
+
+async def test_prune_maps_collapsed_plugin_instances(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that filters naming a collapsed connected-player plugin instance follow it.
+
+    The collapse migration re-keys spotify_connect/airplay_receiver instances to the
+    bare domain; pruning the old id instead of mapping it would leave a user whose
+    last filter entry it was unrestricted.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    auth_manager.mass.config.set(
+        f"{CONF_PROVIDERS}/spotify_connect", {"instance_id": "spotify_connect"}
+    )
+    user = await auth_manager.create_user(
+        username="collapsed",
+        provider_filter=["spotify_connect--abcd1234"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (["spotify_connect"], [])
+
+
+async def test_prune_stale_user_filters_ignores_empty_config(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that filters are left alone when nothing is configured (yet).
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="noconfig",
+        provider_filter=["spotify--old"],
+        player_filter=["player_gone"],
+    )
+
+    await auth_manager._prune_stale_user_filters()
+
+    assert await _get_filters(auth_manager, user.user_id) == (["spotify--old"], ["player_gone"])

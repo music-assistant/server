@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import EventType, ImageType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
+    Audiobook,
     MediaItemImage,
+    Playlist,
+    Podcast,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
+)
+from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.mass import MusicAssistant
 
 FS_INSTANCE = "filesystem_local--AbCd"
@@ -234,3 +248,205 @@ async def test_remove_provider_mappings_emits_event_without_image_changes(
     # payload reflects the removed mapping
     assert len(events) == 1
     assert {pm.provider_instance for pm in events[0].provider_mappings} == {STREAM_INSTANCE}
+
+
+async def test_failed_item_removal_keeps_provider_mapping(mass: MusicAssistant) -> None:
+    """A failing library removal must not leave the item behind without any providers."""
+    artists = mass.music.artists
+    fs_only = Artist(
+        item_id="fsonly",
+        provider=FS_INSTANCE,
+        name="Filesystem Only Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id="fsonly",
+                provider_domain="filesystem_local",
+                provider_instance=FS_INSTANCE,
+            )
+        },
+    )
+    db_artist = await artists.add_item_to_library(fs_only)
+    db_id = int(db_artist.item_id)
+
+    with (
+        patch.object(
+            artists, "remove_item_from_library", AsyncMock(side_effect=MusicAssistantError("boom"))
+        ),
+        pytest.raises(MusicAssistantError),
+    ):
+        await artists.remove_provider_mappings(db_id, FS_INSTANCE)
+
+    # the item survives *with* its mapping, so the removal can be retried
+    updated = await artists.get_library_item(db_id)
+    assert {pm.provider_instance for pm in updated.provider_mappings} == {FS_INSTANCE}
+
+
+async def test_failed_item_removal_keeps_single_provider_mapping(mass: MusicAssistant) -> None:
+    """The same applies when the item's last individual mapping is removed."""
+    artists = mass.music.artists
+    fs_only = Artist(
+        item_id="fsonly",
+        provider=FS_INSTANCE,
+        name="Filesystem Only Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id="fsonly",
+                provider_domain="filesystem_local",
+                provider_instance=FS_INSTANCE,
+            )
+        },
+    )
+    db_artist = await artists.add_item_to_library(fs_only)
+    db_id = int(db_artist.item_id)
+
+    with (
+        patch.object(
+            artists, "remove_item_from_library", AsyncMock(side_effect=MusicAssistantError("boom"))
+        ),
+        pytest.raises(MusicAssistantError),
+    ):
+        await artists.remove_provider_mapping(db_id, FS_INSTANCE, "fsonly")
+
+    updated = await artists.get_library_item(db_id)
+    assert {pm.provider_instance for pm in updated.provider_mappings} == {FS_INSTANCE}
+
+
+async def _assert_orphan_is_pruned(
+    mass: MusicAssistant, controller: MediaControllerBase[Any], db_id: int
+) -> None:
+    """Strip an item's provider mapping rows and assert the periodic cleanup removes it."""
+    await mass.music.database.delete(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": controller.media_type.value, "item_id": db_id},
+    )
+
+    await mass.music._cleanup_database()
+
+    with pytest.raises(MediaNotFoundError):
+        await controller.get_library_item(db_id)
+
+
+async def test_database_cleanup_removes_orphaned_podcasts(mass: MusicAssistant) -> None:
+    """A podcast without any provider mapping is cleaned up."""
+    podcast = Podcast(
+        item_id="show1",
+        provider=FS_INSTANCE,
+        name="Orphaned Show",
+        provider_mappings={
+            ProviderMapping(
+                item_id="show1", provider_domain="filesystem_local", provider_instance=FS_INSTANCE
+            )
+        },
+    )
+    db_item = await mass.music.podcasts.add_item_to_library(podcast)
+    await _assert_orphan_is_pruned(mass, mass.music.podcasts, int(db_item.item_id))
+
+
+async def test_database_cleanup_removes_orphaned_audiobooks(mass: MusicAssistant) -> None:
+    """An audiobook without any provider mapping is cleaned up."""
+    audiobook = Audiobook(
+        item_id="book1",
+        provider=FS_INSTANCE,
+        name="Orphaned Book",
+        provider_mappings={
+            ProviderMapping(
+                item_id="book1", provider_domain="filesystem_local", provider_instance=FS_INSTANCE
+            )
+        },
+    )
+    db_item = await mass.music.audiobooks.add_item_to_library(audiobook)
+    await _assert_orphan_is_pruned(mass, mass.music.audiobooks, int(db_item.item_id))
+
+
+async def test_item_without_provider_mappings_raises_media_not_found(
+    mass: MusicAssistant,
+) -> None:
+    """An item that lost all its providers reports a clean 'not found' error."""
+    playlists = mass.music.playlists
+    playlist = Playlist(
+        item_id="pl1",
+        provider=FS_INSTANCE,
+        name="Orphaned Playlist",
+        owner="tester",
+        is_editable=False,
+        provider_mappings={
+            ProviderMapping(
+                item_id="pl1", provider_domain="filesystem_local", provider_instance=FS_INSTANCE
+            )
+        },
+    )
+    db_playlist = await playlists.add_item_to_library(playlist)
+    db_id = int(db_playlist.item_id)
+    await mass.music.database.delete(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": playlists.media_type.value, "item_id": db_id},
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        async for _ in playlists.tracks(str(db_id), "library"):
+            pass
+
+
+async def test_database_cleanup_removes_relations_of_deleted_items(mass: MusicAssistant) -> None:
+    """Relation rows left pointing at a deleted item are swept, sparing the ones still in use."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="rel-artist",
+            provider=FS_INSTANCE,
+            name="Relation Artist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-artist",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    album = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="rel-album",
+            provider=FS_INSTANCE,
+            name="Relation Album",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-album",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    track = await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id="rel-track",
+            provider=FS_INSTANCE,
+            name="Relation Track",
+            artists=UniqueList([artist]),
+            album=album,
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-track",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    track_id = int(track.item_id)
+    assert await mass.music.database.get_rows(DB_TABLE_ALBUM_TRACKS, {"track_id": track_id})
+    assert await mass.music.database.get_rows(DB_TABLE_TRACK_ARTISTS, {"track_id": track_id})
+
+    # drop the track row itself, the way a removal that only deletes its own side leaves it
+    await mass.music.database.delete(DB_TABLE_TRACKS, {"item_id": track_id})
+
+    await mass.music._cleanup_database()
+
+    assert not await mass.music.database.get_rows(DB_TABLE_ALBUM_TRACKS, {"track_id": track_id})
+    assert not await mass.music.database.get_rows(DB_TABLE_TRACK_ARTISTS, {"track_id": track_id})
+    # the album is still there with its artist, so that relation must survive
+    assert await mass.music.database.get_rows(
+        DB_TABLE_ALBUM_ARTISTS,
+        {"album_id": int(album.item_id), "artist_id": int(artist.item_id)},
+    )

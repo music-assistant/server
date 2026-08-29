@@ -186,4 +186,4 @@ async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant)
     with pytest.raises(InvalidCommand):
         await e2e_mass.player_queues.set_shuffle(queue_id, False)
     with pytest.raises(InvalidCommand):
-        e2e_mass.player_queues.set_repeat(queue_id, RepeatMode.ALL)
+        await e2e_mass.player_queues.set_repeat(queue_id, RepeatMode.ALL)

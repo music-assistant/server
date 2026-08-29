@@ -55,6 +55,7 @@ async def test_create_virtual_player(mass: MusicAssistant) -> None:
     assert player is not None
     assert player.type == PlayerType.PLAYER
     assert player.hidden_by_default is True
+    assert player.private is True
     assert player.expose_to_ha_by_default is False
     assert PlayerFeature.VOLUME_SET not in player.supported_features
     assert PlayerFeature.VOLUME_MUTE not in player.supported_features
@@ -241,6 +242,93 @@ async def test_remove_virtual_player_retries_after_partial_failure() -> None:
     sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
 
 
+async def test_cleanup_failed_creation_awaits_a_slow_teardown() -> None:
+    """Test that a slow teardown is awaited to completion instead of being retried."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}slow"
+    sendspin._virtual_players = {player_id: "owner--test"}
+    sendspin.server_api.get_client.return_value = None
+
+    async def _slow_unregister(_player_id: str, **_kwargs: object) -> None:
+        # outlasts the 2 second bound this path used to carry
+        await asyncio.sleep(2.5)
+
+    sendspin.mass.players.unregister = AsyncMock(side_effect=_slow_unregister)
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    assert sendspin.mass.players.unregister.await_count == 1
+    assert not sendspin.is_virtual_player(player_id)
+    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
+    sendspin.logger.warning.assert_not_called()
+
+
+async def test_cleanup_failed_creation_retries_a_raised_teardown() -> None:
+    """Test that a teardown raising once is retried and then reported as cleaned up."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}flaky"
+    sendspin._virtual_players = {player_id: "owner--test"}
+    sendspin.server_api.get_client.return_value = None
+    sendspin.mass.players.unregister = AsyncMock(
+        side_effect=[RuntimeError("teardown failed"), None]
+    )
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    assert sendspin.mass.players.unregister.await_count == 2
+    assert not sendspin.is_virtual_player(player_id)
+    sendspin.logger.warning.assert_not_called()
+
+
+async def test_cleanup_failed_creation_skips_an_already_removed_player() -> None:
+    """Test that cleanup stops immediately when the player is already gone."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}gone"
+    # already torn down by a racing removal, e.g. the owner-unloaded sweep
+    sendspin._virtual_players = {}
+    sendspin.mass.players.unregister = AsyncMock()
+
+    async with asyncio.timeout(0.5):
+        await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    sendspin.mass.players.unregister.assert_not_awaited()
+    sendspin.mass.players.delete_player_config.assert_not_called()
+    sendspin.logger.warning.assert_not_called()
+
+
+async def test_cleanup_failed_creation_keeps_a_reclaimable_config() -> None:
+    """Test that cleanup leaves a persisted config it did not create in place."""
+    sendspin = SendspinProvider.__new__(SendspinProvider)
+    sendspin.mass = MagicMock()
+    sendspin.server_api = MagicMock()
+    sendspin.logger = MagicMock()
+    sendspin.config = MagicMock(instance_id="sendspin--test")
+    player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}reclaimable"
+    # unloading drops the in-memory entries but keeps the configs on purpose
+    sendspin._virtual_players = {}
+    sendspin.mass.config.get.return_value = {
+        "provider": sendspin.instance_id,
+        "values": {CONF_VIRTUAL_PLAYER_OWNER: "owner--test"},
+    }
+    sendspin.server_api.get_client.return_value = None
+    sendspin.mass.players.unregister = AsyncMock()
+
+    await sendspin._cleanup_failed_virtual_player_creation(player_id)
+
+    sendspin.mass.players.delete_player_config.assert_not_called()
+    sendspin.mass.players.unregister.assert_not_awaited()
+    sendspin.logger.warning.assert_not_called()
+
+
 async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant) -> None:
     """Test that removal is refused for players that are not virtual players."""
     sendspin = _get_sendspin_provider(mass)
@@ -253,7 +341,7 @@ async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant
 
 async def test_virtual_player_removed_on_owner_unload(mass: MusicAssistant) -> None:
     """Test that unloading the owner provider removes its virtual players."""
-    await mass.config.save_provider_config("profiler", {})
+    await mass.config._create_provider_instance("profiler", {})
     owner = mass.get_provider("profiler")
     assert owner is not None
     await owner.initialized.wait()

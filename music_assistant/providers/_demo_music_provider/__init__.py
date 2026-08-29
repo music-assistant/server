@@ -60,13 +60,18 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -106,40 +111,6 @@ async def setup(
     return MyDemoMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # Config Entries are used to configure the Music Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-
-    # We support flow-like configuration where you can have multiple steps of configuration
-    # using the 'action' parameter to distinguish between the different steps.
-    # The 'values' parameter contains the raw values of the config entries that were filled in
-    # by the user in the UI. This is a dictionary with the key being the config entry id
-    # and the value being the actual value filled in by the user.
-
-    # For authentication flows where the user needs to be redirected to a login page
-    # or some other external service, we have a simple helper that can help you with those steps
-    # and a callback url that you can use to redirect the user back to the Music Assistant UI.
-    # See for example the Deezer provider for an example of how to use this.
-    return ()
-
-
 class MyDemoMusicprovider(MusicProvider):
     """
     Example/demo Music provider.
@@ -156,6 +127,42 @@ class MyDemoMusicprovider(MusicProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        This is called only for an already set-up instance to render its options page,
+        so you can read the current values with ``self.get_config_value`` and inspect
+        capabilities with ``self.supported_features``. Return an empty tuple when the
+        provider has no options.
+
+        One-time setup input (credentials, tokens, an OAuth/QR login, picking a device,
+        ...) is NOT collected here - it is collected by the interactive setup flow in
+        ``setup_flow.py`` (see the ``run_setup`` function there). If your provider needs
+        no setup input at all, simply omit ``setup_flow.py``.
+
+        For one-shot buttons (e.g. "clear cache") add a ``ConfigEntryType.ACTION`` entry
+        here and handle its press in ``handle_config_action`` below.
+        """
+        return ()
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """
+        Handle a one-shot ACTION button press from the options page.
+
+        Run the side effect for the pressed ``action`` (the ``action`` id of one of the
+        ``ConfigEntryType.ACTION`` entries returned by ``get_config_entries``) and return
+        None: the action is a one-off, with nothing to re-render. Raise (typically
+        ``ActionUnavailable``) to report that the action could not run. Return config
+        entries only when the options page must re-render with different entries.
+        Delegate unknown actions to ``super()`` (which raises ``ActionUnavailable``).
+
+        Remove this method entirely when your provider declares no ACTION entries.
+        """
+        return await super().handle_config_action(action)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -192,6 +199,19 @@ class MyDemoMusicprovider(MusicProvider):
         """
         # For streaming providers return True here but for local file based providers return False.
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """
+        Return the media types this provider can serve.
+
+        Defaults to the media types the provider declares library support for.
+        Override for providers that can serve (search/stream) media types they
+        cannot list as library items, so they are eligible for search-based
+        lookups such as cross-provider matching and versions.
+        """
+        # OPTIONAL - the default (derived from the LIBRARY_* features) is usually correct.
+        return super().supported_media_types
 
     async def search(  # type: ignore[empty-body]
         self,
@@ -614,16 +634,59 @@ class MyDemoMusicprovider(MusicProvider):
 
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Get this provider's available recommendation rows, without items.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
         """
-        # Get this provider's recommendations.
-        # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
+        # This is only called if you reported the RECOMMENDATIONS feature
+        # in the supported_features.
+        # Return one RecommendationFolder per recommendation row, filling in only
+        # the descriptor fields and leaving 'items' at its (empty) default, e.g.:
+        #     RecommendationFolder(
+        #         item_id="new_releases",
+        #         provider=self.instance_id,
+        #         name="New Releases",
+        #         translation_key="new_releases",
+        #         icon="mdi-album",
+        #     )
+        # Keep each row's item_id STABLE across calls and releases: the frontend
+        # stores user preferences (such as which rows are enabled) keyed on it.
+        # This method must be fast: do NOT perform any backend/network calls here.
+        # Local checks are fine, e.g. omitting rows that require a logged-in account.
+        # If your provider can only fetch its recommendations as one bulk payload,
+        # use the RecommendationPayloadMixin (music_assistant.models.recommendation_payload):
+        # implement _fetch_recommendation_payload() and serve this method from
+        # _recommendation_rows_from_payload(). List the mixin before the provider base
+        # class (class MyProvider(RecommendationPayloadMixin, MusicProvider)) so its
+        # unload() override can cancel in-flight payload tasks.
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        # This is only called if you reported the RECOMMENDATIONS feature
+        # in the supported_features.
+        # Live backend fetches belong here: match on the given item_id and
+        # fetch/build the items for just that row, e.g.:
+        #     if item_id == "new_releases":
+        #         return UniqueList(await self._fetch_new_releases())
+        # An unknown item_id must return an empty UniqueList (do not raise).
+        # NOTE: It is advised to apply caching here (if possible) to avoid too
+        # many calls to the provider's API. You can use the @use_cache decorator
+        # from music_assistant.controllers.cache: it keys on the item_id argument,
+        # giving each row its own cache entry.
+        # If you use the RecommendationPayloadMixin (see get_recommendations),
+        # serve this method from _recommendation_items_from_payload(item_id) instead.
+        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""

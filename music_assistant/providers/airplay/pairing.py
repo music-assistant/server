@@ -1,150 +1,47 @@
 """
-Native pairing implementations for AirPlay devices.
+Pairing implementations for AirPlay devices.
 
 This module provides pairing support for:
-- AirPlay 2 (HAP - HomeKit Accessory Protocol) - for Apple TV 4+, HomePod, Mac
-- RAOP (AirPlay 1 legacy pairing) - for older devices
+- AirPlay 2 (HAP - HomeKit Accessory Protocol) - for Apple TV 4+, HomePod, Mac.
+  Delegated to the cliairplay binary (--pair-setup): the same HAP implementation
+  performs pair-verify at stream time, so credentials and DACP identity always match.
+- RAOP (AirPlay 1 legacy pairing) - for older devices, implemented natively.
 
-Both implementations produce credentials compatible with cliap2/cliraop.
+Both produce credentials compatible with cliairplay.
 """
 
 from __future__ import annotations
 
-import binascii
+import asyncio
 import hashlib
 import logging
 import os
 import plistlib
-import uuid
+import re
 
 import aiohttp
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from music_assistant_models.errors import PlayerCommandFailed
-from srptools import SRPClientSession, SRPContext
 
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import format_ip_for_url
 
 from .constants import StreamingProtocol
+from .helpers import get_cli_binary
 
-# ============================================================================
-# Common utilities
-# ============================================================================
+# Timeout for the binary to complete the SRP exchange after the PIN is entered
+PAIR_SETUP_TIMEOUT = 60
 
-
-def hkdf_derive(
-    input_key: bytes,
-    salt: bytes,
-    info: bytes,
-    length: int = 32,
-) -> bytes:
-    """
-    Derive key using HKDF-SHA512.
-
-    :param input_key: Input keying material.
-    :param salt: Salt value.
-    :param info: Context info.
-    :param length: Output key length.
-    :return: Derived key bytes.
-    """
-    hkdf = HKDF(
-        algorithm=hashes.SHA512(),
-        length=length,
-        salt=salt,
-        info=info,
-    )
-    return hkdf.derive(input_key)
-
-
-# ============================================================================
-# TLV encoding/decoding for HAP
-# ============================================================================
-
-# TLV types for HAP pairing
-TLV_METHOD = 0x00
-TLV_IDENTIFIER = 0x01
-TLV_SALT = 0x02
-TLV_PUBLIC_KEY = 0x03
-TLV_PROOF = 0x04
-TLV_ENCRYPTED_DATA = 0x05
-TLV_STATE = 0x06
-TLV_ERROR = 0x07
-TLV_SIGNATURE = 0x0A
-
-
-def tlv_encode(items: list[tuple[int, bytes]]) -> bytes:
-    """
-    Encode items into TLV format.
-
-    :param items: List of (type, value) tuples.
-    :return: TLV-encoded bytes.
-    """
-    result = bytearray()
-    for tlv_type, value in items:
-        offset = 0
-        while offset < len(value):
-            chunk = value[offset : offset + 255]
-            result.append(tlv_type)
-            result.append(len(chunk))
-            result.extend(chunk)
-            offset += 255
-        if len(value) == 0:
-            result.append(tlv_type)
-            result.append(0)
-    return bytes(result)
-
-
-def tlv_decode(data: bytes) -> dict[int, bytes]:
-    """
-    Decode TLV format into dictionary.
-
-    :param data: TLV-encoded bytes.
-    :return: Dictionary mapping type to concatenated value.
-    """
-    result: dict[int, bytearray] = {}
-    offset = 0
-    while offset < len(data):
-        tlv_type = data[offset]
-        length = data[offset + 1]
-        value = data[offset + 2 : offset + 2 + length]
-        if tlv_type in result:
-            result[tlv_type].extend(value)
-        else:
-            result[tlv_type] = bytearray(value)
-        offset += 2 + length
-    return {k: bytes(v) for k, v in result.items()}
-
-
-# ============================================================================
-# HAP Pairing constants (for AirPlay 2)
-# ============================================================================
-
-# SRP 3072-bit prime for HAP (hex string format for srptools)
-HAP_SRP_PRIME_3072 = (
-    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"
-    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437"
-    "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
-    "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05"
-    "98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB"
-    "9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"
-    "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718"
-    "3995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33"
-    "A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7"
-    "ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864"
-    "D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E2"
-    "08E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF"
-)
-HAP_SRP_GENERATOR = "5"
-
+# HAP error tag in the binary's pair-setup stderr lines ("... error tag: 3 (backoff ...)")
+HAP_ERROR_TAG_RE = re.compile(r"error tag: (\d+)")
 
 # ============================================================================
 # RAOP Pairing constants (for AirPlay 1 legacy)
 # ============================================================================
 
-# SRP 2048-bit prime for RAOP (hex string format for srptools)
+# SRP 2048-bit prime for RAOP (hex string format)
 RAOP_SRP_PRIME_2048 = (
     "AC6BDB41324A9A9BF166DE5E1389582FAF72B6651987EE07FC319294"
     "3DB56050A37329CBB4A099ED8193E0757767A13DD52312AB4B03310D"
@@ -160,16 +57,12 @@ RAOP_SRP_PRIME_2048 = (
 RAOP_SRP_GENERATOR = "02"  # RFC5054-2048bit uses generator 2
 
 
-# ============================================================================
-# Base Pairing class
-# ============================================================================
-
-
 class AirPlayPairing:
     """
-    Base class for AirPlay pairing.
+    Pairing session for an AirPlay device.
 
-    Handles both HAP (AirPlay 2) and RAOP (AirPlay 1) pairing protocols.
+    Handles both HAP (AirPlay 2, via the cliairplay binary) and RAOP
+    (AirPlay 1, native) pairing protocols.
     """
 
     def __init__(
@@ -189,54 +82,27 @@ class AirPlayPairing:
         :param protocol: Streaming protocol (RAOP or AIRPLAY2).
         :param logger: Logger instance.
         :param port: Port number (default: 7000 for AirPlay 2, 5000 for RAOP).
-        :param device_id: Device identifier (DACP ID) - must match what cliap2 uses.
+        :param device_id: Device identifier (DACP ID) - must match what cliairplay
+            uses at stream time (pair-verify signs with it).
         """
         self.address = address
         self.name = name
         self.protocol = protocol
         self.logger = logger
         self.port = port or (7000 if protocol == StreamingProtocol.AIRPLAY2 else 5000)
+        self.device_id = device_id
 
-        # HTTP session
+        # cliairplay --pair-setup subprocess state (AirPlay 2)
+        self._cli_binary: str | None = None
+        self._pair_proc: AsyncProcess | None = None
+        self._pair_proc_stderr: list[str] = []
+
+        # HTTP session (RAOP)
         self._session: aiohttp.ClientSession | None = None
         self._base_url: str = f"http://{format_ip_for_url(address)}:{self.port}"
 
-        # Common state
-        self._is_pairing: bool = False
-        self._srp_context: SRPContext | None = None
-        self._srp_session: SRPClientSession | None = None
-        self._session_key: bytes | None = None
-
-        # Client identifier (device_id) handling depends on protocol:
-        # - HAP (AirPlay 2): Uses DACP ID as string identifier (must match cliap2 pair-verify)
-        # - RAOP: Uses 8 random bytes (not the DACP ID) - credentials are self-contained
-        if protocol == StreamingProtocol.AIRPLAY2:
-            # For HAP, use DACP ID as the identifier (must match pair-verify)
-            if device_id:
-                self._client_id: bytes = device_id.encode()
-            else:
-                self._client_id = str(uuid.uuid4()).encode()
-        else:
-            # For RAOP, generate 8 random bytes for client_id
-            # The credentials format is client_id_hex:auth_secret_hex
-            self._client_id = os.urandom(8)
-
-        # Ed25519 keypair
-        self._client_private_key: Ed25519PrivateKey | None = None
-        self._client_public_key: bytes | None = None
-
-        # Server's public key
-        self._server_public_key: bytes | None = None
-
-    @property
-    def is_pairing(self) -> bool:
-        """Return True if a pairing session is in progress."""
-        return self._is_pairing
-
-    @property
-    def device_provides_pin(self) -> bool:
-        """Return True if the device displays the PIN."""
-        return True  # Both HAP and RAOP display PIN on device
+        # RAOP client identifier: 8 random bytes, the credentials are self-contained
+        self._client_id = os.urandom(8)
 
     @property
     def protocol_name(self) -> str:
@@ -246,7 +112,7 @@ class AirPlayPairing:
         return "AirPlay"
 
     async def start_pairing_session(self) -> None:
-        """Start HTTP session for pairing."""
+        """Prepare a new pairing session."""
         self.logger.info(
             "Starting %s pairing with %s at %s:%d",
             self.protocol_name,
@@ -254,25 +120,25 @@ class AirPlayPairing:
             self.address,
             self.port,
         )
-
-        # Generate Ed25519 keypair
-        self._client_private_key = Ed25519PrivateKey.generate()
-        self._client_public_key = self._client_private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-
-        # Create HTTP session
-        self._session = aiohttp.ClientSession()
-        self._is_pairing = True
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            self._cli_binary = await get_cli_binary()
+        else:
+            self._session = aiohttp.ClientSession()
 
     async def start_pin_pairing(self) -> bool:
         """
-        Start the pairing process.
+        Start the pairing process, making the device display its PIN.
 
         :return: True if device provides PIN.
         :raises PlayerCommandFailed: If device connection fails.
         """
+        if self.protocol == StreamingProtocol.AIRPLAY2:
+            # the binary POSTs /pair-pin-start right after connecting,
+            # then waits for the PIN on its stdin
+            await self._start_pair_setup_process()
+            self.logger.info("Device %s should now display its PIN", self.name)
+            return True
+
         if not self._session:
             raise PlayerCommandFailed("Session not started")
         try:
@@ -285,8 +151,6 @@ class AirPlayPairing:
                     raise PlayerCommandFailed(f"Failed to start pairing: HTTP {resp.status}")
 
             self.logger.info("Device %s is displaying PIN", self.name)
-
-            # SRP context will be created in finish_pairing when we have the PIN
             return True
 
         except aiohttp.ClientError as err:
@@ -298,15 +162,14 @@ class AirPlayPairing:
         Complete pairing with the provided PIN or password.
 
         :param pin: 4-digit PIN from device screen or device password.
-        :return: Credentials string for cliap2/cliraop.
+        :return: Credentials string for cliairplay.
         :raises PlayerCommandFailed: If pairing fails.
         """
-        if not self._session:
-            raise PlayerCommandFailed("Pairing not started")
-
         try:
             if self.protocol == StreamingProtocol.AIRPLAY2:
-                return await self._finish_hap_pairing(pin)
+                return await self._finish_cli_pair_setup(pin)
+            if not self._session:
+                raise PlayerCommandFailed("Pairing not started")
             return await self._finish_raop_pairing(pin)
         except PlayerCommandFailed:
             raise
@@ -316,258 +179,132 @@ class AirPlayPairing:
         finally:
             await self.close()
 
-    # ========================================================================
-    # Cleanup
-    # ========================================================================
-
     async def close(self) -> None:
         """Clean up resources."""
-        self._is_pairing = False
+        if self._pair_proc and not self._pair_proc.closed:
+            await self._pair_proc.kill()
+        self._pair_proc = None
         if self._session:
             await self._session.close()
             self._session = None
-        self._srp_context = None
-        self._srp_session = None
-        self._session_key = None
 
     # ========================================================================
-    # HAP (AirPlay 2) pairing implementation
+    # HAP (AirPlay 2) pairing via cliairplay --pair-setup
     # ========================================================================
 
-    async def _finish_hap_pairing(self, pin: str) -> str:
-        """
-        Complete HAP pairing for AirPlay 2.
-
-        :param pin: 4-digit PIN.
-        :return: Credentials (192 hex chars).
-        """
-        if not self._session:
+    async def _start_pair_setup_process(self) -> None:
+        """Spawn the cliairplay --pair-setup process (device shows its PIN)."""
+        if self._pair_proc and not self._pair_proc.closed:
+            return
+        if not self._cli_binary:
             raise PlayerCommandFailed("Pairing not started")
+        if not self.device_id:
+            raise PlayerCommandFailed("Pairing requires a DACP id")
+        args = [
+            self._cli_binary,
+            "--pair-setup",
+            "--port",
+            str(self.port),
+            "--dacp",
+            self.device_id,
+            self.address,
+        ]
+        self._pair_proc_stderr = []
+        self._pair_proc = AsyncProcess(
+            args, stdin=True, stdout=True, stderr=True, name="cliairplay-pair-setup"
+        )
+        await self._pair_proc.start()
+        self._pair_proc.attach_stderr_reader(
+            asyncio.create_task(self._pair_setup_stderr_reader(self._pair_proc))
+        )
 
+    async def _pair_setup_stderr_reader(self, proc: AsyncProcess) -> None:
+        """Collect (and debug-log) stderr output of the pair-setup process."""
+        async for line in proc.iter_stderr():
+            self._pair_proc_stderr.append(line)
+            self.logger.debug("pair-setup: %s", line)
+
+    async def _finish_cli_pair_setup(self, pin: str) -> str:
+        """
+        Complete HAP pairing by feeding the PIN to the cliairplay process.
+
+        The binary performs the full SRP/HomeKit pair-setup exchange and
+        prints ``CREDENTIALS: <192 hex chars>`` on stdout on success.
+
+        :param pin: 4-digit PIN (or device password).
+        """
+        # password-only devices skip start_pin_pairing, spawn the process now
+        await self._start_pair_setup_process()
+        proc = self._pair_proc
+        assert proc is not None  # type guard
         self.logger.info("Completing HAP pairing with PIN")
+        try:
+            await proc.write(f"{pin}\n".encode())
+            credentials = await asyncio.wait_for(
+                self._read_credentials(proc), timeout=PAIR_SETUP_TIMEOUT
+            )
+            returncode = await proc.wait_with_timeout(10)
+        except (TimeoutError, BrokenPipeError, ConnectionResetError) as err:
+            raise self._pair_setup_failure("Pairing failed") from err
+        if not credentials or returncode != 0:
+            raise self._pair_setup_failure(f"Pairing failed (exit code {returncode})")
+        if len(credentials) != 192:
+            raise PlayerCommandFailed(
+                f"Pairing produced invalid credentials (length {len(credentials)})"
+            )
+        return credentials
 
-        # HAP headers required for pair-setup
-        hap_headers = {
-            "Content-Type": "application/octet-stream",
-            "X-Apple-HKP": "3",
-        }
+    async def _read_credentials(self, proc: AsyncProcess) -> str | None:
+        """Read the pair-setup process stdout until the CREDENTIALS line (or EOF)."""
+        buffer = b""
+        while chunk := await proc.read(1024):
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if line.startswith("CREDENTIALS:"):
+                    return line.split(":", 1)[1].strip()
+        return None
 
-        # M1: Send method request (state=1, method=0 for pair-setup)
-        m1_data = tlv_encode(
-            [
-                (TLV_METHOD, bytes([0x00])),
-                (TLV_STATE, bytes([0x01])),
-            ]
-        )
-
-        async with self._session.post(
-            f"{self._base_url}/pair-setup",
-            data=m1_data,
-            headers=hap_headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                raise PlayerCommandFailed(f"M1 failed: HTTP {resp.status}")
-            m2_data = await resp.read()
-
-        # Parse M2
-        m2 = tlv_decode(m2_data)
-        if TLV_ERROR in m2:
-            raise PlayerCommandFailed(f"Device error in M2: {m2[TLV_ERROR].hex()}")
-
-        salt = m2.get(TLV_SALT)
-        server_pk_srp = m2.get(TLV_PUBLIC_KEY)
-        if not salt or not server_pk_srp:
-            raise PlayerCommandFailed("Invalid M2: missing salt or public key")
-
-        # M3: SRP authentication - create context with password
-        # PIN is passed directly as string (not "Pair-Setup:PIN")
-        # Note: pyatv doesn't specify bits_random, uses default
-        self._srp_context = SRPContext(
-            username="Pair-Setup",
-            password=pin,
-            prime=HAP_SRP_PRIME_3072,
-            generator=HAP_SRP_GENERATOR,
-            hash_func=hashlib.sha512,
-        )
-        # Pass Ed25519 private key bytes as the SRP "a" value (random private exponent)
-        # This is what pyatv does - use the client's Ed25519 private key as the SRP private value
-        if not self._client_private_key:
-            raise PlayerCommandFailed("Client private key not initialized")
-        auth_private = self._client_private_key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        self._srp_session = SRPClientSession(
-            self._srp_context, binascii.hexlify(auth_private).decode()
-        )
-
-        # Process with server's public key and salt (as hex strings)
-        self._srp_session.process(server_pk_srp.hex(), salt.hex())
-
-        # Get client's public key and proof
-        client_pk_srp = bytes.fromhex(self._srp_session.public)
-        client_proof = bytes.fromhex(self._srp_session.key_proof.decode("ascii"))
-
-        m3_data = tlv_encode(
-            [
-                (TLV_STATE, bytes([0x03])),
-                (TLV_PUBLIC_KEY, client_pk_srp),
-                (TLV_PROOF, client_proof),
-            ]
-        )
-
-        async with self._session.post(
-            f"{self._base_url}/pair-setup",
-            data=m3_data,
-            headers=hap_headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                raise PlayerCommandFailed(f"M3 failed: HTTP {resp.status}")
-            m4_data = await resp.read()
-
-        # Parse M4
-        m4 = tlv_decode(m4_data)
-        if TLV_ERROR in m4:
-            raise PlayerCommandFailed(f"Device error in M4: {m4[TLV_ERROR].hex()}")
-
-        server_proof = m4.get(TLV_PROOF)
-        if not server_proof:
-            raise PlayerCommandFailed("Invalid M4: missing proof")
-
-        # Verify server proof
-        if not self._srp_session.verify_proof(server_proof.hex().encode("ascii")):
-            raise PlayerCommandFailed("Server proof verification failed")
-
-        # Get session key
-        self._session_key = bytes.fromhex(self._srp_session.key.decode("ascii"))
-
-        # M5: Send encrypted client info
-        await self._send_hap_m5()
-
-        # Generate credentials
-        return self._generate_hap_credentials()
-
-    async def _send_hap_m5(self) -> None:
-        """Send M5 with encrypted client info and receive M6."""
-        if (
-            not self._session_key
-            or not self._client_private_key
-            or not self._client_public_key
-            or not self._session
-        ):
-            raise PlayerCommandFailed("Invalid state for M5")
-
-        # HAP headers required for pair-setup
-        hap_headers = {
-            "Content-Type": "application/octet-stream",
-            "X-Apple-HKP": "3",
-        }
-
-        # Derive keys
-        enc_key = hkdf_derive(
-            self._session_key,
-            b"Pair-Setup-Encrypt-Salt",
-            b"Pair-Setup-Encrypt-Info",
-            32,
-        )
-        sign_key = hkdf_derive(
-            self._session_key,
-            b"Pair-Setup-Controller-Sign-Salt",
-            b"Pair-Setup-Controller-Sign-Info",
-            32,
-        )
-
-        # Sign device info
-        device_info = sign_key + self._client_id + self._client_public_key
-        signature = self._client_private_key.sign(device_info)
-
-        # Create and encrypt inner TLV
-        inner_tlv = tlv_encode(
-            [
-                (TLV_IDENTIFIER, self._client_id),
-                (TLV_PUBLIC_KEY, self._client_public_key),
-                (TLV_SIGNATURE, signature),
-            ]
-        )
-
-        cipher = ChaCha20Poly1305(enc_key)
-        # Nonce format: 4 zero bytes + 8-byte message identifier = 12 bytes
-        nonce = b"\x00\x00\x00\x00PS-Msg05"
-        encrypted = cipher.encrypt(nonce, inner_tlv, None)
-
-        # Send M5
-        m5_data = tlv_encode(
-            [
-                (TLV_STATE, bytes([0x05])),
-                (TLV_ENCRYPTED_DATA, encrypted),
-            ]
-        )
-
-        async with self._session.post(
-            f"{self._base_url}/pair-setup",
-            data=m5_data,
-            headers=hap_headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                raise PlayerCommandFailed(f"M5 failed: HTTP {resp.status}")
-            m6_data = await resp.read()
-
-        # Parse M6
-        m6 = tlv_decode(m6_data)
-        if TLV_ERROR in m6:
-            raise PlayerCommandFailed(f"Device error in M6: {m6[TLV_ERROR].hex()}")
-
-        encrypted_data = m6.get(TLV_ENCRYPTED_DATA)
-        if not encrypted_data:
-            raise PlayerCommandFailed("Invalid M6: missing encrypted data")
-
-        # Decrypt M6
-        # Nonce format: 4 zero bytes + 8-byte message identifier = 12 bytes
-        nonce = b"\x00\x00\x00\x00PS-Msg06"
-        decrypted = cipher.decrypt(nonce, encrypted_data, None)
-
-        # Extract server's public key
-        inner = tlv_decode(decrypted)
-        self._server_public_key = inner.get(TLV_PUBLIC_KEY)
-        if not self._server_public_key:
-            raise PlayerCommandFailed("Invalid M6: missing server public key")
-
-    def _generate_hap_credentials(self) -> str:
+    def _pair_setup_failure(self, summary: str) -> PlayerCommandFailed:
         """
-        Generate HAP credentials for cliap2.
+        Build the pairing failure carrying the most specific error detail available.
 
-        Format: client_private_key(128 hex) + server_public_key(64 hex) = 192 hex chars
-
-        :return: Credentials string.
+        :param summary: Short summary prefixed to the error detail.
         """
-        if (
-            not self._client_private_key
-            or not self._server_public_key
-            or not self._client_public_key
-        ):
-            raise PlayerCommandFailed("Missing keys for credential generation")
+        detail = f"{summary}: {self._pair_setup_error()}"
+        translation_key = self._pair_setup_translation_key() or "pairing_failed"
+        return PlayerCommandFailed(detail, translation_key=translation_key)
 
-        # Get raw private key (32 bytes seed)
-        private_key_bytes = self._client_private_key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
+    def _pair_setup_translation_key(self) -> str | None:
+        """Map the HAP error tag from the pair-setup stderr (if any) to an error translation."""
+        for line in reversed(self._pair_proc_stderr):
+            if match := HAP_ERROR_TAG_RE.search(line):
+                tag = int(match.group(1))
+                if tag == 2:
+                    return "pairing_wrong_pin"
+                if tag in (3, 5):
+                    # backoff/max tries: the device rate-limits pairing attempts
+                    return "pairing_backoff"
+        return None
 
-        # Expand to 64-byte Ed25519 secret key format (seed + public_key)
-        if len(private_key_bytes) == 32:
-            private_key_bytes = private_key_bytes + self._client_public_key
-
-        if len(private_key_bytes) != 64 or len(self._server_public_key) != 32:
-            raise PlayerCommandFailed("Invalid key lengths")
-
-        return binascii.hexlify(private_key_bytes).decode("ascii") + binascii.hexlify(
-            self._server_public_key
-        ).decode("ascii")
+    def _pair_setup_error(self) -> str:
+        """Return a short error description from the pair-setup stderr output."""
+        # the binary reports failures as plain lines on stderr; the last specific
+        # line wins, its generic "Pairing failed." trailer only as a last resort
+        fallback = "no error details reported"
+        for raw_line in reversed(self._pair_proc_stderr):
+            # the PIN prompt is written without a newline, so it arrives glued
+            # to the front of the next line - strip it rather than skip the line
+            line = raw_line.split("Enter the PIN shown on the device:")[-1].strip()
+            if not line:
+                continue
+            if line == "Pairing failed.":
+                fallback = line
+                continue
+            # strip the binary's log prefix ("[time] func:line [HAP] message")
+            return line.rsplit("] ", 1)[-1]
+        return fallback
 
     # ========================================================================
     # RAOP (AirPlay 1 legacy) pairing implementation
@@ -711,11 +448,7 @@ class AirPlayPairing:
 
         # Derive Ed25519 public key from auth secret
         # For RAOP, we use the auth_secret as the Ed25519 seed
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: PLC0415
-            Ed25519PrivateKey as Ed25519Key,
-        )
-
-        auth_private_key = Ed25519Key.from_private_bytes(auth_secret)
+        auth_private_key = Ed25519PrivateKey.from_private_bytes(auth_secret)
         auth_public_key = auth_private_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
@@ -771,7 +504,6 @@ class AirPlayPairing:
         server_proof = step2_response.get("proof")
         if not server_proof:
             raise PlayerCommandFailed("RAOP server did not return proof")
-        self._session_key = session_key
 
         # Step 3: Encrypt and send auth public key using AES-GCM
         # Derive AES key and IV from session key K (40 bytes)
@@ -799,5 +531,5 @@ class AirPlayPairing:
             if resp.status != 200:
                 raise PlayerCommandFailed(f"RAOP step 3 failed: HTTP {resp.status}")
 
-        # Return credentials in cliraop format: client_id:auth_secret
+        # Return credentials in raop credentials format: client_id:auth_secret
         return f"{self._client_id.hex()}:{auth_secret.hex()}"

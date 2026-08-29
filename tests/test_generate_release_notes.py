@@ -7,6 +7,7 @@ import sys
 import types
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -69,11 +70,24 @@ class FakeComparison:
 class FakePR:
     """Mimics PyGithub PullRequest."""
 
-    def __init__(self, number: int, merged_at: datetime) -> None:
+    def __init__(
+        self,
+        number: int,
+        merged_at: datetime,
+        title: str = "",
+        author: str = "someone",
+        labels: tuple[str, ...] = (),
+        body: str = "",
+    ) -> None:
         """Initialize fake pull request."""
         self.number = number
         self.merged = True
         self.merged_at = merged_at
+        self.title = title
+        self.user = types.SimpleNamespace(login=author)
+        self.labels = [types.SimpleNamespace(name=label) for label in labels]
+        self.body = body
+        self.html_url = f"https://github.com/music-assistant/server/pull/{number}"
 
 
 class FakeRepo:
@@ -126,7 +140,7 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
         ],
     )
     repo = FakeRepo(
-        comparisons={("2.9.0b1", "dev"): comparison},
+        comparisons={("2.9.0b1", "headsha"): comparison},
         pulls={
             200: FakePR(200, datetime(2026, 6, 5, tzinfo=UTC)),
             150: FakePR(150, datetime(2026, 1, 10, tzinfo=UTC)),
@@ -134,7 +148,7 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
         tag_commits={"2.9.0b1": tag_commit},
     )
 
-    prs = generate_notes.get_prs_between_tags(repo, "2.9.0b1", "dev")
+    prs = generate_notes.get_prs_between_tags(repo, "2.9.0b1", "headsha")
 
     assert [pr.number for pr in prs] == [200]
 
@@ -173,7 +187,7 @@ def test_minor_release_with_diverged_previous_tag(
     tag_commit = FakeCommit("tagsha", "2.8.9 release", datetime(2026, 6, 3, tzinfo=UTC))
     repo = FakeRepo(
         comparisons={
-            ("2.8.9", "stable"): head_comparison,
+            ("2.8.9", "headsha"): head_comparison,
             ("mbsha", "2.8.9"): base_comparison,
         },
         pulls={
@@ -185,6 +199,162 @@ def test_minor_release_with_diverged_previous_tag(
         tag_commits={"2.8.9": tag_commit},
     )
 
-    prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "stable")
+    prs = generate_notes.get_prs_between_tags(repo, "2.8.9", "headsha")
 
     assert [pr.number for pr in prs] == [100, 120]
+
+
+def test_filter_dependency_bumps(generate_notes: types.ModuleType) -> None:
+    """Inlined bumps are always dropped; other bumps keep only the latest one."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    deps = ("dependencies",)
+    prs = [
+        FakePR(1, merged_at, "⬆️ Update music-assistant-frontend to 2.17.1", labels=deps),
+        FakePR(2, merged_at, "Fix a bug"),
+        FakePR(3, merged_at, "Bump aiohttp from 3.11.0 to 3.12.0", labels=deps),
+        FakePR(4, merged_at, "⬆️ Update music-assistant-models to 1.1.100", labels=deps),
+        FakePR(5, merged_at, "Bump aiohttp from 3.12.0 to 3.13.0", labels=deps),
+        FakePR(6, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2", labels=deps),
+        FakePR(7, merged_at, "Add a feature"),
+    ]
+
+    filtered = generate_notes.filter_dependency_bumps(prs)
+
+    assert [pr.number for pr in filtered] == [2, 5, 7]
+
+
+def test_filter_dependency_bumps_drop_all(generate_notes: types.ModuleType) -> None:
+    """With drop_all every labeled dependency bump is dropped, unlabeled PRs never."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    deps = ("dependencies",)
+    prs = [
+        FakePR(1, merged_at, "Bump pytest from 9.0.3 to 9.1.1", labels=deps),
+        FakePR(2, merged_at, "Fix a bug"),
+        FakePR(3, merged_at, "⬆️ Update music-assistant-frontend to 2.17.2", labels=deps),
+        FakePR(4, merged_at, "Bump stages for various providers"),
+        FakePR(5, merged_at, "Bump `aiosendspin` to 9.1.1", labels=deps),
+        FakePR(6, merged_at, "Bump the music-assistant-libs group with 2 updates", labels=deps),
+    ]
+
+    filtered = generate_notes.filter_dependency_bumps(prs, drop_all=True)
+
+    assert [pr.number for pr in filtered] == [2, 4]
+
+
+def test_write_outputs_hands_notes_over_via_file(
+    generate_notes: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The notes land in the file; the step output only carries the file path."""
+    notes_file = tmp_path / "release-notes.md"
+    output_file = tmp_path / "github-output"
+    monkeypatch.setenv("RELEASE_NOTES_FILE", str(notes_file))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    notes = "# Notes\n" + ("- a change\n" * 10_000)
+
+    generate_notes.write_outputs(notes, ["alice", "bob"])
+
+    assert notes_file.read_text() == notes
+    output = output_file.read_text()
+    assert f"release-notes-file={notes_file}" in output
+    assert "- a change" not in output
+    assert "contributors<<EOF\nalice,bob\nEOF" in output
+
+
+def test_notes_are_shrunk_to_fit_body_limit(
+    generate_notes: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Oversized notes lose maintenance entries first and gain a full-changelog link."""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "music-assistant/server")
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    config = {
+        "categories": [
+            {"title": "🐛 Bugfixes", "labels": ["bugfix"]},
+            {
+                "title": "🧰 Maintenance",
+                "labels": ["maintenance"],
+                "after-other": True,
+                "collapse-after": 3,
+            },
+        ],
+    }
+    categories = {
+        "🐛 Bugfixes": [
+            FakePR(number, merged_at, f"Fix issue number {number}") for number in range(1, 4)
+        ],
+        "🧰 Maintenance": [
+            FakePR(number, merged_at, f"Maintenance chore number {number}")
+            for number in range(100, 140)
+        ],
+    }
+    uncategorized: list[FakePR] = []
+    maintenance = categories["🧰 Maintenance"]
+
+    def render() -> str:
+        return cast(
+            "str",
+            generate_notes.generate_release_notes(
+                config, categories, uncategorized, [], "2.9.13", None, None
+            ),
+        )
+
+    limit = len(render()) - 500
+    monkeypatch.setattr(generate_notes, "MAX_BODY_CHARS", limit)
+
+    notes = generate_notes.shrink_notes_to_limit(
+        render, config, categories, uncategorized, "2.9.13", "2.10.0"
+    )
+
+    assert len(notes) <= limit
+    # All bugfixes survive; only the maintenance tail was dropped
+    for number in range(1, 4):
+        assert f"#{number})" in notes
+    assert 0 < len(maintenance) < 40
+    assert "compare/2.9.13...2.10.0" in notes
+
+
+def test_categorize_prs_excludes_title_prefixes(generate_notes: types.ModuleType) -> None:
+    """PRs matching an excluded title prefix never appear in the notes."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    config = {
+        "categories": [{"title": "🐛 Bugfixes", "labels": ["bugfix"]}],
+        "exclude-title-prefixes": ["Lokalise", "[Backport to stable]"],
+    }
+    prs = [
+        FakePR(1, merged_at, "Fix a bug", labels=("bugfix",)),
+        FakePR(2, merged_at, "Lokalise translations update"),
+        FakePR(3, merged_at, "Lokalise: Translations update"),
+        FakePR(4, merged_at, "[Backport to stable] 2.9.4"),
+        FakePR(5, merged_at, "Add a feature"),
+    ]
+
+    categories, uncategorized = generate_notes.categorize_prs(prs, config)
+
+    assert [pr.number for pr in categories["🐛 Bugfixes"]] == [1]
+    assert [pr.number for pr in uncategorized] == [5]
+
+
+def test_extract_frontend_changes_skips_lokalise_bullets(
+    generate_notes: types.ModuleType,
+) -> None:
+    """Lokalise translation-sync bullets in frontend PR bodies are skipped."""
+    merged_at = datetime(2026, 6, 1, tzinfo=UTC)
+    prs = [
+        FakePR(
+            1,
+            merged_at,
+            "⬆️ Update music-assistant-frontend to 2.17.294",
+            body=(
+                "## What's changed\n"
+                "- Fix the player card layout (by @someone in #100)\n"
+                "- Lokalise translations update (by @github-actions[bot] in #101)\n"
+                "- Lokalise: Translations update (by @marcelveldt in #102)\n"
+            ),
+        ),
+    ]
+
+    changes, contributors = generate_notes.extract_frontend_changes(prs)
+
+    assert changes == ["- Fix the player card layout (by @someone in #100)"]
+    assert contributors == {"someone"}

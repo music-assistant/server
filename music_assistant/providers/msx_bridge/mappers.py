@@ -22,10 +22,16 @@ def append_device_param(url: str, device_param: str) -> str:
     return f"{url}{sep}{device_param}"
 
 
-def get_image_url(item: Any, provider: MSXBridgeProvider) -> str | None:
-    """Get an image URL for a media item."""
+def get_image_url(item: Any, provider: MSXBridgeProvider, prefer_proxy: bool = False) -> str | None:
+    """
+    Get an image URL for a media item.
+
+    :param prefer_proxy: Route the image through the MA imageproxy so the URL
+        points at the MA server (rather than a remote CDN). Needed for the
+        party QR-cover compositor, which only accepts MA-hosted sources.
+    """
     if hasattr(item, "image") and item.image:
-        return provider.mass.metadata.get_image_url(item.image)
+        return provider.mass.metadata.get_image_url(item.image, prefer_proxy=prefer_proxy)
     return None
 
 
@@ -96,12 +102,13 @@ def _build_audio_action(
     prefix: str,
     player_id: str,
     track_uri: str,
+    token: str,
     device_param: str = "",
     from_playlist: bool = False,
 ) -> str:
     """Build audio action URL for MSX playback."""
     # Standard HTTP streaming mode
-    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}"
+    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}&token={token}"
     if from_playlist:
         audio_url += "&from_playlist=1"
     audio_url = append_device_param(audio_url, device_param)
@@ -140,6 +147,7 @@ def map_track_to_msx(
             prefix=prefix,
             player_id=player_id,
             track_uri=track.uri,
+            token=provider.get_stream_token(player_id),
             device_param=device_param,
         )
 
@@ -161,6 +169,7 @@ def map_tracks_to_msx_playlist(
     player_id: str,
     provider: MSXBridgeProvider,
     device_param: str = "",
+    qr_cover_base: str | None = None,
 ) -> MsxContent:
     """
     Map a list of MA Track objects to an MSX Content page for playlist playback.
@@ -168,7 +177,11 @@ def map_tracks_to_msx_playlist(
     MSX ``playlist:{URL}`` loads a standard Content Root Object.
     Each item uses ``action: "audio:{URL}"`` so MSX can play them sequentially.
     The page-level ``action`` auto-starts playback at the requested track index.
+
+    :param qr_cover_base: When set (active party), item backgrounds are routed
+        through this QR-compositing endpoint so the join QR shows on covers.
     """
+    token = provider.get_stream_token(player_id)
     msx_items = []
     for track in tracks:
         duration = getattr(track, "duration", 0) or 0
@@ -180,11 +193,20 @@ def map_tracks_to_msx_playlist(
             else (artist or duration_str or None)
         )
         image_url = get_image_url(track, provider)
+        background = image_url
+        if qr_cover_base:
+            # The compositor only accepts MA-hosted images; a remote CDN cover
+            # would be rejected (400) and vanish. Route it through the MA
+            # imageproxy so the QR-stamped background actually loads.
+            proxied = get_image_url(track, provider, prefer_proxy=True)
+            if proxied:
+                background = f"{qr_cover_base}?image={quote(proxied, safe='')}"
 
         action = _build_audio_action(
             prefix=prefix,
             player_id=player_id,
             track_uri=track.uri,
+            token=token,
             device_param=device_param,
             from_playlist=True,
         )
@@ -195,7 +217,7 @@ def map_tracks_to_msx_playlist(
                 label=label,
                 player_label=track.name,
                 image=image_url,
-                background=image_url,
+                background=background,
                 duration=duration,
                 action=action,
             )

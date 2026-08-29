@@ -34,40 +34,42 @@ class RadioParadiseChannel(TypedDict):
 
 
 # Channels 0-4 stream FLAC; channel 5 (Serenity) is AAC because Radio Paradise
-# doesn't publish a FLAC variant for it.
+# doesn't publish a FLAC variant for it. The "-flacm" mounts carry the same FLAC
+# audio WITH ICY stream titles; the plain "-flac" mounts are a single continuous
+# Ogg stream whose metadata never updates after connect.
 RADIO_PARADISE_CHANNELS: dict[str, RadioParadiseChannel] = {
     "0": {
         "name": "Radio Paradise - Main Mix",
         "description": "Eclectic mix of music - hand-picked by real humans",
-        "stream_url": "https://stream.radioparadise.com/flac",
+        "stream_url": "https://stream.radioparadise.com/flacm",
         "content_type": ContentType.FLAC,
         "station_icon": "radioparadise-logo-main.png",
     },
     "1": {
         "name": "Radio Paradise - Mellow Mix",
         "description": "A mellower selection from the RP music library",
-        "stream_url": "https://stream.radioparadise.com/mellow-flac",
+        "stream_url": "https://stream.radioparadise.com/mellow-flacm",
         "content_type": ContentType.FLAC,
         "station_icon": "radioparadise-logo-mellow.png",
     },
     "2": {
         "name": "Radio Paradise - Rock Mix",
         "description": "Heavier selections from the RP music library",
-        "stream_url": "https://stream.radioparadise.com/rock-flac",
+        "stream_url": "https://stream.radioparadise.com/rock-flacm",
         "content_type": ContentType.FLAC,
         "station_icon": "radioparadise-logo-rock.png",
     },
     "3": {
         "name": "Radio Paradise - Global",
         "description": "Global music and experimental selections",
-        "stream_url": "https://stream.radioparadise.com/global-flac",
+        "stream_url": "https://stream.radioparadise.com/global-flacm",
         "content_type": ContentType.FLAC,
         "station_icon": "radioparadise-logo-global.png",
     },
     "4": {
         "name": "Radio Paradise - Beyond",
         "description": "Exploring the frontiers of improvisational music",
-        "stream_url": "https://stream.radioparadise.com/beyond-flac",
+        "stream_url": "https://stream.radioparadise.com/beyond-flacm",
         "content_type": ContentType.FLAC,
         "station_icon": "radioparadise-logo-beyond.png",
     },

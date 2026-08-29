@@ -36,6 +36,7 @@
     'item_id': '70b7288088b42d318f75dbcc41fd0091',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -44,6 +45,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/70b7288088b42d318f75dbcc41fd0091/Images/Primary?api_key=ACCESS_TOKEN',
@@ -56,6 +58,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -66,6 +69,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Infest',
     'position': None,
@@ -134,6 +139,7 @@
     'item_id': 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -142,6 +148,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/Images/Primary?api_key=ACCESS_TOKEN',
@@ -154,6 +161,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -164,6 +172,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Nu-Clear Sounds',
     'position': None,
@@ -232,6 +242,7 @@
     'item_id': '32ed6a0091733dcff57eae67010f3d4b',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -240,6 +251,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/32ed6a0091733dcff57eae67010f3d4b/Images/Primary?api_key=ACCESS_TOKEN',
@@ -252,6 +264,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -262,6 +275,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'This Is Christmas',
     'position': None,
@@ -322,6 +337,7 @@
     'item_id': '7c8d0bd55291c7fc0451d17ebef30017',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -330,11 +346,13 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
       ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -345,6 +363,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Yesterday, When I Was Mad [Disc 2]',
     'position': None,
@@ -391,6 +411,7 @@
     'item_id': 'dd954bbf54398e247d803186d3585b79',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -399,6 +420,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/dd954bbf54398e247d803186d3585b79/Images/Backdrop/0?api_key=ACCESS_TOKEN',
@@ -425,6 +447,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -435,6 +458,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Ash',
     'position': None,
@@ -513,6 +538,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -521,6 +547,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/da9c458e425584680765ddc3a89cbc0c/Images/Primary?api_key=ACCESS_TOKEN',
@@ -533,6 +560,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -543,6 +571,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Do I Wanna Know?',
     'position': 1,
@@ -622,6 +652,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -630,11 +661,13 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
       ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -645,6 +678,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '11 Thrown Away',
     'position': 0,
@@ -709,6 +744,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -717,6 +753,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/54918f75ee8f6c8b8dc5efd680644f29/Images/Primary?api_key=ACCESS_TOKEN',
@@ -729,6 +766,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -739,6 +777,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Where the Bands Are',
     'position': 1,
@@ -838,6 +878,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -846,6 +887,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/fb12a77f49616a9fc56a6fab2b94174c/Images/Primary?api_key=ACCESS_TOKEN',
@@ -858,6 +900,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': None,
       'lrc_lyrics': None,
       'lyrics': None,
@@ -868,6 +911,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Zombie Christmas',
     'position': 8,

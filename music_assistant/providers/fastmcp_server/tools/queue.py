@@ -13,7 +13,7 @@ from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 
-from ..models import AddToQueueResult, QueueBrief
+from ..models import AddToQueueResult, QueueBrief, RemoveFromQueueResult
 from ..tags import Tag
 from ._common import (
     TIMEOUT_FAST,
@@ -51,6 +51,12 @@ def _queue_items_window_offset(queue: object | None, queue_option: QueueOption) 
 def _items_window_offset_for_index(index: int) -> int:
     """Return the ``items()`` offset that centers a window on ``index``."""
     return max(0, index - MAX_QUEUE_ITEMS // 2)
+
+
+def _require_queue(mass: MusicAssistant, queue_id: str) -> None:
+    """Raise ``ToolError`` when ``queue_id`` does not resolve to a queue."""
+    if mass.player_queues.get(queue_id) is None:
+        raise ToolError(f"Queue {queue_id!r} not found.")
 
 
 async def _add_to_queue_at_index(
@@ -150,6 +156,14 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
 
+    def _queue_brief(queue_id: str, include_items: int) -> QueueBrief:
+        queue = mass.player_queues.get(queue_id)
+        if queue is None:
+            raise ToolError(f"Queue {queue_id!r} not found after move.")
+        limit = min(max(include_items, 0), MAX_QUEUE_ITEMS)
+        items = mass.player_queues.items(queue.queue_id, limit=limit, offset=0) if limit > 0 else []
+        return to_brief_queue(queue, items=list(items))
+
     @sub.tool(
         tags={Tag.QUERY_QUEUE},
         annotations=ToolAnnotations(
@@ -162,9 +176,10 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_active_queue(
-        player_id: str,
+        player_id: str = "",
         include_items: int = 25,
         items_from_current: bool = False,
+        queue_id: str = "",
     ) -> QueueBrief | None:
         """
         Return the active queue for a player, or ``None`` if the player is idle.
@@ -183,11 +198,12 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         to fetch a lookahead window from the current playback position instead.
 
         ``QueueBrief.queue_id`` is the identifier the mutation tools
-        (``set_shuffle``, ``set_repeat``, ``add_to_queue``, ``clear_queue``,
-        ``transfer_queue``) expect — it is
-        distinct from ``player_id``. For a queue fed by an external plugin
-        source (Connect / AirPlay / Ynison), the current item's ``name`` is
-        the real track title rather than the source wrapper name.
+        (``set_shuffle``, ``set_repeat``, ``add_to_queue``, ``remove_item``,
+        ``move_item``, ``move_item_to_end``, ``clear_queue``,
+        ``transfer_queue``) expect; for a standard player-backed queue that
+        value equals ``PlayerBrief.player_id``. For a queue fed by an external
+        plugin source (Connect / AirPlay / Ynison), the current item's ``name``
+        is the real track title rather than the source wrapper name.
 
         :param player_id: Player identifier from ``PlayerBrief.player_id``.
         :param include_items: How many items to materialise. Clamped to the
@@ -197,8 +213,14 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         :param items_from_current: When ``True``, fetch ``items`` from
             ``current_index`` rather than the queue start. ``items_start_index``
             in the response reflects the offset used.
+        :param queue_id: Convenience alias for ``player_id`` when an agent
+            passes the queue identifier instead. Supply one of the two;
+            ignored when ``player_id`` is given.
         """
-        queue = mass.player_queues.get_active_queue(player_id)
+        target = player_id or queue_id
+        if not target:
+            raise ToolError("Provide player_id (from PlayerBrief.player_id) or queue_id.")
+        queue = mass.player_queues.get_active_queue(target)
         if queue is None:
             return None
         limit = min(max(include_items, 0), MAX_QUEUE_ITEMS)
@@ -265,7 +287,7 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             valid = ", ".join(f"``{e.value}``" for e in RepeatMode if e is not RepeatMode.UNKNOWN)
             raise ToolError(f"Invalid repeat_mode {repeat_mode!r}. Valid options: {valid}")
 
-        mass.player_queues.set_repeat(queue_id, mode)
+        await mass.player_queues.set_repeat(queue_id, mode)
 
     @sub.tool(
         tags={Tag.DELETE_QUEUE},
@@ -319,6 +341,157 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             receive the queue.
         """
         await mass.player_queues.transfer_queue(source_queue_id, target_queue_id)
+
+    @sub.tool(
+        tags={Tag.DELETE_QUEUE},
+        annotations=ToolAnnotations(
+            title="Remove items from queue",
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def remove_item(
+        queue_id: str,
+        item_ids: list[str],
+        ctx: Context | None = None,
+    ) -> RemoveFromQueueResult:
+        """
+        Remove one or more **up-next** items from a queue by ``item_id``.
+
+        Call ``get_active_queue`` first to list items and their stable
+        ``item_id`` values, then pass all ids in a single call rather than
+        removing one at a time.
+
+        Only rows after the current playback position are deleted. Every
+        requested id is acknowledged in exactly one ``RemoveFromQueueResult``
+        bucket: ``removed`` (verified deleted), ``skipped_played`` (at or
+        before the now-playing row), ``skipped_buffered`` (already loaded in
+        the player's audio buffer), or ``not_found`` (unknown or stale id).
+        A stale id never aborts the batch, so rows deleted earlier in the
+        call are always reported.
+
+        When ``Confirm destructive operations`` is enabled the client is
+        asked to confirm before any item is removed.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
+        :param item_ids: ``item_id`` values from ``QueueItemBrief`` returned
+            by ``get_active_queue``. At least one id is required.
+        """
+        if not item_ids:
+            raise ToolError(
+                "Provide at least one item_id from QueueBrief.items[].item_id "
+                "(use get_active_queue first)."
+            )
+        _require_queue(mass, queue_id)
+        await confirm_or_raise(
+            ctx,
+            f"Remove {len(item_ids)} item(s) from queue {queue_id!r}? This cannot be undone.",
+            enabled=require_confirmation,
+        )
+        queue = mass.player_queues.get(queue_id)
+        current_index = getattr(queue, "current_index", None) if queue else None
+        index_in_buffer = getattr(queue, "index_in_buffer", None) if queue else None
+        result = RemoveFromQueueResult()
+        for item_id in item_ids:
+            item_index = mass.player_queues.index_by_id(queue_id, item_id)
+            if item_index is None:
+                result.not_found.append(item_id)
+                continue
+            # Played first: MA keeps index_in_buffer >= current_index, so the
+            # buffer check would otherwise swallow every history row.
+            if current_index is not None and item_index <= current_index:
+                result.skipped_played.append(item_id)
+                continue
+            if index_in_buffer is not None and item_index <= index_in_buffer:
+                result.skipped_buffered.append(item_id)
+                continue
+            try:
+                mass.player_queues.delete_item(queue_id, item_id)
+            except KeyError, InvalidDataError:
+                # Raced with another client between resolve and delete.
+                result.not_found.append(item_id)
+                continue
+            # MA silently ignores deletes of rows already in the player
+            # buffer, so verify the row is gone before claiming "removed".
+            if mass.player_queues.index_by_id(queue_id, item_id) is None:
+                result.removed.append(item_id)
+            else:
+                result.skipped_buffered.append(item_id)
+        return result
+
+    @sub.tool(
+        tags={Tag.EDIT_QUEUE},
+        annotations=ToolAnnotations(
+            title="Move queue item",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def move_item(
+        queue_id: str, item_id: str, pos_shift: int = 1, include_items: int = 25
+    ) -> QueueBrief:
+        """
+        Move an existing queue row up, down, or to play next.
+
+        Call ``get_active_queue`` first for ``item_id`` values. The currently
+        playing or buffered item cannot be moved. Returns the reordered
+        ``QueueBrief`` so the new order can be confirmed without a separate
+        ``get_active_queue`` call.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
+        :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
+            ``get_active_queue``.
+        :param pos_shift: Relative move — ``-1`` up one slot, ``+1`` down one
+            slot (default), ``0`` to insert after the currently playing item
+            (play next).
+        :param include_items: How many items to materialise in the returned
+            brief. Clamped to the ``[0, 500]`` range.
+        """
+        _require_queue(mass, queue_id)
+        try:
+            mass.player_queues.move_item(queue_id, item_id, pos_shift)
+        except (KeyError, IndexError, InvalidDataError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _queue_brief(queue_id, include_items)
+
+    @sub.tool(
+        tags={Tag.EDIT_QUEUE},
+        annotations=ToolAnnotations(
+            title="Move queue item to end",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_MUTATION,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def move_item_to_end(queue_id: str, item_id: str, include_items: int = 25) -> QueueBrief:
+        """
+        Move an existing queue row to the back of the queue.
+
+        Call ``get_active_queue`` first for ``item_id`` values. The currently
+        playing or buffered item cannot be moved. Returns the reordered
+        ``QueueBrief`` so the new order can be confirmed without a separate
+        ``get_active_queue`` call.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
+        :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
+            ``get_active_queue``.
+        :param include_items: How many items to materialise in the returned
+            brief. Clamped to the ``[0, 500]`` range.
+        """
+        _require_queue(mass, queue_id)
+        try:
+            mass.player_queues.move_item_end(queue_id, item_id)
+        except (KeyError, IndexError, InvalidDataError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _queue_brief(queue_id, include_items)
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},

@@ -8,23 +8,12 @@ Validates that:
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from music_assistant_models.enums import RepeatMode
-
-from music_assistant.providers.fastmcp_server.tools.queue import build_queue_server
-
-
-@pytest.fixture
-def mounted_queue(mock_mass: Any) -> FastMCP:
-    """Build a root FastMCP with the queue sub-server mounted."""
-    mcp: FastMCP = FastMCP(name="test")
-    mcp.mount(build_queue_server(mock_mass), namespace="queue")
-    return mcp
 
 
 async def test_set_repeat_accepts_valid_modes(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:

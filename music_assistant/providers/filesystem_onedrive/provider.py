@@ -26,20 +26,33 @@ from onedrive_personal_sdk.clients.client import OneDriveClient
 from onedrive_personal_sdk.exceptions import AuthenticationError, OneDriveException
 from onedrive_personal_sdk.models.items import Folder
 
-from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
-
-from .auth import MAOneDriveAuth
-from .constants import (
+from music_assistant.providers.filesystem_cloud.base import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_FOLDER_ID,
     CONF_REFRESH_TOKEN,
-    GRAPH_BASE_URL,
+    CloudFileSystemProvider,
+    read_setup_value,
 )
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
+)
+
+from .auth import MAOneDriveAuth
+from .constants import GRAPH_BASE_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -56,21 +69,48 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize OneDrive FileSystem Provider."""
-        # the configured "root" is a folder path; handle_async_init resolves it
-        # to the Graph item ID everything else works off
+        # the configured "root" is a folder path; handle_async_init resolves it to the Graph
+        # item ID everything else works off. Read it setup-data-aware here since the instance
+        # (and self.get_setup_value) does not exist yet
         super().__init__(
-            mass, manifest, config, cast("str", config.get_value(CONF_FOLDER_ID) or "root")
+            mass,
+            manifest,
+            config,
+            cast("str", read_setup_value(mass, config, CONF_FOLDER_ID) or "root"),
         )
         self.auth = MAOneDriveAuth(
             mass,
             config.instance_id,
-            cast("str", config.get_value(CONF_CLIENT_ID)),
-            cast("str", config.get_value(CONF_CLIENT_SECRET)),
-            cast("str", config.get_value(CONF_REFRESH_TOKEN)),
+            cast("str", self.get_setup_value(CONF_CLIENT_ID)),
+            cast("str", self.get_setup_value(CONF_CLIENT_SECRET)),
+            cast("str", self.get_setup_value(CONF_REFRESH_TOKEN)),
         )
         # the SDK just needs a coroutine that returns a fresh access token
         self.client = OneDriveClient(self.auth.async_get_access_token, mass.http_session)
         self._root_folder_name: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Credentials, the content type and root folder are collected by the setup flow (see
+        setup_flow.py); only the genuine sync options are configurable here.
+        """
+        # the content type is set by the setup flow; surface it read-only so the sync
+        # options' depends_on chains still resolve
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
+        return (
+            content_type_config_entry(content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -107,12 +147,23 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         out: list[RawItem] = []
         for item in items:
             if isinstance(item, Folder):
-                out.append((item.id, item.name, True, "folder", item.size))
+                out.append((item.id, item.name, True, "folder", item.size, None))
                 continue
-            # quickXorHash is a stable content hash; not every file has one,
-            # so fall back to the size
+            # quickXorHash is a stable content hash; not every file has one, so fall back to
+            # the size - this is also the imported-media checksum, so it must stay exactly as
+            # it always has been, or every existing mapping would look changed on next sync
             checksum = item.hashes.quick_xor_hash or str(item.size)
-            out.append((item.id, item.name, False, checksum, item.size))
+            # a stronger hash (when the account computes one) is only used to detect a
+            # metadata file (NFO/image) changing; it never touches the checksum above. Note:
+            # the onedrive_personal_sdk client's typed File model does not surface an eTag,
+            # cTag, or lastModifiedDateTime (Microsoft Graph returns them, but the SDK's
+            # dataclass mapping silently drops unmapped fields), so a same-size edit on a file
+            # with none of these hashes is the one residual case this cannot detect; that
+            # would require bypassing the SDK's typed client for raw Graph responses
+            metadata_token = (
+                item.hashes.quick_xor_hash or item.hashes.sha256_hash or item.hashes.sha1_hash
+            )
+            out.append((item.id, item.name, False, checksum, item.size, metadata_token))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

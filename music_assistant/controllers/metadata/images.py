@@ -46,6 +46,7 @@ from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
+    _ALLOWED_IMAGEPROXY_SIZES_STR,
     _IMAGE_ID_CACHE_TTL,
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
@@ -312,9 +313,11 @@ class ImageProxyMixin:
             thumbnail_bytes, content_format = await self._resolve_thumbnail(
                 path, provider, size, image_format, flatten_transparency
             )
-        except (MediaNotFoundError, OSError) as err:
+        except (MediaNotFoundError, ProviderUnavailableError, OSError) as err:
             # normalize a missing/unreadable image into one typed error so callers
-            # (and not just the HTTP imageproxy handler) can handle it uniformly
+            # (and not just the HTTP imageproxy handler) can handle it uniformly.
+            # an unavailable provider is included: to a caller it is equally unreadable,
+            # and leaking it would abort sends that only meant to skip the artwork
             raise MediaNotFoundError(f"Image not found or unreadable: {path}") from err
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
@@ -335,13 +338,20 @@ class ImageProxyMixin:
             return web.Response(status=400)
         image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
         if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
-            return web.Response(status=400)
+            return web.Response(status=400, text="Invalid image id")
         try:
             size = int(request.query.get("size", "0"))
         except ValueError:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Invalid size parameter: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR}.",
+            )
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Unsupported size {size}: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR} "
+                "(0 = original size).",
+            )
         resolved = await self.resolve_image_id(image_id)
         if resolved is None:
             return web.Response(status=404)
@@ -411,8 +421,6 @@ class ImageProxyMixin:
         :param image_format: Requested output format (jpg/jpeg/png/svg).
         :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
         """
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]

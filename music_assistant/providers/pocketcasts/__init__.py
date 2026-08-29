@@ -7,9 +7,7 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -41,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import PocketCastsClient
@@ -48,7 +47,7 @@ from .api_client import PocketCastsClient
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
@@ -168,27 +167,6 @@ async def setup(
     return PocketCastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
-
-
 class PocketCastsProvider(MusicProvider):
     """Provider for Pocket Casts podcast service."""
 
@@ -197,10 +175,14 @@ class PocketCastsProvider(MusicProvider):
     # set since multi-room playback can have several episodes in progress on one instance
     _announced_episodes: set[str]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        email = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
         if not email or not password:
             raise LoginFailed("Email and password are required for Pocket Casts")
         self._announced_episodes = set()
@@ -255,17 +237,26 @@ class PocketCastsProvider(MusicProvider):
 
         :param prov_podcast_id: The provider podcast id.
         """
-        # fetch episode metadata and user status in parallel
-        episodes, in_progress, history = await asyncio.gather(
+        # fetch episode metadata, user status and show notes in parallel
+        (podcast_name, episodes), in_progress, history, show_notes = await asyncio.gather(
             self._client.get_podcast_episodes(prov_podcast_id),
             self._client.get_in_progress_episodes(),
             self._client.get_history(),
+            self._get_show_notes(prov_podcast_id),
         )
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
 
-        for episode_data in episodes:
-            episode_item = self._convert_episode(episode_data, prov_podcast_id)
+        # the full-podcast payload carries no episode number, so rank on the publication date
+        positions = rank_episodes_by_date([ep.get("published") or None for ep in episodes])
+        for position, episode_data in zip(positions, episodes, strict=True):
+            episode_item = self._convert_episode(
+                episode_data,
+                prov_podcast_id,
+                show_notes.get(episode_data.get("uuid", "")),
+                podcast_name,
+                position=position,
+            )
             if episode_item:
                 self._enrich_episode_with_status(
                     episode_item, episode_data, in_progress_map, history_map
@@ -346,13 +337,20 @@ class PocketCastsProvider(MusicProvider):
         :param prov_item_id: The episode item id (format: podcast_uuid:episode_uuid).
         """
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
-        episode_data = await self._client.get_episode_details(episode_uuid)
-        episode_item = self._convert_episode(episode_data, podcast_uuid)
+        episode_data, show_notes, podcast_name = await asyncio.gather(
+            self._client.get_episode_details(episode_uuid),
+            self._get_show_notes(podcast_uuid),
+            self._get_podcast_name(podcast_uuid),
+        )
+        episode_item = self._convert_episode(
+            episode_data, podcast_uuid, show_notes.get(episode_uuid), podcast_name
+        )
         if episode_item is None:
             raise MediaNotFoundError(f"Episode {episode_uuid} not found in podcast {podcast_uuid}")
 
-        played_up_to = episode_data.get("playedUpTo", 0)
-        duration = episode_data.get("duration", 0)
+        # the API sends explicit nulls for these fields, so a dict default is not enough
+        played_up_to = episode_data.get("playedUpTo") or 0
+        duration = episode_data.get("duration") or 0
         playing_status = episode_data.get("playingStatus", 1)  # 1=unplayed, 2=in_progress, 3=played
         if duration > 0:
             episode_item.duration = duration
@@ -387,8 +385,8 @@ class PocketCastsProvider(MusicProvider):
 
         for ep in in_progress:
             if ep.get("uuid") == episode_uuid:
-                played_up_to = int(ep.get("playedUpTo", 0))  # seconds from API
-                duration = int(ep.get("duration", 0))
+                played_up_to = int(ep.get("playedUpTo") or 0)  # seconds from API
+                duration = int(ep.get("duration") or 0)
                 fully_played = duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
                 LOGGER.debug(
                     "Resume position for %s: %d ms (fully_played=%s)",
@@ -461,6 +459,7 @@ class PocketCastsProvider(MusicProvider):
             item_id=uuid,
             provider=self.instance_id,
             name=podcast_data.get("title", ""),
+            publisher=podcast_data.get("author"),
             provider_mappings={
                 ProviderMapping(
                     item_id=uuid,
@@ -483,16 +482,53 @@ class PocketCastsProvider(MusicProvider):
             ),
         )
 
+    async def _get_podcast_name(self, prov_podcast_id: str) -> str:
+        """Return a podcast's name, empty when it cannot be looked up."""
+        # the podcast lookup is cached, so this is one call per podcast per day at most
+        try:
+            return (await self.get_podcast(prov_podcast_id)).name
+        except (
+            MediaNotFoundError,
+            LoginFailed,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+        ) as err:
+            self.logger.debug("Could not retrieve podcast name for %s: %s", prov_podcast_id, err)
+            return ""
+
+    async def _get_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
+        """Return show notes per episode uuid, empty when they cannot be read."""
+        # show notes are supplementary, so a failure here must never break episode
+        # resolution. The failure itself is not cached, so the next call tries again.
+        try:
+            return await self._fetch_show_notes(prov_podcast_id)
+        except (
+            LoginFailed,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+        ) as err:
+            self.logger.debug("Could not retrieve show notes for %s: %s", prov_podcast_id, err)
+            return {}
+
+    @use_cache(3600 * 24)
+    async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
+        """Return show notes per episode uuid for the given podcast."""
+        return await self._client.get_show_notes(prov_podcast_id)
+
     def _convert_episode(
-        self, episode_data: dict[str, Any], podcast_uuid: str
+        self,
+        episode_data: dict[str, Any],
+        podcast_uuid: str,
+        show_notes: dict[str, Any] | None = None,
+        podcast_name: str = "",
+        position: int = 0,
     ) -> PodcastEpisode | None:
         """
-        Convert Pocket Casts episode data to a PodcastEpisode object.
+        Convert episode data to a PodcastEpisode, or None when it carries no episode uuid.
 
-        Returns None when the data has no episode UUID to key on.
-
-        :param episode_data: Raw episode data dict from the API.
-        :param podcast_uuid: The UUID of the parent podcast.
+        :param position: The episode's listing position. Defaults to 0 (unknown).
         """
         episode_uuid = episode_data.get("uuid")
         if not episode_uuid:
@@ -500,8 +536,8 @@ class PocketCastsProvider(MusicProvider):
 
         # this is fed by two endpoints with different field schemas: the full-podcast JSON
         # uses snake_case (file_type) while /user/episode uses camelCase (fileType,
-        # episodeNumber). Neither carries show notes or episode artwork, so the description is
-        # left empty and the parent podcast image is used for every episode.
+        # episodeNumber). Neither carries the description or artwork, which is what the
+        # separate show notes lookup is for.
         item_id = f"{podcast_uuid}:{episode_uuid}"
         file_type = episode_data.get("fileType") or episode_data.get("file_type", "audio/mpeg")
         episode_item = PodcastEpisode(
@@ -512,9 +548,9 @@ class PocketCastsProvider(MusicProvider):
                 media_type=MediaType.PODCAST,
                 item_id=podcast_uuid,
                 provider=self.instance_id,
-                name="",
+                name=podcast_name,
             ),
-            position=episode_data.get("episodeNumber", 0),
+            position=position,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,
@@ -529,11 +565,18 @@ class PocketCastsProvider(MusicProvider):
             episode_item.duration = int(episode_data["duration"])
         if title := episode_data.get("title"):
             episode_item.metadata.label = title
+        details = show_notes or {}
+        if description := details.get("description"):
+            episode_item.metadata.description = description
+        # only about half the episodes have their own artwork, the rest keep the podcast cover
+        image_url = details.get("image") or (
+            f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg"
+        )
         episode_item.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg",
+                    path=image_url,
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -561,8 +604,10 @@ class PocketCastsProvider(MusicProvider):
         # never on mere history membership. Both fields are always set so the library sync can
         # clear a stale completed/resume value (it only updates when both are non-None).
         status_data = in_progress_map.get(episode_uuid) or history_map.get(episode_uuid) or {}
-        played_up_to = status_data.get("playedUpTo", 0)
-        duration = status_data.get("duration") or episode_data.get("duration", 0)
+        # feeds that omit a duration yield an explicit null rather than a missing key, so
+        # coerce instead of relying on a dict default
+        played_up_to = status_data.get("playedUpTo") or 0
+        duration = status_data.get("duration") or episode_data.get("duration") or 0
         completed = status_data.get("playingStatus") == 3 or (
             duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
         )
@@ -586,7 +631,9 @@ class PocketCastsProvider(MusicProvider):
         }
         episode_list = await folder_getters[folder_name]()
 
-        items: list[MediaItemType | BrowseFolder] = []
+        # (episode, podcast uuid, podcast name) per episode, the name empty when the folder
+        # payload does not carry it
+        resolved: list[tuple[dict[str, Any], str, str]] = []
         for episode_data in episode_list:
             # the podcast reference is a string on some endpoints and an object on others
             podcast_field = episode_data.get("podcast")
@@ -598,7 +645,33 @@ class PocketCastsProvider(MusicProvider):
             else:
                 podcast_uuid = episode_data.get("podcastUuid")
 
-            if podcast_uuid and (episode_item := self._convert_episode(episode_data, podcast_uuid)):
+            if not podcast_uuid:
+                continue
+            # these folders mix podcasts, so the name is not known up front. Take it from the
+            # payload where that carries it, in either of the two shapes
+            payload_name = podcast_field.get("title") if isinstance(podcast_field, dict) else None
+            resolved.append(
+                (
+                    episode_data,
+                    podcast_uuid,
+                    payload_name or episode_data.get("podcastTitle") or "",
+                )
+            )
+
+        # every remaining name costs a full-podcast fetch, so look them up once per podcast and
+        # all at once: serialising them would stall the browse for as long as the folder is deep
+        missing = list({uuid for _, uuid, name in resolved if not name})
+        looked_up = await asyncio.gather(*(self._get_podcast_name(uuid) for uuid in missing))
+        names = dict(zip(missing, looked_up, strict=True))
+
+        items: list[MediaItemType | BrowseFolder] = []
+        for episode_data, podcast_uuid, podcast_name in resolved:
+            if episode_item := self._convert_episode(
+                episode_data,
+                podcast_uuid,
+                show_notes=None,
+                podcast_name=podcast_name or names.get(podcast_uuid, ""),
+            ):
                 items.append(episode_item)
         return items
 

@@ -50,14 +50,15 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     SearchResults,
+    UniqueList,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
     from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
@@ -102,29 +103,6 @@ async def setup(
     return MyDemoPluginprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # Config Entries are used to configure the Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-    return ()
-
-
 class MyDemoPluginprovider(PluginProvider):
     """
     Example/demo Plugin provider.
@@ -145,12 +123,23 @@ class MyDemoPluginprovider(PluginProvider):
     # tracks which queue currently owns the exclusive AudioSource. Set in
     # on_source_selected (NOT in get_stream_details — that path also runs from
     # queue preload, where claiming would block a later cross-queue handoff).
-    _in_use_by_queue: str | None = None
+    _in_use_by_player: str | None = None
     # tracks the active stream_session_id for the current stream request.
-    # Paired with _in_use_by_queue: same-queue reconnects refresh this token
-    # without changing _in_use_by_queue, so stream loops and generator
+    # Paired with _in_use_by_player: same-queue reconnects refresh this token
+    # without changing _in_use_by_player, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup
+        input (if any) is collected by a ``setup_flow.py`` module; one-shot buttons
+        are declared here as ``ConfigEntryType.ACTION`` entries and handled in
+        ``handle_config_action``.
+        """
+        return ()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -193,8 +182,8 @@ class MyDemoPluginprovider(PluginProvider):
         # "Live Inputs" browse node and can be played on any player via
         # the standard play_media flow. Capability flags (can_play_pause,
         # can_seek, can_next_previous) drive which control buttons the UI
-        # surfaces and which commands the player controller proxies through
-        # to on_source_control.
+        # surfaces and which commands the server proxies through to
+        # on_source_control.
         #
         # Most plugins expose a single source; for those, build it once in
         # __init__ and return the cached instance here. Plugins that expose
@@ -226,10 +215,11 @@ class MyDemoPluginprovider(PluginProvider):
             )
         ]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the given AudioSource to a queue."""
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return StreamDetails for streaming an item owned by this plugin."""
         # OPTIONAL
-        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+        # Called for any playable item this plugin exposes; media_type tells you
+        # which kind. This demo only has an AudioSource.
         #
         # MUST be side-effect-free — no exclusivity claim, no busy raise.
         # MA calls this from both the streaming path AND from queue preload, so
@@ -242,8 +232,7 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.streams.update_stream_metadata(queue_id, ...) — same mechanism
-        # ICY radio metadata uses.
+        # mass.players.update_source_metadata(player_id, ...).
         #
         # Silence-during-pause contract:
         # - stream_type=CUSTOM: the server wraps your audio generator with a
@@ -255,11 +244,11 @@ class MyDemoPluginprovider(PluginProvider):
         #   shairport-sync and librespot do this in passthrough mode). If
         #   the producer actually stops writing, ffmpeg will block and the
         #   player will eventually disconnect.
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 sample_rate=44100,
@@ -288,7 +277,7 @@ class MyDemoPluginprovider(PluginProvider):
         # on_source_selected fires again with a fresh stream_session_id (but
         # the same queue id), and the prior generator's teardown would
         # otherwise clear the lock that now belongs to the new session.
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         captured_session_id = self._active_session_id
         # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
         # declared in get_stream_details. Replace with your actual byte source.
@@ -298,16 +287,16 @@ class MyDemoPluginprovider(PluginProvider):
                 yield pcm_chunk
         finally:
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
 
     async def on_source_control(
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         # OPTIONAL
@@ -329,7 +318,7 @@ class MyDemoPluginprovider(PluginProvider):
         # at the group level, not per child.
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to an AudioSource being selected for playback on a player."""
         # OPTIONAL — fires only on the actual stream request (not on queue
@@ -345,7 +334,7 @@ class MyDemoPluginprovider(PluginProvider):
         #
         #     if self._active_player_id and self._active_player_id != player_id:
         #         await self.mass.players.cmd_stop(self._active_player_id)
-        #     self._in_use_by_queue = queue_id  # claim (overwrites prior queue's)
+        #     self._in_use_by_player = owner_player_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
         #
@@ -355,7 +344,7 @@ class MyDemoPluginprovider(PluginProvider):
         # continue into get_stream_details and stream to the wrong player.
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """React to MA tearing down this AudioSource's stream from a queue."""
         # OPTIONAL — fires in the queue-item stream handler's finally block, so
@@ -363,7 +352,7 @@ class MyDemoPluginprovider(PluginProvider):
         # disconnect, exception). Lets NAMED_PIPE plugins release ownership
         # without depending on an external session event.
         #
-        # Guard with a stream_session_id match — NOT just a queue_id match —
+        # Guard with a stream_session_id match — NOT just a owner_player_id match —
         # so a stale callback from a superseded same-queue request (player
         # drops + reopens the same URL before the prior finally fires) cannot
         # clear the live claim of the new stream:
@@ -371,8 +360,8 @@ class MyDemoPluginprovider(PluginProvider):
         #     if self._active_session_id != stream_session_id:
         #         return
         #     self._active_session_id = None
-        #     if self._in_use_by_queue == queue_id:
-        #         self._in_use_by_queue = None
+        #     if self._in_use_by_player == owner_player_id:
+        #         self._in_use_by_player = None
 
     async def search(
         self,
@@ -397,14 +386,33 @@ class MyDemoPluginprovider(PluginProvider):
         # existing music providers so MA's playback path resolves normally.
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Retrieve a list of recommendation folders from this plugin."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this plugin's available recommendation rows, without items."""
         # OPTIONAL
         # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        # Folders may contain Playlist items pointing back to this plugin via
-        # their provider_mappings. Users can add such a Playlist to their
-        # library through the standard add-to-library flow.
+        # Return the recommendation rows this plugin offers as
+        # RecommendationFolder objects WITHOUT items (leave the default empty
+        # items list). This must be fast: hardcoded or locally cached row
+        # descriptors only, no backend calls — MA uses it to instantly render
+        # the row shells and the recommendations settings page.
+        # Keep each row's item_id stable across calls and restarts: the user's
+        # per-row preferences (enabled/hidden, order) are keyed on it.
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Get the items for a single recommendation row."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        # Called separately (possibly in parallel) for each enabled row
+        # returned by get_recommendations; any (slow) backend fetching belongs
+        # here, not in get_recommendations. Rows may contain Playlist items
+        # pointing back to this plugin via their provider_mappings; users can
+        # add such a Playlist to their library through the standard
+        # add-to-library flow.
+        # Return an empty UniqueList for an unknown item_id.
+        return UniqueList()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this plugin's contents."""

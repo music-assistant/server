@@ -34,7 +34,7 @@ from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarde
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.util import is_arm
+from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
@@ -75,6 +75,8 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
+# Background analysis is deliberately limited to the user's own files: pulling a streaming
+# service's catalogue for audio nobody asked to hear is not something we do. Keep it that way.
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -223,9 +225,6 @@ class AudioAnalysisController:
         # per queue (concurrent queues don't evict each other's still-playing analysis).
         self._session_queues: dict[str, str] = {}
         self._inference_runtime_configured = False
-        # Kept alive to persist the process-wide native BLAS thread cap (set in
-        # ensure_inference_runtime_configured); never used as a context manager.
-        self._blas_limiter: object | None = None
         # Bounds how many analysis offloads run concurrently to half the cores; created in
         # ensure_inference_runtime_configured once the core count is known (None until then),
         # and honored by AudioAnalysisProvider._run_offloaded.
@@ -239,6 +238,8 @@ class AudioAnalysisController:
         # Monotonic time of the last analysis start, and the monitor that unloads idle models.
         self._last_analysis_activity: float = 0.0
         self._idle_unload_task: asyncio.Task[None] | None = None
+        # In-flight provider finalizes: their session is already gone, but the models are not.
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -280,10 +281,9 @@ class AudioAnalysisController:
         """
         if self._inference_runtime_configured:
             return
-        # Lazy imports: only torch-backed providers call this, so a host running no such
-        # provider never imports torch/threadpoolctl. Running before the first model load
-        # also lets set_num_interop_threads take effect (only settable before the first op).
-        import threadpoolctl  # noqa: PLC0415
+        # Lazy import: only torch-backed providers call this, so a host running no such
+        # provider never imports torch. Running before the first model load also lets
+        # set_num_interop_threads take effect (only settable before the first op).
         import torch  # noqa: PLC0415
 
         budget = self._aa_thread_budget()
@@ -292,11 +292,9 @@ class AudioAnalysisController:
             # set_num_interop_threads can only be called before the first torch op
             torch.set_num_interop_threads(1)
         # torch.set_num_threads only governs torch's own ops. The per-block librosa/numpy
-        # feature extraction runs through the native BLAS pool (OpenBLAS), which otherwise
-        # spawns a thread per core per worker and, across concurrent sessions, saturates
-        # every core and starves playback. Cap it to the same budget; the limiter is kept
-        # alive on the controller so the cap persists for the process.
-        self._blas_limiter = threadpoolctl.threadpool_limits(limits=budget, user_api="blas")
+        # feature extraction runs through the native BLAS pool (OpenBLAS), which is capped to
+        # the same budget from the environment at process start (cap_native_thread_pools);
+        # it cannot be capped from here without deadlocking against a concurrent import.
         arm = is_arm()
         if arm:
             # NNPACK frequently fails to initialize on ARM SBCs (e.g. Raspberry Pi); torch
@@ -319,11 +317,11 @@ class AudioAnalysisController:
             initializer=_nice_analysis_worker,
         )
         self.logger.info(
-            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, "
+            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%s, "
             "analysis concurrency<=%d (1 while a player streams), nnpack=%s",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
-            budget,
+            os.environ.get("OPENBLAS_NUM_THREADS", "uncapped"),
             concurrency_cap,
             "off" if arm else "on",
         )
@@ -1149,15 +1147,20 @@ class AudioAnalysisController:
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         next_allowed = time.monotonic()
-        async for chunk in audio_source:
-            if session_key not in self._active_sessions:
-                # all providers evicted — bail early
-                break
-            now = time.monotonic()
-            if now < next_allowed:
-                await asyncio.sleep(next_allowed - now)
-            await self._distribute_chunk(session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS)
-            next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
+        # aclosing guarantees the source (and any provider stream slot it holds)
+        # is released promptly when the loop breaks out early
+        async with contextlib.aclosing(audio_source):
+            async for chunk in audio_source:
+                if session_key not in self._active_sessions:
+                    # all providers evicted — bail early
+                    break
+                now = time.monotonic()
+                if now < next_allowed:
+                    await asyncio.sleep(next_allowed - now)
+                await self._distribute_chunk(
+                    session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS
+                )
+                next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
@@ -1336,7 +1339,11 @@ class AudioAnalysisController:
         for provider_id in provider_ids:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                self.mass.create_task(provider.finalize(session_key))
+                # finalize runs the whole-track inference, long after the session was popped
+                # above, so track it: it is what keeps the models in use from here on.
+                task = self.mass.create_task(provider.finalize(session_key))
+                self._finalize_tasks.add(task)
+                task.add_done_callback(self._finalize_tasks.discard)
 
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
@@ -1368,7 +1375,7 @@ class AudioAnalysisController:
         """Unload heavy models once no analysis has run for MODEL_IDLE_UNLOAD_SECONDS."""
         while True:
             await asyncio.sleep(MODEL_IDLE_CHECK_INTERVAL_SECONDS)
-            if self._active_sessions:
+            if self._active_sessions or self._finalize_tasks:
                 # Keep the timer fresh while analysis is running.
                 self._last_analysis_activity = time.monotonic()
                 continue
@@ -1523,7 +1530,8 @@ class AudioAnalysisController:
 
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, self._cpu_count() // 4)
+        # Shared with the native BLAS cap applied at process start, so torch and BLAS agree.
+        return inference_thread_budget()
 
     def _get_scan_concurrency(self) -> int:
         """Read background scan concurrency from config, clamped to [1, 16]."""

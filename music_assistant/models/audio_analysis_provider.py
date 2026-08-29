@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
 from .provider import Provider
@@ -115,6 +116,8 @@ class AudioAnalysisProvider(Provider):
         # Serializes (re)loading of heavy models so concurrent session starts load them once.
         self._models_lock = asyncio.Lock()
         self._models_loaded = False
+        # Tracked so unload() can cancel them before freeing the models they infer against.
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     async def start_analysis(
         self,
@@ -131,6 +134,10 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if self.unloading:
+            # The controller snapshots providers up front and awaits between them, so a
+            # session can still arrive for a provider that is already on its way out.
+            return False
         if (
             self.max_analysis_duration is not None
             and streamdetails.duration
@@ -200,48 +207,61 @@ class AudioAnalysisProvider(Provider):
 
     async def finalize(self, session_id: str) -> None:
         """Finalize analysis, persist the result, fire post_analysis, then clean up."""
-        analysis: AudioAnalysisData | None = None
-        session = self._sessions.get(session_id)
+        if self.unloading:
+            # Too late to be cancelled by unload(); the models are about to be freed.
+            self._sessions.pop(session_id, None)
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._finalize_tasks.add(task)
         try:
-            analysis = await self._finalize(session_id)
-        except AudioAnalysisError as err:
-            if session is not None:
-                await self._record_failure(session, err.reason, err.retry_at)
-        except asyncio.CancelledError:
-            # Cancellation is not an analysis failure: let it propagate without recording.
-            raise
-        except Exception as err:
-            # _finalize is provider-implemented (torch/ffmpeg inference); its failure
-            # surface is open-ended, so the catch stays broad — logged and recorded.
-            self.logger.error("_finalize raised for session %s: %s", session_id, err, exc_info=err)
-            if session is not None:
-                await self._record_failure(session, str(err), None)
-        if analysis is not None and session is not None:
+            analysis: AudioAnalysisData | None = None
+            session = self._sessions.get(session_id)
             try:
-                await self.mass.streams.audio_analysis.set_audio_analysis(
-                    item_id=session.streamdetails.item_id,
-                    provider_instance_id_or_domain=session.streamdetails.provider,
-                    aa_provider_domain=self.domain,
-                    analysis=analysis,
-                    analysis_version=self.analysis_version,
-                    media_type=session.streamdetails.media_type,
-                )
+                analysis = await self._finalize(session_id)
+            except AudioAnalysisError as err:
+                if session is not None:
+                    await self._record_failure(session, err.reason, err.retry_at)
+            except asyncio.CancelledError:
+                # Cancellation is not an analysis failure: let it propagate without recording.
+                raise
             except Exception as err:
-                # Persisting (DB write + provider lookup) must never break session
-                # cleanup below, so the catch stays broad — logged and skipped.
-                self.logger.warning(
-                    "set_audio_analysis raised for %s: %s", self.domain, err, exc_info=err
+                # _finalize is provider-implemented (torch/ffmpeg inference); its failure
+                # surface is open-ended, so the catch stays broad — logged and recorded.
+                self.logger.error(
+                    "_finalize raised for session %s: %s", session_id, err, exc_info=err
                 )
-            else:
+                if session is not None:
+                    await self._record_failure(session, str(err), None)
+            if analysis is not None and session is not None:
                 try:
-                    await self.post_analysis(session.streamdetails, analysis)
-                except Exception as err:
-                    # post_analysis is a provider-implemented hook with an open-ended
-                    # failure surface; a failing side effect must not break cleanup.
-                    self.logger.warning(
-                        "post_analysis raised for %s: %s", self.domain, err, exc_info=err
+                    await self.mass.streams.audio_analysis.set_audio_analysis(
+                        item_id=session.streamdetails.item_id,
+                        provider_instance_id_or_domain=session.streamdetails.provider,
+                        aa_provider_domain=self.domain,
+                        analysis=analysis,
+                        analysis_version=self.analysis_version,
+                        media_type=session.streamdetails.media_type,
                     )
-        self._sessions.pop(session_id, None)
+                except Exception as err:
+                    # Persisting (DB write + provider lookup) must never break session
+                    # cleanup below, so the catch stays broad — logged and skipped.
+                    self.logger.warning(
+                        "set_audio_analysis raised for %s: %s", self.domain, err, exc_info=err
+                    )
+                else:
+                    try:
+                        await self.post_analysis(session.streamdetails, analysis)
+                    except Exception as err:
+                        # post_analysis is a provider-implemented hook with an open-ended
+                        # failure surface; a failing side effect must not break cleanup.
+                        self.logger.warning(
+                            "post_analysis raised for %s: %s", self.domain, err, exc_info=err
+                        )
+            self._sessions.pop(session_id, None)
+        finally:
+            if task is not None:
+                self._finalize_tasks.discard(task)
 
     async def post_analysis(
         self,
@@ -265,9 +285,17 @@ class AudioAnalysisProvider(Provider):
         self._sessions.pop(session_id, None)
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload, cancelling any active analysis sessions and freeing models."""
+        """Handle unload, cancelling in-flight analysis work and freeing models."""
         for session_id in list(self._sessions):
             await self.cancel(session_id)
+        # Cancelled, not awaited: inference runs for minutes and records no failure, so the
+        # track is simply analyzed again on its next play.
+        current_task = asyncio.current_task()
+        # Reaching unload() from inside a finalize must not cancel that finalize itself.
+        finalize_tasks = [task for task in self._finalize_tasks if task is not current_task]
+        for task in finalize_tasks:
+            task.cancel()
+        await asyncio.gather(*finalize_tasks, return_exceptions=True)
         async with self._models_lock:
             self._free_models()
             self._models_loaded = False
@@ -278,9 +306,14 @@ class AudioAnalysisProvider(Provider):
         Load this provider's heavy models if they are not resident, returning success.
 
         Safe to call from concurrent sessions: the models are loaded once. Returns False
-        when loading fails, so the caller can decline the session.
+        when loading fails, or when the provider is unloading, so the caller can decline
+        the session.
         """
         async with self._models_lock:
+            # Checked under the lock unload() frees within: the lock alone only serializes
+            # the two, so a loader that wins it afterwards would strand the models.
+            if self.unloading:
+                return False
             if self._models_loaded:
                 return True
             try:
@@ -418,8 +451,8 @@ class AudioAnalysisProvider(Provider):
             semaphore.release()
             raise
         future.add_done_callback(_release)
-        # shield: a cancelled awaiter leaves the thread and its slot held until the work finishes.
-        return await asyncio.shield(future)
+        # join: a cancelled awaiter leaves the thread and its slot held until the work finishes.
+        return await join_task(future)
 
     async def _run_offloaded_timed(
         self, func: Callable[..., _T], /, *args: Any, **kwargs: Any

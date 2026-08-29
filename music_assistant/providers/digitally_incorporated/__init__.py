@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
-        ConfigValueType,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
@@ -151,45 +150,6 @@ async def setup(
     return DigitallyIncorporatedProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-# ruff: noqa: ARG001
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    entries = []
-
-    # Listen key configuration
-    entries.append(
-        ConfigEntry(
-            key="listen_key",
-            type=ConfigEntryType.STRING,
-            required=True,
-        )
-    )
-
-    # Network selection - multi-select instead of individual booleans
-    network_options = [
-        ConfigValueOption(network_key, title=network_info["display_name"])
-        for network_key, network_info in NETWORKS.items()
-    ]
-
-    entries.append(
-        ConfigEntry(
-            key="enabled_networks",
-            type=ConfigEntryType.STRING,
-            default_value=list(NETWORKS.keys()),  # Enable all by default
-            required=True,
-            options=network_options,
-            multi_value=True,
-        )
-    )
-
-    return tuple(entries)
-
-
 class DigitallyIncorporatedProvider(MusicProvider):
     """Digitally Incorporated Music Provider."""
 
@@ -206,6 +166,29 @@ class DigitallyIncorporatedProvider(MusicProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._throttler = Throttler(rate_limit=RATE_LIMIT, period=RATE_PERIOD)
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        entries = []
+
+        # Network selection - multi-select instead of individual booleans
+        network_options = [
+            ConfigValueOption(network_key, title=network_info["display_name"])
+            for network_key, network_info in NETWORKS.items()
+        ]
+
+        entries.append(
+            ConfigEntry(
+                key="enabled_networks",
+                type=ConfigEntryType.STRING,
+                default_value=list(NETWORKS.keys()),  # Enable all by default
+                required=True,
+                options=network_options,
+                multi_value=True,
+            )
+        )
+
+        return tuple(entries)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Validate configuration
@@ -214,7 +197,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             msg = f"{self.domain}: At least one network must be enabled"
             raise ProviderUnavailableError(msg)
 
-        listen_key = self.config.get_value("listen_key")
+        listen_key = self.get_setup_value("listen_key")
         if (
             not listen_key
             or not isinstance(listen_key, str)
@@ -323,12 +306,10 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 ValueError,
                 KeyError,
             ) as err:
-                self.logger.debug(
-                    "%s: Failed to get favorites for network %s: %s",
-                    self.domain,
-                    network_key,
-                    err,
-                )
+                # the try block spans the whole per-network fetch and yield loop, so a
+                # failure partway through leaves an unknown subset of this network's
+                # favourites unreported; item_id=None holds back deletions for the run
+                self.report_skipped_sync_item(MediaType.RADIO, None, err)
                 continue
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -534,7 +515,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
     async def _fetch_favorites_pls(self, network_key: str) -> str:
         """Download favorites.pls from the listen.* host for this network."""
         domain = NETWORKS[network_key]["domain"]
-        listen_key = self.config.get_value("listen_key")
+        listen_key = self.get_setup_value("listen_key")
         timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
         params: dict[str, str] = {"listen_key": str(listen_key), **FAVORITES_PLS_EXTRA_PARAMS}
         try:
@@ -813,7 +794,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             "%s: Getting stream URLs for %s:%s", self.domain, network_key, channel_key
         )
 
-        listen_key = self.config.get_value("listen_key")
+        listen_key = self.get_setup_value("listen_key")
         if not listen_key:
             msg = f"{self.domain}: Listen key not configured"
             raise ProviderUnavailableError(msg)

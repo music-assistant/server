@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_ALBUMS,
@@ -39,8 +40,8 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
 if TYPE_CHECKING:
     import logging
@@ -854,6 +855,152 @@ async def migrate_database(  # noqa: PLR0915
                     "audio analysis row(s)",
                     result.rowcount,
                 )
+
+    if prev_version <= 53:
+        # normalize stored synced lyrics: strip LRC ID tags and expand multi-timestamp
+        # (repeating) lines into one line per timestamp
+        tracks_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_TRACKS})", limit=0
+            )
+        }
+        repaired_lyrics_rows = 0
+        if "metadata" in tracks_columns:
+            # guard against (test) databases with stand-in tables
+            async for db_row in database.iter_items(DB_TABLE_TRACKS):
+                if not db_row["metadata"] or '"lrc_lyrics"' not in db_row["metadata"]:
+                    continue
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    # corrupt metadata rows are handled elsewhere (diagnostics), skip here
+                    continue
+                lrc_lyrics = metadata.get("lrc_lyrics")
+                if not isinstance(lrc_lyrics, str):
+                    continue
+                normalized = normalize_lrc_lyrics(lrc_lyrics)
+                if normalized == lrc_lyrics:
+                    continue
+                metadata["lrc_lyrics"] = normalized
+                await database.update(
+                    DB_TABLE_TRACKS,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                repaired_lyrics_rows += 1
+        if repaired_lyrics_rows:
+            logger.info("Normalized synced lyrics of %d track(s)", repaired_lyrics_rows)
+
+    if prev_version <= 54:
+        # apple music blobstore artwork URLs are presigned with a ~24h expiry and are
+        # no longer persisted: replace the stored (long-dead) signed URLs with the
+        # stable artwork token the provider resolves to a fresh URL on demand
+        migrated_artwork_rows = 0
+        for table, media_type_value in (
+            (DB_TABLE_ARTISTS, "artist"),
+            (DB_TABLE_ALBUMS, "album"),
+            (DB_TABLE_TRACKS, "track"),
+            (DB_TABLE_PLAYLISTS, "playlist"),
+        ):
+            table_columns = {
+                x["name"]
+                for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+            }
+            if "metadata" not in table_columns:
+                # guard against (test) databases with stand-in tables
+                continue
+            # the (provider_instance, item_id) -> provider item id lookup needed to
+            # derive each item's artwork token from its apple music mapping
+            apple_item_ids = {
+                (row["item_id"], row["provider_instance"]): row["provider_item_id"]
+                for row in await database.get_rows_from_query(
+                    f"SELECT item_id, provider_instance, provider_item_id "
+                    f"FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = :media_type AND provider_domain = 'apple_music'",
+                    {"media_type": media_type_value},
+                    limit=0,
+                )
+            }
+            async for db_row in database.iter_items(table):
+                if not db_row["metadata"] or "blobstore.apple.com" not in db_row["metadata"]:
+                    continue
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    # corrupt metadata rows are handled elsewhere (diagnostics), skip here
+                    continue
+                images = metadata.get("images")
+                if not isinstance(images, list):
+                    continue
+                migrated_images = []
+                changed = False
+                for image in images:
+                    if not isinstance(image, dict) or "blobstore.apple.com" not in (
+                        image.get("path") or ""
+                    ):
+                        migrated_images.append(image)
+                        continue
+                    changed = True
+                    prov_item_id = apple_item_ids.get((db_row["item_id"], image.get("provider")))
+                    if prov_item_id is None:
+                        # no mapping left to resolve through; drop the dead url
+                        continue
+                    image["path"] = f"{media_type_value}/{prov_item_id}"
+                    image["remotely_accessible"] = False
+                    migrated_images.append(image)
+                if not changed:
+                    continue
+                metadata["images"] = migrated_images
+                await database.update(
+                    table,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                migrated_artwork_rows += 1
+        if migrated_artwork_rows:
+            logger.info(
+                "Migrated the Apple Music artwork of %d library item(s) to resolvable tokens",
+                migrated_artwork_rows,
+            )
+
+    if prev_version <= 55:
+        # drop the sound effect media type from the stored playlists: clients that do not
+        # know it yet refuse to parse a playlist that advertises it. Rewriting the rows
+        # here makes upgrading enough, instead of having to wait for the next library sync.
+        await database.execute(
+            f"UPDATE {DB_TABLE_PLAYLISTS} SET supported_mediatypes = json(("
+            "SELECT json_group_array(value) FROM json_each"
+            f"({DB_TABLE_PLAYLISTS}.supported_mediatypes) WHERE value != 'sound_effect'))"
+            " WHERE json_valid(supported_mediatypes)"
+            " AND supported_mediatypes LIKE '%sound_effect%'"
+        )
+
+    if prev_version <= 56:
+        # the stable branch numbers its schema versions independently of this one, so a
+        # stable database can report a version that leapfrogs steps it never ran: stable
+        # 41-43 never got the columns this branch adds at <= 41 and <= 42. Re-add them for
+        # every pre-57 database; the ALTERs are no-ops where the column already exists.
+        for table, column in (
+            (DB_TABLE_PLAYLISTS, "[translation_key] TEXT"),
+            (DB_TABLE_PLAYLISTS, "[translation_params] json"),
+            (DB_TABLE_PLAYLOG, "[playback_speed] REAL NOT NULL DEFAULT 1.0"),
+        ):
+            try:
+                await database.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
+    if prev_version <= 57:
+        # add is_dynamic column to radio table
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_dynamic BOOLEAN NOT NULL DEFAULT 0"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

@@ -28,12 +28,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import compare_album_name, compare_strings
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -110,44 +110,6 @@ async def setup(
     return AudioDbMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_ENABLE_ARTIST_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_ALBUM_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_TRACK_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-    )
-
-
 class AudioDbMetadataProvider(MetadataProvider):
     """The AudioDB Metadata provider."""
 
@@ -157,6 +119,31 @@ class AudioDbMetadataProvider(MetadataProvider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 20
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_ARTIST_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_ALBUM_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_TRACK_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -314,23 +301,6 @@ class AudioDbMetadataProvider(MetadataProvider):
             adb_album, "strDescription"
         )
         metadata.review = adb_album.get("strReview")
-        # images
-        if not self.config.get_value(CONF_ENABLE_IMAGES):
-            return metadata
-        metadata.images = UniqueList()
-        for key, img_type in IMG_MAPPING.items():
-            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
-                if img := adb_album.get(f"{key}{postfix}"):
-                    metadata.images.append(
-                        MediaItemImage(
-                            type=img_type,
-                            path=img,
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    )
-                else:
-                    break
         # fill in some missing album info if needed
         if not album.year:
             album.year = int(adb_album.get("intYearReleased", "0"))
@@ -349,6 +319,23 @@ class AudioDbMetadataProvider(MetadataProvider):
                     album_artist.item_id,
                     album_artist,
                 )
+        # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
+        metadata.images = UniqueList()
+        for key, img_type in IMG_MAPPING.items():
+            for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
+                if img := adb_album.get(f"{key}{postfix}"):
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
+                else:
+                    break
         return metadata
 
     async def __parse_track(self, track: Track, adb_track: dict[str, Any]) -> MediaItemMetadata:
@@ -364,6 +351,30 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.description, metadata.description_language = self._localized_field(
             adb_track, "strDescription"
         )
+        # update the artist mbid while at it
+        for album_artist in track.artists:
+            if not compare_strings(album_artist.name, adb_track["strArtist"]):
+                continue
+            if not album_artist.mbid and album_artist.provider == "library":
+                if isinstance(album_artist, ItemMapping):
+                    album_artist = self.mass.music.artists.artist_from_item_mapping(album_artist)  # noqa: PLW2901
+                album_artist.mbid = adb_track["strMusicBrainzArtistID"]
+                await self.mass.music.artists.update_item_in_library(
+                    album_artist.item_id,
+                    album_artist,
+                )
+        # update the album mbid while at it
+        if (
+            track.album
+            and track.album.provider == "library"
+            and not track.album.get_external_id(ExternalID.MB_RELEASEGROUP)
+            # a recording is shared by every release it appears on, so the album id is
+            # only ours to take when the matched record is for this album as well
+            and compare_album_name(track.album.name, adb_track["strAlbum"])
+        ):
+            await self.mass.music.albums.set_release_group(
+                int(track.album.item_id), adb_track["strMusicBrainzAlbumID"]
+            )
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -381,29 +392,6 @@ class AudioDbMetadataProvider(MetadataProvider):
                     )
                 else:
                     break
-        # update the artist mbid while at it
-        for album_artist in track.artists:
-            if not compare_strings(album_artist.name, adb_track["strArtist"]):
-                continue
-            if not album_artist.mbid and album_artist.provider == "library":
-                if isinstance(album_artist, ItemMapping):
-                    album_artist = self.mass.music.artists.artist_from_item_mapping(album_artist)  # noqa: PLW2901
-                album_artist.mbid = adb_track["strMusicBrainzArtistID"]
-                await self.mass.music.artists.update_item_in_library(
-                    album_artist.item_id,
-                    album_artist,
-                )
-        # update the album mbid while at it
-        if (
-            track.album
-            and not track.album.get_external_id(ExternalID.MB_RELEASEGROUP)
-            and track.album.provider == "library"
-            and isinstance(track.album, Album)
-        ):
-            track.album.add_external_id(
-                ExternalID.MB_RELEASEGROUP, adb_track["strMusicBrainzAlbumID"]
-            )
-            await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
         return metadata
 
     def _localized_field(self, obj: dict[str, Any], prefix: str) -> tuple[str | None, str | None]:

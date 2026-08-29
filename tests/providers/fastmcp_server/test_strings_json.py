@@ -10,6 +10,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.providers.fastmcp_server import config as _config
 from music_assistant.providers.fastmcp_server.config import build_config_entries
+from music_assistant.providers.fastmcp_server.constants import DEFAULT_MOUNT_PATH
 
 if TYPE_CHECKING:
     from unittest.mock import MagicMock
@@ -40,7 +41,7 @@ def test_every_category_is_known_or_declared(mock_mass: MagicMock) -> None:
     """Each category emitted by the schema is a common one or declared in ``config_categories``."""
     data = _load_strings()
     declared = set(data["config_categories"])
-    for entry in build_config_entries(mock_mass, {}):
+    for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH):
         category = getattr(entry, "category", None)
         if not category:
             continue
@@ -56,7 +57,7 @@ def test_static_entries_carry_no_inline_text(mock_mass: MagicMock) -> None:
     Only ``LABEL``-type entries may carry inline text: their content is composed
     at runtime (e.g. the endpoint info label embeds the live ``base_url``).
     """
-    for entry in build_config_entries(mock_mass, {}):
+    for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH):
         if entry.type is ConfigEntryType.LABEL:
             continue
         assert entry.label is None, f"inline label on {entry.key!r}"
@@ -67,7 +68,7 @@ def test_deliteralized_entries_have_strings(mock_mass: MagicMock) -> None:
     """Every static entry with ``label is None`` has full label+description text in strings.json."""
     data = _load_strings()
     config_entries = data["config_entries"]
-    for entry in build_config_entries(mock_mass, {}):
+    for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH):
         if entry.label is not None:
             continue
         assert entry.key in config_entries, f"missing strings.json entry for {entry.key!r}"

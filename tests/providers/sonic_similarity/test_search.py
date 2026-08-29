@@ -52,6 +52,8 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=True → plugin advertises SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=True)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=True))
         assert ProviderFeature.SEARCH in plugin.supported_features
 
@@ -60,6 +62,8 @@ class TestSetupConditionalSearch:
         self, mock_mass: MagicMock
     ) -> None:
         """CONF_ENABLE_TEXT_SEARCH=False → plugin does not advertise SEARCH."""
+        # setup() reads the stored enable_text_search value directly from mass.config
+        mock_mass.config.get_raw_provider_config_value = MagicMock(return_value=False)
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         assert ProviderFeature.SEARCH not in plugin.supported_features
 

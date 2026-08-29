@@ -8,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import HttpVersion11, web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -31,6 +31,8 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
+from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -39,6 +41,7 @@ from .constants import (
     CONF_ENTRY_UGP_OUTPUT_FORMAT,
     CONF_UGP_OUTPUT_FORMAT,
     CONFIG_ENTRY_UGP_NOTE,
+    EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
     UGP_OUTPUT_MP3,
     resolve_ugp_output_format,
@@ -48,13 +51,14 @@ from .ugp_stream import UGPStream
 if TYPE_CHECKING:
     from .provider import UniversalGroupProvider
 
-# PlayerFeature.POWER is intentionally not in the base feature set anymore:
-# the lifecycle (form on play, dissolve on stop, debounced idle deform) governs
-# whether the group captures its members. POWER is added dynamically when the
-# user assigns 'Fake power control' to the group.
+# The features the group carries on its own. Everything else is resolved per read in
+# the supported_features property: POWER when the user assigns 'Fake power control',
+# SET_MEMBERS for dynamic groups, and EXTRA_FEATURES_FROM_MEMBERS from the members.
+# PlayerFeature.POWER is intentionally not a base feature: the lifecycle (form on
+# play, dissolve on stop, debounced idle deform) governs whether the group captures
+# its members.
 BASE_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
-    PlayerFeature.VOLUME_SET,
     PlayerFeature.MULTI_DEVICE_DSP,
 }
 
@@ -72,14 +76,17 @@ class UniversalGroupPlayer(Player):
         """Initialize UniversalGroupPlayer instance."""
         super().__init__(provider, player_id)
         self.stream: UGPStream | None = None
-        self._attr_name = self.config.name or f"Universal Group {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = (
+            self.config.default_name or self.config.name or f"Universal Group {player_id}"
+        )
         self._attr_available = True
         # See SyncGroupPlayer: groups have no opinion on power by default; the
         # session lifecycle is what governs activity. Fake power control is the
         # opt-in mechanism for explicit on/off semantics.
         self._attr_powered = None
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
-        self._attr_supported_features = {*BASE_FEATURES}
         self._attr_needs_poll = True
         self._attr_poll_interval = 30
         # task that releases members after the idle grace window expires
@@ -98,6 +105,29 @@ class UniversalGroupPlayer(Player):
             )
         )
         self._set_attributes()
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        features = {*BASE_FEATURES}
+        # The raw config value is read here to avoid recursion via the power_control
+        # property (which itself may inspect supported features).
+        raw_power_conf = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_POWER_CONTROL
+        )
+        if raw_power_conf == PLAYER_CONTROL_FAKE:
+            features.add(PlayerFeature.POWER)
+        if self.is_dynamic:
+            features.add(PlayerFeature.SET_MEMBERS)
+        # derive the fanned-out features from all (configured) members, so volume and
+        # mute are advertised whether or not the group currently has a live session.
+        for member_id in self._attr_group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                    if feature in member_player.state.supported_features:
+                        features.add(feature)
+        return features
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -158,29 +188,13 @@ class UniversalGroupPlayer(Player):
             # only realign members to the configured static set when the group
             # is dormant — otherwise we would lose any dynamic adds mid-session.
             self._attr_group_members = static_members.copy()
-        if self.is_dynamic:
-            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        elif PlayerFeature.SET_MEMBERS in self._attr_supported_features:
-            self._attr_supported_features.remove(PlayerFeature.SET_MEMBERS)
-        # advertise POWER feature only when the user has opted in via fake control
-        raw_power_conf = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_POWER_CONTROL
-        )
-        if raw_power_conf == PLAYER_CONTROL_FAKE:
-            self._attr_supported_features.add(PlayerFeature.POWER)
-        else:
-            self._attr_supported_features.discard(PlayerFeature.POWER)
 
     @cached_property
     def is_dynamic(self) -> bool:
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             # add universal group specific entries
@@ -194,7 +208,7 @@ class UniversalGroupPlayer(Player):
                 options=[
                     ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
-                    if x.type != PlayerType.GROUP
+                    if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN, PlayerType.SOURCE)
                 ],
             ),
             ConfigEntry(
@@ -275,10 +289,6 @@ class UniversalGroupPlayer(Player):
             self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
 
-    async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        # group volume is already handled in the player manager
-
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # form on play: cancel any pending idle-grace release, then capture the
@@ -307,6 +317,8 @@ class UniversalGroupPlayer(Player):
             audio_source=audio_source,
             audio_format=pivot_format,
             base_pcm_format=pivot_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
         )
         base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
 
@@ -322,14 +334,17 @@ class UniversalGroupPlayer(Player):
             for member in self.mass.players.iter_group_members(self, only_powered=True):
                 # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(
-                    self.mass.players._handle_play_media(
+                    self._play_media_on_member(
                         member.player_id,
                         PlayerMedia(
                             uri=f"{base_url}?player_id={member.player_id}",
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
-                            custom_data={"ugp_player_id": self.player_id},
+                            queue_session_id=self.stream.session_id,
+                            custom_data={
+                                "ugp_player_id": self.player_id,
+                            },
                         ),
                     )
                 )
@@ -374,14 +389,17 @@ class UniversalGroupPlayer(Player):
                 )
                 base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
                 # Use internal handler to get protocol selection and avoid redirect
-                await self.mass.players._handle_play_media(
+                await self._play_media_on_member(
                     player_id,
                     PlayerMedia(
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
                         source_id=self.player_id,
-                        custom_data={"ugp_player_id": self.player_id},
+                        queue_session_id=self.stream.session_id,
+                        custom_data={
+                            "ugp_player_id": self.player_id,
+                        },
                     ),
                 )
         # handle removals
@@ -420,6 +438,11 @@ class UniversalGroupPlayer(Player):
             # tear down any in-flight session before unloading
             await self.stop()
             self._attr_powered = False
+
+    async def _play_media_on_member(self, player_id: str, media: PlayerMedia) -> None:
+        """Play media directly on a group member under its playback lock."""
+        async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            await self.mass.players._handle_play_media(player_id, media)
 
     async def _capture_members(self) -> None:
         """
@@ -487,18 +510,19 @@ class UniversalGroupPlayer(Player):
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
-        if self.is_dynamic and PlayerFeature.SET_MEMBERS not in self.supported_features:
-            # dynamic group players should support SET_MEMBERS feature
-            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        elif not self.is_dynamic and PlayerFeature.SET_MEMBERS in self.supported_features:
-            # static group players should not support SET_MEMBERS feature
-            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         prev_state = self._attr_playback_state
         # grab current media and state from one of the active players
         # use state properties (not raw attributes) to account for protocol player propagation
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
             self._attr_playback_state = child_player.state.playback_state
-            if child_player.state.elapsed_time:
+            # a position is only meaningful together with the timestamp it was taken at,
+            # so the pair is adopted as a whole or not at all. Position 0 is a valid
+            # position: members that anchor the group stream once report a fixed 0 and
+            # let the timestamp carry both the progression and their own buffer delay.
+            if (
+                child_player.state.elapsed_time is not None
+                and child_player.state.elapsed_time_last_updated is not None
+            ):
                 self._attr_elapsed_time = child_player.state.elapsed_time
                 self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
             break
@@ -586,10 +610,11 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
-        # prefer the child (protocol) player configuration
-        # (child player_id may be stale/invalid; fall back to the group profile)
+        # prefer the configuration of the player that actually renders the audio
+        # (the member's active protocol player when it outputs via a protocol);
+        # child player_id may be stale/invalid, then fall back to the group profile
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            http_profile = child_player.get_config_value(CONF_HTTP_PROFILE, http_profile)
+            http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()
@@ -617,15 +642,19 @@ class UniversalGroupPlayer(Player):
         )
 
         # Generate filter params for the player specific DSP settings
-        filter_params = None
+        output_plan = None
         if child_player_id:
-            filter_params = self.mass.streams.audio.get_player_filter_params(
-                child_player_id, self.stream.input_format, output_format
+            output_plan = self.mass.streams.audio.get_player_output_plan(
+                child_player_id,
+                self.stream.input_format,
+                output_format,
+                queue_id=self.stream.queue_id,
+                session_id=self.stream.session_id,
             )
 
         async for chunk in self.stream.get_stream(
             output_format,
-            filter_params=filter_params,
+            filter_params=output_plan.filter_params if output_plan else None,
         ):
             try:
                 await resp.write(chunk)

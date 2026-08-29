@@ -6,7 +6,8 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import Any, cast
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -25,7 +26,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.podcast_parsers import enrich_episode_chapters
+from music_assistant.helpers.podcast_parsers import (
+    enrich_episode_chapters,
+    rank_episodes_by_date,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -45,10 +49,28 @@ class PodcastIndexProvider(MusicProvider):
     api_key: str = ""
     api_secret: str = ""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_STORED_PODCASTS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                default_value=[],
+                required=False,
+                hidden=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.api_key = str(self.config.get_value(CONF_API_KEY))
-        self.api_secret = str(self.config.get_value(CONF_API_SECRET))
+        self.api_key = str(self.get_setup_value(CONF_API_KEY))
+        self.api_secret = str(self.get_setup_value(CONF_API_SECRET))
 
         if not self.api_key or not self.api_secret:
             raise LoginFailed("API key and secret are required")
@@ -264,14 +286,17 @@ class PodcastIndexProvider(MusicProvider):
             )
 
             episodes = response.get("items", [])
-            for idx, episode_data in enumerate(episodes):
+            # rank on the publication date rather than trusting the listing order, so a feed
+            # that numbers only part of its episodes cannot mix two incompatible scales
+            positions = rank_episodes_by_date([ep.get("datePublished") or None for ep in episodes])
+            for position, episode_data in zip(positions, episodes, strict=True):
                 episode = parse_episode_from_data(
                     episode_data,
                     prov_podcast_id,
-                    idx,
                     self.instance_id,
                     self.domain,
                     podcast_name,
+                    position=position,
                 )
                 if episode:
                     yield episode
@@ -299,7 +324,7 @@ class PodcastIndexProvider(MusicProvider):
             episode_data = response.get("episode")
             if episode_data:
                 episode = parse_episode_from_data(
-                    episode_data, podcast_id, 0, self.instance_id, self.domain
+                    episode_data, podcast_id, self.instance_id, self.domain
                 )
         except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
@@ -428,7 +453,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("recent/episodes", params={"max": 50})
 
             episodes = []
-            for idx, episode_data in enumerate(response.get("items", [])):
+            for episode_data in response.get("items", []):
                 # Extract podcast ID from episode data
                 podcast_id = str(episode_data.get("feedId", ""))
                 # Pass feedTitle to avoid unnecessary API calls
@@ -436,7 +461,6 @@ class PodcastIndexProvider(MusicProvider):
                 episode = parse_episode_from_data(
                     episode_data,
                     podcast_id,
-                    idx,
                     self.instance_id,
                     self.domain,
                     podcast_name,

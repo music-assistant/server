@@ -16,61 +16,65 @@ from aiohttp import ClientError
 from google_drive_api.auth import AbstractAuth
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
-from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.oauth import (
+    OAUTH_STEP_TIMEOUT,
+    authorization_code_from_params,
+    hosted_bounce_redirect,
+)
+from music_assistant.models.setup_flow import SetupFlowError
 
-from .constants import CALLBACK_REDIRECT_URL, OAUTH_AUTHORIZE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL
+from .constants import OAUTH_AUTHORIZE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.setup_flow import SetupSession
 
 
-async def authorize(
-    mass: MusicAssistant, session_id: str, client_id: str, client_secret: str
-) -> str:
+async def authorize(session: SetupSession, client_id: str, client_secret: str) -> str:
     """
-    Run the Google OAuth consent flow and return the resulting refresh token.
+    Run the Google OAuth consent flow via the setup session and return the refresh token.
 
-    :param mass: MusicAssistant instance.
-    :param session_id: Unique id for this auth session, provided by the frontend.
+    :param session: The setup session driving the flow.
     :param client_id: The user's Google OAuth client ID.
     :param client_secret: The user's Google OAuth client secret.
     """
-    async with AuthenticationHelper(mass, session_id) as auth_helper:
-        params = {
-            "response_type": "code",
-            "client_id": client_id,
-            "scope": OAUTH_SCOPE,
-            "redirect_uri": CALLBACK_REDIRECT_URL,
-            # Google only allows pre-registered redirect URIs, so we send the user
-            # through the fixed MA callback page which forwards to the local
-            # (session-specific) callback URL we smuggle along in `state`
-            "state": auth_helper.callback_url,
-            # offline access + forced consent so Google always returns a refresh token
-            "access_type": "offline",
-            "prompt": "consent",
-        }
-        auth_url = f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
-        result = await auth_helper.authenticate(auth_url, timeout=120)
-    # the callback relay page forwards a literal "null" code when consent was denied
-    if not result.get("code") or result["code"] == "null":
-        err = result.get("error", "no authorization code returned")
-        raise LoginFailed(f"Google authorization failed: {err}")
+    # Google only allows pre-registered redirect URIs, so send the user through the fixed
+    # MA callback page which forwards to the local callback URL smuggled along in `state`
+    redirect_uri, state = hosted_bounce_redirect(session.callback_url)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "scope": OAUTH_SCOPE,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        # offline access + forced consent so Google always returns a refresh token
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    result = await session.external(
+        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}",
+        step_id="authenticate",
+        expires_in=OAUTH_STEP_TIMEOUT,
+    )
+    code = authorization_code_from_params(result)
     data = {
         "grant_type": "authorization_code",
-        "code": result["code"],
+        "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": CALLBACK_REDIRECT_URL,
+        "redirect_uri": redirect_uri,
     }
     try:
-        async with mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
+        async with session.mass.http_session.post(OAUTH_TOKEN_URL, data=data) as resp:
             if resp.status != 200:
-                raise LoginFailed(f"Failed to exchange authorization code: {await resp.text()}")
+                raise SetupFlowError(f"Failed to exchange authorization code: {await resp.text()}")
             token_info = await resp.json()
     except ClientError as err:
-        raise LoginFailed(f"Failed to exchange authorization code: {err}") from err
+        raise SetupFlowError(f"Failed to exchange authorization code: {err}") from err
     if not (refresh_token := token_info.get("refresh_token")):
-        raise LoginFailed("Google did not return a refresh token, please retry the authorization")
+        raise SetupFlowError(
+            "Google did not return a refresh token, please retry the authorization"
+        )
     return str(refresh_token)
 
 

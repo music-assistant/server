@@ -2,7 +2,7 @@
 Smart Fades - candidate value objects and the timed-candidate factory.
 
 A ``CandidateSpec`` is a generator's declared intent (which tier rung, which
-anchor/entry, which relaxation was applied) before any plan exists; a
+anchor/entry, which generator produced it) before any plan exists; a
 ``Candidate`` is that spec paired with its timed ``TransitionPlan`` and
 computed ``PlanMetrics``, ready for policies to score. The factory builds
 TIMED candidates only - anchor, overlap timing, tempo ramp, trims and metrics.
@@ -22,7 +22,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.bands import instrumental_claim_confirmed
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
@@ -39,7 +38,6 @@ from music_assistant.controllers.streams.smart_fades.models import (
 )
 from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
 from music_assistant.controllers.streams.smart_fades.vocal import (
-    VocalMask,
     collision_metrics,
     mask_saturated,
     merge_windows,
@@ -78,6 +76,16 @@ RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 _TRIM_GUARD_LOW_FLOOR: float = 0.25
 _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 
+# Trim-closing anchors engage only when the audible end sits this much past
+# the energy anchor; below it the default anchor leads the main pass (the
+# rescue pass re-runs this generator ungated when that pass rejects everything)
+_TRIM_CLOSING_MIN_GAP_S: float = 8.0
+
+# Lazy-overlay length: a long unphrased equal-power blend, not a rung on any ladder
+_LAZY_OVERLAY_SECONDS: float = 16.0
+# both decks at or under this in-window vocal duty qualify as ambient
+_LAZY_DUTY_MAX: float = 0.10
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
@@ -92,8 +100,6 @@ class CandidateSpec:
     strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED
     # generator name, for scoreboard + tie-break
     source: str = ""
-    # "outgoing" | "incoming" | None (16-bar relaxation)
-    one_sided_vocal: str | None = None
     # the tier ladder's top rung; 0 = same as bars
     ideal_bars: int = 0
 
@@ -156,7 +162,8 @@ class EnergyLadderGenerator(CandidateGenerator):
         ideal = ladder[0]
         # the default anchor is already kick-folded; a pure full-band variant
         # would let a longer blend win past the kick die-out, defeating the
-        # researched kick handover, so it is deliberately not emitted
+        # researched kick handover, so it is deliberately not emitted (trim-closing
+        # may still anchor later when >=8s of audible tail would otherwise be stranded)
         anchors: list[float | None] = [None]
         a_pin = _fade_onset_pin(ctx)
         if a_pin < ctx.default_anchor:
@@ -177,25 +184,6 @@ class EnergyLadderGenerator(CandidateGenerator):
                         source=self.name,
                         ideal_bars=ideal,
                     )
-        # the doubled overlap is a full-blend privilege: a shorter tier's
-        # ladder never reaches 16 bars, one-sided relaxation or not
-        if ctx.tier is not TransitionTier.FULL_BLEND:
-            return
-        one_sided = _one_sided_instrumental_side(ctx)
-        if one_sided is None:
-            return
-        for anchor in anchors:
-            entries = [None] if anchor is None else _entry_options(ctx, _INSTRUMENTAL_BLEND_BARS)
-            for entry in entries:
-                yield CandidateSpec(
-                    tier=ctx.tier,
-                    bars=_INSTRUMENTAL_BLEND_BARS,
-                    anchor_s=anchor,
-                    entry_s=entry,
-                    source=self.name,
-                    one_sided_vocal=one_sided,
-                    ideal_bars=_INSTRUMENTAL_BLEND_BARS,
-                )
 
 
 class CodaAnchorGenerator(CandidateGenerator):
@@ -337,6 +325,59 @@ class RescueAnchorGenerator(CandidateGenerator):
                 )
 
 
+class TrimClosingAnchorGenerator(CandidateGenerator):
+    """Emits the tier's ladder at that anchor, at the audible end, when a large tail is stranded."""
+
+    name = "trim-closing-anchor"
+
+    def __init__(self, min_gap: float = _TRIM_CLOSING_MIN_GAP_S) -> None:
+        """Initialize the generator with the smallest stranded-tail gap that engages it."""
+        self._min_gap = min_gap
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit every ladder rung at the audible end, or nothing when the trim gap is small."""
+        anchor = ctx.audio_end
+        if anchor - ctx.default_anchor < self._min_gap:
+            return
+        # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
+        _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)
+        ladder = bars_ladder(ctx, tier)
+        for bars in ladder:
+            yield CandidateSpec(
+                tier=tier,
+                bars=bars,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=ladder[0],
+            )
+
+
+class LazyOverlayGenerator(CandidateGenerator):
+    """Emits one long unphrased overlay when the grid is unusable but both decks are ambient."""
+
+    name = "lazy-overlay"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the overlay spec, or nothing when the pair doesn't qualify."""
+        if ctx.tier is not TransitionTier.QUICK_FADE or ctx.cross_meter:
+            return
+        if ctx.bpm_diff_percent > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+            return
+        duties = _window_duties(ctx, _LAZY_OVERLAY_SECONDS)
+        if duties is None or duties[0] > _LAZY_DUTY_MAX or duties[1] > _LAZY_DUTY_MAX:
+            return
+        yield CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=ctx.audio_end,
+            entry_s=None,
+            strategy=TransitionStrategy.LAZY_OVERLAY,
+            source=self.name,
+            ideal_bars=1,
+        )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
@@ -344,6 +385,8 @@ def default_generators() -> tuple[CandidateGenerator, ...]:
         CodaAnchorGenerator(),
         ProtectiveAnchorGenerator(),
         VocalOnsetEntryGenerator(),
+        LazyOverlayGenerator(),
+        TrimClosingAnchorGenerator(),
     )
 
 
@@ -367,17 +410,14 @@ class CandidateFactory:
         The returned candidate's spec reflects what was actually built: a
         re-anchored tail can downgrade the tier and cap the bar count.
         """
+        if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
+            return self._build_lazy_overlay(spec)
         tail = self._anchored_tail(spec.anchor_s)
         # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
         # requested bar count still reflects the old tier, so cap it at the new
         # tier's largest rung or a long overlap ships without its tempo ramp
         _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
         bars_cap = bars_ladder(self._ctx, tier)[0]
-        if spec.one_sided_vocal is not None and tier is TransitionTier.FULL_BLEND:
-            # the one-sided relaxation's ceiling is declared by its generator
-            # (panel-reviewed 16-bar rung); the ladder alone only grants 16
-            # to both-instrumental pairs
-            bars_cap = max(bars_cap, _INSTRUMENTAL_BLEND_BARS)
         bars = min(spec.bars, bars_cap)
 
         fadein_start_pos = (
@@ -816,6 +856,21 @@ class CandidateFactory:
         )
         return low_silent & voice_active
 
+    def _build_lazy_overlay(self, spec: CandidateSpec) -> Candidate:
+        """Build the unphrased long-overlay candidate: anchored at the audible end, no alignment."""
+        tail = self._anchored_tail(spec.anchor_s)
+        plan = TransitionPlan(
+            tier=spec.tier,
+            fade_out_window=tail.effective_end,
+            crossfade_duration=min(_LAZY_OVERLAY_SECONDS, tail.effective_end),
+            tempo_plan=TempoPlan(),
+            fadeout_trim=tail.fadeout_trim,
+            fadein_trim_start=None,
+        )
+        return Candidate(
+            spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
+        )
+
     def _score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
         """Score a candidate: trims, retained vocal time, downbeat alignment, collision."""
         ctx = self._ctx
@@ -896,7 +951,7 @@ class _AnchoredTail:
 
 
 def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
-    """Outgoing/incoming vocal duty fractions the instrumental-blend gates key on, or None."""
+    """Outgoing/incoming vocal duty fractions the instrumental-blend/lazy-overlay gates key on."""
     if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
         return None
     out_duty = sum(right - left for left, right in ctx.vocal_out_scoring.windows) / max(
@@ -908,39 +963,31 @@ def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
     return out_duty, in_duty
 
 
-def _one_sided_instrumental_side(ctx: TransitionContext) -> str | None:
-    """Which side (the one WITH vocals) earns the one-sided 16-bar rung, or None."""
-    duties = _vocal_duties(ctx)
-    if duties is None:
+def _window_duties(ctx: TransitionContext, seconds: float) -> tuple[float, float] | None:
+    """
+    Vocal duty per deck over the window an unphrased overlay of ``seconds`` actually spans.
+
+    :param ctx: The transition context.
+    :param seconds: Requested overlay length; the outgoing window is the last
+        ``seconds`` before the audible end, the incoming window its first ``seconds``.
+    """
+    if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
         return None
-    out_duty, in_duty = duties
-    out_ok = out_duty <= _INSTRUMENTAL_DUTY_MAX
-    in_ok = in_duty <= _INSTRUMENTAL_DUTY_MAX
-    if out_ok == in_ok:
-        # both qualify (already the ladder's plain ideal) or neither does
+    # mirrors the anchored tail: a sub-half-second gap to the buffer end is not trimmed
+    effective_end = ctx.audio_end
+    if effective_end >= ctx.buffer_duration - 0.5:
+        effective_end = ctx.buffer_duration
+    span = min(seconds, effective_end)
+    if span <= 0.0:
         return None
-    assert ctx.vocal_out_scoring is not None  # narrowed by _vocal_duties
-    assert ctx.vocal_in_scoring is not None
-    if out_ok:
-        if ctx.outgoing_profile is None:
-            return None
-        media_mask = _shift_windows(ctx.vocal_out_scoring, ctx.buffer_offset)
-        region_end = ctx.buffer_offset + ctx.audio_end
-        confirmed = instrumental_claim_confirmed(
-            ctx.outgoing_profile, media_mask, ctx.buffer_offset, region_end
-        )
-        return "incoming" if confirmed else None
-    if ctx.incoming_profile is None:
-        return None
-    confirmed = instrumental_claim_confirmed(
-        ctx.incoming_profile, ctx.vocal_in_scoring, 0.0, float(SMART_CROSSFADE_DURATION)
+    out_secs = sum(
+        max(0.0, min(right, effective_end) - max(left, effective_end - span))
+        for left, right in ctx.vocal_out_scoring.windows
     )
-    return "outgoing" if confirmed else None
-
-
-def _shift_windows(mask: VocalMask, offset: float) -> VocalMask:
-    """Shift a mask's windows by a constant offset (buffer-local <-> media time)."""
-    return VocalMask(windows=[(left + offset, right + offset) for left, right in mask.windows])
+    in_secs = sum(
+        max(0.0, min(right, span) - max(left, 0.0)) for left, right in ctx.vocal_in_scoring.windows
+    )
+    return out_secs / span, in_secs / span
 
 
 def _fade_onset_pin(ctx: TransitionContext) -> float:
@@ -957,7 +1004,7 @@ def _fade_onset_pin(ctx: TransitionContext) -> float:
 
 
 def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
-    """B entries for a rung: exact groove alignment first (when legal), else the natural entry."""
+    """B entries for a rung: groove alignment, intro-keeping 0.0 (bars<=2), then natural entry."""
     import numpy as np  # noqa: PLC0415
 
     bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
@@ -971,6 +1018,11 @@ def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
         )
         if snapped >= 0.0 and not in_mask:
             options.append(snapped)
+    # at 1-2 bars the overlap is a handover, not a blend: keeping B's whole
+    # intro (zero trim) lets it build naturally after A's tail rides out; it
+    # goes before the natural entry so a scoring tie prefers keeping the intro
+    if bars <= 2 and ctx.natural_entry > 0.0 and 0.0 not in options:
+        options.append(0.0)
     if ctx.natural_entry not in options:
         options.append(ctx.natural_entry)
     return options

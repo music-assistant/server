@@ -28,9 +28,6 @@ from aioaudiobookshelf.exceptions import (
 )
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
-    AuthorWithItems as AbsAuthorWithItems,
-)
-from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
 )
 from aioaudiobookshelf.schema.calls_items import (
@@ -79,10 +76,10 @@ from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
+    ArtistType,
     ConfigEntryType,
     ContentType,
     MediaType,
@@ -105,9 +102,9 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
     parse_author,
@@ -132,6 +129,7 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    STREAMDETAILS_EXPIRATION_S,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -153,8 +151,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
-    ProviderFeature.AUTHOR_AUDIOBOOKS,
-    ProviderFeature.NARRATOR_AUDIOBOOKS,
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
 }
@@ -167,76 +163,25 @@ async def setup(
     return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key="label",
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_API_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_OLD_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            hidden=True,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_HIDE_EMPTY_PODCASTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=False,
-        ),
-    )
-
-
 R = TypeVar("R")
 P = ParamSpec("P")
 
 
-class Audiobookshelf(MusicProvider):
+class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     """Audiobookshelf MusicProvider."""
 
     _on_unload_callbacks: list[Callable[[], None]]
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the Audiobookshelf provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self.libraries = LibrariesHelper()
 
     @staticmethod
     def handle_refresh_token(
@@ -256,17 +201,29 @@ class Audiobookshelf(MusicProvider):
 
         return wrapper
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_HIDE_EMPTY_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                advanced=True,
+                default_value=False,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
         self.create_session_lock = asyncio.Lock()
-        base_url = str(self.config.get_value(CONF_URL))
-        username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
-        token_old = self.config.get_value(CONF_OLD_TOKEN)
-        token_api = self.config.get_value(CONF_API_TOKEN)
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        base_url = str(self.get_setup_value(CONF_URL))
+        username = str(self.get_setup_value(CONF_USERNAME))
+        password = str(self.get_setup_value(CONF_PASSWORD))
+        token_old = self.get_setup_value(CONF_OLD_TOKEN)
+        token_api = self.get_setup_value(CONF_API_TOKEN)
+        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         session_config = AbsSessionConfiguration(
             session=self.mass.http_session,
             url=base_url,
@@ -333,19 +290,12 @@ for more details.
         )
         if cached_libraries is None:
             self.libraries = LibrariesHelper()
-            # We need the library ids for recommendations. If the cache got cleared e.g. by a db
-            # migration, we might end up with empty library helpers on a configured provider. Note,
-            # that the lib item ids are not synced, still only on full provider sync, instead the
-            # sets are empty. Full sync is expensive.
-            # See warning in browse_lib_podcasts / _browse_books
-            libraries = await self._client.get_all_libraries()
-            for library in libraries:
-                if library.media_type == AbsLibraryMediaType.BOOK:
-                    self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
-                elif library.media_type == AbsLibraryMediaType.PODCAST:
-                    self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
+
+        libraries = await self._client.get_all_libraries()
+        if libraries:
+            self._sync_library_keys(libraries)
 
         # cache username
         self.abs_username = (await self._client.get_my_user()).username
@@ -384,6 +334,9 @@ for more details.
         self.playlist_lock = asyncio.Lock()
         self.playlist_last = 0.0
 
+        # create close sessions task
+        self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
+
         # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
@@ -398,6 +351,26 @@ for more details.
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
+        # payload tasks, so no fetch is still running against the clients logging out below
+        await super().unload(is_removed)
+
+        # cancel close sessions task, and close remaining
+        if self._close_sessions_task:
+            self._close_sessions_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._close_sessions_task
+
+        # close the tracked sessions concurrently, so an unreachable server can neither
+        # stall nor abort the unload below
+        await asyncio.gather(
+            *(
+                self._client.close_open_session(session_id=x.abs_session_id)
+                for x in self.sessions.values()
+            ),
+            return_exceptions=True,
+        )
+        self.sessions.clear()
         try:
             await self._client.logout()
             await self._client_socket.logout()
@@ -431,9 +404,32 @@ for more details.
             features.add(ProviderFeature.PLAYLIST_CREATE_PODCAST_EPISODES)
         return features
 
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Supported artist types."""
+        return {ArtistType.AUTHOR, ArtistType.NARRATOR}
+
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """Return the errors a library sync must not swallow as an item failure."""
+        # handle_refresh_token needs to see this to renew the token and retry
+        return (RefreshTokenExpiredError,)
+
     @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
+        if media_type == MediaType.AUDIOBOOK:
+            self.libraries.audiobooks.clear()
+            self.libraries.audiobook_narrators.clear()
+        elif media_type == MediaType.PODCAST:
+            self.libraries.podcasts.clear()
+        elif media_type == MediaType.PLAYLIST:
+            self.libraries.playlists_audiobooks.clear()
+            self.libraries.playlists_podcasts.clear()
+        elif media_type == MediaType.ARTIST:
+            self.libraries.authors.clear()
+            self.libraries.narrators.clear()
+
         libraries = await self._client.get_all_libraries()
         if len(libraries) == 0:
             self._log_no_libraries()
@@ -477,50 +473,13 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
             for abs_narrator in await self._client.get_library_narrators(library_id=book_lib_id):
                 self.libraries.narrators[book_lib_id].add(abs_narrator.id_)
                 yield parse_narrator(
                     abs_narrator=abs_narrator, instance_id=self.instance_id, domain=self.domain
                 )
-
-    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
-        """Get audiobooks of author."""
-        abs_author = await self._client.get_author(
-            author_id=prov_artist_id, include_items=True, include_series=False
-        )
-        if not isinstance(abs_author, AbsAuthorWithItems):
-            raise TypeError("Unexpected type of author.")
-
-        book_ids = {x.id_ for x in abs_author.library_items}
-        audiobooks: list[Audiobook] = []
-        for book_id in book_ids:
-            mass_item = await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.AUDIOBOOK,
-                item_id=book_id,
-                provider_instance_id_or_domain=self.instance_id,
-            )
-            if mass_item is not None:
-                mass_item = cast("Audiobook", mass_item)
-                audiobooks.append(mass_item)
-        return audiobooks
-
-    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
-        """Get audiobooks of narrator."""
-        narrator_lib_id: str = ""
-        # get library of artist:
-        for lib_id, narrator_ids in self.libraries.narrators.items():
-            if prov_artist_id in narrator_ids:
-                narrator_lib_id = lib_id
-                break
-        if narrator_lib_id:
-            return list(
-                await self._browse_narrator_books(
-                    library_id=narrator_lib_id, narrator_filter_str=prov_artist_id
-                )
-            )
-        return []
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get an author or narrator."""
@@ -539,7 +498,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -563,7 +522,7 @@ for more details.
                             instance_id=self.instance_id,
                             domain=self.domain,
                             token=self._client.token,
-                            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                             owner=self.abs_username,
                             media_type=media_type,
                         )
@@ -607,7 +566,7 @@ for more details.
                         domain=self.domain,
                         token=self._client.token,
                         media_progress=progress,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                 )
             elif isinstance(item, AbsPlaylistItemExpandedPodcast):
@@ -623,7 +582,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
                         cover_path=item.library_item.media.cover_path,
                         cover_version=item.library_item.updated_at,
@@ -663,7 +622,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
@@ -757,7 +716,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     if (
                         bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
@@ -765,6 +724,27 @@ for more details.
                     ):
                         continue
                     yield mass_podcast
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get the available recommendation rows, without items."""
+        if len(self.libraries.audiobooks) + len(self.libraries.podcasts) == 0:
+            self._log_no_libraries()
+            return []
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(self._browse_recommendation_row())
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "browse":
+            return self._browse_recommendation_items()
+        return await self._recommendation_items_from_payload(item_id)
 
     @handle_refresh_token
     async def _get_abs_expanded_podcast(
@@ -786,7 +766,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
@@ -816,7 +796,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
                 cover_path=abs_podcast.media.cover_path,
                 cover_version=abs_podcast.updated_at,
@@ -847,7 +827,7 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
                     cover_path=abs_podcast.media.cover_path,
                     cover_version=abs_podcast.updated_at,
@@ -881,7 +861,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     yield mass_audiobook
 
@@ -911,7 +891,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
             media_progress=progress,
         )
 
@@ -939,7 +919,7 @@ for more details.
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
         """
-        abs_base_url = str(self.config.get_value(CONF_URL))
+        abs_base_url = str(self.get_setup_value(CONF_URL))
         tracks = abs_session.audio_tracks
 
         if len(tracks) == 0:
@@ -977,6 +957,7 @@ for more details.
             path=file_parts[0].path if len(file_parts) == 1 else file_parts,
             can_seek=True,
             allow_seek=True,
+            expiration=STREAMDETAILS_EXPIRATION_S,
         )
 
     async def _get_playback_session(self, mass_item_id: str) -> AbsPlaybackSessionExpanded:
@@ -995,9 +976,12 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
+            # Abs allows a single session per device id.
+
             client_name = f"Music Assistant {self.instance_id}"
+            device_id = f"{self.instance_id}_{mass_item_id}"
             device_info = AbsDeviceInfo(
-                device_id=self.instance_id,
+                device_id=device_id,
                 client_name=client_name,
                 client_version=self.mass.version,
                 manufacturer="",
@@ -1053,7 +1037,7 @@ for more details.
         except IndexError:
             return web.Response(status=404, text="Part not found")
 
-        base_url = str(self.config.get_value(CONF_URL))
+        base_url = str(self.get_setup_value(CONF_URL))
         stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
@@ -1063,123 +1047,30 @@ for more details.
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
-        # this method is called _before_ get_stream_details, so the playback session
-        # is created here.
-        session = await self._get_playback_session(mass_item_id=item_id)
-
+        # do not create a session here, as this method is called outside of stream acquisition
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
         progress = await self._client.get_my_media_progress(
             item_id=abs_item_id, episode_id=episode_id
         )
-        # only the progress object has a timestamp of the progress (not the session)
-        # last_update is in ms epoch
-        # If there is an open session, that session might have the old progress time,
-        # whereas the explicit progress call above gives the most recent time.
+        if progress is None:
+            # fallback to internal position
+            raise NotImplementedError
+        # The progress' last_update is in ms epoch
         timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
-        current_time = (
-            progress.current_time
-            if progress is not None and progress.current_time is not None
-            else session.current_time
+        current_time = progress.current_time if progress.current_time is not None else 0.0
+        self.logger.debug(
+            "Acquired resume position %s for %s with item_id %s.",
+            current_time,
+            media_type.value,
+            item_id,
         )
-        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
-        self.logger.debug("Resume position %s: obtained.", current_time)
         return (
-            finished,
+            progress.is_finished,
             int(current_time * 1000),
             timestamp,
         )
-
-    @use_cache(3600, base_class=RecommendationFolder, allow_expired_cache=True)
-    @handle_refresh_token
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations."""
-        # We have to avoid "flooding" the home page, which becomes especially troublesome if users
-        # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
-        # roughly the same amount of items per row, no matter the amount of libraries
-        # List of list (one list per lib) here, such that we can pick the items per lib later.
-        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]] = {}
-
-        all_libraries = {**self.libraries.audiobooks, **self.libraries.podcasts}
-        max_items_per_row = 20
-        num_libraries = len(all_libraries)
-
-        if num_libraries == 0:
-            self._log_no_libraries()
-            return []
-
-        limit_items_per_lib = max_items_per_row // num_libraries
-        limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
-
-        for library_id in all_libraries:
-            shelves = await self._client.get_library_personalized_view(
-                library_id=library_id, limit=limit_items_per_lib
-            )
-            await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
-
-        folders: list[RecommendationFolder] = []
-        for shelf_id, item_lists in items_by_shelf_id.items():
-            # we have something like [[A, B], [C, D, E], [F]]
-            # and want [A, C, F, B, D, E]
-            recommendation_items = [
-                x
-                for x in itertools.chain.from_iterable(itertools.zip_longest(*item_lists))
-                if x is not None
-            ][:max_items_per_row]
-
-            # shelf ids follow pattern:
-            # recently-added
-            # newest-episodes
-            # etc
-            name = f"{shelf_id.capitalize().replace('-', ' ')}"
-            folders.append(
-                RecommendationFolder(
-                    item_id=f"{shelf_id}",
-                    name=name,
-                    icon=ABS_SHELF_ID_ICONS.get(shelf_id),
-                    translation_key=ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id),
-                    items=UniqueList(recommendation_items),
-                    provider=self.instance_id,
-                )
-            )
-
-        # Browse "recommendation" for convenience. If the user has
-        # multiple audiobook libraries, we return a listing of them.
-        # If there is only a single audiobook library, we add the folders
-        # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
-        # Podcast libs do not have filter folders, so always the root folders.
-        browse_items: list[MediaItemType | BrowseFolder] = []
-        translation_key = "libraries"
-        if len(self.libraries.audiobooks) <= 1:
-            if len(self.libraries.podcasts) == 0:
-                translation_key = "library"
-
-            # audiobooklibs are first, and we have at max 1 audiobook lib
-            _browse_root = self._browse_root(append_mediatype_suffix=False)
-            if len(self.libraries.audiobooks) == 0:
-                browse_items.extend(_browse_root)
-            else:
-                assert isinstance(_browse_root[0], BrowseFolder)
-                _path = _browse_root[0].path
-                browse_items.extend(self._browse_lib_audiobooks(current_path=_path))
-                # add podcast roots
-                browse_items.extend(_browse_root[1:])
-        else:
-            browse_items = list(self._browse_root())
-
-        folders.append(
-            RecommendationFolder(
-                item_id="browse",
-                name="Libraries",
-                icon="mdi-bookshelf",
-                translation_key=translation_key,
-                items=UniqueList(browse_items),
-                provider=self.instance_id,
-            )
-        )
-
-        return folders
 
     async def _recommendations_iter_shelves(
         self,
@@ -1240,7 +1131,7 @@ for more details.
                                 instance_id=self.instance_id,
                                 domain=self.domain,
                                 token=self._client.token,
-                                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                                 cover_path=_cover_path,
                                 cover_version=_cover_version,
                             )
@@ -1346,12 +1237,19 @@ for more details.
                     ),
                 )
                 session_helper.last_sync_time = now
+                session_helper.failed_sync_count = 0
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
             except AbsSessionSyncError:
-                self.logger.debug(
-                    "Was unable to sync session. Falling back to non-session approach."
-                )
+                session_helper.failed_sync_count += 1
+                if session_helper.failed_sync_count >= 5:
+                    self.logger.warning(
+                        "Unable to sync session %s after %s attempts - "
+                        "falling back to non-session approach.",
+                        session_helper.abs_session_id,
+                        session_helper.failed_sync_count,
+                    )
+                    self.sessions.pop(prov_item_id, None)
             return False
 
         if media_type == MediaType.PODCAST_EPISODE:
@@ -1819,7 +1717,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     ),
                     overwrite_existing=True,
                 )
@@ -1835,7 +1733,7 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
                 if not (
                     bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
@@ -1920,7 +1818,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
@@ -1972,8 +1870,8 @@ for more details.
                 await asyncio.sleep(0.5)
         async with self.reauthenticate_lock:
             await self._client.session_config.authenticate(
-                username=str(self.config.get_value(CONF_USERNAME)),
-                password=str(self.config.get_value(CONF_PASSWORD)),
+                username=str(self.get_setup_value(CONF_USERNAME)),
+                password=str(self.get_setup_value(CONF_PASSWORD)),
             )
             self.reauthenticate_last = time.time()
 
@@ -2083,6 +1981,7 @@ for more details.
                 mass_audiobook,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
+                user_initiated=False,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -2104,6 +2003,7 @@ for more details.
                 mass_episode,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
+                user_initiated=False,
             )
 
     async def _update_book_narrators(self, library_id: str) -> None:
@@ -2142,6 +2042,24 @@ for more details.
             data=self.libraries.to_dict(),
         )
 
+    def _sync_library_keys(self, libraries: list[Any]) -> None:
+        """Prune deleted and add new library keys, preserving cached item_ids."""
+        current_book_ids = {
+            lib.id_ for lib in libraries if lib.media_type == AbsLibraryMediaType.BOOK
+        }
+        current_podcast_ids = {
+            lib.id_ for lib in libraries if lib.media_type == AbsLibraryMediaType.PODCAST
+        }
+        for stale_id in set(self.libraries.audiobooks) - current_book_ids:
+            del self.libraries.audiobooks[stale_id]
+        for stale_id in set(self.libraries.podcasts) - current_podcast_ids:
+            del self.libraries.podcasts[stale_id]
+        for library in libraries:
+            if library.media_type == AbsLibraryMediaType.BOOK:
+                self.libraries.audiobooks.setdefault(library.id_, LibraryHelper(name=library.name))
+            elif library.media_type == AbsLibraryMediaType.PODCAST:
+                self.libraries.podcasts.setdefault(library.id_, LibraryHelper(name=library.name))
+
     def _log_no_libraries(self) -> None:
         self.logger.error("There are no libraries visible to the Audiobookshelf provider.")
 
@@ -2150,3 +2068,131 @@ for more details.
             "Cached item ids are missing. "
             "Please trigger a full resync of the Audiobookshelf provider manually."
         )
+
+    @handle_refresh_token
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the personalized views of all libraries and parse them into shelf folders."""
+        # We have to avoid "flooding" the home page, which becomes especially troublesome if users
+        # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
+        # roughly the same amount of items per row, no matter the amount of libraries
+        # List of list (one list per lib) here, such that we can pick the items per lib later.
+        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType | BrowseFolder]]] = {}
+
+        all_libraries = {**self.libraries.audiobooks, **self.libraries.podcasts}
+        max_items_per_row = 20
+        num_libraries = len(all_libraries)
+
+        if num_libraries == 0:
+            self._log_no_libraries()
+            return []
+
+        limit_items_per_lib = max_items_per_row // num_libraries
+        limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
+
+        for library_id in all_libraries:
+            shelves = await self._client.get_library_personalized_view(
+                library_id=library_id, limit=limit_items_per_lib
+            )
+            await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
+
+        folders: list[RecommendationFolder] = []
+        for shelf_id, item_lists in items_by_shelf_id.items():
+            # we have something like [[A, B], [C, D, E], [F]]
+            # and want [A, C, F, B, D, E]
+            recommendation_items = [
+                x
+                for x in itertools.chain.from_iterable(itertools.zip_longest(*item_lists))
+                if x is not None
+            ][:max_items_per_row]
+
+            # shelf ids follow pattern:
+            # recently-added
+            # newest-episodes
+            # etc
+            name = f"{shelf_id.capitalize().replace('-', ' ')}"
+            folders.append(
+                RecommendationFolder(
+                    item_id=f"{shelf_id}",
+                    name=name,
+                    icon=ABS_SHELF_ID_ICONS.get(shelf_id),
+                    translation_key=ABS_SHELF_ID_TRANSLATION_KEY.get(shelf_id),
+                    items=UniqueList(recommendation_items),
+                    provider=self.instance_id,
+                )
+            )
+
+        return folders
+
+    def _browse_recommendation_row(self) -> RecommendationFolder:
+        """Build the static browse row descriptor, without items."""
+        translation_key = "libraries"
+        if len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0:
+            translation_key = "library"
+        return RecommendationFolder(
+            item_id="browse",
+            name="Libraries",
+            icon="mdi-bookshelf",
+            translation_key=translation_key,
+            provider=self.instance_id,
+        )
+
+    def _browse_recommendation_items(
+        self,
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Build the items of the browse row from the known libraries."""
+        # Browse "recommendation" for convenience. If the user has
+        # multiple audiobook libraries, we return a listing of them.
+        # If there is only a single audiobook library, we add the folders
+        # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
+        # Podcast libs do not have filter folders, so always the root folders.
+        browse_items: list[MediaItemType | BrowseFolder] = []
+        if len(self.libraries.audiobooks) <= 1:
+            # audiobooklibs are first, and we have at max 1 audiobook lib
+            _browse_root = self._browse_root(append_mediatype_suffix=False)
+            if len(self.libraries.audiobooks) == 0:
+                browse_items.extend(_browse_root)
+            else:
+                assert isinstance(_browse_root[0], BrowseFolder)
+                _path = _browse_root[0].path
+                browse_items.extend(self._browse_lib_audiobooks(current_path=_path))
+                # add podcast roots
+                browse_items.extend(_browse_root[1:])
+        else:
+            browse_items = list(self._browse_root())
+        return UniqueList(browse_items)
+
+    async def _cleanup_open_sessions_loop(self) -> None:
+        """Close unused open sessions."""
+        while True:
+            await asyncio.sleep(STREAMDETAILS_EXPIRATION_S)
+            current_time = time.time()
+
+            async with self.create_session_lock:
+                sessions_to_close = [
+                    (session_key, session)
+                    for session_key, session in self.sessions.items()
+                    if current_time - session.last_sync_time > (STREAMDETAILS_EXPIRATION_S * 2)
+                ]
+                results = await asyncio.gather(
+                    *(
+                        self._client.close_open_session(session_id=session.abs_session_id)
+                        for (_, session) in sessions_to_close
+                    ),
+                    return_exceptions=True,
+                )
+
+                for (session_key, session), result in zip(sessions_to_close, results, strict=True):
+                    if isinstance(result, Exception):
+                        self.logger.warning(
+                            "Failed to close session %s: %s",
+                            session.abs_session_id,
+                            result,
+                        )
+                    else:
+                        self.logger.debug(
+                            "Closed session %s",
+                            session.abs_session_id,
+                        )
+                    # We do not try again after a failure. _get_playback_session verifies if a session
+                    # exists.
+                    self.sessions.pop(session_key, None)

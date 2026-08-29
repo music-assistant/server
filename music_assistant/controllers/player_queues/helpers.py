@@ -5,9 +5,9 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
@@ -15,11 +15,16 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        MediaItemType,
+        PlayableMediaItemType,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+    from music_assistant.models.player import Player
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -42,7 +47,7 @@ class CompareState(TypedDict):
     last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
-    output_formats: list[str] | None
+    output_player_ids: list[str] | None
 
 
 class _PlayActionHost(Protocol):
@@ -57,6 +62,10 @@ class _PlayActionHost(Protocol):
     _queue_data: dict[str, PlayerQueueData]
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+
+    def on_player_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None: ...
 
 
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
@@ -94,14 +103,39 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 if queue_data.play_action_refcount <= 0:
                     queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                    # the queue follows the player through a debounced update, which is also
+                    # suppressed while an action is transitioning; recalculate it here so the
+                    # update that clears the flag already carries the action's resulting state
+                    if (player := self.mass.players.get_player(queue_id)) is not None:
+                        self.on_player_update(player, {})
                     self.signal_update(queue_id)
 
     return wrapper
 
 
+def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
+    """Return True if the item supplies its own on-demand track feed."""
+    return isinstance(item, Playlist | Radio) and item.is_dynamic
+
+
+def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
+    """
+    Return the queue's most recently added dynamic source, if it has one.
+
+    Prefers the queue's sources and falls back to what was enqueued on it.
+
+    :param queue_data: The queue to inspect.
+    """
+    for items in (queue_data.source_items, queue_data.enqueued_media_items):
+        for item in reversed(items):
+            if is_dynamic_source(item):
+                return item
+    return None
+
+
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
-    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
-    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+    """Return True if any source supplies its own on-demand track feed (the queue is dynamic)."""
+    return any(is_dynamic_source(item) for item in source_items)
 
 
 def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:

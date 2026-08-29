@@ -48,6 +48,14 @@ def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC) -> Any:
     mock_config.values = {k: MockValue(v) for k, v in mock_config_values.items()}
     mock_config.get_value = lambda key: mock_config_values.get(key)
 
+    # the auth token + library type are read via get_setup_value (setup_data store)
+    setup_data = {"library_type": library_type, "token": "local_auth"}
+    mock_mass.config.get = lambda key, default=None: (
+        setup_data if str(key).endswith("/setup_data") else default
+    )
+    mock_mass.config.get_raw_provider_config_value = lambda _instance_id, _key: None
+    mock_mass.config.decrypt_string = lambda value: value
+
     mock_manifest = MagicMock()
     mock_manifest.type = "music"
     mock_manifest.domain = "plex"
@@ -85,6 +93,7 @@ class FakePlexTrack:
         self.parentKey = parent_key
         self.viewOffset = view_offset
         self.viewCount = 0
+        self.summary = ""
         if has_media:
             media = MagicMock()
             media.container = container
@@ -677,16 +686,16 @@ class TestGetResumePosition:
 
 
 # ---------------------------------------------------------------------------
-# update_config cleanup
+# stale library-mapping cleanup (idempotent, runs on load)
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateConfig:
-    """Tests for update_config media type cleanup when library_type changes."""
+class TestCleanupStaleLibraryMappings:
+    """Tests for _cleanup_stale_library_mappings removing entries not matching the type."""
 
     @staticmethod
     def _setup_mocks(provider: Any, query_result: list[dict[str, Any]] | None = None) -> Any:
-        """Wire standard mocks onto provider.mass for update_config tests."""
+        """Wire standard mocks onto provider.mass for the cleanup tests."""
         provider.mass.music.database = MagicMock()
         provider.mass.music.database.get_rows_from_query = AsyncMock(
             return_value=query_result or []
@@ -698,176 +707,48 @@ class TestUpdateConfig:
         return mock_ctrl
 
     @pytest.mark.asyncio
-    async def test_type_change_from_audiobooks_to_podcasts_cleans_audiobooks(self) -> None:
-        """Changing library_type from audiobooks to podcasts removes audiobook entries."""
-        provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
-        mock_ctrl = self._setup_mocks(provider, query_result=[{"item_id": 1}, {"item_id": 2}])
-
-        new_config = MagicMock()
-        new_config.get_value = lambda key: (
-            LIBRARY_TYPE_PODCASTS if key == "library_type" else "plex_instance_1"
-        )
-        new_config.values = {"library_type": LIBRARY_TYPE_PODCASTS}
-        new_config.instance_id = "plex_instance_1"
-
-        async def _mock_super_update_config(config: Any, _changed_keys: set[str]) -> None:
-            """Mock super().update_config that updates provider.config."""
-            provider.config = config
-
-        with mock.patch(
-            "music_assistant.models.provider.Provider.update_config",
-            side_effect=_mock_super_update_config,
-        ) as mock_super:
-            await provider.update_config(
-                new_config,
-                changed_keys={"values/library_type"},
-            )
-
-        mock_super.assert_awaited_once()
-
-        # The old type was audiobooks, new type is podcasts
-        # Audiobook is a stale media type (not present in podcasts)
-        mock_ctrl.remove_provider_mappings.assert_has_awaits(
-            [
-                mock.call(1, "plex_instance_1"),
-                mock.call(2, "plex_instance_1"),
-            ]
-        )
-
-    @pytest.mark.asyncio
-    async def test_type_change_from_music_to_audiobooks_cleans_music_items(self) -> None:
-        """Changing library_type from music to audiobooks removes music entries."""
+    async def test_music_library_cleans_non_music_types(self) -> None:
+        """A music library removes mappings for the 3 non-music media types."""
         provider = _make_provider(LIBRARY_TYPE_MUSIC)
         mock_ctrl = self._setup_mocks(provider, query_result=[{"item_id": 10}])
 
-        new_config = MagicMock()
-        new_config.get_value = lambda key: (
-            LIBRARY_TYPE_AUDIOBOOKS if key == "library_type" else "plex_instance_1"
-        )
-        new_config.values = {"library_type": LIBRARY_TYPE_AUDIOBOOKS}
-        new_config.instance_id = "plex_instance_1"
+        await provider._cleanup_stale_library_mappings()
 
-        async def _mock_super_update_config(config: Any, _changed_keys: set[str]) -> None:
-            """Mock super().update_config that updates provider.config."""
-            provider.config = config
-
-        with mock.patch(
-            "music_assistant.models.provider.Provider.update_config",
-            side_effect=_mock_super_update_config,
-        ):
-            await provider.update_config(
-                new_config,
-                changed_keys={"values/library_type"},
-            )
-
-        # Music types (artist, album, track, playlist) are stale
-        # All of them should have had their provider mappings queried and removed
-        music_ctrl = provider.mass.music.get_controller
-        assert music_ctrl.call_count == 4  # artist, album, track, playlist
+        # stale for music = audiobook, podcast, podcast_episode
+        assert provider.mass.music.get_controller.call_count == 3
         mock_ctrl.remove_provider_mappings.assert_has_awaits(
-            [
-                mock.call(10, "plex_instance_1"),
-                mock.call(10, "plex_instance_1"),
-                mock.call(10, "plex_instance_1"),
-                mock.call(10, "plex_instance_1"),
-            ]
+            [mock.call(10, "plex_instance_1")] * 3, any_order=True
         )
 
     @pytest.mark.asyncio
-    async def test_no_change_does_nothing(self) -> None:
-        """When library_type does not change, no cleanup is performed."""
+    async def test_audiobooks_library_cleans_all_other_types(self) -> None:
+        """An audiobooks library removes mappings for the 6 non-audiobook media types."""
         provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
-        self._setup_mocks(provider)
+        mock_ctrl = self._setup_mocks(provider, query_result=[{"item_id": 1}])
 
-        new_config = MagicMock()
-        new_config.get_value = lambda key: (
-            LIBRARY_TYPE_AUDIOBOOKS if key == "library_type" else "plex_instance_1"
-        )
-        new_config.values = {"library_type": LIBRARY_TYPE_AUDIOBOOKS}
+        await provider._cleanup_stale_library_mappings()
 
-        async def _mock_super_update_config(config: Any, _changed_keys: set[str]) -> None:
-            """Mock super().update_config that updates provider.config."""
-            provider.config = config
-
-        with mock.patch(
-            "music_assistant.models.provider.Provider.update_config",
-            side_effect=_mock_super_update_config,
-        ):
-            await provider.update_config(
-                new_config,
-                changed_keys={"values/library_type"},
-            )
-
-        # No database queries, no controller lookups
-        provider.mass.music.database.get_rows_from_query.assert_not_awaited()
-        provider.mass.music.get_controller.assert_not_called()
+        # stale for audiobooks = artist, album, track, playlist, podcast, podcast_episode
+        assert provider.mass.music.get_controller.call_count == 6
+        assert mock_ctrl.remove_provider_mappings.await_count == 6
 
     @pytest.mark.asyncio
-    async def test_other_config_changes_ignored(self) -> None:
-        """Non-library_type config changes do not trigger cleanup."""
-        provider = _make_provider(LIBRARY_TYPE_AUDIOBOOKS)
-        self._setup_mocks(provider)
-
-        new_config = MagicMock()
-        new_config.get_value = lambda key: (
-            LIBRARY_TYPE_AUDIOBOOKS if key == "library_type" else "plex_instance_1"
-        )
-        new_config.values = {"library_type": LIBRARY_TYPE_AUDIOBOOKS}
-
-        async def _mock_super_update_config(config: Any, _changed_keys: set[str]) -> None:
-            """Mock super().update_config that updates provider.config."""
-            provider.config = config
-
-        with mock.patch(
-            "music_assistant.models.provider.Provider.update_config",
-            side_effect=_mock_super_update_config,
-        ):
-            await provider.update_config(
-                new_config,
-                changed_keys={"values/token"},
-            )
-
-        provider.mass.music.database.get_rows_from_query.assert_not_awaited()
-        provider.mass.music.get_controller.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_stale_sync_config_values_are_removed(self) -> None:
-        """When library_type changes, old sync config values are purged."""
+    async def test_no_stale_rows_removes_nothing(self) -> None:
+        """With no stale mappings present, no removals are performed."""
         provider = _make_provider(LIBRARY_TYPE_MUSIC)
-        self._setup_mocks(provider)
-        provider.mass.config.remove_provider_config_value = AsyncMock()
+        mock_ctrl = self._setup_mocks(provider, query_result=[])
 
-        new_config = MagicMock()
-        new_config.get_value = lambda key: (
-            LIBRARY_TYPE_AUDIOBOOKS if key == "library_type" else "plex_instance_1"
-        )
-        new_config.values = {"library_type": LIBRARY_TYPE_AUDIOBOOKS}
+        await provider._cleanup_stale_library_mappings()
 
-        async def _mock_super_update_config(config: Any, _changed_keys: set[str]) -> None:
-            """Mock super().update_config that updates provider.config."""
-            provider.config = config
+        mock_ctrl.remove_provider_mappings.assert_not_awaited()
 
-        with (
-            mock.patch(
-                "music_assistant.models.provider.Provider.update_config",
-                side_effect=_mock_super_update_config,
-            ),
-            mock.patch.object(
-                type(provider), "instance_id", new_callable=mock.PropertyMock
-            ) as mock_instance_id,
-        ):
-            mock_instance_id.return_value = "plex_instance_1"
-            await provider.update_config(
-                new_config,
-                changed_keys={"values/library_type"},
-            )
+    @pytest.mark.asyncio
+    async def test_missing_database_returns_early(self) -> None:
+        """Cleanup is a no-op when the music database is not available."""
+        provider = _make_provider(LIBRARY_TYPE_MUSIC)
+        provider.mass.music.database = None
+        provider.mass.music.get_controller = MagicMock()
 
-        # Music sync config keys should be removed for the stale types
-        provider.mass.config.remove_provider_config_value.assert_has_awaits(
-            [
-                mock.call("plex_instance_1", "library_sync_artists"),
-                mock.call("plex_instance_1", "library_sync_albums"),
-                mock.call("plex_instance_1", "library_sync_tracks"),
-                mock.call("plex_instance_1", "library_sync_playlists"),
-            ]
-        )
+        await provider._cleanup_stale_library_mappings()
+
+        provider.mass.music.get_controller.assert_not_called()

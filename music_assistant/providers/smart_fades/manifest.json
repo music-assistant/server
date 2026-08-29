@@ -7,8 +7,7 @@
   "requirements": [
     "beat-this==1.1.0",
     "kaldi-native-fbank==1.22.3",
-    "nnAudio==0.3.3",
-    "threadpoolctl==3.6.0"
+    "nnAudio==0.3.4"
   ],
   "credits": [
     "[Beat This!](https://github.com/CPJKU/beat_this)",

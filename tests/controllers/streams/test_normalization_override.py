@@ -53,6 +53,7 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
         """AudioBuffer test double: records the filter_params, yields no audio."""
 
         has_error = False
+        pcm_format = PCM_FORMAT
 
         @classmethod
         async def get_buffer(cls, **_kwargs: Any) -> _FakeBuffer:
@@ -63,7 +64,9 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
             output_format: AudioFormat,
             seek_position_ms: int = 0,
             filter_params: list[str] | None = None,
+            exact_seek: bool = False,
         ) -> AsyncGenerator[bytes]:
+            del output_format, seek_position_ms, exact_seek
             captured["filter_params"] = filter_params or []
             empty: tuple[bytes, ...] = ()
             for chunk in empty:

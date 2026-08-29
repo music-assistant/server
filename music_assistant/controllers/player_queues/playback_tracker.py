@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
     MediaItemType,
-    Playlist,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -41,11 +40,14 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
     build_queue_item,
+    find_dynamic_source,
     get_current_playback_speed,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
+from music_assistant.helpers.audio import resolve_output_player_ids
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 
@@ -54,6 +56,12 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+
+# media types that never put a queue in the ended state: a live source has no natural end, so it
+# going idle means the source stopped and not that the queue ran out (marking it ended would strand
+# a later resume), and a sound effect is a one-off that leaves the queue as it found it.
+UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT)
 
 
 class PlaybackTrackerMixin(_PlayerQueuesBase):
@@ -145,18 +153,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if not self._update_current_index_from_player(queue, player):
             return
 
-        # This is enough to detect any changes in the DSPDetails
-        # (so child count changed, or any output format changed)
-        output_formats = []
-        if output_format := player.extra_data.get("output_format"):
-            output_formats.append(str(output_format))
-        for child_id in player.state.group_members:
-            if (child := self.mass.players.get_player(child_id)) and (
-                output_format := child.extra_data.get("output_format")
-            ):
-                output_formats.append(str(output_format))
-            else:
-                output_formats.append("unknown")
+        output_player_ids = self._get_output_player_ids(player)
 
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state: CompareState = self._queue_data[queue_id].prev_state or CompareState(
@@ -169,7 +166,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             last_playing_elapsed_time=0,
             stream_title=None,
             codec_type=None,
-            output_formats=None,
+            output_player_ids=None,
         )
         # update last_playing_elapsed_time only when the player is actively playing
         # use corrected_elapsed_time which accounts for time since last update
@@ -205,7 +202,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 if queue.current_item and queue.current_item.streamdetails
                 else None
             ),
-            output_formats=output_formats,
+            output_player_ids=sorted(output_player_ids),
         )
         changed_keys = get_changed_keys(dict(prev_state), dict(new_state))
         with suppress(KeyError):
@@ -240,16 +237,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # also signal update to the player itself so it can update its current_media
                 self.mass.players.trigger_player_update(queue_id)
 
-        if send_update:
+        processing_update_sent = False
+        if "output_player_ids" in changed_keys:
+            processing_update_sent = self.mass.streams.audio_processing.retain_outputs(
+                queue_id,
+                output_player_ids,
+            )
+        if send_update and not processing_update_sent:
             self.signal_update(queue_id)
-
-        if "output_formats" in changed_keys:
-            # refresh DSP details since they may have changed
-            dsp = self.mass.streams.audio.get_stream_dsp_details(queue_id)
-            if queue.current_item and queue.current_item.streamdetails:
-                queue.current_item.streamdetails.dsp = dsp
-            if queue.next_item and queue.next_item.streamdetails:
-                queue.next_item.streamdetails.dsp = dsp
 
         # handle updating stream_metadata if needed
         if (
@@ -292,10 +287,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # a dynamic queue tops up its bounded managed pool from its (dynamic + finite) sources
                 task_id = f"fill_dynamic_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
-            elif queue.autoplay_enabled and queue_data.enqueued_media_items and running_low:
-                # autoplay refills using the per-queue configured Autoplay mode
+            elif queue.autoplay_enabled and running_low:
+                # autoplay appends whatever continues the queue's last item (more music, the
+                # next podcast episode/audiobook, or nothing at all)
                 task_id = f"fill_autoplay_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+
+    def _get_output_player_ids(self, player: Player) -> set[str]:
+        """Return destination player IDs represented in the processing chain."""
+        return resolve_output_player_ids(
+            self.mass,
+            [player.player_id, *player.state.group_members],
+        )
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
@@ -321,13 +324,31 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         played_time = 0.0
         queue_index: int | None = queue.current_index or 0
         track_time = 0.0
-        for play_log_entry in queue_data.flow_mode_stream_log:
+        flow_log = queue_data.flow_mode_stream_log
+        for log_index, play_log_entry in enumerate(flow_log):
             # seconds_streamed is bytes-derived stream-time, so the boundary check
-            # doesn't need a speed factor. Only the still-streaming tail entry has
-            # seconds_streamed=None; we'll break inside it before the sentinel matters.
+            # doesn't need a speed factor. Normally only the still-streaming tail entry
+            # has seconds_streamed=None (we'll break inside it before the sentinel
+            # matters); an abandoned probe entry is the exception, handled below.
             if play_log_entry.seconds_streamed is not None:
                 # NOTE: 'seconds_streamed' can be 0 if there was a stream error
                 entry_stream_duration = play_log_entry.seconds_streamed
+            elif log_index < len(flow_log) - 1:
+                # Some players open the same flow URL several times while probing the
+                # stream. A probe can leave an unfinished entry behind before the
+                # connection that actually plays the audio appends the next entry.
+                # Recover the completed stream duration from the shared QueueItem;
+                # treating this non-tail entry as the active sentinel would pin the
+                # queue to the previous track and let elapsed time overflow its duration.
+                stale_queue_item = self.get_item(queue.queue_id, play_log_entry.queue_item_id)
+                if (
+                    stale_queue_item
+                    and stale_queue_item.streamdetails
+                    and stale_queue_item.streamdetails.seconds_streamed is not None
+                ):
+                    entry_stream_duration = stale_queue_item.streamdetails.seconds_streamed
+                else:
+                    entry_stream_duration = 0
             else:
                 entry_stream_duration = 3600 * 24 * 7
             if elapsed_time_queue_total > (entry_stream_duration + played_time):
@@ -419,22 +440,19 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if prev_state["current_item_id"] is None:
             return
 
-        # retrieve prev_item here so it's available in the _clear_or_resume_delayed closure
+        # retrieve prev_item here so it's available in the _settle_or_resume_delayed closure
         # regardless of which code path (flow mode or non-flow mode) creates the task
         prev_item = prev_state["current_item"]
 
-        # Live sources (radio / AudioSource) have no natural end — stopping
-        # means the source stopped, not that the queue is exhausted. Clearing
-        # would strand a later resume, so leave the queue intact.
-        if prev_item is not None and prev_item.media_type in (
-            MediaType.RADIO,
-            MediaType.AUDIO_SOURCE,
-        ):
+        if prev_item is not None and prev_item.media_type in UNENDABLE_MEDIA_TYPES:
             return
 
-        async def _clear_or_resume_delayed() -> None:
+        async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
+                if self._queue_data.get(queue.queue_id) is not queue_data:
+                    # the queue was removed or re-registered while we waited
+                    return
                 if queue.state != PlaybackState.IDLE:
                     return
                 if queue.next_item is not None:
@@ -452,27 +470,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         )
                         await self.play_index(queue.queue_id, next_index)
                     return
-            # If the queue was started from a dynamic playlist, fetch fresh tracks and continue.
-            qdata = self._queue_data.get(queue.queue_id)
-            source_items = qdata.source_items if qdata else []
-            dynamic_playlist = next(
-                (
-                    item
-                    for item in reversed(source_items)
-                    if isinstance(item, Playlist) and item.is_dynamic
-                ),
-                None,
-            )
-            if dynamic_playlist is None:
-                dynamic_playlist = next(
-                    (
-                        item
-                        for item in reversed(queue_data.enqueued_media_items)
-                        if isinstance(item, Playlist) and item.is_dynamic
-                    ),
-                    None,
-                )
-            if dynamic_playlist is not None:
+            # If the queue was started from a dynamic source, fetch fresh tracks and continue.
+            dynamic_source = find_dynamic_source(queue_data)
+            if dynamic_source is not None:
                 try:
                     # Restore the queue owner's user context so provider filters and
                     # per-user logic (e.g. smart playlist dedup) are respected during
@@ -483,9 +483,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         else None
                     )
                     set_current_user(playback_user)
-                    dynamic_tracks = await self._media_resolver.get_playlist_tracks(
-                        dynamic_playlist, start_item=None
+                    dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
+                        dynamic_source
                     )
+                    if self._queue_data.get(queue.queue_id) is not queue_data:
+                        # the queue was removed or re-registered while tracks were fetched
+                        return
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(queue.queue_id, x)
@@ -513,16 +516,18 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                                     return
                 except MusicAssistantError as err:
                     self.logger.warning(
-                        "Failed to refresh dynamic playlist %s for queue %s: %s",
-                        getattr(dynamic_playlist, "name", repr(dynamic_playlist)),
+                        "Failed to refresh dynamic source %s for queue %s: %s",
+                        getattr(dynamic_source, "name", repr(dynamic_source)),
                         queue.display_name,
                         err,
                     )
-            self.logger.info("End of queue reached, clearing items")
-            self.clear(queue.queue_id)
+            if self._queue_data.get(queue.queue_id) is not queue_data:
+                # the queue was removed or re-registered while the source was fetched
+                return
+            self._finish_queue(queue, prev_item)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
-        # now determine if the item was fully played before clearing/resuming
+        # now determine if the item was fully played before settling/resuming
 
         # For flow mode, check if the last track was fully streamed using the stream log
         # This is more reliable than elapsed_time which can be reset/incorrect
@@ -532,13 +537,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # Guard: if a next item (e.g. a radio that caused the flow stream to break
                 # out early) is already queued, the queue_buffer_completed path
                 # (_resume_on_idle) is responsible for starting it. Creating
-                # _clear_or_resume_delayed here would race with that restart and could
-                # incorrectly clear the queue or trigger a double play_index call.
+                # _settle_or_resume_delayed here would race with that restart and could
+                # incorrectly settle the queue or trigger a double play_index call.
                 if queue.current_index is not None and self.get_next_item(
                     queue.queue_id, queue.current_index
                 ):
                     return
-                self.mass.create_task(_clear_or_resume_delayed())
+                self.mass.create_task(_settle_or_resume_delayed())
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -548,7 +553,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_clear_or_resume_delayed())
+            self.mass.create_task(_settle_or_resume_delayed())
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -557,7 +562,26 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_clear_or_resume_delayed())
+            self.mass.create_task(_settle_or_resume_delayed())
+
+    def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
+        """
+        Settle a queue that has nothing left to play, based on the item it ended on.
+
+        :param queue: The queue that ran out of items.
+        :param prev_item: The item the queue was playing when it went idle, if it is still known.
+        """
+        queue_data = self._queue_data.get(queue.queue_id)
+        # prev_item is gone when the player dropped its current item before we got here; the
+        # queue's last item is the one that finished, so fall back to that
+        ending_item = prev_item or (
+            queue_data.items[-1] if queue_data and queue_data.items else None
+        )
+        if ending_item is not None and ending_item.media_type in UNENDABLE_MEDIA_TYPES:
+            # normally caught before the debounce; reachable only when prev_item was lost
+            return
+        self.logger.info("End of queue reached for %s, marking it as ended", queue.display_name)
+        self.mark_ended(queue.queue_id)
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
@@ -592,6 +616,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if item_to_report.streamdetails and item_to_report.streamdetails.stream_error:
             #  Ignore items that had a stream error
             return
+
+        # a preloaded item is only probed once it actually streams
+        self._apply_probed_duration(item_to_report)
 
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
@@ -666,9 +693,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 )
             )
             if fully_played and not is_playing:
-                if credit_album := self._enqueued_album_for_track(
-                    queue_data, item_to_report, media_item
-                ):
+                if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(
                         self._mark_album_played(credit_album, media_item, queue_data)
                     )
@@ -716,47 +741,52 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             ),
         )
 
-    def _enqueued_album_for_track(
-        self, queue_data: PlayerQueueData, item_to_report: QueueItem, media_item: MediaItemType
+    def _claim_enqueued_album_credit(
+        self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> Album | None:
         """
-        Return the album to credit for this played track, or None.
+        Claim the album play this track credits, or None when there is nothing to credit.
 
-        Only an album the user explicitly enqueued is eligible, and only on the first
-        track of a contiguous run of its tracks (the previous queue item must belong to
-        a different album), so a single album play is credited once.
+        Only an album the user explicitly enqueued is eligible, and only the first of its
+        tracks to complete since it was enqueued, so a single album play is credited once
+        however its tracks ended up ordered in the queue. Claiming marks the album as
+        credited on this queue, so a second call for the same enqueue returns None.
         """
         album = getattr(media_item, "album", None)
         if album is None:
             return None
+        # the album the user pressed play on keeps the shape of the listing it was picked
+        # from, while the queue's tracks carry the library album. Matching on the provider
+        # mappings recognises both shapes as the same album. The most recent enqueue wins,
+        # because that is the one whose credit was just armed; an earlier entry for the same
+        # album may still be a differently shaped (and therefore separately keyed) object.
         enqueued = next(
             (
                 item
-                for item in queue_data.enqueued_media_items
-                if isinstance(item, Album) and item == album
+                for item in reversed(queue_data.enqueued_media_items)
+                if isinstance(item, Album) and compare_item_ids(item, album)
             ),
             None,
         )
-        if enqueued is None:
+        if enqueued is None or enqueued in queue_data.credited_albums:
             return None
-        queue_id = queue_data.queue.queue_id
-        index = self.index_by_id(queue_id, item_to_report.queue_item_id)
-        if index:
-            prev_item = self.get_item(queue_id, index - 1)
-            prev_album = (
-                getattr(prev_item.media_item, "album", None)
-                if prev_item and prev_item.media_item
-                else None
-            )
-            if prev_album == album:
-                return None
-        return enqueued
+        queue_data.credited_albums.add(enqueued)
+        # credit the album the track carries, which is the library one whenever the album is
+        # in the library, so the play lands on the row an explicit library play writes instead
+        # of a second provider-scoped one.
+        return album if isinstance(album, Album) else enqueued
 
     def _is_user_initiated_play(
         self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> bool:
         """Return whether a played item was explicitly chosen by the user."""
-        return media_item in queue_data.enqueued_media_items
+        # a played item is reported in its library shape while the enqueued item may still be
+        # the provider one it was picked from. The media type is compared alongside it because
+        # the library numbers each type from one, so ids collide freely across types.
+        return any(
+            item.media_type == media_item.media_type and compare_item_ids(item, media_item)
+            for item in queue_data.enqueued_media_items
+        )
 
     async def _mark_album_played(
         self, album: Album, track: MediaItemType, queue_data: PlayerQueueData
