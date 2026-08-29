@@ -926,6 +926,19 @@ class KionMusicProvider(MusicProvider):
         for i in range(0, len(track_ids), batch_size):
             batch_ids = track_ids[i : i + batch_size]
             full_tracks = await self.client.get_tracks(batch_ids)
+            returned_ids = {
+                str(track.id).split(":", 1)[0]
+                for track in full_tracks
+                if getattr(track, "id", None) is not None
+            }
+            for requested_id in batch_ids:
+                item_id = requested_id.split(":", 1)[0]
+                if item_id not in returned_ids:
+                    self.report_skipped_sync_item(
+                        MediaType.TRACK,
+                        item_id,
+                        InvalidDataError(f"Kion response omitted requested track {item_id}"),
+                    )
             for track in full_tracks:
                 try:
                     yield parse_track(self, track)
@@ -2491,8 +2504,7 @@ class KionMusicProvider(MusicProvider):
                 try:
                     tracks.append(parse_track(self, found))
                 except InvalidDataError as err:
-                    item_id = str(found.id) if found.id is not None else None
-                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
+                    self.logger.debug("Error parsing liked track %s: %s", track_id, err)
 
         self.logger.debug("Liked tracks: fetched %s, parsed %s", len(track_shorts), len(tracks))
         return tracks

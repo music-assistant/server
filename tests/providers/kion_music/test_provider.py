@@ -11,10 +11,13 @@ The cache decorator does need a server, so those tests attach the minimal
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.kion_music.constants import (
     LIKED_TRACKS_PLAYLIST_ID,
@@ -218,3 +221,129 @@ async def test_cancelled_waiter_does_not_cancel_shared_fetch(
     assert await _cache_key_exists(provider, "_get_regular_playlist_tracks.12345:67.0")
     assert await provider.get_playlist_tracks("12345:67") == []
     assert mock_client.get_playlist.await_count == 1
+
+
+async def test_library_artist_parser_failure_reports_unidentifiable_item(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A library artist without an ID blocks the complete artist deletion pass."""
+    provider, mock_client = cached_provider
+    error = InvalidDataError("missing artist id")
+    provider.report_skipped_sync_item = mock.MagicMock()
+    mock_client.get_liked_artists.return_value = [SimpleNamespace(id=None)]
+
+    with mock.patch(
+        "music_assistant.providers.kion_music.provider.parse_artist", side_effect=error
+    ):
+        assert [item async for item in provider.get_library_artists()] == []
+
+    provider.report_skipped_sync_item.assert_called_once_with(MediaType.ARTIST, None, error)
+
+
+async def test_library_album_parser_failure_reports_album_id(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A malformed library album protects its identifiable provider item."""
+    provider, mock_client = cached_provider
+    error = InvalidDataError("invalid album artist")
+    provider.report_skipped_sync_item = mock.MagicMock()
+    mock_client.get_liked_albums.return_value = [SimpleNamespace(id=42)]
+
+    with mock.patch("music_assistant.providers.kion_music.provider.parse_album", side_effect=error):
+        assert [item async for item in provider.get_library_albums()] == []
+
+    provider.report_skipped_sync_item.assert_called_once_with(MediaType.ALBUM, "42", error)
+
+
+async def test_library_track_parser_failure_reports_track_id(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A malformed full track protects its identifiable provider item."""
+    provider, mock_client = cached_provider
+    error = InvalidDataError("invalid track artist")
+    provider.report_skipped_sync_item = mock.MagicMock()
+    mock_client.get_liked_tracks.return_value = [SimpleNamespace(track_id="51:9")]
+    mock_client.get_tracks.return_value = [SimpleNamespace(id=51)]
+
+    with mock.patch("music_assistant.providers.kion_music.provider.parse_track", side_effect=error):
+        assert [item async for item in provider.get_library_tracks()] == []
+
+    provider.report_skipped_sync_item.assert_called_once_with(MediaType.TRACK, "51", error)
+
+
+async def test_library_playlists_parser_failure_reports_owner_and_kind(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A malformed library playlist protects its stable owner/kind ID."""
+    provider, mock_client = cached_provider
+    error = InvalidDataError("invalid playlist")
+    provider.report_skipped_sync_item = mock.MagicMock()
+    provider.get_playlist = mock.AsyncMock(side_effect=[mock.sentinel.wave, mock.sentinel.liked])
+    mock_client.get_user_playlists.return_value = [
+        SimpleNamespace(owner=SimpleNamespace(uid=77), kind=88)
+    ]
+    mock_client.get_liked_playlists.return_value = []
+
+    with mock.patch(
+        "music_assistant.providers.kion_music.provider.parse_playlist", side_effect=error
+    ):
+        assert [item async for item in provider.get_library_playlists()] == [
+            mock.sentinel.wave,
+            mock.sentinel.liked,
+        ]
+
+    provider.report_skipped_sync_item.assert_called_once_with(MediaType.PLAYLIST, "77:88", error)
+
+
+async def test_library_tracks_reports_partial_and_empty_batches(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """Every requested base ID omitted by get_tracks is reported to the sync."""
+    provider, mock_client = cached_provider
+    provider.report_skipped_sync_item = mock.MagicMock()
+    returned_track = SimpleNamespace(id="101:91")
+    parsed_track = mock.sentinel.track
+    mock_client.get_liked_tracks.return_value = [
+        SimpleNamespace(track_id="101:1"),
+        SimpleNamespace(track_id="102:2"),
+        SimpleNamespace(track_id="103:3"),
+    ]
+    mock_client.get_tracks.side_effect = [[returned_track], []]
+
+    with (
+        mock.patch("music_assistant.providers.kion_music.provider.TRACK_BATCH_SIZE", 2),
+        mock.patch(
+            "music_assistant.providers.kion_music.provider.parse_track", return_value=parsed_track
+        ),
+    ):
+        assert [item async for item in provider.get_library_tracks()] == [parsed_track]
+
+    assert mock_client.get_tracks.await_args_list == [
+        mock.call(["101:1", "102:2"]),
+        mock.call(["103:3"]),
+    ]
+    assert provider.report_skipped_sync_item.call_count == 2
+    first_call, second_call = provider.report_skipped_sync_item.call_args_list
+    assert first_call.args[:2] == (MediaType.TRACK, "102")
+    assert isinstance(first_call.args[2], InvalidDataError)
+    assert str(first_call.args[2]) == "Kion response omitted requested track 102"
+    assert second_call.args[:2] == (MediaType.TRACK, "103")
+    assert isinstance(second_call.args[2], InvalidDataError)
+    assert str(second_call.args[2]) == "Kion response omitted requested track 103"
+
+
+async def test_liked_tracks_playlist_parser_failure_only_logs_locally(
+    cached_provider: tuple[KionMusicProvider, mock.AsyncMock],
+) -> None:
+    """A non-sync playlist browse failure does not report sync state."""
+    provider, mock_client = cached_provider
+    error = InvalidDataError("invalid liked track")
+    provider.report_skipped_sync_item = mock.MagicMock()
+    mock_client.get_liked_tracks.return_value = [SimpleNamespace(track_id="61:7")]
+    mock_client.get_tracks.return_value = [SimpleNamespace(id=61)]
+
+    with mock.patch("music_assistant.providers.kion_music.provider.parse_track", side_effect=error):
+        assert await provider._get_liked_tracks_playlist_tracks(0) == []
+
+    provider.report_skipped_sync_item.assert_not_called()
+    provider.logger.debug.assert_any_call("Error parsing liked track %s: %s", "61:7", error)
