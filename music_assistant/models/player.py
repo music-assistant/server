@@ -627,23 +627,34 @@ class Player(ABC):
         return type(self).run_setup_flow is not Player.run_setup_flow
 
     @property
+    def setup_flow_available(self) -> bool:
+        """
+        Return if this player's setup flow currently has anything to offer.
+
+        Override to hide the reconfigure action while there is nothing left to set up,
+        so the user is not sent into a flow that can only abort. Only consulted for a
+        player that implements a flow of its own.
+        """
+        return True
+
+    @property
     @final
     def has_setup_flow(self) -> bool:
         """
         Return if an interactive setup flow can be started for this player.
 
-        True when the player implements its own setup flow, or when it wraps a
-        (non-native) protocol child player that does. Unlike ``needs_setup`` this stays
-        True once setup completed, so the UI can offer to re-run the flow on demand
-        (e.g. to redo a pairing step that was skipped).
+        True when the player implements its own setup flow and that flow currently has
+        something to offer, or when it wraps a (non-native) protocol child player that
+        does. Unlike ``needs_setup`` this stays True once setup completed, so the UI can
+        offer to re-run the flow on demand (e.g. to redo a pairing step that was skipped).
         """
         if self.implements_setup_flow:
-            return True
+            return self.setup_flow_available
         for output_protocol in self.output_protocols:
             if output_protocol.is_native:
                 continue
             child = self.mass.players.get_player(output_protocol.output_protocol_id)
-            if child is not None and child.implements_setup_flow:
+            if child is not None and child.has_setup_flow:
                 return True
         return False
 
