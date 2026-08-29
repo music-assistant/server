@@ -240,7 +240,7 @@ async def test_auth_concurrent_callers_share_one_refresh(monkeypatch: pytest.Mon
     await asyncio.sleep(0)
     release_refresh.set()
 
-    assert await asyncio.gather(first, second) == ["shared-access", "shared-access"]
+    assert tuple(await asyncio.gather(first, second)) == ("shared-access", "shared-access")
     assert refresh_calls == 1
 
 
