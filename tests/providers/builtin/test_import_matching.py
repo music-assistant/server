@@ -1038,11 +1038,13 @@ async def test_exact_instance_reference_never_widens_to_sibling_instance() -> No
     assert called_instance == "spotify--1"
 
 
-async def test_extprov_naming_disallowed_instance_does_not_fall_back_to_path() -> None:
-    """An #EXTPROV entry outside the allowed snapshot must not resolve via a sibling instance."""
+async def test_extprov_naming_unregistered_instance_falls_back_to_allowed_sibling_domain() -> None:
+    """A pinned instance absent locally is retried on allowed siblings of its own domain."""
+    # spotify--1 does not exist in this server's registry at all - as if the M3U was
+    # exported from a different Music Assistant install, where instance ids are
+    # randomly generated per install - but the allowed snapshot's own spotify--2
+    # sibling of the same domain does have the item
     prov = _make_provider(
-        # spotify--2 is an allowed, loaded sibling that does have the item - but the
-        # entry's own #EXTPROV names spotify--1, which is not in the allowed snapshot
         provider_entries=[("spotify", "spotify--2", True)],
         get_provider_item=AsyncMock(return_value=MagicMock()),
     )
@@ -1051,26 +1053,32 @@ async def test_extprov_naming_disallowed_instance_does_not_fall_back_to_path() -
         providers=[
             ProviderMappingInfo(domain="spotify", instance_id="spotify--1", item_id="abc123"),
         ],
-        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
     )
     prov_any = _prepare(prov, generate_m3u("Imported", [item]))
-    enrichment = TrackProviderEnrichment(
-        track=_make_track("Song", artists=["Artist"]),
-        matches=(),
-        ambiguous_providers=(),
-        failed_providers=(),
-        used_library_item=False,
-    )
-    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
 
-    await prov.match_imported_playlist_tracks(
-        "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--2")
-    )
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify--2")
+        )
 
-    # the entry's own #EXTPROV data already names a provider reference, so a bare-path
-    # guess must never be tried against an unrelated allowed sibling instance
-    prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
-    prov_any.mass.music.tracks.enrich_provider_mappings.assert_awaited_once()
+    # the unregistered pinned instance is normalized to the allowed sibling that
+    # actually confirmed it, so a later load resolves straight to spotify--2 instead
+    # of repeating this same fallback every pass
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    assert len(written_items) == 1
+    assert written_items[0].providers == [
+        ProviderMappingInfo(domain="spotify", instance_id="spotify--2", item_id="abc123")
+    ]
+    prov_any.mass.music.tracks.get_provider_item.assert_awaited_once_with(
+        "abc123",
+        "spotify--2",
+        force_refresh=True,
+        allow_fallback=False,
+        strict_provider_instance=True,
+    )
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 1 |" in report_markdown
 
 
 async def test_domain_only_reference_to_unloaded_instance_is_retained() -> None:

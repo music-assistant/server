@@ -70,6 +70,11 @@ _FEATURED_ARTIST_SPLITTER = re.compile(
     r"\s*(?:,|&|\+|\band\b|\bwith\b)\s*",
     re.IGNORECASE,
 )
+# a comma unambiguously joins a list of independent artist names, unlike an ampersand,
+# "and", or "with", which are just as likely to be part of an official act's own name
+# (e.g. "Earth, Wind & Fire", "Simon & Garfunkel") - used only as a conservative
+# fallback for a structured artist credit, never for a title-embedded feature credit
+_ARTIST_LIST_SPLITTER = re.compile(r"\s*,\s*")
 
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title.
 # Entries must be a single ASCII alphanumeric word: album_retail_suffix_sql_match matches
@@ -467,6 +472,29 @@ def compare_track(
     return abs(base_item.duration - compare_item.duration) <= 2
 
 
+def _album_has_authoritative_release_evidence(
+    base_album: Album | ItemMapping | None, compare_album_item: Album | ItemMapping | None
+) -> bool:
+    """
+    Return whether two album references share decisive, release-level evidence.
+
+    Mirrors the external ids ``compare_album_evidence`` already treats as decisive on
+    their own (a shared item identity, or a MusicBrainz release id, Discogs, or
+    TheAudioDB match) - as opposed to a barcode/ASIN, which is shared across pressings
+    and only ever corroborates an otherwise ambiguous edition, never release identity
+    by itself.
+    """
+    if base_album is None or compare_album_item is None:
+        return False
+    if compare_item_ids(base_album, compare_album_item):
+        return True
+    return any(
+        compare_external_ids(base_album.external_ids, compare_album_item.external_ids, ext_id)
+        is True
+        for ext_id in (ExternalID.MB_ALBUM, ExternalID.DISCOGS, ExternalID.TADB)
+    )
+
+
 def compare_track_evidence(
     base_item: Track,
     compare_item: Track,
@@ -532,7 +560,15 @@ def compare_track_evidence(
         and versions_match
         and _same_album_position_matches(base_item, compare_item)
     ):
-        return TrackMatchConfidence.EXACT
+        # metadata agreement alone (title/artists/version/position on a nominally
+        # matching album) is provider drift risk, not proof of the same recording;
+        # only decisive release-level evidence earns EXACT here, otherwise this is
+        # still strong corroboration but only to LIKELY
+        return (
+            TrackMatchConfidence.EXACT
+            if _album_has_authoritative_release_evidence(base_album, compare_album_item)
+            else TrackMatchConfidence.LIKELY
+        )
 
     if recording_id_match:
         return TrackMatchConfidence.LIKELY
@@ -1098,11 +1134,11 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
     # comparison is the one that must decide, so it must always run rather than
     # being preempted by a list-level comparison that splits composite credits
     # (e.g. "Artist A, Artist B" reconstructed as one M3U artist) differently
-    base_credits = _track_artist_credit_groups(base_track)
-    compare_credits = _track_artist_credit_groups(compare_track)
+    base_credits, base_list_groups = _track_artist_credit_groups(base_track)
+    compare_credits, compare_list_groups = _track_artist_credit_groups(compare_track)
     if not (
-        _artist_credit_groups_cover(base_credits, compare_credits)
-        or _artist_credit_groups_cover(compare_credits, base_credits)
+        _artist_credit_groups_cover(base_credits, compare_credits, base_list_groups)
+        or _artist_credit_groups_cover(compare_credits, base_credits, compare_list_groups)
     ):
         return False
     # a shared featured artist alone is not enough to accept the match: each side's
@@ -1113,14 +1149,26 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
     )
 
 
-def _track_artist_credit_groups(track: Track) -> set[frozenset[str]]:
-    """Return normalized structured and title-embedded artist credits."""
+def _track_artist_credit_groups(
+    track: Track,
+) -> tuple[set[frozenset[str]], dict[frozenset[str], frozenset[str]]]:
+    """
+    Return normalized structured and title-embedded artist credits.
+
+    Also returns a per-structured-credit comma-only decomposition, keyed by its
+    normal (full-splitter) group, for ``_artist_credit_groups_cover``'s conservative
+    multi-artist fallback - a title-embedded feature credit needs no such entry, since
+    it only ever uses the full splitter it was already extracted with.
+    """
     artist_credits: set[frozenset[str]] = set()
+    list_groups: dict[frozenset[str], frozenset[str]] = {}
     for artist in track.artists:
-        artist_credits.add(_artist_credit_group(artist.name))
+        group = _artist_credit_group(artist.name)
+        artist_credits.add(group)
+        list_groups[group] = _artist_credit_list_group(artist.name)
     for featured_artists in extract_title_artist_credits(track.name):
         artist_credits.add(_artist_credit_group(featured_artists))
-    return artist_credits
+    return artist_credits, list_groups
 
 
 def _artist_credit_group(name: str) -> frozenset[str]:
@@ -1132,16 +1180,39 @@ def _artist_credit_group(name: str) -> frozenset[str]:
     )
 
 
+def _artist_credit_list_group(name: str) -> frozenset[str]:
+    """Return one structured artist credit split only on commas."""
+    return frozenset(
+        _artist_credit_key(artist_name)
+        for artist_name in _ARTIST_LIST_SPLITTER.split(name)
+        if artist_name
+    )
+
+
 def _artist_credit_groups_cover(
     source_groups: set[frozenset[str]],
     target_groups: set[frozenset[str]],
+    source_list_groups: dict[frozenset[str], frozenset[str]] | None = None,
 ) -> bool:
-    """Return whether target credits contain every complete source credit."""
+    """
+    Return whether target credits contain every complete source credit.
+
+    A multi-artist source credit with no matching combined group among the targets
+    can still be considered covered when every one of its components is separately
+    credited there - using ``source_list_groups``'s comma-only decomposition for that
+    fallback where available, instead of the same full splitter used for the direct
+    equality check just above, so that an official act's own name is never mistaken
+    for a list of unrelated artists that happen to share its individual words.
+    """
     target_singletons = {next(iter(group)) for group in target_groups if len(group) == 1}
-    return all(
-        group in target_groups or (len(group) > 1 and group.issubset(target_singletons))
-        for group in source_groups
-    )
+    for group in source_groups:
+        if group in target_groups:
+            continue
+        list_group = (source_list_groups or {}).get(group, group)
+        if len(list_group) > 1 and list_group.issubset(target_singletons):
+            continue
+        return False
+    return True
 
 
 def _artist_credited(name: str, credit_groups: set[frozenset[str]]) -> bool:
@@ -1153,7 +1224,10 @@ def _artist_credited(name: str, credit_groups: set[frozenset[str]]) -> bool:
     # components; it is still represented when the credits carry that same combined
     # group, or every one of its components separately
     own_group = _artist_credit_group(name)
-    return len(own_group) > 1 and _artist_credit_groups_cover({own_group}, credit_groups)
+    own_list_group = _artist_credit_list_group(name)
+    return len(own_group) > 1 and _artist_credit_groups_cover(
+        {own_group}, credit_groups, {own_group: own_list_group}
+    )
 
 
 def _artist_credit_key(name: str) -> str:

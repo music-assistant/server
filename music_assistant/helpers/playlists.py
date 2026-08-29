@@ -585,6 +585,7 @@ def construct_media_item_from_playlist_item(
             duration,
             provider_mappings,
             external_ids,
+            mass,
         )
 
     for img in item.images:
@@ -667,6 +668,7 @@ def _construct_track(
     duration: int | None,
     provider_mappings: set[ProviderMapping],
     external_ids: set[tuple[ExternalID, str]],
+    mass: MusicAssistant,
 ) -> Track:
     """Construct a Track from playlist item data, including artists and album."""
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -686,8 +688,19 @@ def _construct_track(
         # prefer the exact account this album was captured from over its bare domain -
         # a domain-only reference expands to every allowed sibling instance downstream
         # (see TracksController._get_full_track_album), which is only correct for
-        # legacy entries that never captured a specific instance in the first place
+        # legacy entries that never captured a specific instance in the first place -
+        # but only when that account actually exists on this server: a playlist
+        # imported from a different Music Assistant install carries instance ids that
+        # are randomly generated per install and will never resolve here, so fall back
+        # to the domain instead, letting that same downstream expansion try every
+        # allowed sibling instance of it rather than an instance id that can never match
         album_provider = item.album.provider_instance or item.album.provider_domain or item_provider
+        if (
+            item.album.provider_instance
+            and item.album.provider_domain
+            and not mass.get_provider(item.album.provider_instance, return_unavailable=True)
+        ):
+            album_provider = item.album.provider_domain
         album_item_id = item.album.item_id or item.album.name
         album_mapping = ItemMapping(
             item_id=album_item_id,

@@ -380,8 +380,11 @@ async def test_match_confidence_hydrates_album_after_initial_no_match(
     candidate = create_track("qobuz_1", "candidate", duration=210)
     base.disc_number = candidate.disc_number = 1
     base.track_number = candidate.track_number = 1
-    base_album = create_album("spotify_1", "base-album", name="Album")
-    candidate_album = create_album("qobuz_1", "candidate-album", name="Album")
+    mb_album_id = {(ExternalID.MB_ALBUM, "11111111-1111-1111-1111-111111111111")}
+    base_album = create_album("spotify_1", "base-album", name="Album", external_ids=mb_album_id)
+    candidate_album = create_album(
+        "qobuz_1", "candidate-album", name="Album", external_ids=mb_album_id
+    )
     base.album = ItemMapping(
         item_id=base_album.item_id,
         provider=base_album.provider,

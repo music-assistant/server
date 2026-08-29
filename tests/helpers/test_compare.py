@@ -84,12 +84,14 @@ def _provider_track(
     album_name: str = "Album",
     artist_names: tuple[str, ...] = ("Artist A",),
     external_ids: set[tuple[ExternalID, str]] | None = None,
+    album_external_ids: set[tuple[ExternalID, str]] | None = None,
 ) -> media_items.Track:
     """Build a provider track for confidence comparisons."""
     album = _album(
         item_id=f"album-{item_id}",
         provider=provider,
         name=album_name,
+        external_ids=album_external_ids,
     )
     return media_items.Track(
         item_id=item_id,
@@ -1264,8 +1266,9 @@ def test_compare_track_missing_disc_number_assumes_disc_one() -> None:
 
 def test_compare_track_evidence_ranks_release_and_recording_matches() -> None:
     """Exact-release evidence outranks the same recording on another album."""
-    base = _provider_track("base", "provider_a")
-    exact = _provider_track("exact", "provider_b")
+    mb_album_id = {(ExternalID.MB_ALBUM, "11111111-1111-1111-1111-111111111111")}
+    base = _provider_track("base", "provider_a", album_external_ids=mb_album_id)
+    exact = _provider_track("exact", "provider_b", album_external_ids=mb_album_id)
     alternate_release = _provider_track(
         "alternate",
         "provider_b",
@@ -1277,6 +1280,19 @@ def test_compare_track_evidence_ranks_release_and_recording_matches() -> None:
         compare.compare_track_evidence(base, alternate_release)
         == compare.TrackMatchConfidence.LIKELY
     )
+
+
+def test_compare_track_evidence_full_metadata_agreement_without_release_evidence_is_likely() -> (
+    None
+):
+    """Title/artist/version/position agreement alone, with no release-level id, caps at LIKELY."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+
+    # same nominal album name, same title/artist/version/position - but neither side
+    # carries any release-level identifier (MusicBrainz release, Discogs, TheAudioDB,
+    # or a shared item identity), so this is provider metadata drift risk, not proof
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
 
 
 def test_compare_track_evidence_conflicting_release_track_ids_are_not_exact() -> None:
@@ -1636,6 +1652,30 @@ def test_compare_track_evidence_matches_asymmetric_composite_credit() -> None:
     assert (
         compare.compare_track_evidence(m3u_credit, provider_credit)
         != compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_rejects_unrelated_separate_artists_matching_band_name() -> None:
+    """A structured act name is not shredded into unrelated solo artists sharing its words."""
+    # "Earth, Wind & Fire" is one official act's own name, not a list of three artists -
+    # a track crediting three separate solo artists literally named Earth/Wind/Fire is
+    # an unrelated recording that must not be treated as the same one
+    band_credit = _provider_track(
+        "band",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Earth, Wind & Fire",),
+    )
+    solo_artists_credit = _provider_track(
+        "solo",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Earth", "Wind", "Fire"),
+    )
+
+    assert (
+        compare.compare_track_evidence(band_credit, solo_artists_credit)
+        == compare.TrackMatchConfidence.NO_MATCH
     )
 
 

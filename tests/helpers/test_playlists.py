@@ -744,7 +744,7 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance()
     mass = MagicMock()
     spotify_1 = DummyProvider("spotify", "spotify--1")
     spotify_2 = DummyProvider("spotify", "spotify--2")
-    mass.get_provider.side_effect = lambda ref: {
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {
         "spotify": spotify_1,
         "spotify--1": spotify_1,
         "spotify--2": spotify_2,
@@ -784,6 +784,65 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance()
     # the album was captured on spotify--2, a *different* instance than the track's own
     # spotify--1 - the reconstructed reference must pin to that exact instance
     assert reconstructed.album.provider == "spotify--2"
+
+
+def test_media_item_to_playlist_item_track_round_trip_falls_back_to_album_domain() -> None:
+    """
+    An album pinned to an instance id unknown on this server falls back to its domain.
+
+    A playlist exported from a different Music Assistant install carries instance ids
+    that are randomly generated per install and will never resolve here; reconstructing
+    with that foreign instance id verbatim would leave the album permanently
+    unhydratable. Falling back to the domain lets downstream hydration
+    (``TracksController._get_full_track_album``) try every allowed sibling instance of
+    it instead.
+    """
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    # spotify--2 (the account this album was originally captured on, on a *different*
+    # Music Assistant install) does not exist on this server at all - only an unrelated
+    # sibling of the same domain does
+    spotify_9 = DummyProvider("spotify", "spotify--9")
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {"spotify--9": spotify_9}.get(ref)
+    album = Album(
+        item_id="alb1",
+        provider="spotify--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1", provider_domain="spotify", provider_instance="spotify--2"
+            )
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--2",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--2",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.album is not None
+    # falls back to the bare domain instead of the foreign, unresolvable instance id
+    assert reconstructed.album.provider == "spotify"
 
 
 def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple() -> None:
@@ -993,7 +1052,7 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_exact_capable_al
             self.instance_id = instance_id
 
     tidal_1 = DummyProvider("tidal", "tidal--1")
-    mass.get_provider.side_effect = lambda ref: {
+    mass.get_provider.side_effect = lambda ref, **_kwargs: {
         "tidal": tidal_1,
         "tidal--1": tidal_1,
     }.get(ref)

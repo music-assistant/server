@@ -1084,11 +1084,13 @@ class BuiltinProvider(MusicProvider):
             # now - either way there is nothing to substitute
             normalized_entry = None
             if confirmed_mapping is not None:
-                # a bare URI (no #EXTPROV metadata at all) or a domain-only reference
-                # was just confirmed playable - persist the resolved mapping so this
-                # entry keeps resolving to the exact same instance on future loads too,
-                # instead of leaving one that can never attach an instance-pinned
-                # mapping, or that would re-guess the first registered account, again
+                # a bare URI (no #EXTPROV metadata at all), a domain-only reference, or
+                # one pinning an instance id not registered on this server (e.g.
+                # imported from a different Music Assistant install) was just confirmed
+                # playable - persist the resolved mapping so this entry keeps resolving
+                # to the exact same instance on future loads too, instead of leaving one
+                # that can never attach an instance-pinned mapping, or that would repeat
+                # the same fallback, again
                 normalized_entry = replace(
                     item,
                     providers=[
@@ -1096,7 +1098,7 @@ class BuiltinProvider(MusicProvider):
                         if (
                             pm.domain == confirmed_mapping.domain
                             and pm.item_id == confirmed_mapping.item_id
-                            and not pm.instance_id
+                            and pm.instance_id != confirmed_mapping.instance_id
                         )
                         else pm
                         for pm in item.providers
@@ -1223,26 +1225,33 @@ class BuiltinProvider(MusicProvider):
 
         Returns the confirmed provider mapping alongside the playable verdict whenever
         the entry needs it written back to keep resolving on its own next time: a bare
-        Music Assistant provider URI with no ``#EXTPROV`` metadata at all, or a
-        domain-only ``#EXTPROV`` reference that was just confirmed on one specific
-        allowed instance. A raw builtin stream URL already reconstructs its own mapping
-        from the path alone and needs nothing written back, and an ``#EXTPROV``
-        reference that already names an exact instance already resolves correctly on
-        its own. Also returns every ``(instance_id, item_id)`` pair that was just
-        authoritatively confirmed dead here, so a subsequent matching pass does not
-        force-refresh the exact same candidate a second time.
+        Music Assistant provider URI with no ``#EXTPROV`` metadata at all, a
+        domain-only ``#EXTPROV`` reference, or one that pins an instance id not
+        registered on this server (e.g. imported from a different Music Assistant
+        install, where instance ids are randomly generated per install) - each
+        normalized to whichever allowed instance actually confirmed it. A raw builtin
+        stream URL already reconstructs its own mapping from the path alone and needs
+        nothing written back, and an ``#EXTPROV`` reference that already names an
+        exact allowed instance already resolves correctly on its own. Also returns
+        every ``(instance_id, item_id)`` pair that was just authoritatively confirmed
+        dead here, so a subsequent matching pass does not force-refresh the exact same
+        candidate a second time.
         """
         candidates: list[tuple[str, str, bool]] = []
         seen: set[tuple[str, str]] = set()
         confirmed_dead: set[tuple[str, str]] = set()
         for prov_info in item.providers:
-            # a domain-only reference (no pinned instance id) is not yet tied to one
-            # specific account; once resolved, normalize it to whichever allowed
-            # instance actually confirmed it, so a later load doesn't fall back to
-            # guessing the first registered account of that domain again
-            needs_provider_metadata = not prov_info.instance_id
+            # a domain-only reference (no pinned instance id), or a pinned instance id
+            # that is not registered on this server at all (e.g. a playlist imported
+            # from a different Music Assistant install, where instance ids are
+            # randomly generated per install), is not yet tied to one of the caller's
+            # own accounts; once resolved, normalize it to whichever allowed instance
+            # actually confirmed it, so a later load doesn't need this same fallback again
+            needs_provider_metadata = (
+                not prov_info.instance_id or prov_info.instance_id not in allowed_provider_instances
+            )
             for instance_id in self._allowed_instances_for(
-                prov_info.instance_id or prov_info.domain, allowed_provider_instances
+                prov_info.instance_id, prov_info.domain, allowed_provider_instances
             ):
                 key = (instance_id, prov_info.item_id)
                 if key not in seen:
@@ -1251,9 +1260,8 @@ class BuiltinProvider(MusicProvider):
         if not item.providers:
             # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
             # metadata at all needs this path parsed - an entry that does carry
-            # #EXTPROV references but none of them fall within the allowed snapshot
-            # must not fall back to guessing an allowed sibling instance of the same
-            # domain, since that sibling is not actually the entry's original source
+            # #EXTPROV references is fully handled by the loop above, including its
+            # own domain-based fallback for an unregistered pinned instance
             with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
                 _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
                 # a resolved external provider reference - a bare MA URI or a public
@@ -1262,8 +1270,13 @@ class BuiltinProvider(MusicProvider):
                 # stream URL already reconstructs "builtin" from the path alone on
                 # every future load and needs nothing written back
                 needs_provider_metadata = provider_instance_or_domain != "builtin"
+                # a bare URI carries no separate domain field to fall back on, so an
+                # instance id that isn't allowed here (unlike a genuine domain, e.g.
+                # from a public share link) simply yields no candidates below
                 for instance_id in self._allowed_instances_for(
-                    provider_instance_or_domain, allowed_provider_instances
+                    provider_instance_or_domain,
+                    provider_instance_or_domain,
+                    allowed_provider_instances,
                 ):
                     candidates.append((instance_id, raw_item_id, needs_provider_metadata))
         for provider_instance, provider_item_id, needs_provider_metadata in candidates:
@@ -1379,25 +1392,29 @@ class BuiltinProvider(MusicProvider):
         return False
 
     def _allowed_instances_for(
-        self, provider_instance_or_domain: str, allowed_provider_instances: Mapping[str, str]
+        self, instance_id: str, domain: str, allowed_provider_instances: Mapping[str, str]
     ) -> list[str]:
         """
         Expand an entry's provider reference to allowed instance ids.
 
-        An exact instance id is kept as-is, and only if it is in the caller's own
-        snapshot; a bare domain is expanded to every one of the caller's allowed
-        instances of that domain instead of the single, arbitrary instance the
-        shared library would otherwise resolve it to. The snapshot maps every
-        instance the caller has configured to its domain, whether or not the
-        instance is currently loaded, so this never depends on the provider's
-        current load state - including for the domain-only expansion.
+        An exact instance id is kept as-is when it is in the caller's own snapshot.
+        Otherwise - whether the entry never pinned one at all, or it pins one that is
+        not registered on this server (e.g. a playlist imported from a different
+        Music Assistant install, where instance ids are randomly generated per
+        install) - every one of the caller's allowed instances of the entry's own
+        domain is tried instead: the single, arbitrary instance the shared library
+        would otherwise resolve a bare domain to, or silently giving up on a foreign
+        instance id that matches nothing here, would both be wrong. The snapshot
+        maps every instance the caller has configured to its domain, whether or not
+        the instance is currently loaded, so this never depends on the provider's
+        current load state - including for the domain-based expansion.
         """
-        if provider_instance_or_domain in allowed_provider_instances:
-            return [provider_instance_or_domain]
+        if instance_id and instance_id in allowed_provider_instances:
+            return [instance_id]
         return [
-            instance_id
-            for instance_id, domain in allowed_provider_instances.items()
-            if domain == provider_instance_or_domain
+            allowed_instance_id
+            for allowed_instance_id, allowed_domain in allowed_provider_instances.items()
+            if allowed_domain == domain
         ]
 
     def _get_stored_item(
