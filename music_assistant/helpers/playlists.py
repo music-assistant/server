@@ -683,7 +683,11 @@ def _construct_track(
         )
     album_mapping: ItemMapping | None = None
     if item.album:
-        album_provider = item.album.provider_domain or item_provider
+        # prefer the exact account this album was captured from over its bare domain -
+        # a domain-only reference expands to every allowed sibling instance downstream
+        # (see TracksController._get_full_track_album), which is only correct for
+        # legacy entries that never captured a specific instance in the first place
+        album_provider = item.album.provider_instance or item.album.provider_domain or item_provider
         album_item_id = item.album.item_id or item.album.name
         album_mapping = ItemMapping(
             item_id=album_item_id,
