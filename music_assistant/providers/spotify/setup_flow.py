@@ -8,7 +8,7 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 import pkce
 from aiohttp import ClientError, ClientTimeout
@@ -441,8 +441,10 @@ async def _paired_account_differs(data_dir: Path, account_id: str | None) -> boo
         return False
     paired = await asyncio.to_thread(soloist_session_account, data_dir)
     # the engine records Spotify's canonical username, which is the signed-in
-    # id lowercased
-    if not paired or paired.casefold() == account_id.casefold():
+    # id lowercased. It is stored percent-encoded when it contains non-ASCII
+    # characters (e.g. legacy usernames with accented letters), so decode it
+    # before comparing.
+    if not paired or unquote(paired).casefold() == account_id.casefold():
         return False
     LOGGER.warning("Soloist is paired with %s instead of %s", paired, account_id)
     return True
@@ -639,9 +641,12 @@ def _credential_account_differs(credentials: str, account_id: str | None) -> boo
         return False
     if not isinstance(stored, dict):
         return False
-    # librespot stores Spotify's canonical username, which is the signed-in id lowercased
+    # librespot stores Spotify's canonical username, which is the signed-in id
+    # lowercased. It is stored percent-encoded when it contains non-ASCII
+    # characters (e.g. legacy usernames with accented letters), so decode it
+    # before comparing.
     username = str(stored.get("username") or "")
-    if not username or username.casefold() == account_id.casefold():
+    if not username or unquote(username).casefold() == account_id.casefold():
         return False
     LOGGER.warning("Playback was authorized for %s instead of %s", username, account_id)
     return True
