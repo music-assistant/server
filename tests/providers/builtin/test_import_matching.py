@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -184,9 +185,9 @@ def _prepare(prov: BuiltinProvider, m3u_data: str, playlist_name: str = "Importe
     prov_any._read_m3u_file = AsyncMock(return_value=m3u_data)
     prov_any.get_playlist = AsyncMock(return_value=_make_playlist(playlist_name))
     prov_any._write_m3u_file = AsyncMock()
-    # a stable dummy fingerprint: the playlist is the same file throughout the pass
+    # a stable dummy generation: the playlist is the same file throughout the pass
     # unless a test overrides this to simulate a delete-and-recreate race
-    prov_any._get_playlist_generation = AsyncMock(return_value=(1, 1))
+    prov_any._get_playlist_generation = AsyncMock(return_value=1)
     return prov_any
 
 
@@ -1881,9 +1882,9 @@ async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten
     prov_any = _prepare(prov, m3u_data)
     # the original playlist was deleted and a new, unrelated playlist was created that
     # reused the same sanitized ID while this (possibly long-running) pass was still
-    # searching - even though its content happens to look identical, its file identity
-    # (captured once at the start of the pass) is now different
-    prov_any._get_playlist_generation = AsyncMock(side_effect=[(1, 1), (2, 2)])
+    # searching - even though its content happens to look identical, its creation
+    # generation (captured once at the start of the pass) is now different
+    prov_any._get_playlist_generation = AsyncMock(side_effect=[1, 2])
 
     matched_track = _make_track(
         "Song",
@@ -1916,3 +1917,36 @@ async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten
     report_markdown = set_report.call_args.args[0]
     assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
     assert "Substitutions" not in report_markdown
+
+
+async def test_create_playlist_generation_survives_inode_reuse(tmp_path: Path) -> None:
+    """
+    A recreate under the same ID gets a new generation, even with the same inode.
+
+    The generation counter is an in-memory value bumped by ``create_playlist``, not a
+    filesystem fingerprint, so it stays reliable even when a delete followed by a
+    same-path create happens to have the filesystem reuse the just-freed inode number -
+    a scenario this test does not need to force, since the implementation never reads
+    inode/device information in the first place.
+    """
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = str(tmp_path)
+    prov_any._playlist_generations = {}
+    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Test"))
+
+    await prov.create_playlist("Test", {MediaType.TRACK})
+    playlist_id = prov._sanitize_playlist_id("Test")
+    playlist_file = tmp_path / f"{playlist_id}.m3u"
+    first_generation = await prov._get_playlist_generation(playlist_id)
+    assert first_generation == 1
+
+    playlist_file.unlink()
+    assert await prov._get_playlist_generation(playlist_id) is None
+    await prov.create_playlist("Test", {MediaType.TRACK})
+
+    second_generation = await prov._get_playlist_generation(playlist_id)
+    assert second_generation == 2
+    assert second_generation != first_generation
+
+    assert second_generation != first_generation

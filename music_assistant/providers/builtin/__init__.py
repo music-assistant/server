@@ -183,6 +183,7 @@ class BuiltinProvider(MusicProvider):
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
     _playlist_locks: dict[str, asyncio.Lock]
+    _playlist_generations: dict[str, int]
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -199,6 +200,7 @@ class BuiltinProvider(MusicProvider):
         """Call after the provider has been loaded."""
         self._playlist_lock = asyncio.Lock()
         self._playlist_locks = {}
+        self._playlist_generations = {}
         self._playlists_dir = os.path.join(self.mass.storage_path, "playlists")
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
@@ -596,6 +598,11 @@ class BuiltinProvider(MusicProvider):
         ):
             playlist_id = f"{base_id} ({counter})"
             counter += 1
+        # bump this ID's generation before creating its file: a delete followed by a
+        # recreation under the same sanitized ID must be distinguishable from an
+        # in-place rewrite of the same playlist, even if the filesystem happens to
+        # reuse the freed inode for the new file
+        self._playlist_generations[playlist_id] = self._playlist_generations.get(playlist_id, 0) + 1
         # create empty M3U file with header
         await self._write_m3u_file(playlist_id, name, [])
         return await self.get_playlist(playlist_id)
@@ -666,7 +673,7 @@ class BuiltinProvider(MusicProvider):
             return
         playlist = await self.get_playlist(prov_playlist_id)
         # this pass can run for a while; if the playlist is deleted and a new one is
-        # created that reuses the same sanitized ID before it finishes, this fingerprint
+        # created that reuses the same sanitized ID before it finishes, this generation
         # lets the later write-back tell the two apart instead of writing stale matches
         # into an unrelated playlist that merely happens to share its ID
         original_generation = await self._get_playlist_generation(prov_playlist_id)
@@ -919,7 +926,7 @@ class BuiltinProvider(MusicProvider):
         self,
         prov_playlist_id: str,
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
-        expected_generation: tuple[int, int] | None,
+        expected_generation: int | None,
     ) -> set[int]:
         """
         Write resolved substitutes into the playlist's current contents.
@@ -930,10 +937,11 @@ class BuiltinProvider(MusicProvider):
 
         :param prov_playlist_id: The provider-side playlist ID to update.
         :param pending_substitutions: (original, replacement) pairs found during matching.
-        :param expected_generation: The playlist's identity fingerprint captured when this
-            pass started, as returned by ``_get_playlist_generation``. If the file no longer
-            has this identity, the playlist behind this ID was deleted (and possibly replaced
-            by an unrelated new playlist reusing the same sanitized ID), so nothing is written.
+        :param expected_generation: The playlist's creation generation captured when this
+            pass started, as returned by ``_get_playlist_generation``. If the file's current
+            generation no longer matches, the playlist behind this ID was deleted (and
+            possibly replaced by an unrelated new playlist reusing the same sanitized ID),
+            so nothing is written.
         :return: Indices into `pending_substitutions` whose original entry was no longer in
             the playlist (e.g. removed by a concurrent edit, or the playlist was replaced)
             and so were not applied.
@@ -1694,23 +1702,22 @@ class BuiltinProvider(MusicProvider):
                 result: str = await _file.read()
                 return result
 
-    async def _get_playlist_generation(self, playlist_id: str) -> tuple[int, int] | None:
+    async def _get_playlist_generation(self, playlist_id: str) -> int | None:
         """
-        Return an (inode, device) identity fingerprint for a playlist's M3U file.
+        Return the current creation generation for a playlist's M3U file.
 
-        A rewrite of the same file (a rename, edit or matched substitution) keeps this
-        identity, while a delete followed by a new file recreated under the same
-        sanitized ID gets a new one - this is what lets a long-running background pass
-        tell the two apart. Returns None when the file does not currently exist.
+        Bumped by create_playlist every time a new file is created under this sanitized
+        ID, so a delete followed by a recreation under the same ID - even one that, by
+        pure filesystem-level chance, reuses the just-freed inode - is still
+        distinguishable from an in-place rewrite of the same playlist (a rename, edit,
+        or matched substitution). Returns None when the file does not currently exist.
 
         :param playlist_id: The provider-side playlist ID to fingerprint.
         """
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        try:
-            stat_result = await asyncio.to_thread(os.stat, playlist_file)
-        except FileNotFoundError:
+        if not await asyncio.to_thread(os.path.isfile, playlist_file):
             return None
-        return (stat_result.st_ino, stat_result.st_dev)
+        return self._playlist_generations.get(playlist_id, 0)
 
     async def _write_m3u_file(
         self,
