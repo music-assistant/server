@@ -217,6 +217,51 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
     )
 
 
+async def test_import_with_empty_match_providers_narrows_search_to_nothing() -> None:
+    """An explicit empty match_providers list deselects every provider, not every provider."""
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = MagicMock()
+    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = [
+        _make_provider_mock("spotify--1", "spotify"),
+        _make_provider_mock("qobuz--1", "qobuz"),
+    ]
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            _make_provider_config_mock("spotify--1", "spotify"),
+            _make_provider_config_mock("qobuz--1", "qobuz"),
+        ]
+    )
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist(
+            "#EXTM3U\n",
+            match_policy=PlaylistMatchPolicy.BEST_EFFORT,
+            match_providers=[],
+        )
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    await call_kwargs["handler"]()
+    # an explicit [] means "nothing selected", so the search target set must be empty,
+    # while source validation still keeps the user's full snapshot
+    builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
+        "playlist_1",
+        PlaylistMatchPolicy.BEST_EFFORT,
+        (("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
+        (),
+    )
+
+
 async def test_import_source_validation_includes_configured_but_unloaded_provider() -> None:
     """A configured provider that failed to load still counts for source validation."""
     ctrl = _make_controller()

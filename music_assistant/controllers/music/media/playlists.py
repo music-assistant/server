@@ -417,9 +417,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             }
             # match_providers only narrows which providers are searched for a substitute;
             # it must not narrow source validation, or a playable original on a provider
-            # outside that list would look unavailable and get replaced unnecessarily
+            # outside that list would look unavailable and get replaced unnecessarily.
+            # An explicit empty list (all providers deselected) must narrow the search
+            # to nothing, so it is checked against None rather than emptiness.
             search_provider_instances = {item.instance_id for item in self.mass.music.providers}
-            if match_providers:
+            if match_providers is not None:
                 search_provider_instances = {
                     item.instance_id
                     for item in self.mass.music.providers
