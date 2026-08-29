@@ -415,6 +415,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if conf.enabled
                 and (not user_provider_filter or conf.instance_id in user_provider_filter)
             }
+            # the builtin provider hosts the playlist itself; it is not a streaming
+            # provider choice a restricted user's filter opts in or out of, so a bare
+            # HTTP/file entry's original source must always be authoritatively probable
+            allowed_provider_instances[builtin_prov.instance_id] = builtin_prov.domain
             # match_providers only narrows which providers are searched for a substitute;
             # it must not narrow source validation, or a playable original on a provider
             # outside that list would look unavailable and get replaced unnecessarily.
