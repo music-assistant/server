@@ -1,7 +1,7 @@
 """Metadata-related functions for BBC Sounds provider."""
 
 from music_assistant_models.streamdetails import StreamMetadata
-from sounds import Segment
+from sounds import LiveStation, Segment
 
 from .constants import _Constants
 
@@ -33,4 +33,11 @@ def _segment_to_metadata(now_playing: Segment) -> StreamMetadata | None:
         if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
             image_url = None
         return StreamMetadata(title=title, artist=artist, image_url=image_url)
+    return None
+
+
+async def _station_programme_display(station: LiveStation) -> StreamMetadata | None:
+    if station and station.titles:
+        title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
+        return StreamMetadata(title=title, artist=None, image_url=station.image_url)
     return None
