@@ -944,8 +944,8 @@ class KionMusicProvider(MusicProvider):
                     yield parse_track(self, track)
                 except InvalidDataError as err:
                     # The track id may still be usable when metadata is invalid.
-                    item_id = str(track.id) if track.id is not None else None
-                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
+                    skipped_item_id = str(track.id) if track.id is not None else None
+                    self.report_skipped_sync_item(MediaType.TRACK, skipped_item_id, err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """
