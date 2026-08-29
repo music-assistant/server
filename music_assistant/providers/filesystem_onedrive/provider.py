@@ -147,12 +147,12 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         out: list[RawItem] = []
         for item in items:
             if isinstance(item, Folder):
-                out.append((item.id, item.name, True, "folder", item.size))
+                out.append((item.id, item.name, True, "folder", item.size, None))
                 continue
             # quickXorHash is a stable content hash; not every file has one,
             # so fall back to the size
             checksum = item.hashes.quick_xor_hash or str(item.size)
-            out.append((item.id, item.name, False, checksum, item.size))
+            out.append((item.id, item.name, False, checksum, item.size, None))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

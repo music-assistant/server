@@ -81,9 +81,9 @@ async def test_list_children_maps_sdk_items() -> None:
 
     items = await provider._api_list_children("folder-id")
 
-    assert items[0] == ("d1", "Albums", True, "folder", None)
-    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123)
-    assert items[2] == ("f2", "no-hash.mp3", False, "456", 456)
+    assert items[0] == ("d1", "Albums", True, "folder", None, None)
+    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123, None)
+    assert items[2] == ("f2", "no-hash.mp3", False, "456", 456, None)
 
 
 async def test_list_children_translates_errors() -> None:

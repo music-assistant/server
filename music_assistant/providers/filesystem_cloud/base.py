@@ -49,8 +49,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
 
-# (id, name, is_dir, checksum, size) as returned by _api_list_children
-RawItem = tuple[str, str, bool, str, int | None]
+# (id, name, is_dir, checksum, size, metadata_token) as returned by _api_list_children
+RawItem = tuple[str, str, bool, str, int | None, str | None]
 
 # extensions the stream route will serve; playlists/cue/images are read
 # server-side and never fetched over HTTP, so audio is all it needs to proxy
@@ -226,7 +226,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         List the children of a cloud folder, following pagination if needed.
 
         :param folder_id: The cloud provider's opaque folder ID.
-        :return: One (id, name, is_dir, checksum, size) tuple per child.
+        :return: One (id, name, is_dir, checksum, size, metadata_token) tuple per child.
         """
         raise NotImplementedError
 
@@ -482,7 +482,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     def _to_item(self, raw: RawItem, parent_path: str, name: str) -> FileSystemItem:
         """Convert a raw API listing entry to a FileSystemItem."""
-        _, _, is_dir, checksum, size = raw
+        _, _, is_dir, checksum, size, _metadata_token = raw
         relative_path = f"{parent_path}/{name}" if parent_path else name
         return FileSystemItem(
             filename=name,

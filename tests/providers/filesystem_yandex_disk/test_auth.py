@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import aiohttp
@@ -211,6 +212,36 @@ async def test_auth_refresh_caches_access_token_and_persists_rotation() -> None:
     assert await helper.async_get_access_token() == "access-token"
     assert persisted == ["rotated"]
     assert len(session.posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_concurrent_callers_share_one_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent cache misses redeem the refresh token only once."""
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+    refresh_calls = 0
+
+    async def refresh_once(*_args: object) -> OAuthTokens:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        refresh_started.set()
+        await release_refresh.wait()
+        return OAuthTokens("shared-access", "refresh", 3600)
+
+    monkeypatch.setattr(
+        "music_assistant.providers.filesystem_yandex_disk.auth.refresh_oauth_tokens",
+        refresh_once,
+    )
+    helper = MAYandexDiskAuth(_mass(_FakeSession()), "client-id", "secret", "refresh")
+
+    first = asyncio.create_task(helper.async_get_access_token())
+    await refresh_started.wait()
+    second = asyncio.create_task(helper.async_get_access_token())
+    await asyncio.sleep(0)
+    release_refresh.set()
+
+    assert await asyncio.gather(first, second) == ["shared-access", "shared-access"]
+    assert refresh_calls == 1
 
 
 @pytest.mark.asyncio

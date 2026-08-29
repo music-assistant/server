@@ -7,10 +7,8 @@ from typing import Any, cast
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
-from music_assistant.providers.filesystem_yandex_disk import get_config_entries
 from music_assistant.providers.filesystem_yandex_disk.constants import DISK_ROOT
 from music_assistant.providers.filesystem_yandex_disk.provider import YandexDiskFileSystemProvider
 
@@ -23,9 +21,11 @@ class _FakeApi:
     def __init__(self) -> None:
         self.listed: str | None = None
 
-    async def list_children(self, folder: str) -> list[tuple[str, str, bool, str, int | None]]:
+    async def list_children(
+        self, folder: str
+    ) -> list[tuple[str, str, bool, str, int | None, str | None]]:
         self.listed = folder
-        return [("disk:/M/a.flac", "a.flac", False, "h", 1)]
+        return [("disk:/M/a.flac", "a.flac", False, "h", 1, "modified")]
 
     async def download_bytes(self, path: str) -> bytes:
         return b"data-" + path.encode()
@@ -49,7 +49,7 @@ async def test_api_list_children_delegates() -> None:
     prov, fake = _provider_with_fake_api()
     out = await prov._api_list_children("disk:/M")
     assert fake.listed == "disk:/M"
-    assert out == [("disk:/M/a.flac", "a.flac", False, "h", 1)]
+    assert out == [("disk:/M/a.flac", "a.flac", False, "h", 1, "modified")]
 
 
 @pytest.mark.asyncio
@@ -86,6 +86,7 @@ def _construct_provider(
         "client_id": "client-id",
         "client_secret": "client-secret",
         "refresh_token": "refresh-token",
+        "content_type": "podcasts",
     }
     if folder_id is not None:
         config.setup_data["folder_id"] = folder_id
@@ -157,15 +158,15 @@ def test_rotated_refresh_token_updates_setup_data_immediately() -> None:
 
 
 @pytest.mark.asyncio
-async def test_config_entries_only_expose_runtime_sync_options() -> None:
-    """Credentials and root stay in setup_data; config contains only runtime options."""
-    mass = mock.Mock()
-    mass.get_provider.return_value = None
+async def test_inherited_config_entries_only_expose_runtime_sync_options() -> None:
+    """The provider instance inherits runtime entries and uses its setup content type."""
+    provider, _auth_cls, _config = _construct_provider()
 
-    entries = await get_config_entries(mass)
+    entries = await provider.get_config_entries()
     keys = {entry.key for entry in entries}
 
     assert {"client_id", "client_secret", "refresh_token", "folder_id"}.isdisjoint(keys)
     assert {"library_sync_tracks", "library_sync_playlists"} <= keys
     content_type = next(entry for entry in entries if entry.key == "content_type")
-    assert content_type.type is ConfigEntryType.LABEL
+    assert content_type.read_only is True
+    assert content_type.default_value == "podcasts"

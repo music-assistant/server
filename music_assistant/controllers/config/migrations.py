@@ -375,6 +375,13 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
         "folder_id",
         "refresh_token",
     ),
+    "filesystem_yandex_disk": (
+        "content_type",
+        "client_id",
+        "client_secret",
+        "folder_id",
+        "refresh_token",
+    ),
     "filesystem_smb": (
         "content_type",
         "host",
@@ -691,10 +698,15 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
             # a config without stored values has nothing to move, but may still
             # be missing a default
             values = {}
-        movable_keys = [key for key in owned_keys if key in values]
         setup_data = provider_cfg.get("setup_data")
         if not isinstance(setup_data, dict):
             setup_data = {}
+        migrated_yandex_root = domain == "filesystem_yandex_disk" and "root_path" in values
+        if migrated_yandex_root:
+            if "folder_id" not in setup_data and "folder_id" not in values:
+                values["folder_id"] = values["root_path"]
+            del values["root_path"]
+        movable_keys = [key for key in owned_keys if key in values]
         # a key that is about to be moved carries the user's own value and is left alone
         missing_defaults = {
             key: value
@@ -702,7 +714,12 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
             if key not in setup_data and key not in movable_keys
         }
         needs_airplay_default = domain == "airplay_receiver" and "airplay_name" not in setup_data
-        if not movable_keys and not missing_defaults and not needs_airplay_default:
+        if (
+            not movable_keys
+            and not missing_defaults
+            and not needs_airplay_default
+            and not migrated_yandex_root
+        ):
             continue
         provider_cfg["setup_data"] = setup_data
         for key in movable_keys:
