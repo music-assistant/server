@@ -68,12 +68,13 @@ def test_legacy_unencrypted_client_needs_no_setup() -> None:
     assert player.needs_setup is False
 
 
-def test_undecided_audio_input_keeps_the_device_usable() -> None:
+def test_undecided_audio_input_prompts_even_while_the_device_plays() -> None:
     """
-    A combo with an active player role stays available while its input is undecided.
+    A combo with an active player role still prompts while its input is undecided.
 
-    Devices granted unpaired access before the input decision existed must not
-    become unavailable on upgrade; the pending input only drives the setup flow.
+    Guest access can never carry a line-in, so the choice between keeping it and
+    pairing has to be made once. The setup state cannot be split per role, so the
+    device is held out of playback until that one choice is answered.
     """
     api = _make_api(
         active_roles=("player@v1",),
@@ -81,7 +82,7 @@ def test_undecided_audio_input_keeps_the_device_usable() -> None:
         unpaired_access=True,
     )
     player = _make_player(api)
-    assert player.needs_setup is False
+    assert player.needs_setup is True
     assert player._source_input_pending is True
 
 
