@@ -185,6 +185,9 @@ def _prepare(prov: BuiltinProvider, m3u_data: str, playlist_name: str = "Importe
     prov_any._read_m3u_file = AsyncMock(return_value=m3u_data)
     prov_any.get_playlist = AsyncMock(return_value=_make_playlist(playlist_name))
     prov_any._write_m3u_file = AsyncMock()
+    # a stable dummy fingerprint: the playlist is the same file throughout the pass
+    # unless a test overrides this to simulate a delete-and-recreate race
+    prov_any._get_playlist_generation = AsyncMock(return_value=(1, 1))
     return prov_any
 
 
@@ -1485,6 +1488,49 @@ async def test_read_m3u_file_existence_check_is_atomic_with_delete() -> None:
     assert result == ""
 
 
+async def test_startup_migration_waits_for_per_playlist_lock() -> None:
+    """The startup repair pass shares the per-playlist lock with delete/edit/import matching."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    prov_any.manifest = MagicMock(domain="builtin")
+    prov_any.mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+    prov_any._read_m3u_file = AsyncMock(
+        return_value=generate_m3u(
+            "Imported",
+            [
+                PlaylistItem(
+                    path="builtin://track/1",
+                    title="Already Resolved",
+                    providers=[ProviderMappingInfo(domain="builtin", item_id="1")],
+                    metadata={"media_type": "track"},
+                )
+            ],
+        )
+    )
+    prov_any.get_playlist = AsyncMock(return_value=_make_playlist("Imported"))
+    prov_any._write_m3u_file = AsyncMock()
+
+    with patch(
+        "music_assistant.providers.builtin.os.listdir",
+        return_value=["playlist_1.m3u"],
+    ):
+        # hold the same per-playlist lock a concurrent delete/edit/import-matching write
+        # would hold, as if one of those was already in flight for this playlist
+        async with prov._get_playlist_lock("playlist_1"):
+            migration_task = asyncio.ensure_future(prov._migrate_playlists())
+            try:
+                await asyncio.sleep(0.1)
+                # the migration pass must not read/repair this playlist while it is locked
+                assert not migration_task.done()
+                prov_any._read_m3u_file.assert_not_awaited()
+            finally:
+                pass
+        await asyncio.wait_for(migration_task, timeout=2)
+
+    prov_any._read_m3u_file.assert_awaited_once_with("playlist_1")
+
+
 async def test_matched_entry_is_enriched_and_reported_as_exact() -> None:
     """A structured-artist entry matched at EXACT confidence is substituted and reported."""
     prov = _make_provider()
@@ -1820,5 +1866,54 @@ async def test_concurrent_deletion_during_matching_is_reflected_in_report() -> N
     prov_any._write_m3u_file.assert_not_awaited()
     report_markdown = set_report.call_args.args[0]
     assert "| Exact release | 0 |" in report_markdown
+    assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
+    assert "Substitutions" not in report_markdown
+
+
+async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten() -> None:
+    """A stale pass must not write into an unrelated new playlist that reused the same ID."""
+    prov = _make_provider()
+    to_match = _make_playlist_item(
+        path="spotify:track:original",
+        title="Artist - Song",
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    m3u_data = generate_m3u("Imported", [to_match])
+    prov_any = _prepare(prov, m3u_data)
+    # the original playlist was deleted and a new, unrelated playlist was created that
+    # reused the same sanitized ID while this (possibly long-running) pass was still
+    # searching - even though its content happens to look identical, its file identity
+    # (captured once at the start of the pass) is now different
+    prov_any._get_playlist_generation = AsyncMock(side_effect=[(1, 1), (2, 2)])
+
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", PlaylistMatchPolicy.EXACT, _allowed(prov, "qobuz--1")
+        )
+
+    prov_any._write_m3u_file.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
     assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
     assert "Substitutions" not in report_markdown

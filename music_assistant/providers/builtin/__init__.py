@@ -665,6 +665,11 @@ class BuiltinProvider(MusicProvider):
         if not parsed_items:
             return
         playlist = await self.get_playlist(prov_playlist_id)
+        # this pass can run for a while; if the playlist is deleted and a new one is
+        # created that reuses the same sanitized ID before it finishes, this fingerprint
+        # lets the later write-back tell the two apart instead of writing stale matches
+        # into an unrelated playlist that merely happens to share its ID
+        original_generation = await self._get_playlist_generation(prov_playlist_id)
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
         allowed_provider_instance_map = dict(allowed_provider_instances)
@@ -735,7 +740,7 @@ class BuiltinProvider(MusicProvider):
 
         if pending_substitutions:
             not_applied = await self._apply_import_substitutions(
-                prov_playlist_id, pending_substitutions
+                prov_playlist_id, pending_substitutions, original_generation
             )
             # the report is built from tallies collected before this write - reconcile any
             # substitution the playlist no longer had an original for (a concurrent edit)
@@ -747,7 +752,7 @@ class BuiltinProvider(MusicProvider):
 
         if pending_metadata_updates:
             not_applied = await self._apply_import_substitutions(
-                prov_playlist_id, pending_metadata_updates
+                prov_playlist_id, pending_metadata_updates, original_generation
             )
             for _entry_index in not_applied:
                 counts["retained"] -= 1
@@ -914,6 +919,7 @@ class BuiltinProvider(MusicProvider):
         self,
         prov_playlist_id: str,
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+        expected_generation: tuple[int, int] | None,
     ) -> set[int]:
         """
         Write resolved substitutes into the playlist's current contents.
@@ -924,8 +930,13 @@ class BuiltinProvider(MusicProvider):
 
         :param prov_playlist_id: The provider-side playlist ID to update.
         :param pending_substitutions: (original, replacement) pairs found during matching.
+        :param expected_generation: The playlist's identity fingerprint captured when this
+            pass started, as returned by ``_get_playlist_generation``. If the file no longer
+            has this identity, the playlist behind this ID was deleted (and possibly replaced
+            by an unrelated new playlist reusing the same sanitized ID), so nothing is written.
         :return: Indices into `pending_substitutions` whose original entry was no longer in
-            the playlist (e.g. removed by a concurrent edit) and so were not applied.
+            the playlist (e.g. removed by a concurrent edit, or the playlist was replaced)
+            and so were not applied.
         """
         # index pending replacements by a stable key with per-key queues, so a playlist
         # with duplicate entries is still matched in original order without a per-item
@@ -935,6 +946,9 @@ class BuiltinProvider(MusicProvider):
             pending_by_key[repr(original)].append((index, replacement))
 
         async with self._get_playlist_lock(prov_playlist_id):
+            current_generation = await self._get_playlist_generation(prov_playlist_id)
+            if expected_generation is None or current_generation != expected_generation:
+                return set(range(len(pending_substitutions)))
             current_items = parse_m3u(await self._read_m3u_file(prov_playlist_id))
             updated_items: list[PlaylistItem] = []
             applied_indices: set[int] = set()
@@ -1680,6 +1694,24 @@ class BuiltinProvider(MusicProvider):
                 result: str = await _file.read()
                 return result
 
+    async def _get_playlist_generation(self, playlist_id: str) -> tuple[int, int] | None:
+        """
+        Return an (inode, device) identity fingerprint for a playlist's M3U file.
+
+        A rewrite of the same file (a rename, edit or matched substitution) keeps this
+        identity, while a delete followed by a new file recreated under the same
+        sanitized ID gets a new one - this is what lets a long-running background pass
+        tell the two apart. Returns None when the file does not currently exist.
+
+        :param playlist_id: The provider-side playlist ID to fingerprint.
+        """
+        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        try:
+            stat_result = await asyncio.to_thread(os.stat, playlist_file)
+        except FileNotFoundError:
+            return None
+        return (stat_result.st_ino, stat_result.st_dev)
+
     async def _write_m3u_file(
         self,
         playlist_id: str,
@@ -1904,87 +1936,94 @@ class BuiltinProvider(MusicProvider):
             if not filename.endswith(".m3u"):
                 continue
             playlist_id = filename[:-4]  # strip .m3u extension
-            m3u_data = await self._read_m3u_file(playlist_id)
-            playlist = await self.get_playlist(playlist_id)
-            self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
-            update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
-            all_items = parse_m3u(m3u_data)
-            has_changes = False
-            orphaned: set[int] = set()
-            for index, item in enumerate(all_items):
-                if _is_orphaned_entry_path(item.path):
-                    # leftover text from a value that once contained a line break: it is no
-                    # reference to anything and never will be, so drop it instead of failing
-                    # this (and every future) migration run on it
-                    self.logger.warning(
-                        "Dropping unresolvable entry %s from playlist '%s'",
-                        item.path,
-                        playlist.name,
-                    )
-                    orphaned.add(index)
-                    has_changes = True
-                    continue
-                force_migration = item.metadata and item.metadata.get("album") and not item.album
-                unresolved = bool(force_migration) or not (
-                    item.title and item.providers and item.metadata
-                )
-                if not unresolved and not self._stored_details_differ(item, stored_by_media_type):
-                    continue
-                self.logger.debug(
-                    "Found %s entry in playlist '%s': %s",
-                    "unresolved" if unresolved else "outdated",
-                    playlist_id,
-                    item.path,
-                )
-                try:
-                    enriched = await self._build_m3u_entry_from_uri(item.path)
-                    item.length = enriched.length
-                    item.title = enriched.title
-                    item.images = enriched.images
-                    item.providers = enriched.providers
-                    item.metadata = enriched.metadata
-                    item.album = enriched.album
-                    item.artists = enriched.artists
-                    item.podcast = enriched.podcast
-                except (
-                    MediaNotFoundError,
-                    InvalidDataError,
-                    InvalidProviderURI,
-                    ProviderUnavailableError,
-                ) as err:
-                    if unresolved:
+            async with self._get_playlist_lock(playlist_id):
+                m3u_data = await self._read_m3u_file(playlist_id)
+                playlist = await self.get_playlist(playlist_id)
+                self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
+                update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
+                all_items = parse_m3u(m3u_data)
+                has_changes = False
+                orphaned: set[int] = set()
+                for index, item in enumerate(all_items):
+                    if _is_orphaned_entry_path(item.path):
+                        # leftover text from a value that once contained a line break: it is no
+                        # reference to anything and never will be, so drop it instead of failing
+                        # this (and every future) migration run on it
                         self.logger.warning(
-                            "Could not enrich playlist entry %s during migration: %s",
+                            "Dropping unresolvable entry %s from playlist '%s'",
+                            item.path,
+                            playlist.name,
+                        )
+                        orphaned.add(index)
+                        has_changes = True
+                        continue
+                    force_migration = (
+                        item.metadata and item.metadata.get("album") and not item.album
+                    )
+                    unresolved = bool(force_migration) or not (
+                        item.title and item.providers and item.metadata
+                    )
+                    if not unresolved and not self._stored_details_differ(
+                        item, stored_by_media_type
+                    ):
+                        continue
+                    self.logger.debug(
+                        "Found %s entry in playlist '%s': %s",
+                        "unresolved" if unresolved else "outdated",
+                        playlist_id,
+                        item.path,
+                    )
+                    try:
+                        enriched = await self._build_m3u_entry_from_uri(item.path)
+                        item.length = enriched.length
+                        item.title = enriched.title
+                        item.images = enriched.images
+                        item.providers = enriched.providers
+                        item.metadata = enriched.metadata
+                        item.album = enriched.album
+                        item.artists = enriched.artists
+                        item.podcast = enriched.podcast
+                    except (
+                        MediaNotFoundError,
+                        InvalidDataError,
+                        InvalidProviderURI,
+                        ProviderUnavailableError,
+                    ) as err:
+                        if unresolved:
+                            self.logger.warning(
+                                "Could not enrich playlist entry %s during migration: %s",
+                                item.path,
+                                err,
+                            )
+                            report_current_task_failure(
+                                f"Could not enrich playlist entry: {item.path}"
+                            )
+                            errors += 1
+                            continue
+                        # an outdated entry is still playable, so failing to reach the stream is
+                        # no migration error; restore the stored details without any IO so a
+                        # permanently unreachable stream keeps its name and image
+                        self.logger.debug(
+                            "Could not refresh playlist entry %s, restoring stored details: %s",
                             item.path,
                             err,
                         )
-                        report_current_task_failure(f"Could not enrich playlist entry: {item.path}")
-                        errors += 1
-                        continue
-                    # an outdated entry is still playable, so failing to reach the stream is
-                    # no migration error; restore the stored details without any IO so a
-                    # permanently unreachable stream keeps its name and image
-                    self.logger.debug(
-                        "Could not refresh playlist entry %s, restoring stored details: %s",
-                        item.path,
-                        err,
-                    )
-                    self._restore_stored_details(item, stored_by_media_type)
-                else:
-                    # writing an entry the refresh did not bring back in step would leave
-                    # it outdated, and every later run would rewrite the file again
-                    if self._stored_details_differ(item, stored_by_media_type):
                         self._restore_stored_details(item, stored_by_media_type)
-                    self.logger.debug("Enriched playlist entry %s", item.path)
-                has_changes = True
-            if has_changes:
-                await self._write_m3u_file(
-                    playlist_id,
-                    playlist.name,
-                    [item for idx, item in enumerate(all_items) if idx not in orphaned],
-                    self._get_playlist_image_url(playlist),
-                )
-                self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
+                    else:
+                        # writing an entry the refresh did not bring back in step would leave
+                        # it outdated, and every later run would rewrite the file again
+                        if self._stored_details_differ(item, stored_by_media_type):
+                            self._restore_stored_details(item, stored_by_media_type)
+                        self.logger.debug("Enriched playlist entry %s", item.path)
+                    has_changes = True
+                if has_changes:
+                    await self._write_m3u_file(
+                        playlist_id,
+                        playlist.name,
+                        [item for idx, item in enumerate(all_items) if idx not in orphaned],
+                        self._get_playlist_image_url(playlist),
+                    )
+                    self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
             if errors > 25:
                 raise RuntimeError("Too many errors during playlist migration")
         self.logger.info("Playlist migration completed with %d errors", errors)
