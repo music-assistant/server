@@ -125,10 +125,7 @@ async def test_scandir_skips_duplicate_names() -> None:
     """Clouds may allow duplicate names in a folder; only the first wins."""
     provider = _make_provider(
         tree={
-            ROOT_ID: [
-                ("id1", "a.mp3", False, "1", 1, None),
-                ("id2", "a.mp3", False, "2", 2, None),
-            ]
+            ROOT_ID: [("id1", "a.mp3", False, "1", 1, None), ("id2", "a.mp3", False, "2", 2, None)]
         }
     )
     logger = MagicMock()
