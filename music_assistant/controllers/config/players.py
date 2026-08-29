@@ -58,10 +58,12 @@ from music_assistant.constants import (
     CONF_ICON,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
+    CONF_PLUGIN_KEY_SPLITTER,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
+    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
@@ -71,7 +73,9 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import _with_translation_owner
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
@@ -207,12 +211,16 @@ class PlayerConfigMixin:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
-            # protocol-prefixed entries are virtual mirrors of the linked protocol player's own
-            # config (the canonical store). Drop any that linger in this player's persisted values
-            # so a stale copy can never shadow the protocol player's current value; the live values
-            # are merged back in from the protocol player(s) below.
+            # protocol- and plugin-prefixed entries are virtual mirrors of another config
+            # (the linked protocol player resp. the plugin provider is the canonical store).
+            # Drop any that linger in this player's persisted values so a stale copy can never
+            # shadow the canonical value; the live values are merged back in below.
             if stored_values := raw_conf.get("values"):
-                for key in [key for key in stored_values if CONF_PROTOCOL_KEY_SPLITTER in key]:
+                for key in [
+                    key
+                    for key in stored_values
+                    if CONF_PROTOCOL_KEY_SPLITTER in key or CONF_PLUGIN_KEY_SPLITTER in key
+                ]:
                     del stored_values[key]
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
@@ -225,6 +233,11 @@ class PlayerConfigMixin:
                     if "values" not in raw_conf:
                         raw_conf["values"] = {}
                     raw_conf["values"].update(protocol_values)
+                # ...and the (derived) values for the per-player plugin toggles
+                if plugin_values := self._get_plugin_provider_config_values(config_entries):
+                    if "values" not in raw_conf:
+                        raw_conf["values"] = {}
+                    raw_conf["values"].update(plugin_values)
             else:
                 # handle unavailable player and/or provider
                 config_entries = []
@@ -244,6 +257,9 @@ class PlayerConfigMixin:
                 protocol_player_id = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER, 1)[0]
                 if protocol_player := self.mass.players.get_player(protocol_player_id, False):
                     entry.translation_owner = protocol_player.translation_owner
+                elif owner := self._stored_protocol_translation_owner(protocol_player_id):
+                    # a protocol the user switched off has no player to ask
+                    entry.translation_owner = owner
             return conf
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
@@ -293,6 +309,14 @@ class PlayerConfigMixin:
                     ]
             else:
                 player_entries = await self._get_player_config_entries(player)
+
+            # append the per-player plugin toggles (e.g. Spotify Connect), the same
+            # virtual-entry approach as the protocol outputs above but backed by the
+            # plugin provider's own config
+            player_entries = [
+                *player_entries,
+                *self._create_plugin_provider_config_entries(player),
+            ]
 
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
@@ -474,6 +498,7 @@ class PlayerConfigMixin:
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
         values = await self._update_output_protocol_config(values)
+        values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         existing_raw = self.get(conf_key) or {}
         existing_values = existing_raw.get("values", {})
@@ -488,11 +513,13 @@ class PlayerConfigMixin:
         for key, value in existing_values.items():
             if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
-        # never persist protocol-prefixed (virtual) entries on this player; the linked protocol
-        # player is the canonical store (handled by _update_output_protocol_config). Storing a copy
-        # here would shadow the protocol player's value once it is reset back to its default.
+        # never persist protocol- or plugin-prefixed (virtual) entries on this player; the linked
+        # protocol player resp. the plugin provider is the canonical store (handled above). Storing
+        # a copy here would shadow the canonical value once it is reset back to its default.
         new_values = {
-            key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
+            key: value
+            for key, value in new_values.items()
+            if CONF_PROTOCOL_KEY_SPLITTER not in key and CONF_PLUGIN_KEY_SPLITTER not in key
         }
         if _reconcile_player_icon_value(values, existing_values, new_values):
             changed_keys.add(f"values/{CONF_ICON}")
@@ -668,7 +695,13 @@ class PlayerConfigMixin:
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
-                default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
+                    default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
+                else:
+                    # Flow mode is enforced for this player. Clear depends_on so the
+                    # UI doesn't visually disable sample rate when entry is omitted.
+                    forced_sample_rate_entry = deepcopy(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
+                    forced_sample_rate_entry.depends_on = None
+                    default_entries.append(forced_sample_rate_entry)
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
@@ -940,8 +973,12 @@ class PlayerConfigMixin:
         if has_native:
             default_value = "native"
         else:
-            default_value = "auto"
+            # Without a native output the entry default stays "auto": runtime selection
+            # honours the player's default_output_protocol_domain (e.g. DLNA-first for a
+            # LinkPlay shell) with plain priority fallback, so the stored config default
+            # must not depend on which linked protocols happen to be available right now.
             options.append(ConfigValueOption("auto"))
+            default_value = "auto"
 
         all_entries.append(
             ConfigEntry(
@@ -960,6 +997,14 @@ class PlayerConfigMixin:
         for protocol in output_protocols:
             domain = protocol.protocol_domain
             protocol_name = self._get_protocol_display_name(domain)
+            # An output its provider flagged as experimental is opt-in: it defaults to
+            # off and carries the provider's warning above the toggle.
+            experimental_note = cast(
+                "str | None",
+                self.get_raw_player_config_value(
+                    protocol.output_protocol_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE
+                ),
+            )
             protocol_player_enabled = self.get_raw_player_config_value(
                 protocol.output_protocol_id, CONF_ENABLED, True
             )
@@ -984,17 +1029,43 @@ class PlayerConfigMixin:
                 category_translation_key = "protocol_output_settings_via"
                 category_translation_params = [protocol_name, base_name]
             if not protocol.is_native:
+                if experimental_note:
+                    # the warning is added here, not by the protocol player, because an
+                    # output the user did not opt into has no registered player to speak
+                    # for it
+                    all_entries.append(
+                        ConfigEntry(
+                            # prefixed like the protocol player's own entries, so the
+                            # note resolves against its provider and not this player's
+                            key=f"{protocol_prefix}{experimental_note}",
+                            translation_key=experimental_note,
+                            translation_owner=f"provider.{domain}",
+                            type=ConfigEntryType.ALERT,
+                            category=protocol_category,
+                            category_translation_key=category_translation_key,
+                            category_translation_params=category_translation_params,
+                        )
+                    )
+                    enabled_translation_key = (
+                        "protocol_enable_experimental_via"
+                        if base_name
+                        else "protocol_enable_experimental"
+                    )
+                else:
+                    enabled_translation_key = (
+                        "protocol_enable_via" if base_name else "protocol_enable"
+                    )
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="protocol_enable_via" if base_name else "protocol_enable",
+                        translation_key=enabled_translation_key,
                         translation_params=[base_name] if base_name else None,
                         # a derived protocol cannot be active while its base is disabled
                         value=bool(protocol_player_enabled) and base_enabled,
                         read_only=not base_enabled,
-                        default_value=True,
+                        default_value=not experimental_note,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
                         category_translation_params=category_translation_params,
@@ -1113,3 +1184,94 @@ class PlayerConfigMixin:
         if provider_manifest := self.mass.get_provider_manifest(protocol_domain):
             return provider_manifest.name
         return protocol_domain.upper()
+
+    def _stored_protocol_translation_owner(self, protocol_player_id: str) -> str | None:
+        """
+        Return the translation namespace of a protocol player from its stored config.
+
+        :param protocol_player_id: The protocol player to resolve the namespace for.
+        """
+        raw_conf = self.get(f"{CONF_PLAYERS}/{protocol_player_id}")
+        if not raw_conf or not (provider := raw_conf.get("provider")):
+            return None
+        return f"provider.{str(provider).split('--', maxsplit=1)[0]}"
+
+    def _create_plugin_provider_config_entries(self, player: Player) -> list[ConfigEntry]:
+        """
+        Create the per-player plugin toggle entries for a player.
+
+        Each loaded plugin that binds its AudioSources to individual players (e.g.
+        Spotify Connect) renders as a single boolean toggle whose value reflects
+        whether the player is in that plugin's connected players.
+
+        :param player: The player to create the plugin toggle entries for.
+        """
+        # only players a plugin can offer as playback target get the toggles
+        if player.state.type not in PLAYBACK_TARGET_TYPES:
+            return []
+        entries: list[ConfigEntry] = []
+        plugin_providers = (
+            provider for provider in self.mass.providers if isinstance(provider, PluginProvider)
+        )
+        for provider in sorted(plugin_providers, key=lambda prov: prov.name.lower()):
+            # a player-bound plugin returns a list for any player id, unbound returns None
+            if provider.get_player_audio_sources(player.player_id) is None:
+                continue
+            connected_players = cast(
+                "list[str]",
+                self.mass.config.get_raw_provider_config_value(
+                    provider.instance_id, CONF_CONNECTED_PLAYERS
+                )
+                or [],
+            )
+            entries.append(
+                ConfigEntry(
+                    key=f"{provider.instance_id}{CONF_PLUGIN_KEY_SPLITTER}{CONF_ENABLED}",
+                    type=ConfigEntryType.BOOLEAN,
+                    # the key is per-plugin (dynamic), so pin a static catalog key
+                    translation_key="plugin_enable",
+                    translation_params=[provider.name],
+                    value=player.player_id in connected_players,
+                    default_value=False,
+                    category="plugins",
+                    requires_reload=False,
+                )
+            )
+        return entries
+
+    def _get_plugin_provider_config_values(
+        self, entries: list[ConfigEntry]
+    ) -> dict[str, ConfigValueType]:
+        """Extract the plugin toggle values for given (parent) player entries."""
+        return {
+            entry.key: entry.value for entry in entries if CONF_PLUGIN_KEY_SPLITTER in entry.key
+        }
+
+    async def _update_plugin_provider_config(
+        self, player_id: str, values: dict[str, ConfigValueType]
+    ) -> dict[str, ConfigValueType]:
+        """
+        Update the connected players of per-player plugins from submitted toggle values.
+
+        Returns the updated values dict with the plugin toggle entries removed.
+        """
+        for key in [key for key in values if CONF_PLUGIN_KEY_SPLITTER in key]:
+            enabled = bool(values.pop(key))
+            instance_id = key.split(CONF_PLUGIN_KEY_SPLITTER, 1)[0]
+            connected_players = cast(
+                "list[str]",
+                self.mass.config.get_raw_provider_config_value(instance_id, CONF_CONNECTED_PLAYERS)
+                or [],
+            )
+            if enabled == (player_id in connected_players):
+                continue
+            if enabled:
+                connected_players = [*connected_players, player_id]
+            else:
+                connected_players = [x for x in connected_players if x != player_id]
+            # the plugin provider's config is the canonical store; updating it also
+            # reloads the plugin so it picks up the new player set
+            await self.mass.config._update_provider_config(
+                instance_id, {CONF_CONNECTED_PLAYERS: connected_players}
+            )
+        return values

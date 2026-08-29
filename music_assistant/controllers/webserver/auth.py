@@ -1248,7 +1248,15 @@ class AuthenticationManager:
             updates["provider_filter"] = json_dumps(provider_filter)
 
         if updates:
-            await self.database.update("users", {"user_id": target_user.user_id}, updates)
+            # the lock the automatic rewrites take as well, so a player or provider that is
+            # being removed cannot overwrite the filters an admin just saved
+            async with self._user_filter_lock:
+                await self.database.update("users", {"user_id": target_user.user_id}, updates)
+                self.webserver.update_active_user_filters(
+                    target_user.user_id,
+                    player_filter=player_filter,
+                    provider_filter=provider_filter,
+                )
             # Refresh target user to get updated filters
             refreshed_user = await self.get_user(target_user.user_id)
             if not refreshed_user:
@@ -1275,6 +1283,31 @@ class AuthenticationManager:
             if provider_instance_ids
             else None,
             keep_player=(lambda x: x not in player_ids) if player_ids else None,
+        )
+
+    async def replace_player_in_user_filters(
+        self,
+        old_player_id: str,
+        new_player_id: str,
+        removed_player_ids: Collection[str] = (),
+    ) -> None:
+        """
+        Point the access filters of all users at the replacement of a removed player.
+
+        Call this when a player is automatically replaced by another one, so a user that
+        is restricted to the old player follows the replacement instead of silently
+        ending up with access to every player.
+
+        :param old_player_id: ID of the player that is replaced.
+        :param new_player_id: ID of the player that takes its place, must not be one of
+            the removed players.
+        :param removed_player_ids: IDs of all players whose config is removed, which
+            normally includes the replaced player itself.
+        """
+        await self._rewrite_user_filters(
+            keep_provider=None,
+            keep_player=(lambda x: x not in removed_player_ids) if removed_player_ids else None,
+            map_player=lambda x: new_player_id if x == old_player_id else x,
         )
 
     @api_command("auth/user/update")
@@ -1945,41 +1978,79 @@ class AuthenticationManager:
         """Drop user access filter entries for providers or players that no longer exist."""
         known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
         known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
+
+        # one-off: the connected-player plugins collapsed their instances into a single
+        # instance keyed by the bare domain; filter entries naming a collapsed instance
+        # follow it instead of being pruned (which would lift the user's restriction).
+        # TODO: remove after 2.12 release
+        def _map_collapsed_plugin(entry: str) -> str:
+            for domain in ("spotify_connect", "airplay_receiver"):
+                if entry.startswith(f"{domain}--") and domain in known_providers:
+                    return domain
+            return entry
+
         # an empty config section means nothing is configured yet, which must not be
         # mistaken for everything having been removed
         await self._rewrite_user_filters(
             keep_provider=(lambda x: x in known_providers) if known_providers else None,
             keep_player=(lambda x: x in known_players) if known_players else None,
+            map_provider=_map_collapsed_plugin if known_providers else None,
         )
 
     async def _rewrite_user_filters(
         self,
         keep_provider: Callable[[str], bool] | None,
         keep_player: Callable[[str], bool] | None,
+        map_player: Callable[[str], str] | None = None,
+        map_provider: Callable[[str], str] | None = None,
     ) -> None:
-        """Rewrite the access filters of all users, dropping the entries that are not kept."""
-        if keep_provider is None and keep_player is None:
+        """
+        Rewrite the access filters of all users.
+
+        :param keep_provider: Returns False for the provider entries that must be dropped.
+        :param keep_player: Returns False for the player entries that must be dropped.
+        :param map_player: Maps a player entry onto its replacement, applied before keep_player.
+        :param map_provider: Maps a provider entry onto its replacement, applied before
+            keep_provider.
+        """
+        if keep_provider is None and keep_player is None and map_player is None:
             return
         # removing a provider wipes the config of its players one by one, so without the lock
         # those rewrites would read the same filter and each undo the other's removal
         async with self._user_filter_lock:
             for row in await self.database.get_rows("users", limit=0):
-                updates: dict[str, str] = {}
-                for column, keep_func in (
-                    ("provider_filter", keep_provider),
-                    ("player_filter", keep_player),
+                changed: dict[str, list[str]] = {}
+                for column, keep_func, map_func in (
+                    ("provider_filter", keep_provider, map_provider),
+                    ("player_filter", keep_player, map_player),
                 ):
-                    if keep_func is None:
+                    if keep_func is None and map_func is None:
                         continue
                     current: list[str] = json_loads(row[column])
-                    remaining = [x for x in current if keep_func(x)]
+                    remaining: list[str] = []
+                    dropped: list[str] = []
+                    for entry in current:
+                        mapped = map_func(entry) if map_func else entry
+                        if keep_func and not keep_func(mapped):
+                            dropped.append(entry)
+                        elif mapped not in remaining:
+                            remaining.append(mapped)
                     if remaining == current:
                         continue
-                    updates[column] = json_dumps(remaining)
-                    dropped = ", ".join(x for x in current if x not in remaining)
-                    if remaining:
+                    changed[column] = remaining
+                    if not dropped:
                         self.logger.info(
-                            "Removed %s from the %s of user '%s'", dropped, column, row["username"]
+                            "Updated the %s of user '%s' to %s",
+                            column,
+                            row["username"],
+                            ", ".join(remaining),
+                        )
+                    elif remaining:
+                        self.logger.info(
+                            "Removed %s from the %s of user '%s'",
+                            ", ".join(dropped),
+                            column,
+                            row["username"],
                         )
                     else:
                         # An empty filter means unrestricted. A user whose entries are all gone is
@@ -1988,12 +2059,23 @@ class AuthenticationManager:
                         self.logger.warning(
                             "Removed the last entries (%s) from the %s of user '%s'. This user is "
                             "no longer restricted, adjust the access settings if needed.",
-                            dropped,
+                            ", ".join(dropped),
                             column,
                             row["username"],
                         )
-                if updates:
-                    await self.database.update("users", {"user_id": row["user_id"]}, updates)
+                if changed:
+                    await self.database.update(
+                        "users",
+                        {"user_id": row["user_id"]},
+                        {column: json_dumps(value) for column, value in changed.items()},
+                    )
+                    # a session holds its own copy of the User object, so the live ones have to
+                    # follow or they keep applying the filter that was just rewritten
+                    self.webserver.update_active_user_filters(
+                        row["user_id"],
+                        player_filter=changed.get("player_filter"),
+                        provider_filter=changed.get("provider_filter"),
+                    )
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """

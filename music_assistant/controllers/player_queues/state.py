@@ -16,7 +16,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.media_items import ItemMapping, MediaItemType, media_from_dict
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    MediaItemType,
+    media_from_dict,
+)
 from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
 from music_assistant_models.queue_item import QueueItem
 
@@ -48,16 +53,15 @@ class PlayerQueueData:
     # the parent media items the user enqueued; the seed for autoplay's "similar" mode.
     # Persisted so autoplay survives a restart.
     enqueued_media_items: list[MediaItemType] = field(default_factory=list)
+    # the enqueued albums already credited as played; an album is credited once per time it is
+    # enqueued, so re-enqueueing it (or a new play that clears the enqueued list) arms it again.
+    # Persisted alongside the enqueued items, so a restart does not re-credit the same enqueue.
+    credited_albums: set[Album] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
-    # monotonic stamp of when the user last switched shuffle on for this queue. Deliberately not
-    # persisted (a monotonic value would not survive a restart anyway): a shuffle restored from
-    # cache belongs to an earlier listening session and must not be read as intent for whatever
-    # the user plays next (see PlayerQueuesController._apply_shuffle_intent).
-    shuffle_set_at: float | None = None
     transitioning: bool = False
     play_action_refcount: int = 0
     last_counted_play: str | None = None
@@ -102,6 +106,9 @@ class PlayerQueueData:
             "cache_format_version": CACHE_FORMAT_VERSION,
             "queue": queue,
             "enqueued_media_items": [item.to_dict() for item in self.enqueued_media_items],
+            "credited_albums": sorted(
+                uri for album in self.credited_albums if (uri := album.uri) is not None
+            ),
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
         }
@@ -167,6 +174,14 @@ class PlayerQueueData:
             )
             if not isinstance(item, ItemMapping)
         ]
+        # only an album still in the enqueued list can be looked up again, so the credits are
+        # restored by matching the persisted uris against it
+        credited_uris = set(state_data.get("credited_albums") or [])
+        credited_albums = {
+            item
+            for item in enqueued_media_items
+            if isinstance(item, Album) and item.uri in credited_uris
+        }
         source_items = cls._source_items_from_cache(state_data, queue, enqueued_media_items)
         queue.is_dynamic = has_dynamic_source(source_items)
         items: list[QueueItem] = []
@@ -183,6 +198,7 @@ class PlayerQueueData:
             items=items,
             source_items=source_items,
             enqueued_media_items=enqueued_media_items,
+            credited_albums=credited_albums,
             userid=state_data.get("userid"),
         )
 

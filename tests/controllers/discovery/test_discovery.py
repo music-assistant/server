@@ -163,6 +163,35 @@ async def test_mass_service_advertises_webserver_publish_addresses(
     assert mock_service_info.call_args.kwargs["addresses"] == [b"192.168.1.10", b"fd00::10"]
 
 
+async def test_mass_service_refreshes_on_core_state_update(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A server info change must refresh the already registered mdns record."""
+    mass_minimal.webserver = MagicMock(
+        publish_ip="192.168.1.10",
+        publish_addresses=["192.168.1.10"],
+        publish_port=8095,
+        base_url="http://192.168.1.10:8095",
+    )
+    mock_zc = MagicMock(spec=AsyncZeroconf)
+    mock_zc.async_register_service = AsyncMock()
+    mock_zc.async_update_service = AsyncMock()
+    mass_minimal.discovery._aiozc = mock_zc
+    mass_minimal.discovery._mass_service_info = MagicMock()
+
+    with (
+        patch("music_assistant.controllers.discovery.controller.AsyncServiceInfo"),
+        patch(
+            "music_assistant.controllers.discovery.controller.get_ip_pton",
+            new=AsyncMock(side_effect=lambda ip: ip.encode()),
+        ),
+    ):
+        await mass_minimal.discovery._on_core_state_updated(MagicMock())
+
+    mock_zc.async_update_service.assert_awaited_once()
+    mock_zc.async_register_service.assert_not_awaited()
+
+
 async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssistant) -> None:
     """A device name must not cross-match another device whose name contains it."""
     mass.discovery.aiozc.zeroconf.cache.cache = {

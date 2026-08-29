@@ -18,6 +18,11 @@
       }
     }
   },
+  "errors": {
+    "model_setup_pending": "Sonic Analysis is still preparing its machine-learning model; the first run has to download about 700 MB. The work continues in the background — reload Sonic Analysis once it has had time to finish, or add it again if it is no longer listed.",
+    "model_assets_download_failed": "Sonic Analysis could not download its machine-learning model. Check this server's internet connection and available disk space, then reload Sonic Analysis — or add it again if it is no longer listed.",
+    "prompt_embeddings_unavailable": "Sonic Analysis is missing the precomputed prompt data it needs to score tracks, which means this installation is incomplete."
+  },
   "manifest": {
     "description": "Analyses how each track sounds to power similarity, mood-based playlists, and other audio-aware features."
   }

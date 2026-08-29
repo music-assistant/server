@@ -1,8 +1,10 @@
 """Test YouTube Music Provider."""
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import LoginFailed
@@ -92,3 +94,34 @@ async def test_sync_library_keeps_other_errors_silent(provider: YoutubeMusicProv
     ):
         await provider.sync_library(MediaType.PLAYLIST)
     provider.unload_with_error.assert_not_called()
+
+
+def test_parse_owned_playlist_is_editable_without_privacy(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An owned playlist is editable even when the library response omits privacy."""
+    playlist = provider._parse_playlist(
+        {
+            "id": "PL_owned",
+            "title": "Owned playlist",
+            "owned": True,
+        }
+    )
+
+    assert playlist.is_editable is True
+
+
+async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
+    """A search must run in English, whatever language the server is set to."""
+    # ytmusicapi matches the (translated) result shelf title against the English filter
+    # name, so a filtered search silently returns nothing in most other languages.
+    provider.language = "cs"
+    provider._headers = {}
+    provider._yt_user = None
+    mock_ytm = MagicMock()
+    mock_ytm.search.return_value = []
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await search(provider, "test", [MediaType.TRACK])
+
+    assert mock_ytmusic.call_args.kwargs["language"] == "en"

@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     FlowStepType,
     PlayerType,
     ProviderFeature,
+    ProviderStage,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -149,8 +150,14 @@ def _abort_events(events: list[MassEvent]) -> list[SetupFlowStep]:
     return [event.data for event in events if event.data.type == FlowStepType.ABORT]
 
 
-def _fake_json_session(payload: dict[str, Any]) -> Any:
-    """Return a stub http_session whose .post() yields a 200 JSON response (token exchange)."""
+def _fake_json_session(payload: dict[str, Any], get_payload: dict[str, Any] | None = None) -> Any:
+    """
+    Return a stub http_session yielding 200 JSON responses.
+
+    :param payload: Body for .post() (the token exchange).
+    :param get_payload: Body for .get() (e.g. the Spotify account lookup); when omitted
+        .get() is left unstubbed.
+    """
     response = SimpleNamespace(
         status=200,
         json=AsyncMock(return_value=payload),
@@ -161,6 +168,16 @@ def _fake_json_session(payload: dict[str, Any]) -> Any:
     post_cm.__aexit__ = AsyncMock(return_value=False)
     session = MagicMock()
     session.post = MagicMock(return_value=post_cm)
+    if get_payload is not None:
+        get_response = SimpleNamespace(
+            status=200,
+            json=AsyncMock(return_value=get_payload),
+            text=AsyncMock(return_value=""),
+        )
+        get_cm = MagicMock()
+        get_cm.__aenter__ = AsyncMock(return_value=get_response)
+        get_cm.__aexit__ = AsyncMock(return_value=False)
+        session.get = MagicMock(return_value=get_cm)
     return session
 
 
@@ -1104,6 +1121,46 @@ async def test_setup_provider_single_instance_guard(flow_mass: MusicAssistant) -
     assert step.reason == "already_configured"
 
 
+async def test_setup_provider_retired_guard(flow_mass: MusicAssistant) -> None:
+    """Setting up a provider whose manifest is deprecated aborts with the retirement notice."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=ProviderStage.DEPRECATED)
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.type == FlowStepType.ABORT
+    assert step.reason == "provider_retired"
+    assert step.translation_owner == f"provider.{FAKE_DOMAIN}"
+    assert not flow_mass.config._setup_flows
+
+
+async def test_retired_guard_precedes_the_other_setup_guards(flow_mass: MusicAssistant) -> None:
+    """A retired provider reports the retirement, not that it is already configured."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=ProviderStage.DEPRECATED)
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{FAKE_DOMAIN}",
+        {"type": "music", "domain": FAKE_DOMAIN, "instance_id": FAKE_DOMAIN, "enabled": True},
+    )
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.reason == "provider_retired"
+
+
+@pytest.mark.parametrize(
+    "stage", [ProviderStage.STABLE, ProviderStage.ALPHA, ProviderStage.UNMAINTAINED]
+)
+async def test_setup_gate_is_specific_to_deprecated(
+    flow_mass: MusicAssistant, stage: ProviderStage
+) -> None:
+    """Every other stage falls through the gate to the ordinary setup guards."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, stage=stage)
+    flow_mass.config.set(
+        f"{CONF_PROVIDERS}/{FAKE_DOMAIN}",
+        {"type": "music", "domain": FAKE_DOMAIN, "instance_id": FAKE_DOMAIN, "enabled": True},
+    )
+    step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    assert step.reason == "already_configured"
+
+
 async def test_setup_unknown_provider_domain(flow_mass: MusicAssistant) -> None:
     """Setting up an unknown provider domain raises."""
     with pytest.raises(KeyError):
@@ -1446,6 +1503,7 @@ async def test_player_setup_reason_in_state_fingerprint() -> None:
 async def test_has_setup_flow_serialized_for_own_flow() -> None:
     """A player implementing its own flow serializes has_setup_flow (regardless of needs_setup)."""
     provider = MockProvider("sendspin", instance_id="sendspin")
+    provider.mass.players.get_audio_source_session.return_value = None
     plain = MockPlayer(provider, "plain_player", "Plain Player")
     player = _FlowPlayer(provider, "flow_player", "Flow Player")
     assert plain.has_setup_flow is False
@@ -1462,6 +1520,7 @@ async def test_has_setup_flow_serialized_for_own_flow() -> None:
 async def test_has_setup_flow_serialized_for_protocol_child() -> None:
     """A wrapper player inherits has_setup_flow from a linked protocol child with a flow."""
     parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    parent_provider.mass.players.get_audio_source_session.return_value = None
     child_provider = MockProvider("airplay", instance_id="airplay")
     parent = MockPlayer(parent_provider, "up_parent", "Hallway")
     child = _ProtocolChildPlayer(child_provider, "ap_child", "Hallway AirPlay")
@@ -1574,12 +1633,66 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None
 
 
+async def test_audible_flow_login_link_and_redirect_form(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Audible flow shows its login link with the redirect URL form and stores auth."""
+    from music_assistant.providers.audible import CONF_AUTH_FILE, CONF_LOCALE  # noqa: PLC0415
+    from music_assistant.providers.audible import setup_flow as audible_flow  # noqa: PLC0415
+
+    login_url = "https://www.amazon.com/ap/signin?openid=abc"
+    auth = SimpleNamespace(
+        adp_token="adp-token",
+        device_private_key="private-key",
+        to_file=MagicMock(),
+    )
+    get_auth_info = AsyncMock(return_value=("verifier", login_url, "serial"))
+    custom_login = AsyncMock(return_value=auth)
+    monkeypatch.setattr(audible_flow, "audible_get_auth_info", get_auth_info)
+    monkeypatch.setattr(audible_flow, "audible_custom_login", custom_login)
+
+    with (
+        _use_flow(flow_mass, audible_flow.run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        assert [entry.key for entry in step.entries] == [CONF_LOCALE]
+
+        auth_step = await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_LOCALE: "us"})
+        assert auth_step.type == FlowStepType.FORM
+        assert auth_step.step_id == "authenticate"
+        assert auth_step.translation_params is None
+        assert [entry.key for entry in auth_step.entries] == [
+            "auth_link",
+            audible_flow.CONF_POST_LOGIN_URL,
+        ]
+        assert auth_step.entries[0].translation_params == [login_url]
+
+        redirect_url = "https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=code"
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {audible_flow.CONF_POST_LOGIN_URL: redirect_url}
+        )
+
+    assert finish_step.type == FlowStepType.FINISH
+    custom_login.assert_awaited_once_with("verifier", redirect_url, "serial", "us")
+    auth.to_file.assert_called_once()
+    auth_file = auth.to_file.call_args.args[0]
+    assert auth_file.startswith(flow_mass.storage_path)
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_AUTH_FILE]) == auth_file
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LOCALE]) == "us"
+
+
 async def test_spotify_flow_hosted_bounce_roundtrip(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The real Spotify flow: hosted-bounce auth, playback authorization, stored credentials."""
     from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
         CONF_LIBRESPOT_CREDENTIALS,
+        CONF_PLAYBACK_BACKEND,
         CONF_REFRESH_TOKEN_GLOBAL,
     )
     from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
@@ -1596,14 +1709,20 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
     monkeypatch.setattr(
         flow_mass,
         "_http_session",
-        _fake_json_session({"refresh_token": "rt_global", "access_token": "at_keymaster"}),
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            # the account lookup must answer, so the flow really traverses the
+            # premium/duplicate gate instead of skipping it on an unstubbed call
+            get_payload={"id": "u1", "product": "premium"},
+        ),
     )
     # the playback steps shell out to librespot; stub the binary lookup and the exchange
     monkeypatch.setattr(
         "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
         AsyncMock(return_value="/bin/librespot"),
     )
-    credentials_via_token = AsyncMock(return_value='{"username": "u", "auth_data": "d"}')
+    # librespot stores the account it was authorized for, and it is the one that signed in
+    credentials_via_token = AsyncMock(return_value='{"username": "u1", "auth_data": "d"}')
     monkeypatch.setattr(
         "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
         credentials_via_token,
@@ -1629,7 +1748,17 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
         assert step.flow_id in step.url
         session = flow_mass.config._setup_flows[step.flow_id].session
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
-        # playback needs its own authorization; pick the browser fallback
+        # playback needs an explicit backend choice; stay on librespot here
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
+        # the librespot branch then authorizes playback; pick the browser fallback
         await _wait_for(
             lambda: (
                 session.current_step is not None and session.current_step.step_id == "playback_auth"
@@ -1676,7 +1805,7 @@ async def test_spotify_flow_hosted_bounce_roundtrip(
     )
     assert (
         flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_LIBRESPOT_CREDENTIALS])
-        == '{"username": "u", "auth_data": "d"}'
+        == '{"username": "u1", "auth_data": "d"}'
     )
 
 
@@ -1730,52 +1859,57 @@ async def test_gdrive_flow_form_then_hosted_bounce(
     assert flow_mass.config.decrypt_string(setup_data[CONF_FOLDER_ID]) == "root"
 
 
-async def test_tidal_flow_pkce_url_paste(
+async def test_tidal_flow_device_login(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real Tidal flow: paste the redirect URL, exchange it, store the tokens."""
+    """The real Tidal flow: show the device code, poll until approved, store the tokens."""
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
     from music_assistant.providers.tidal.constants import (  # noqa: PLC0415
         CONF_AUTH_TOKEN,
-        CONF_OOPS_URL,
         CONF_REFRESH_TOKEN,
         CONF_USER_ID,
     )
     from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
 
     monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "interval": 0,
+        "expiresIn": 300,
+    }
     auth_data = {
         "access_token": "at-123",
         "refresh_token": "rt-456",
         "expires_at": 4102444800.0,
         "userId": 42,
     }
+    device["verificationUriComplete"] = "link.tidal.com/ABCDE"
+    # hold the poll open so the progress step is observable before it finishes
+    release = asyncio.Event()
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        return auth_data
+
     with (
         _use_flow(flow_mass, run_setup),
-        patch.object(
-            TidalAuthManager,
-            "build_pkce_login",
-            return_value=("https://login.tidal.com/authorize?x=1", {"code_verifier": "v"}),
-        ),
-        patch.object(
-            TidalAuthManager, "process_pkce_login", AsyncMock(return_value=auth_data)
-        ) as mock_exchange,
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        assert step.type == FlowStepType.FORM
-        assert step.step_id == "user"
-        # the authorize link rides along on the instructions label
-        instructions = next(x for x in step.entries if x.key == "auth_instructions")
-        assert instructions.help_link == "https://login.tidal.com/authorize?x=1"
-        finish_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id,
-            {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"},
-        )
-    assert finish_step.type == FlowStepType.FINISH
-    # the pasted redirect URL was handed to the token exchange
-    assert mock_exchange.await_args is not None
-    assert mock_exchange.await_args.args[2] == "https://tidal.com/android/login/auth?code=abc"
+        # single external "Open URL" step (code pre-filled) completed by the poll
+        assert step.type == FlowStepType.EXTERNAL
+        assert step.step_id == "device_login"
+        assert step.url == "https://link.tidal.com/ABCDE"
+        # the code is also shown on the step, so it can be typed on another device
+        assert step.translation_params == ["ABCDE"]
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        # approval resolves the poll and the flow finishes on its own
+        release.set()
+        await _wait_for(lambda: session.finished)
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     setup_data = raw_conf["setup_data"]
     assert flow_mass.config.decrypt_string(setup_data[CONF_AUTH_TOKEN]) == "at-123"
@@ -1784,47 +1918,49 @@ async def test_tidal_flow_pkce_url_paste(
     assert flow_mass.config.decrypt_string(setup_data[CONF_USER_ID]) == "42"
 
 
-async def test_tidal_flow_exchange_error_retries(
+async def test_tidal_flow_device_login_denied_aborts(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed token exchange re-renders the form with an error, then succeeds on retry."""
+    """A denied/failed device authorization aborts the flow with the login_failed reason."""
     from music_assistant_models.errors import LoginFailed  # noqa: PLC0415
 
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
-    from music_assistant.providers.tidal.constants import CONF_OOPS_URL  # noqa: PLC0415
     from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
 
     monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
-    exchange = AsyncMock(
-        side_effect=[
-            LoginFailed("No authorization code found in redirect URL"),
-            {
-                "access_token": "at",
-                "refresh_token": "rt",
-                "expires_at": 1.0,
-                "userId": "u",
-            },
-        ]
-    )
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "interval": 0,
+        "expiresIn": 300,
+    }
+    # hold the poll so the progress step is observable before it aborts
+    release = asyncio.Event()
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        raise LoginFailed("access_denied")
+
     with (
         _use_flow(flow_mass, run_setup),
-        patch.object(
-            TidalAuthManager, "build_pkce_login", return_value=("https://login.tidal.com/x", {})
-        ),
-        patch.object(TidalAuthManager, "process_pkce_login", exchange),
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        retry_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth"}
+        # single external step; a denied poll aborts the flow
+        assert step.type == FlowStepType.EXTERNAL
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        release.set()
+        abort = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step and session.current_step.type == FlowStepType.ABORT
+                else None
+            )
         )
-        assert retry_step.type == FlowStepType.FORM
-        # the canonical retry pattern surfaces the error's translation key
-        assert retry_step.errors == {"base": "login_failed"}
-        finish_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"}
-        )
-    assert finish_step.type == FlowStepType.FINISH
+        assert abort.reason == "login_failed"
 
 
 async def test_hue_pairing_flow_retry_then_success(
@@ -1983,3 +2119,169 @@ async def test_external_until_raises_on_deadline(flow_mass: MusicAssistant) -> N
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.EXTERNAL
         await _wait_for(lambda: expired.is_set())
+
+
+async def test_tidal_flow_device_login_remints_on_expiry(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired device code re-mints a fresh one and the flow completes on the retry."""
+    from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
+    from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "verificationUriComplete": "link.tidal.com/ABCDE",
+        "interval": 0,
+        "expiresIn": 0.1,
+    }
+    auth_data = {"access_token": "at", "refresh_token": "rt", "expires_at": 1.0, "userId": 7}
+    polls = {"n": 0}
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            # never resolve, so the step's expires_in deadline fires (StepExpiredError)
+            await asyncio.Event().wait()
+        return auth_data
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _wait_for(lambda: session.finished)
+    # the first (expired) attempt is followed by a re-minted second that succeeds
+    assert polls["n"] == 2
+
+
+async def test_spotify_flow_aborts_on_a_non_premium_account(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Spotify flow stops right after the sign-in when the account has no Premium."""
+    from music_assistant.providers.spotify.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
+    )
+    monkeypatch.setattr(
+        flow_mass,
+        "_http_session",
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            get_payload={"id": "u1", "product": "free"},
+        ),
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        aborted = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.type == FlowStepType.ABORT
+                else None
+            )
+        )
+        # the flow never reaches the playback authorization, and nothing is persisted
+        assert aborted.reason == "premium_required"
+        assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None
+
+
+async def test_spotify_flow_rejects_playback_authorized_by_another_account(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Authorizing playback as a different Spotify account re-asks instead of storing it."""
+    from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        BACKEND_LIBRESPOT,
+        CONF_PLAYBACK_BACKEND,
+    )
+    from music_assistant.providers.spotify.setup_flow import (  # noqa: PLC0415
+        CONF_PLAYBACK_AUTH_METHOD,
+        CONF_PLAYBACK_CALLBACK_URL,
+        PLAYBACK_AUTH_BROWSER,
+        run_setup,
+    )
+
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
+    )
+    monkeypatch.setattr(
+        flow_mass,
+        "_http_session",
+        _fake_json_session(
+            {"refresh_token": "rt_global", "access_token": "at_keymaster"},
+            get_payload={"id": "u1", "product": "premium"},
+        ),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.get_librespot_binary",
+        AsyncMock(return_value="/bin/librespot"),
+    )
+    # the browser sign-in lands on a Spotify account other than the one that just signed in
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.librespot_credentials_via_token",
+        AsyncMock(return_value='{"username": "someone_else", "auth_data": "d"}'),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.await_loopback_authorization",
+        MagicMock(side_effect=OSError),
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # playback needs an explicit backend choice; stay on librespot here
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_backend"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}
+        )
+        await _wait_for(
+            lambda: (
+                session.current_step is not None and session.current_step.step_id == "playback_auth"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_PLAYBACK_AUTH_METHOD: PLAYBACK_AUTH_BROWSER}
+        )
+        await _wait_for(
+            lambda: (
+                session.current_step is not None
+                and session.current_step.step_id == "playback_browser"
+            )
+        )
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {CONF_PLAYBACK_CALLBACK_URL: "http://127.0.0.1:5588/login?code=playback_code"},
+        )
+        # back at the method step, carrying the reason it was refused
+        retry = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.step_id == "playback_auth"
+                and session.current_step.errors
+                else None
+            )
+        )
+        assert retry.errors == {"base": "playback_account_mismatch"}
+    # the mismatching credential is never persisted
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None

@@ -290,6 +290,10 @@
         "all": "All interfaces"
       }
     },
+    "plugin_enable": {
+      "label": "Enable {0} on this player",
+      "description": "Make this player available in {0}. This is the same setting as the 'Connected players' list in the {0} configuration."
+    },
     "protocol_enable": {
       "label": "Enable this protocol on this player",
       "description": "Enable or disable this output protocol for the player."
@@ -297,6 +301,14 @@
     "protocol_enable_via": {
       "label": "Enable this protocol on this player",
       "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
+    },
+    "protocol_enable_experimental": {
+      "label": "Enable this protocol on this player (experimental)",
+      "description": "Enable or disable this output protocol for the player. This output is experimental, so it is switched off until you turn it on yourself."
+    },
+    "protocol_enable_experimental_via": {
+      "label": "Enable this protocol on this player (experimental)",
+      "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled. This output is experimental, so it is switched off until you turn it on yourself."
     },
     "pre_announcement_chime_url": {
       "label": "Custom (pre)announcement chime URL",
@@ -375,10 +387,20 @@
       }
     },
     "mass_player_id": {
-      "options": {
-        "__auto__": "Auto (prefer playing player)"
-      },
       "label": "Connected Music Assistant Player"
+    },
+    "connected_players": {
+      "label": "Connected players",
+      "description": "The Music Assistant players this plugin exposes. Every selected player is advertised as its own device on the network and audio streamed to it plays on that player. Leave empty to keep the plugin idle."
+    },
+    "publish_name_template": {
+      "label": "Advertised device name",
+      "description": "How each advertised device is named, based on the connected player's name.",
+      "options": {
+        "player_mass": "Player name | Music Assistant",
+        "player": "Player name only",
+        "mass_player": "Music Assistant | Player name"
+      }
     },
     "auth_device": {
       "label": "Login with device code",
@@ -445,6 +467,7 @@
     "protocol_settings": "Output Protocol(s)",
     "protocol_output_settings": "Enable {0} support",
     "protocol_output_settings_via": "Enable {0} support (over {1})",
+    "plugins": "Plugins",
     "dsp": "Digital Signal Processing (DSP)",
     "options": "Player options",
     "audio": "Audio",
@@ -1183,6 +1206,7 @@
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",
     "audio_error": "An error occurred while processing audio.",
+    "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
     "unsupported_system": "This is not supported on this system.",
@@ -1221,6 +1245,9 @@
     },
     "finish_library_sync": {
       "description": "Your library is imported in the background and can take a while the first time. It keeps filling up as the import progresses, so it is normal for things to look empty or incomplete at first."
+    },
+    "finish_silent": {
+      "title": "Done"
     }
   },
   "page": {

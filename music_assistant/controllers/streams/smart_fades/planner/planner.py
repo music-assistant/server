@@ -5,9 +5,10 @@ Smart Fades - the candidate/policy transition planner.
 build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
 rejection/penalty policies, finalize the winner's EQ - or, when every
-candidate is rejected, try a modest late-anchored rescue rung before falling
-back to the click-free emergency handoff as a last resort. Alternative
-strategies slot in as sibling ``TransitionPlanner`` subclasses.
+candidate is rejected, retry with late-anchored rescue candidates (the
+ungated audible-end ladder plus a modest rescue rung) before falling back to
+the click-free emergency handoff as a last resort. Alternative strategies
+slot in as sibling ``TransitionPlanner`` subclasses.
 """
 
 from __future__ import annotations
@@ -21,7 +22,12 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import SmartFadeNotApplicable
 
 from .assembly import EmergencyHandoffFactory, PlanAssembler
-from .candidates import CandidateFactory, RescueAnchorGenerator, default_generators
+from .candidates import (
+    CandidateFactory,
+    RescueAnchorGenerator,
+    TrimClosingAnchorGenerator,
+    default_generators,
+)
 from .context import build_transition_context
 from .policies import default_policies
 from .selection import CandidateSelector
@@ -99,16 +105,22 @@ class SmartCrossFadePlanner(TransitionPlanner):
         selector = CandidateSelector(default_policies(), self.logger)
         winner = selector.select(candidates, ctx)
         if winner is None:
-            # every phrased candidate breached a hard rejection: try a modest,
-            # late-anchored rescue rung before falling back to the handoff
+            # every phrased candidate breached a hard rejection: retry with the
+            # ungated audible-end ladder plus a modest late-anchored rescue rung
+            # before falling back to the handoff
+            rescue_specs = [
+                *TrimClosingAnchorGenerator(min_gap=0.0).generate(ctx),
+                *RescueAnchorGenerator().generate(ctx),
+            ]
             rescue_candidates = [
-                candidate
-                for spec in RescueAnchorGenerator().generate(ctx)
-                if (candidate := factory.build(spec)) is not None
+                candidate for spec in rescue_specs if (candidate := factory.build(spec)) is not None
             ]
             winner = selector.select(rescue_candidates, ctx) if rescue_candidates else None
             if winner is not None:
-                self.logger.debug("shipping a rescue candidate instead of the emergency handoff")
+                self.logger.debug(
+                    "shipping a rescue-pass candidate (source=%s) instead of the emergency handoff",
+                    winner.candidate.spec.source,
+                )
         if winner is None:
             self.logger.debug("shipping click-free emergency handoff")
             plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()

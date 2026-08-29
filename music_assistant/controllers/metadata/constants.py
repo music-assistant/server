@@ -78,9 +78,11 @@ PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
 
 THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
 
+ALBUM_RECONCILIATION_TASK_ID = "metadata_album_reconciliation_v1"
+
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 
-METADATA_SCAN_BATCH_SIZE = 5
+METADATA_SCAN_BATCH_SIZE = 25
 
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
 
