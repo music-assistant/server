@@ -46,9 +46,9 @@ on:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.6.2"
-  BASE_IMAGE_VERSION_BETA: "1.6.2"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.6.2"
+  BASE_IMAGE_VERSION_STABLE: "1.6.3"
+  BASE_IMAGE_VERSION_BETA: "1.6.3"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.6.3"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -609,7 +609,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
           RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
-          RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
+          RELEASE_NOTES_FILE: ${{ steps.notes.outputs.release-notes-file }}
           RELEASE_TITLE: ${{ steps.title.outputs.title }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
@@ -635,7 +635,7 @@ jobs:
             --arg tag "$VERSION" \
             --arg target "$SOURCE_SHA" \
             --arg name "$RELEASE_TITLE" \
-            --arg body "$RELEASE_NOTES" \
+            --rawfile body "$RELEASE_NOTES_FILE" \
             --argjson prerelease "$IS_PRERELEASE" \
             '{
               tag_name: $tag,

@@ -154,6 +154,51 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.should_release is True
 
 
+def test_stable_auto_release_fails_when_unreleased_rc_exists(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """An RC ahead of the latest stable tag blocks the automatic patch release."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc2")
+
+    with pytest.raises(ReleaseWorkflowError, match="Create Release"):
+        determine_auto_release(git_repository, "stable", "HEAD")
+
+
+def test_stable_auto_release_continues_after_rc_base_released(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Patch releases resume once the RC's base version has shipped as stable."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0rc2")
+    _commit(path, "release work")
+    _git(path, "tag", "2.10.0")
+    _commit(path, "patch work")
+
+    decision = determine_auto_release(git_repository, "stable", "HEAD")
+
+    assert decision.version == "2.10.1"
+    assert decision.previous_tag == "2.10.0"
+
+
+def test_rc_auto_release_ignores_the_stable_only_guard(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """The RC-window guard only blocks the stable channel, not the RC channel itself."""
+    path, git_repository = repository
+    _git(path, "tag", "2.9.9")
+    _commit(path, "beta work")
+    _git(path, "tag", "2.10.0b1")
+    _commit(path, "rc work")
+    _git(path, "tag", "2.10.0rc1")
+
+    decision = determine_auto_release(git_repository, "rc", "HEAD")
+
+    assert decision.version == "2.10.0rc2"
+
+
 def test_current_release_combines_beta_and_rc_channels(
     repository: tuple[Path, GitRepository],
 ) -> None:

@@ -23,19 +23,16 @@ from ya_passport_auth import ClientConfig, PassportClient
 from ya_passport_auth.exceptions import QRTimeoutError, YaPassportError
 
 from music_assistant.helpers.config_entries import create_player_selector
-from music_assistant.models.setup_flow import SetupFlowError, StepExpiredError
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 
 from .config_helpers import list_yandex_music_instances
 from .constants import (
     CONF_ACCOUNT_LOGIN,
     CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
     CONF_REMEMBER_SESSION,
     CONF_TOKEN,
     CONF_X_TOKEN,
     CONF_YM_INSTANCE,
-    DEFAULT_DISPLAY_NAME,
-    PLAYER_ID_AUTO,
     YM_INSTANCE_OWN,
 )
 
@@ -52,6 +49,8 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: The setup session driving the flow.
     """
+    if not session.mass.players.all_players(False, False):
+        raise AbortFlow("no_players")
     ym_instances = list_yandex_music_instances(session.mass)
     valid_sources = {inst_id for inst_id, _ in ym_instances}
     setup_data = dict(session.context.setup_data)
@@ -60,7 +59,6 @@ async def run_setup(session: SetupSession) -> None:
     if default_source != YM_INSTANCE_OWN and default_source not in valid_sources:
         default_source = YM_INSTANCE_OWN
     default_player = prefill.get(CONF_MASS_PLAYER_ID)
-    default_name = str(prefill.get(CONF_PUBLISH_NAME) or DEFAULT_DISPLAY_NAME)
 
     errors: dict[str, str] | None = None
     while True:
@@ -77,14 +75,6 @@ async def run_setup(session: SetupSession) -> None:
                     session.mass,
                     CONF_MASS_PLAYER_ID,
                     default_player,
-                    PLAYER_ID_AUTO,
-                ),
-                ConfigEntry(
-                    key=CONF_PUBLISH_NAME,
-                    type=ConfigEntryType.STRING,
-                    required=True,
-                    default_value=default_name,
-                    value=default_name,
                 ),
             ],
             step_id="user",
@@ -93,10 +83,8 @@ async def run_setup(session: SetupSession) -> None:
         source = str(values[CONF_YM_INSTANCE])
         remember = bool(values[CONF_REMEMBER_SESSION])
         default_player = values[CONF_MASS_PLAYER_ID]
-        default_name = str(values[CONF_PUBLISH_NAME])
         identity: dict[str, ConfigValueType] = {
             CONF_MASS_PLAYER_ID: default_player,
-            CONF_PUBLISH_NAME: default_name,
         }
         if source != YM_INSTANCE_OWN:
             # borrow mode: the linked Yandex Music instance owns authentication

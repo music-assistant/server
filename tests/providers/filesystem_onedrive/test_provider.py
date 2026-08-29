@@ -29,7 +29,14 @@ def _folder(item_id: str, name: str) -> Folder:
     return Folder(id=item_id, name=name, parent_reference=_PARENT, created_by=IdentitySet())
 
 
-def _file(item_id: str, name: str, size: int, xor_hash: str | None = None) -> File:
+def _file(
+    item_id: str,
+    name: str,
+    size: int,
+    xor_hash: str | None = None,
+    sha256_hash: str | None = None,
+    sha1_hash: str | None = None,
+) -> File:
     """Build a real SDK File item."""
     return File(
         id=item_id,
@@ -37,7 +44,7 @@ def _file(item_id: str, name: str, size: int, xor_hash: str | None = None) -> Fi
         parent_reference=_PARENT,
         created_by=IdentitySet(),
         size=size,
-        hashes=Hashes(quick_xor_hash=xor_hash),
+        hashes=Hashes(quick_xor_hash=xor_hash, sha256_hash=sha256_hash, sha1_hash=sha1_hash),
     )
 
 
@@ -82,8 +89,76 @@ async def test_list_children_maps_sdk_items() -> None:
     items = await provider._api_list_children("folder-id")
 
     assert items[0] == ("d1", "Albums", True, "folder", None, None)
-    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123, None)
+    # the checksum (imported-media compatibility) uses only quickXorHash-or-size, unchanged
+    assert items[1] == ("f1", "track.mp3", False, "xor-1", 123, "xor-1")
     assert items[2] == ("f2", "no-hash.mp3", False, "456", 456, None)
+
+
+async def test_list_children_checksum_ignores_stronger_hashes() -> None:
+    """
+    The imported-media checksum must stay quickXorHash-or-size, even with other hashes.
+
+    Using a stronger hash for checksum on accounts without quickXorHash would change every
+    existing mapping's checksum on upgrade, making the entire library look changed on the
+    next sync.
+    """
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[_file("f1", "track.mp3", 456, sha256_hash="sha256-1", sha1_hash="sha1-1")]
+    )
+
+    items = await provider._api_list_children("folder-id")
+
+    assert items[0][3] == "456"  # checksum: falls back to size, not a hash
+
+
+async def test_list_children_metadata_token_prefers_quick_xor_hash() -> None:
+    """When quickXorHash is present, it is used for the metadata token too."""
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[
+            _file("f1", "art.jpg", 10, xor_hash="xor-1", sha256_hash="sha256-1", sha1_hash="sha1-1")
+        ]
+    )
+
+    items = await provider._api_list_children("folder-id")
+
+    assert items[0][5] == "xor-1"  # metadata_token
+
+
+async def test_list_children_metadata_token_falls_back_to_sha256() -> None:
+    """Without quickXorHash, the metadata token prefers SHA-256 over SHA-1."""
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[_file("f1", "art.jpg", 10, sha256_hash="sha256-1", sha1_hash="sha1-1")]
+    )
+
+    items = await provider._api_list_children("folder-id")
+
+    assert items[0][3] == "10"  # checksum unaffected, still size-based
+    assert items[0][5] == "sha256-1"  # metadata_token
+
+
+async def test_list_children_metadata_token_falls_back_to_sha1() -> None:
+    """With only a SHA-1 hash, the metadata token falls back to it."""
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(
+        return_value=[_file("f1", "art.jpg", 10, sha1_hash="sha1-1")]
+    )
+
+    items = await provider._api_list_children("folder-id")
+
+    assert items[0][5] == "sha1-1"  # metadata_token
+
+
+async def test_list_children_metadata_token_none_without_any_hash() -> None:
+    """With no hash at all, the metadata token is None (falls back to checksum itself)."""
+    provider, mocks = _make_provider()
+    mocks.client.list_drive_items = AsyncMock(return_value=[_file("f1", "art.jpg", 10)])
+
+    items = await provider._api_list_children("folder-id")
+
+    assert items[0][5] is None  # metadata_token
 
 
 async def test_list_children_translates_errors() -> None:

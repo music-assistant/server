@@ -64,7 +64,12 @@ from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_OPTIONS,
 )
 
-from .backends import LibrespotBackend, SoloistBackend, SpotifyPlaybackBackend
+from .backends import (
+    LibrespotBackend,
+    SoloistBackend,
+    SpotifyPlaybackBackend,
+    StreamSupersededError,
+)
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
@@ -258,22 +263,6 @@ class SpotifyProvider(MusicProvider):
             return live
         return self.spotify_normalization_configured
 
-    def delivers_crossfaded_audio(self, streamdetails: StreamDetails) -> bool | None:
-        """
-        Return whether Spotify's own engine crossfades this playback.
-
-        Only the soloist backend can: it keeps one session across items and is handed
-        the queue's crossfade duration when that session starts, so the overlap lives
-        in the audio it delivers. librespot fetches every track on its own. The session
-        serving this item's queue answers for the item's own boundaries, because it read
-        that duration once - a setting changed mid-playback applies to the next session,
-        not to the audio this one is still serving.
-
-        :param streamdetails: Stream details of the item being asked about.
-        """
-        backend = self._soloist_backend
-        return backend.session_crossfades(streamdetails) if backend is not None else False
-
     @property
     def max_concurrent_streams(self) -> int:
         """
@@ -284,6 +273,8 @@ class SpotifyProvider(MusicProvider):
         backend the item that is ending and the item that continues from the
         same session are two streams reading it in turn.
         """
+        # not answered per backend: MusicProvider sizes the stream semaphore from
+        # this in __init__, long before the configured backend is created
         return 2
 
     @property
@@ -710,11 +701,9 @@ class SpotifyProvider(MusicProvider):
                 f"({completion_percentage:.1f}%, fully_played: {fully_played})"
             )
 
-            # Note: No API exists to sync playback position back to Spotify for audiobooks
-            # MA handles all internal position tracking automatically
-
-            # The resume position will be automatically updated by MA's internal tracking
-            # and will be retrieved via get_audiobook() which combines MA + Spotify positions
+            # No API exists to sync playback position back to Spotify for audiobooks:
+            # the resume position stays in MA's own tracking, and Spotify's chapter
+            # resume points are read separately via get_resume_position()
 
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -955,7 +944,7 @@ class SpotifyProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
-        """Get audio stream from Spotify via librespot."""
+        """Get the audio stream for the given item from the configured playback backend."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_uris = streamdetails.data.get("chapters", [])
             chapters_data = streamdetails.data.get("chapters_data", [])
@@ -980,7 +969,7 @@ class SpotifyProvider(MusicProvider):
                     start_chapter = len(chapter_uris) - 1
                     current_seek_ms = 0
 
-            # Convert back to seconds for librespot
+            # back to seconds: that is the unit the backend's seek_position takes
             current_seek_seconds = int(current_seek_ms // 1000)
 
             # Stream chapters starting from the calculated position
@@ -992,12 +981,19 @@ class SpotifyProvider(MusicProvider):
                 try:
                     chunk_count = 0
                     async for chunk in self.backend.stream_spotify_uri(
-                        chapter_uri, chapter_seek, streamdetails=streamdetails
+                        chapter_uri,
+                        chapter_seek,
+                        streamdetails=streamdetails,
+                        continuation=i > start_chapter,
                     ):
                         yield chunk
                         chunk_count += 1
                     if chunk_count > 0:
                         consecutive_failures = 0
+                except StreamSupersededError:
+                    # a new stream of this audiobook took over (a seek): the
+                    # chapters from here on are its to deliver, not this one's
+                    return
                 except ProviderStreamLimitError:
                     # capacity, not a broken chapter: skipping ahead would burn
                     # chapters and end as a plain error, which costs the item its
@@ -1015,10 +1011,12 @@ class SpotifyProvider(MusicProvider):
                 "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
             )
             spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
-            async for chunk in self.backend.stream_spotify_uri(
-                spotify_uri, seek_position, streamdetails=streamdetails
-            ):
-                yield chunk
+            # a new stream of this item taking over (a seek) simply ends this one
+            with suppress(StreamSupersededError):
+                async for chunk in self.backend.stream_spotify_uri(
+                    spotify_uri, seek_position, streamdetails=streamdetails
+                ):
+                    yield chunk
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:

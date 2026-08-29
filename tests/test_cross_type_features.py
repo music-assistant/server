@@ -8,7 +8,13 @@ import pytest
 from aiohttp import ClientConnectionError
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
-from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
+from music_assistant_models.media_items import (
+    Artist,
+    AudioSource,
+    BrowseFolder,
+    ProviderMapping,
+    SearchResults,
+)
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.artists import ArtistsController
@@ -540,6 +546,160 @@ async def test_browse_root_includes_non_music_providers() -> None:
         for c in mass.get_providers_supporting_feature.call_args_list
     ]
     assert ProviderFeature.BROWSE in calls
+
+
+def _audio_source_item(provider: str, item_id: str, *, can_initiate: bool = True) -> AudioSource:
+    """Return an AudioSource as a plugin would declare it."""
+    return AudioSource(
+        item_id=item_id,
+        provider=provider,
+        name=f"Source {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+        can_initiate=can_initiate,
+    )
+
+
+class _AudioSourcePlugin(PluginProvider):
+    """Plugin stub exposing AudioSources, optionally bound per player."""
+
+    def __init__(
+        self,
+        instance_id: str,
+        sources: list[AudioSource],
+        bound_players: dict[str, list[AudioSource]] | None = None,
+    ) -> None:
+        self.manifest = Mock(type=ProviderType.PLUGIN)
+        self.manifest.domain = instance_id
+        self.config = Mock(instance_id=instance_id)
+        self.config.name = instance_id
+        self._supported_features = {ProviderFeature.AUDIO_SOURCE}
+        self._sources = sources
+        self._bound_players = bound_players
+
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return all sources this plugin exposes."""
+        return self._sources
+
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource] | None:
+        """Return the sources bound to the given player, or None when not player-bound."""
+        if self._bound_players is None:
+            return None
+        return self._bound_players.get(player_id, [])
+
+
+def _audio_source_browse_controller() -> tuple[MusicController, PluginProvider, PluginProvider]:
+    """Build a browse controller with one player-bound and one unbound audio source plugin."""
+    bound_plugin = _AudioSourcePlugin(
+        "connect",
+        [_audio_source_item("connect", "kitchen"), _audio_source_item("connect", "office")],
+        bound_players={
+            "kitchen": [_audio_source_item("connect", "kitchen")],
+            "office": [_audio_source_item("connect", "office")],
+        },
+    )
+    unbound_plugin = _AudioSourcePlugin("vban", [_audio_source_item("vban", "input1")])
+
+    mass = Mock()
+
+    def _supports(feature: ProviderFeature) -> list[PluginProvider]:
+        if feature == ProviderFeature.AUDIO_SOURCE:
+            return [bound_plugin, unbound_plugin]
+        return []
+
+    mass.get_providers_supporting_feature.side_effect = _supports
+    mass.get_provider.side_effect = lambda instance_id: {
+        "connect": bound_plugin,
+        "vban": unbound_plugin,
+    }.get(instance_id)
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+    return controller, bound_plugin, unbound_plugin
+
+
+async def test_browse_root_scopes_audio_sources_to_player() -> None:
+    """With a player scope, only that player's bound sources plus unbound plugins list."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None, player_id="kitchen")
+
+    # the bound plugin narrows to the player's single source (promoted to the
+    # source itself); the other player's source is not offered here
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") not in result
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_root_hides_bound_plugin_for_unbound_player() -> None:
+    """A player-bound plugin disappears entirely for a player it has no source for."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None, player_id="livingroom")
+
+    assert _audio_source_item("connect", "kitchen") not in result
+    assert _audio_source_item("connect", "office") not in result
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_root_without_player_scope_lists_all_sources() -> None:
+    """Without a player scope every plugin keeps its full source listing."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path=None)
+
+    # two initiable sources: the bound plugin lists as a folder holding both
+    folder_paths = [item.path for item in result if isinstance(item, BrowseFolder)]
+    assert "connect://" in folder_paths
+    assert _audio_source_item("vban", "input1") in result
+
+
+async def test_browse_provider_level_scopes_audio_sources_to_player() -> None:
+    """The provider-level source listing honors the player scope too."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path="connect://", player_id="kitchen")
+
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") not in result
+
+
+async def test_browse_provider_level_without_player_scope_lists_all_sources() -> None:
+    """Without a player scope the provider-level listing keeps every source."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+
+    result = await controller.browse(path="connect://")
+
+    assert _audio_source_item("connect", "kitchen") in result
+    assert _audio_source_item("connect", "office") in result
+
+
+async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
+    """A restricted user only sees bound sources of players their filter allows."""
+    controller, _bound, _unbound = _audio_source_browse_controller()
+    restricted_user = Mock(player_filter=["office"])
+
+    with (
+        patch(
+            "music_assistant.controllers.music.controller.get_current_user",
+            return_value=restricted_user,
+        ),
+        patch("music_assistant.controllers.music.controller.has_scope", return_value=False),
+    ):
+        unscoped = await controller.browse(path=None)
+        hidden_scope = await controller.browse(path=None, player_id="kitchen")
+
+    assert _audio_source_item("connect", "office") in unscoped
+    assert _audio_source_item("connect", "kitchen") not in unscoped
+    assert _audio_source_item("vban", "input1") in unscoped
+    # scoping to a player outside the filter yields no bound sources
+    assert _audio_source_item("connect", "kitchen") not in hidden_scope
+    assert _audio_source_item("vban", "input1") in hidden_scope
 
 
 async def test_global_search_includes_plugin_providers_with_search() -> None:

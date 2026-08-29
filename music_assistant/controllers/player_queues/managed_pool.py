@@ -126,7 +126,9 @@ class ManagedPool:
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
         """
-        queue_data = self.queues.queue_data(queue_id)
+        if (queue_data := self.queues.queue_data_or_none(queue_id)) is None:
+            # the queue was removed while this background refill was starting up
+            return []
         queue = queue_data.queue
         windows = self.queues.recency_windows()
         snapshot = await self.mass.music.recency.snapshot(windows, userid=queue_data.userid)
@@ -142,7 +144,7 @@ class ManagedPool:
         # recency, not permanent exclusion, decides when a track may return. Besides exact item
         # identity we also dedupe on fuzzy same-song keys (title + artist) so a different
         # release/version of an already-queued song is not pulled in as well.
-        items = self.queues.queue_data(queue_id).items
+        items = queue_data.items
         start = queue.current_index if queue.current_index is not None else 0
         pool_keys: set[Track] = set()
         pool_song_keys: set[tuple[str, str]] = set()
@@ -207,10 +209,13 @@ class ManagedPool:
         :param include_dynamic: Whether to include dynamic sources; skipped on the initial
             fill, where each dynamic source seeds its own first batch directly.
         """
+        if (queue_data := self.queues.queue_data_or_none(queue_id)) is None:
+            # the queue was removed while earlier fetches of this refill were awaited
+            return []
         # multiplicity = how often a source was added (adding a source more than once weights it up)
         counts: dict[str, int] = {}
         items: dict[str, MediaItemType] = {}
-        for item in self.queues.queue_data(queue_id).source_items:
+        for item in queue_data.source_items:
             if is_dynamic_source(item) and not include_dynamic:
                 continue
             if not (uri := _uri(item)):

@@ -53,6 +53,9 @@ def _make_provider(base_path: str, lib_artists: list[Artist]) -> LocalFileSystem
     provider.cache = MagicMock()
     provider.cache.get = AsyncMock(return_value=None)
     provider.cache.set = AsyncMock(return_value=None)
+    provider.sync_running = False
+    provider._sync_nfo_by_dir = {}
+    provider._sync_nfo_index_ready = False
 
     async def iter_library_items(
         search: str | None = None,  # noqa: ARG001

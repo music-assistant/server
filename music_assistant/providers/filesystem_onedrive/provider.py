@@ -149,10 +149,21 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
             if isinstance(item, Folder):
                 out.append((item.id, item.name, True, "folder", item.size, None))
                 continue
-            # quickXorHash is a stable content hash; not every file has one,
-            # so fall back to the size
+            # quickXorHash is a stable content hash; not every file has one, so fall back to
+            # the size - this is also the imported-media checksum, so it must stay exactly as
+            # it always has been, or every existing mapping would look changed on next sync
             checksum = item.hashes.quick_xor_hash or str(item.size)
-            out.append((item.id, item.name, False, checksum, item.size, None))
+            # a stronger hash (when the account computes one) is only used to detect a
+            # metadata file (NFO/image) changing; it never touches the checksum above. Note:
+            # the onedrive_personal_sdk client's typed File model does not surface an eTag,
+            # cTag, or lastModifiedDateTime (Microsoft Graph returns them, but the SDK's
+            # dataclass mapping silently drops unmapped fields), so a same-size edit on a file
+            # with none of these hashes is the one residual case this cannot detect; that
+            # would require bypassing the SDK's typed client for raw Graph responses
+            metadata_token = (
+                item.hashes.quick_xor_hash or item.hashes.sha256_hash or item.hashes.sha1_hash
+            )
+            out.append((item.id, item.name, False, checksum, item.size, metadata_token))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

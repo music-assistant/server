@@ -36,6 +36,7 @@ from music_assistant.providers.filesystem_local.constants import (
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
+    WALK_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
@@ -49,7 +50,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
 
-# (id, name, is_dir, checksum, size, metadata_token) as returned by _api_list_children
+# (id, name, is_dir, checksum, size, metadata_token) as returned by _api_list_children.
+# metadata_token is an optional higher-precision token (e.g. a stronger hash a provider
+# also computes) used only to detect a metadata file (NFO/image) changing; it never
+# substitutes for checksum, which stays whatever it always was for imported media.
 RawItem = tuple[str, str, bool, str, int | None, str | None]
 
 # extensions the stream route will serve; playlists/cue/images are read
@@ -320,6 +324,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -353,7 +358,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     if scan_errors.aborted:
                         return
                     continue
-                if item.ext not in SUPPORTED_EXTENSIONS:
+                if item.ext not in WALK_EXTENSIONS:
                     continue
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
@@ -367,6 +372,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await _walk("", is_root=True)
@@ -482,7 +488,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     def _to_item(self, raw: RawItem, parent_path: str, name: str) -> FileSystemItem:
         """Convert a raw API listing entry to a FileSystemItem."""
-        _, _, is_dir, checksum, size, _metadata_token = raw
+        _, _, is_dir, checksum, size, metadata_token = raw
         relative_path = f"{parent_path}/{name}" if parent_path else name
         return FileSystemItem(
             filename=name,
@@ -494,4 +500,5 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             is_dir=is_dir,
             checksum=checksum,
             file_size=size,
+            metadata_token=metadata_token,
         )

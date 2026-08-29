@@ -98,6 +98,7 @@ async def _run_enumerate(
         unchanged_cue_items=[],
         cue_stems=set(),
         scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
+        metadata_files=[],
     )
 
 
@@ -308,17 +309,18 @@ async def test_resolve_image_embedded_art_missing(monkeypatch: pytest.MonkeyPatc
 
 
 async def test_enumerate_classifies_supported_files_only() -> None:
-    """The sync walk visits all folders and classifies only supported extensions."""
+    """The sync walk visits all folders and classifies media plus local metadata files."""
     provider = _make_provider()
     provider._classify_scan_item = MagicMock()  # type: ignore[method-assign]
 
     await _run_enumerate(provider)
 
-    # cover.jpg and notes.txt are not sync candidates; folder art is handled separately
+    # cover.jpg is a recognized metadata file (routed to metadata-file change detection, never
+    # imported as media); notes.txt is neither media nor a recognized metadata file
     classified = [
         call.args[0].relative_path for call in provider._classify_scan_item.call_args_list
     ]
-    assert classified == ["Artist/track.mp3"]
+    assert classified == ["Artist/track.mp3", "cover.jpg"]
 
 
 async def test_enumerate_subfolder_error_is_skipped() -> None:
