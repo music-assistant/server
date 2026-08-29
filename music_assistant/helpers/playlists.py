@@ -716,6 +716,17 @@ def _construct_track(
 # --------------------------------------------------------------------------- #
 
 
+def _provider_mapping_sort_key(mapping: ProviderMapping) -> tuple[bool, int, str, str, str]:
+    """Sort key ranking available, higher-quality mappings first, tie-broken deterministically."""
+    return (
+        not mapping.available,
+        -mapping.quality,
+        mapping.provider_domain,
+        mapping.provider_instance,
+        mapping.item_id,
+    )
+
+
 def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
     """Extract artist info from a media item for M3U serialization."""
     artist_infos: list[ArtistInfo] = []
@@ -743,17 +754,33 @@ def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
     return artist_infos
 
 
-def collect_album_info(full_item: MediaItem) -> AlbumInfo | None:
-    """Extract album info from a media item for M3U serialization."""
+def collect_album_info(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> AlbumInfo | None:
+    """
+    Extract album info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among the album's mappings,
+        typically the track's own primary instance, so the serialized album reference
+        stays consistent with the account the rest of the entry was captured from.
+    """
     if not hasattr(full_item, "album") or not full_item.album:
         return None
     album = full_item.album
     prov_mappings = getattr(album, "provider_mappings", None)
     if prov_mappings:
-        first_mapping = next(iter(prov_mappings))
-        al_domain = first_mapping.provider_domain
-        al_item_id = first_mapping.item_id
-        al_instance = first_mapping.provider_instance
+        # a set's iteration order is not guaranteed stable, so picking an arbitrary
+        # mapping here would nondeterministically pin an unrelated sibling account as
+        # authoritative album evidence; prefer the mapping matching the track's own
+        # instance, falling back to the same deterministic ranking used for tracks
+        mapping = next(
+            (m for m in prov_mappings if m.provider_instance == preferred_instance),
+            None,
+        ) or min(prov_mappings, key=_provider_mapping_sort_key)
+        al_domain = mapping.provider_domain
+        al_item_id = mapping.item_id
+        al_instance = mapping.provider_instance
     else:
         al_domain = album.provider
         al_item_id = album.item_id
@@ -836,16 +863,7 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     # deterministic instead of process-dependent. Available mappings are ranked before
     # unavailable ones so an unplayable primary URI is never chosen while a playable
     # sibling mapping exists (in the same or another domain).
-    sorted_mappings = sorted(
-        full_item.provider_mappings,
-        key=lambda x: (
-            not x.available,
-            -x.quality,
-            x.provider_domain,
-            x.provider_instance,
-            x.item_id,
-        ),
-    )
+    sorted_mappings = sorted(full_item.provider_mappings, key=_provider_mapping_sort_key)
     for prov_mapping in sorted_mappings:
         domain = prov_mapping.provider_domain
         if domain in seen_domains:
@@ -871,7 +889,9 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         primary_uri = full_item.uri or ""
 
     artist_infos = collect_artist_infos(full_item)
-    album_info = collect_album_info(full_item)
+    album_info = collect_album_info(
+        full_item, preferred_instance=primary.instance_id if prov_infos else None
+    )
     podcast_info = collect_podcast_info(full_item)
 
     # collect images

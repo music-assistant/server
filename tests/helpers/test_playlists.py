@@ -786,6 +786,97 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance()
     assert reconstructed.album.provider == "spotify--2"
 
 
+def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple() -> None:
+    """
+    An album with mappings on multiple sibling instances pins to the track's own account.
+
+    Picking an arbitrary album mapping (set iteration order is not guaranteed stable)
+    would let an unrelated sibling account's same-domain album ID nondeterministically
+    become the serialized - and later pinned - album reference; the mapping matching the
+    track's own instance is unambiguous and must win instead.
+    """
+    album = Album(
+        item_id="alb1",
+        provider="spotify--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1a", provider_domain="spotify", provider_instance="spotify--2"
+            ),
+            ProviderMapping(
+                item_id="alb1b", provider_domain="spotify", provider_instance="spotify--1"
+            ),
+            ProviderMapping(
+                item_id="alb1c", provider_domain="spotify", provider_instance="spotify--3"
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "spotify--1"
+    assert playlist_item.album.item_id == "alb1b"
+
+
+def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_without_match() -> (
+    None
+):
+    """
+    Without a mapping matching the track's own instance, the choice is still deterministic.
+
+    Falling back to a set's iteration order would let hash-order variance pick a
+    different sibling account across runs; the same ranking used for the track's own
+    primary provider (available, higher quality, then domain/instance/item_id) applies
+    here too, instead of whichever mapping the set happens to iterate first.
+    """
+    album = Album(
+        item_id="alb1",
+        provider="tidal--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(item_id="alb1z", provider_domain="tidal", provider_instance="tidal--2"),
+            ProviderMapping(item_id="alb1a", provider_domain="tidal", provider_instance="tidal--1"),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "tidal--1"
+    assert playlist_item.album.item_id == "alb1a"
+
+
 def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> None:
     """Conflicting merged external IDs from different providers are not exported arbitrarily."""
     track = Track(
