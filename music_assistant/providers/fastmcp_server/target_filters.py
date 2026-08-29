@@ -8,7 +8,8 @@ from enum import StrEnum
 from fnmatch import fnmatchcase
 from typing import Any
 
-from fastmcp.exceptions import ToolError
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InsufficientPermissions
 
 
 class TargetKind(StrEnum):
@@ -18,6 +19,8 @@ class TargetKind(StrEnum):
     PLAYERS = "players"
     MUSIC_PROVIDER = "music_provider"
     MUSIC_PROVIDERS = "music_providers"
+    MUSIC_REFERENCE = "music_reference"
+    MUSIC_REFERENCES = "music_references"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +54,11 @@ COLLECTION_RULES: tuple[CollectionRule, ...] = (
     CollectionRule("player_queues/all", TargetKind.PLAYER, _PLAYER_ROW_ATTRIBUTES),
     CollectionRule("music/search", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
     CollectionRule("music/*/library_items", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
+    CollectionRule("music/browse", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
+)
+
+_SINGLE_ITEM_RULES = frozenset(
+    {"music/item", "music/item_by_uri", "music/get_library_item"}
 )
 
 TARGET_RULES: tuple[TargetRule, ...] = (
@@ -86,6 +94,22 @@ TARGET_RULES: tuple[TargetRule, ...] = (
     TargetRule("music/*", "providers", TargetKind.MUSIC_PROVIDERS),
     TargetRule("music/*", "provider_instance_ids", TargetKind.MUSIC_PROVIDERS),
     TargetRule("audio_analysis/*", "provider_instance_id_or_domain", TargetKind.MUSIC_PROVIDER),
+    # Provider identities embedded in typed music references.
+    TargetRule("music/browse", "path", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/item_by_uri", "uri", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/verify_item_uri", "uri", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/favorites/add_item", "item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/library/add_item", "item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/refresh_item", "media_item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/mark_played", "media_item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/mark_unplayed", "media_item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/add_provider_mapping", "mapping", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/remove_provider_mapping", "mapping", TargetKind.MUSIC_REFERENCE),
+    TargetRule("music/playlists/add_playlist_tracks", "uris", TargetKind.MUSIC_REFERENCES),
+    TargetRule("player_queues/play_media", "media", TargetKind.MUSIC_REFERENCES),
+    TargetRule("player_queues/play_media", "start_item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("metadata/update_metadata", "item", TargetKind.MUSIC_REFERENCE),
+    TargetRule("metadata/get_track_lyrics", "track", TargetKind.MUSIC_REFERENCE),
 )
 
 
@@ -113,7 +137,10 @@ def enforce_target_filters(
     for argument, value in arguments.items():
         if value is None or (rule := target_rule(command, argument)) is None:
             continue
-        values = _target_values(value, sequence=rule.kind in _SEQUENCE_KINDS)
+        if rule.kind in _REFERENCE_KINDS:
+            values = _reference_provider_ids(value)
+        else:
+            values = _target_values(value, sequence=rule.kind in _SEQUENCE_KINDS)
         if rule.kind in _PLAYER_KINDS:
             _enforce_allowed(values, getattr(user, "player_filter", None))
         else:
@@ -142,7 +169,15 @@ def collection_row_allowed(user: Any, item: Any, *, kind: TargetKind) -> bool:
     if allowed is None:
         return True
     attributes = _PLAYER_ROW_ATTRIBUTES if kind in _PLAYER_KINDS else _MUSIC_PROVIDER_ATTRIBUTES
-    return bool(_row_ids(item, attributes) & allowed)
+    row_ids = _row_ids(item, attributes)
+    return bool(
+        row_ids & allowed
+        or (
+            kind not in _PLAYER_KINDS
+            and bool(row_ids)
+            and row_ids <= _INTERNAL_MUSIC_TARGETS
+        )
+    )
 
 
 def filter_collection_result(user: Any, command: str, result: Any) -> Any:
@@ -157,6 +192,10 @@ def filter_collection_result(user: Any, command: str, result: Any) -> Any:
         return result
     rule = collection_rule(command)
     if rule is None:
+        if command in _SINGLE_ITEM_RULES and not collection_row_allowed(
+            user, result, kind=TargetKind.MUSIC_PROVIDER
+        ):
+            return None
         return result
     allowed = _allowed_values(
         getattr(user, "player_filter" if rule.kind in _PLAYER_KINDS else "provider_filter", None)
@@ -177,6 +216,7 @@ def filter_collection_result(user: Any, command: str, result: Any) -> Any:
 
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
+_REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
 _INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "database", "library"})
 
 
@@ -191,7 +231,11 @@ def _filter_rows(result: Any, allowed: set[str], attributes: tuple[str, ...]) ->
 def _row_ids(item: Any, attributes: tuple[str, ...]) -> set[str]:
     """Collect declared identifiers from the row and any provider mappings."""
     ids = _attribute_ids(item, attributes)
-    mappings = getattr(item, "provider_mappings", None) or ()
+    mappings = (
+        item.get("provider_mappings")
+        if isinstance(item, Mapping)
+        else getattr(item, "provider_mappings", None)
+    ) or ()
     for mapping in mappings:
         ids.update(_attribute_ids(mapping, attributes))
     return ids
@@ -199,11 +243,60 @@ def _row_ids(item: Any, attributes: tuple[str, ...]) -> set[str]:
 
 def _attribute_ids(value: Any, attributes: tuple[str, ...]) -> set[str]:
     """Return non-empty identifier strings for the declared attributes."""
+    if isinstance(value, Mapping):
+        return {
+            str(candidate)
+            for name in attributes
+            if (candidate := value.get(name)) is not None and str(candidate)
+        }
     return {
         str(candidate)
         for name in attributes
         if (candidate := getattr(value, name, None)) is not None and str(candidate)
     }
+
+
+def _reference_provider_ids(value: Any) -> set[str]:
+    """Collect provider ids from one declared URI or media-reference argument."""
+    if isinstance(value, str):
+        if value.startswith("https://open."):
+            host_parts = value.split("/", 3)[2].split(".")
+            return {host_parts[1]} if len(host_parts) > 2 and host_parts[1] else set()
+        if value.startswith("https://tidal.com/browse/"):
+            return {"tidal"}
+        if value.startswith("https://music.apple.com/"):
+            return {"apple_music"}
+        if value.startswith(("https://www.deezer.com/", "https://deezer.com/")):
+            return {"deezer"}
+        if value.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+            return {"builtin"}
+        provider, separator, _remainder = value.partition("://")
+        if separator and provider:
+            return {provider}
+        parts = value.split(":")
+        if len(parts) == 3 and all(parts):
+            try:
+                MediaType(parts[1])
+            except ValueError:
+                return set()
+            return {parts[0]}
+        return set()
+    if isinstance(value, list | tuple | set | frozenset):
+        return set().union(*(_reference_provider_ids(item) for item in value), set())
+
+    providers = _attribute_ids(value, _MUSIC_PROVIDER_ATTRIBUTES)
+    uri = value.get("uri") if isinstance(value, Mapping) else getattr(value, "uri", None)
+    if isinstance(uri, str):
+        providers.update(_reference_provider_ids(uri))
+    mappings = (
+        value.get("provider_mappings")
+        if isinstance(value, Mapping)
+        else getattr(value, "provider_mappings", None)
+    )
+    if isinstance(mappings, list | tuple | set | frozenset):
+        for mapping in mappings:
+            providers.update(_reference_provider_ids(mapping))
+    return providers
 
 
 def _target_values(value: Any, *, sequence: bool) -> set[str]:
@@ -226,7 +319,7 @@ def _enforce_allowed(requested: set[str], configured: Any) -> None:
     """Reject requested identifiers outside one active allowlist."""
     allowed = _allowed_values(configured)
     if allowed is not None and not requested.issubset(allowed):
-        raise ToolError("Command target is not permitted for the current user")
+        raise InsufficientPermissions("Command target is not permitted for the current user")
 
 
 def _resolve_music_provider(mass: Any, submitted: str) -> Any:
@@ -252,4 +345,4 @@ def _enforce_music_providers(mass: Any, requested: set[str], configured: Any) ->
             or str(provider_type).casefold() != "music"
             or str(getattr(provider, "instance_id", "")) not in allowed
         ):
-            raise ToolError("Command target is not permitted for the current user")
+            raise InsufficientPermissions("Command target is not permitted for the current user")

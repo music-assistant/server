@@ -197,7 +197,7 @@ def test_authorization_uses_command_classifier_and_target_filters(
     monkeypatch.setattr(authorization, "has_scope", lambda _user, _scope: True, raising=False)
     policy = policy_snapshot(PolicyProfile.CUSTOM, {Capability.DELETE_QUEUE: PolicyMode.ALLOW})
 
-    with pytest.raises(ToolError, match="not permitted"):
+    with pytest.raises(InsufficientPermissions, match="not permitted"):
         authorize_extension(
             _config(Capability.DELETE_QUEUE),
             required_scope="queues.control",
@@ -582,6 +582,41 @@ async def test_provider_owned_denial_audits_once(
     assert records[0].outcome == "authorization.denied"
     assert records[0].capability == "debug:providers"
     assert records[0].mode == "deny"
+
+
+async def test_provider_owned_target_denial_keeps_native_error_and_audits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native target guards retain MA errors and emit no argument values."""
+    mass = CommandRegistry()
+    records: list[Any] = []
+    policy = policy_snapshot(
+        PolicyProfile.CUSTOM,
+        {Capability.DELETE_QUEUE: PolicyMode.ALLOW},
+    )
+    command_set = ProviderCommandSet(
+        mass,
+        _config(Capability.DELETE_QUEUE),
+        policy_provider=lambda _bearer: policy,
+        audit_sink=records.append,
+        audit_client_id_provider=lambda _bearer: "exact-token-id",
+    )
+    command_set.start()
+    user = _user(UserRole.USER)
+    user.player_filter = ["kitchen"]
+    monkeypatch.setattr(authorization, "get_current_user", lambda: user)
+    monkeypatch.setattr(authorization, "get_current_token", lambda: "raw-provider-bearer")
+    monkeypatch.setattr(authorization, "has_scope", lambda _user, _scope: True, raising=False)
+
+    with pytest.raises(InsufficientPermissions, match="not permitted"):
+        await mass.handlers["fastmcp/queue/remove_items_safe"](
+            "secret-bedroom", ["secret-item"]
+        )
+
+    assert [record.outcome for record in records] == ["authorization.denied"]
+    assert "secret-bedroom" not in repr(records)
+    assert "secret-item" not in repr(records)
+    assert "raw-provider-bearer" not in repr(records)
 
 
 async def test_dynamic_provider_execution_is_not_double_counted(

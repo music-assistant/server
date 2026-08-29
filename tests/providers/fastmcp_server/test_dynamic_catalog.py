@@ -1879,8 +1879,9 @@ async def test_invocation_rejects_targets_outside_user_filters(
         role="user",
         **filters,
     )
-    adapter = _real_adapter(handler, user=user)
-    with pytest.raises(ToolError, match="not permitted"):
+    audit_records: list[Any] = []
+    adapter = _real_adapter(handler, user=user, audit_sink=audit_records.append)
+    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]") as exc_info:
         await adapter.call(
             f"ma_api:{command}",
             {parameter: "blocked-target"},
@@ -1890,6 +1891,104 @@ async def test_invocation_rejects_targets_outside_user_filters(
             ctx=MagicMock(),
         )
     assert called is False
+    assert [record.outcome for record in audit_records] == ["authorization.denied"]
+    assert "blocked-target" not in str(exc_info.value)
+    assert "blocked-target" not in repr(audit_records)
+
+
+async def test_embedded_provider_write_is_denied_before_execution() -> None:
+    """A provider identity inside a media mapping is checked before a write runs."""
+    calls: list[object] = []
+
+    async def add_item(item: Any) -> None:
+        calls.append(item)
+
+    user = SimpleNamespace(
+        user_id="u1",
+        username="limited",
+        enabled=True,
+        role="user",
+        player_filter=[],
+        provider_filter=["spotify--user"],
+    )
+    adapter = _real_adapter(
+        _handler("music/library/add_item", add_item, "library.write"),
+        user=user,
+        allowed_capabilities={str(Capability.EDIT_LIBRARY)},
+    )
+
+    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
+        await adapter.call(
+            "ma_api:music/library/add_item",
+            {"item": {"provider": "qobuz--other", "item_id": "secret"}},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=MagicMock(),
+        )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("command", "selector", "default"),
+    [
+        ("music/recently_played_items", "userid", None),
+        ("music/mark_played", "userid", None),
+        ("music/mark_unplayed", "userid", None),
+        ("music/in_progress_items", "all_users", False),
+    ],
+)
+async def test_native_user_selectors_are_hidden_and_rejected(
+    command: str,
+    selector: str,
+    default: object,
+) -> None:
+    """MCP commands always rely on the authenticated MA request context for user scope."""
+    calls: list[dict[str, Any]] = []
+
+    async def operation(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    operation.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        [
+            inspect.Parameter(
+                selector,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=default,
+                annotation=bool if selector == "all_users" else str | None,
+            )
+        ]
+    )
+    handler = _handler(command, operation, "library.write")
+    handler.type_hints = {
+        selector: bool if selector == "all_users" else str | None,
+        "return": None,
+    }
+    adapter = _real_adapter(handler)
+    entry = (await adapter.visible_entries())[0]
+
+    assert selector not in entry.input_schema["properties"]
+    with pytest.raises(ToolError, match=r"\[invalid_arguments\]"):
+        await adapter.call(
+            f"ma_api:{command}",
+            {selector: "another-user" if selector == "userid" else True},
+            response_mode="compact",
+            fields=None,
+            max_items=None,
+            ctx=MagicMock(),
+        )
+    assert calls == []
+
+    await adapter.call(
+        f"ma_api:{command}",
+        {},
+        response_mode="compact",
+        fields=None,
+        max_items=None,
+        ctx=MagicMock(),
+    )
+    assert calls == [{}]
 
 
 async def test_admin_scope_is_not_restricted_by_user_filters() -> None:
