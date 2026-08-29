@@ -186,7 +186,12 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
 via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances.
+queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
+leaves alone only what the session playing *now* claimed, so playback that restarted before the
+stop got that far keeps its audio. Everything else goes, including what sessions that ended
+earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
+audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
+audio goes with them.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)

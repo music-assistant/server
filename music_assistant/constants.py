@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 63
+API_SCHEMA_VERSION: Final[int] = 65
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -170,6 +170,10 @@ CONF_PROTOCOL_PARENT_ID: Final[str] = (
 CONF_UNDERLYING_PLAYER_ID: Final[str] = (
     "underlying_player_id"  # player this (bridge) protocol player is derived from
 )
+# Translation key of the warning a provider stores on a protocol player it considers
+# experimental. Its presence also makes the output's enable entry default to disabled;
+# a stored enabled state still wins, so the provider persists that one itself.
+CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
 CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC for fast restart
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
@@ -1075,6 +1079,8 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "chromecast",
     # bluetooth (bluesound, musiccast)
     "bluetooth",
+    "bluetooth audio",
+    "bluetooth_audio",
     # physical/analog inputs (sonos, heos, musiccast, demo)
     "line-in",
     "linein",
