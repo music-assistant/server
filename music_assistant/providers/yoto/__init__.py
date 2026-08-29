@@ -311,7 +311,7 @@ class YotoProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if ":" not in prov_radio_id:
-            raise InvalidProviderID(f"Invalid track ID format: {prov_radio_id}")
+            raise InvalidProviderID(f"Invalid radio ID format: {prov_radio_id}")
         card_id, _station_id = prov_radio_id.split(":", 1)
         async for station in self._parse_radio_stations(await self._get_card(card_id)):
             if station.item_id == prov_radio_id:
