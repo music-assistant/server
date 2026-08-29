@@ -609,9 +609,7 @@ async def test_provider_owned_target_denial_keeps_native_error_and_audits_once(
     monkeypatch.setattr(authorization, "has_scope", lambda _user, _scope: True, raising=False)
 
     with pytest.raises(InsufficientPermissions, match="not permitted"):
-        await mass.handlers["fastmcp/queue/remove_items_safe"](
-            "secret-bedroom", ["secret-item"]
-        )
+        await mass.handlers["fastmcp/queue/remove_items_safe"]("secret-bedroom", ["secret-item"])
 
     assert [record.outcome for record in records] == ["authorization.denied"]
     assert "secret-bedroom" not in repr(records)

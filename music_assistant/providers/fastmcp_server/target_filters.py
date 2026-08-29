@@ -57,9 +57,7 @@ COLLECTION_RULES: tuple[CollectionRule, ...] = (
     CollectionRule("music/browse", TargetKind.MUSIC_PROVIDER, _MUSIC_PROVIDER_ATTRIBUTES),
 )
 
-_SINGLE_ITEM_RULES = frozenset(
-    {"music/item", "music/item_by_uri", "music/get_library_item"}
-)
+_SINGLE_ITEM_RULES = frozenset({"music/item", "music/item_by_uri", "music/get_library_item"})
 
 TARGET_RULES: tuple[TargetRule, ...] = (
     # Player controller commands.
@@ -172,11 +170,7 @@ def collection_row_allowed(user: Any, item: Any, *, kind: TargetKind) -> bool:
     row_ids = _row_ids(item, attributes)
     return bool(
         row_ids & allowed
-        or (
-            kind not in _PLAYER_KINDS
-            and bool(row_ids)
-            and row_ids <= _INTERNAL_MUSIC_TARGETS
-        )
+        or (kind not in _PLAYER_KINDS and bool(row_ids) and row_ids <= _INTERNAL_MUSIC_TARGETS)
     )
 
 
