@@ -31,8 +31,11 @@
     "security_status_paired": {
       "label": "This device is paired. The connection is encrypted and authenticated."
     },
-    "security_status_unpaired": {
-      "label": "The connection is encrypted, but the device is not securely paired."
+    "security_status_guest": {
+      "label": "This device is connected through guest access. The connection is encrypted but not verified, which the device allows on purpose."
+    },
+    "security_status_guest_pairable": {
+      "label": "This device is connected through guest access. It also supports pairing for a permanent, verified connection - use Reconfigure to set that up."
     },
     "pairing_error_generic": {
       "label": "Pairing failed. Please try again."
@@ -53,33 +56,24 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "Pairing method",
+      "label": "Which pairing code does the device use?",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
-        "static_pin": "Static pairing code",
-        "token": "Pairing token"
+        "static_pin": "Static pairing code"
       },
       "option_descriptions": {
         "pin": "Enter the device's pairing code.",
         "dynamic_pin": "Enter the device's dynamically generated pairing code.",
-        "static_pin": "Enter the device's fixed pairing code.",
-        "token": "Enter the device's pairing token."
+        "static_pin": "Enter the device's fixed pairing code."
       }
     },
     "pairing_pin": {
       "label": "Pairing code"
     },
-    "pairing_token": {
-      "label": "Pairing token"
-    },
     "unpair": {
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
-    },
-    "revoke_unpaired": {
-      "label": "Require pairing",
-      "description": "Stop letting this device connect without pairing."
     },
     "management_enter": {
       "label": "Manage device settings",
@@ -87,14 +81,6 @@
     },
     "management_status": {
       "label": "Managing device settings. The device rejects other servers until this section is closed."
-    },
-    "management_unpaired_enable": {
-      "label": "Enable unpaired access",
-      "description": "Let the device accept connections from servers without pairing. Unpaired connections are encrypted but not authenticated."
-    },
-    "management_unpaired_disable": {
-      "label": "Disable unpaired access",
-      "description": "Stop the device from accepting connections from servers that are not paired with it."
     },
     "management_static_pin_enable": {
       "label": "Enable static pairing code",
@@ -140,28 +126,19 @@
       "label": "The management request failed: {0}."
     },
     "static_pin_location_device": {
-      "label": "The pairing code is printed on the device."
+      "label": "Enter the code printed on the device"
     },
     "static_pin_location_leaflet": {
-      "label": "The pairing code is on a leaflet supplied with the device."
+      "label": "Enter the code from the leaflet supplied with the device"
     },
     "static_pin_location_operator": {
-      "label": "The pairing code is a custom one set on the device by its operator."
-    },
-    "pairing_psk_location_device": {
-      "label": "The pairing token is printed on the device."
-    },
-    "pairing_psk_location_leaflet": {
-      "label": "The pairing token is on a leaflet supplied with the device."
-    },
-    "pairing_psk_location_operator": {
-      "label": "The pairing token is a custom one set on the device by its operator."
+      "label": "Enter the code set on the device by its operator"
     },
     "dynamic_pin_channel_display": {
-      "label": "The device shows the pairing code on its screen."
+      "label": "Enter the code shown on the device's screen"
     },
     "dynamic_pin_channel_speaker": {
-      "label": "The device speaks the pairing code aloud."
+      "label": "Enter the code the device speaks aloud"
     },
     "source_autostart_target": {
       "label": "Automatically play line-in on",
@@ -178,16 +155,23 @@
         "dismiss": "Don't use audio input"
       },
       "option_descriptions": {
-        "pair": "Pairing is required before the device may send audio to Music Assistant.",
+        "pair": "Sets up a verified connection, which is required before the device may send audio to Music Assistant.",
         "dismiss": "Playback is unaffected. Music Assistant will stop offering this device's audio input."
       }
     },
-    "pair_device": {
-      "label": "Pair this device",
-      "description": "Verify the device with a pairing code or pairing token instead of allowing it unpaired."
+    "connect_method": {
+      "label": "Connection",
+      "options": {
+        "unpaired": "Connect unpaired",
+        "pair": "Pair device"
+      },
+      "option_descriptions": {
+        "unpaired": "No pairing needed. Quick and easy, but less secure.",
+        "pair": "Sets up a permanent, secure connection with this device."
+      }
     },
-    "source_input_note": {
-      "label": "The device also has an audio input. It stays off unless the device is paired."
+    "dynamic_pin_channel_display_speaker": {
+      "label": "Enter the code the device shows on screen or speaks aloud"
     }
   },
   "setup_flow": {
@@ -195,8 +179,8 @@
       "title": "Pair this device"
     },
     "approve_device": {
-      "title": "Allow this new device",
-      "description": "This device is new to Music Assistant. Continuing allows it to play without pairing; the connection is encrypted but not authenticated."
+      "title": "How do you want to connect?",
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted."
     },
     "source_input": {
       "title": "Audio input available",
@@ -213,17 +197,12 @@
       "progress_text": "Waiting for the pairing gesture on the device..."
     },
     "enter_pin": {
-      "title": "Enter the pairing code",
-      "description": "Enter the device's pairing code to finish pairing."
+      "title": "Enter the pairing code"
     },
     "confirming": {
       "title": "Finishing pairing",
       "description": "Completing the secure pairing with the device.",
       "progress_text": "Completing pairing with the device..."
-    },
-    "enter_token": {
-      "title": "Enter the pairing token",
-      "description": "Paste the device's pairing token to pair it."
     },
     "verify_pin": {
       "title": "Verify device presence",
@@ -236,7 +215,12 @@
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
-      "timed_out": "The device did not respond in time. Run the setup again to retry."
+      "timed_out": "The device did not respond in time. Run the setup again to retry.",
+      "token_pairing_only": "This device cannot be paired from here. It only offers the pairing method servers use to enrol themselves, which has no code for you to enter."
+    },
+    "approve_device_source": {
+      "title": "How do you want to connect?",
+      "description": "You can connect to this device straight away, or set up a secure pairing first. Without pairing the connection can be intercepted. This device can also send audio to Music Assistant. If that input could be sensitive, such as a microphone, pairing is the safer choice."
     }
   },
   "manifest": {
