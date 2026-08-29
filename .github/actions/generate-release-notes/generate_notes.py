@@ -9,12 +9,27 @@ import os
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 from github import Github, GithubException
+
+# GitHub rejects release bodies longer than 125,000 characters; stay slightly
+# under so the release create/update calls can never fail on size.
+MAX_BODY_CHARS = 124_000
+
+# Extracts the dependency name from bump titles like
+# "⬆️ Update music-assistant-frontend to 2.17.294", "Bump pytest from 9.0.3 to 9.1.1"
+# or "Bump `aiosendspin` to 9.1.1"
+BUMP_TITLE_PATTERN = re.compile(r"^(?:⬆️\s*)?(?:Update|Bump)\s+`?([^\s`]+)`?\s+(?:from|to)\s+\S+")
+
+# Bump PRs whose contents already surface elsewhere in the notes: frontend changes
+# are inlined in their own section and models changes ship with the server PRs
+# that use them.
+INLINED_BUMP_DEPS = {"music-assistant-frontend", "music-assistant-models"}
 
 
 def load_config() -> dict[str, Any]:
@@ -145,6 +160,49 @@ def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     return prs
 
 
+def is_dependency_bump(pr) -> bool:
+    """Whether the PR is a dependency bump (carries the "dependencies" label)."""
+    return any(label.name == "dependencies" for label in pr.labels)
+
+
+def get_bumped_dependency(title) -> str | None:
+    """Return the dependency name from a bump PR title, or None if not parseable."""
+    match = BUMP_TITLE_PATTERN.match(title)
+    return match.group(1) if match else None
+
+
+def filter_dependency_bumps(prs, drop_all=False) -> list[Any]:
+    """
+    Drop dependency-bump PRs that add no information to the notes.
+
+    Bumps of dependencies whose contents are inlined elsewhere are always
+    dropped and only the latest bump per other dependency is kept. With
+    drop_all, every dependency bump is dropped.
+    """
+    latest: dict[str, Any] = {}
+    for pr in prs:
+        if not is_dependency_bump(pr):
+            continue
+        dependency = get_bumped_dependency(pr.title)
+        if dependency:
+            # PRs are ordered oldest to newest, so the last match wins
+            latest[dependency] = pr
+
+    filtered = []
+    for pr in prs:
+        if is_dependency_bump(pr):
+            dependency = get_bumped_dependency(pr.title)
+            if drop_all or (
+                dependency and (dependency in INLINED_BUMP_DEPS or latest[dependency] is not pr)
+            ):
+                continue
+        filtered.append(pr)
+
+    if len(filtered) != len(prs):
+        print(f"Dropped {len(prs) - len(filtered)} dependency-bump PRs from the notes")  # noqa: T201
+    return filtered
+
+
 def categorize_prs(prs, config) -> tuple[dict[str, list[Any]], list[Any]]:
     """Categorize PRs based on their labels using the config."""
     categories = defaultdict(list)
@@ -158,12 +216,16 @@ def categorize_prs(prs, config) -> tuple[dict[str, list[Any]], list[Any]]:
     include_labels = config.get("include-labels")
     if include_labels:
         include_labels = set(include_labels)
+    exclude_title_prefixes = tuple(config.get("exclude-title-prefixes", []))
 
     for pr in prs:
         # Check if PR should be excluded
         pr_labels = {label.name for label in pr.labels}
 
         if exclude_labels and pr_labels & exclude_labels:
+            continue
+
+        if exclude_title_prefixes and pr.title.startswith(exclude_title_prefixes):
             continue
 
         if include_labels and not (pr_labels & include_labels):
@@ -254,6 +316,9 @@ def extract_frontend_changes(prs) -> tuple[list[str], set[str]]:
                     continue
                 # Skip "No changes" entries
                 if re.match(r"^[•\-\*]\s*No changes\s*$", stripped_line, re.IGNORECASE):
+                    continue
+                # Skip translation-sync noise
+                if re.match(r"^[•\-\*]\s*Lokalise", stripped_line, re.IGNORECASE):
                     continue
 
                 # Add the change
@@ -398,6 +463,62 @@ def generate_release_notes(  # noqa: PLR0915
     return "\n".join(lines)
 
 
+def shrink_notes_to_limit(
+    render: Callable[[], str],
+    config,
+    categories,
+    uncategorized,
+    previous_tag,
+    version,
+) -> str:
+    """
+    Trim the least important sections until the notes fit the release body limit.
+
+    The render callable regenerates the notes from the section lists, which are
+    trimmed in place from the bottom up.
+    """
+    footer_lines = ["", "---", "", "_Some changes were omitted to fit these notes on the release._"]
+    if previous_tag:
+        repo_url = (
+            os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+            + "/"
+            + os.environ["GITHUB_REPOSITORY"]
+        )
+        footer_lines[-1] = (
+            "_Some changes were omitted to fit these notes on the release. "
+            f"See the [full changelog]({repo_url}/compare/{previous_tag}...{version}) "
+            "for the complete list._"
+        )
+    footer = "\n".join(footer_lines)
+    budget = MAX_BODY_CHARS - len(footer) - 1
+
+    # Drop entries from the bottom up: deferred (maintenance) sections first,
+    # then "Other Changes", then the regular categories in reverse order
+    category_configs = config.get("categories", [])
+    deferred = [c.get("title", "Other") for c in category_configs if c.get("after-other", False)]
+    regular = [c.get("title", "Other") for c in category_configs if not c.get("after-other", False)]
+    drop_lists = (
+        [categories[title] for title in deferred if title in categories]
+        + [uncategorized]
+        + [categories[title] for title in reversed(regular) if title in categories]
+    )
+
+    notes = render()
+    dropped = 0
+    for entries in drop_lists:
+        while entries and len(notes) > budget:
+            # Drop a chunk proportional to the overflow before re-rendering
+            count = min(len(entries), max(1, (len(notes) - budget) // 100))
+            del entries[-count:]
+            dropped += count
+            notes = render()
+        if len(notes) <= budget:
+            break
+
+    print(f"Omitted {dropped} changes to fit the release body limit")  # noqa: T201
+    return notes + "\n" + footer
+
+
 def main() -> None:
     """Generate release notes for the target version."""
     # Get environment variables
@@ -436,8 +557,13 @@ def main() -> None:
         notes = no_changes
         contributors_list = []
     else:
+        # A stable X.Y.0 release aggregates months of dependency bumps: drop them
+        # all there, elsewhere only the redundant ones
+        drop_all_bumps = channel == "stable" and re.fullmatch(r"\d+\.\d+\.0", version) is not None
+        prs_for_notes = filter_dependency_bumps(prs, drop_all=drop_all_bumps)
+
         # Categorize PRs
-        categories, uncategorized = categorize_prs(prs, config)
+        categories, uncategorized = categorize_prs(prs_for_notes, config)
         print(f"Categorized into {len(categories)} categories, {len(uncategorized)} uncategorized")  # noqa: T201
 
         # Extract frontend changes and contributors
@@ -458,24 +584,48 @@ def main() -> None:
         )
 
         # Generate formatted notes
-        notes = generate_release_notes(
-            config,
-            categories,
-            uncategorized,
-            contributors_list,
-            previous_tag,
-            frontend_changes_list,
-            important_notes,
-        )
+        def render_notes() -> str:
+            return generate_release_notes(
+                config,
+                categories,
+                uncategorized,
+                contributors_list,
+                previous_tag,
+                frontend_changes_list,
+                important_notes,
+            )
 
-    # Output to GitHub Actions
-    # Use multiline output format
+        notes = render_notes()
+        if len(notes) > MAX_BODY_CHARS:
+            notes = shrink_notes_to_limit(
+                render_notes,
+                config,
+                categories,
+                uncategorized,
+                previous_tag,
+                version,
+            )
+
+    write_outputs(notes, contributors_list)
+
+
+def write_outputs(notes, contributors_list) -> None:
+    """
+    Write the generated notes and the GitHub Actions step outputs.
+
+    The notes are handed to the workflow through a file: passing them through
+    a step output means they end up in an env var or command argument, which
+    hits the kernel argument-size limit on big releases.
+    """
+    notes_file = os.environ.get("RELEASE_NOTES_FILE")
+    if notes_file:
+        with open(notes_file, "w") as f:
+            f.write(notes)
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a") as f:
-            f.write("release-notes<<EOF\n")
-            f.write(notes)
-            f.write("\nEOF\n")
+            if notes_file:
+                f.write(f"release-notes-file={notes_file}\n")
             f.write("contributors<<EOF\n")
             f.write(",".join(contributors_list))
             f.write("\nEOF\n")

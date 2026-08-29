@@ -46,6 +46,7 @@ from .constants import (
     SENDSPIN_CAST_APP_ID,
 )
 from .helpers import CastStatusListener, ChromecastInfo
+from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
     from pychromecast import Chromecast
@@ -88,6 +89,7 @@ class ChromecastPlayer(Player):
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
+        self.command_controller: MassCastCommandController | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
@@ -138,6 +140,9 @@ class ChromecastPlayer(Player):
             mz_controller = MultizoneController(cast_info.uuid)
             self.cc.register_handler(mz_controller)
             self.mz_controller = mz_controller
+        command_controller = MassCastCommandController(self._handle_receiver_command)
+        self.cc.register_handler(command_controller)
+        self.command_controller = command_controller
 
     async def async_setup(self) -> None:
         """Start the chromecast socket client (must be called after __init__)."""
@@ -289,6 +294,9 @@ class ChromecastPlayer(Player):
         if self.status_listener is not None:
             self.status_listener.invalidate()
         self.status_listener = None
+        if self.command_controller is not None:
+            self.cc.unregister_handler(self.command_controller)
+            self.command_controller = None
         self.logger.debug("Disconnecting from chromecast socket %s", self.display_name)
         if self.mass.closing:
             # Non-blocking disconnect: close socket, don't wait for thread.
@@ -903,3 +911,32 @@ class ChromecastPlayer(Player):
         # player that owns the queue. Only a native/standalone Cast owns its own queue.
         queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
         return self.mass.player_queues.flow_stream_finished(queue_id)
+
+    def _handle_receiver_command(self, command: str) -> None:
+        """
+        Handle a playback command forwarded by the Cast receiver app.
+
+        Called from the pychromecast socket thread.
+
+        :param command: Either "next" or "previous".
+        """
+        if self.mass.closing:
+            return
+        queue_command = (
+            self.mass.player_queues.next if command == "next" else self.mass.player_queues.previous
+        )
+
+        def dispatch() -> None:
+            if self.mass.closing:
+                return
+            # A stopped queue still reports active=True, so also reject IDLE or a
+            # press on a dashboard-only session would start playback.
+            queue = self.mass.players.get_active_queue(self)
+            if queue is None or not queue.active or queue.state == PlaybackState.IDLE:
+                self.logger.debug(
+                    "Ignoring %s command: no playing queue for %s", command, self.display_name
+                )
+                return
+            self.mass.create_task(queue_command(queue.queue_id))
+
+        self.mass.loop.call_soon_threadsafe(dispatch)

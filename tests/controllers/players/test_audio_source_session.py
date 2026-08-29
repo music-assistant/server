@@ -6,6 +6,7 @@ without any of it living in a queue item. Nothing produces a session yet, so
 these tests drive the mixin directly.
 """
 
+from typing import cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
@@ -106,12 +107,15 @@ def test_started_session_resolves_source_and_provider() -> None:
 def test_starting_a_second_session_replaces_the_first() -> None:
     """A player outputs one source at a time, so a new session replaces the old."""
     ctrl = _Controller(_plugin_provider())
-    ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
+    first = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
     second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("second"), PROVIDER_INSTANCE)
 
     current = ctrl.get_audio_source_session(PLAYER_ID)
     assert current is second
     assert current.source_id == "second"
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID, first.playback_session_id
+    )
 
 
 def test_ending_a_session_drops_and_returns_it() -> None:
@@ -120,6 +124,9 @@ def test_ending_a_session_drops_and_returns_it() -> None:
     session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
 
     assert ctrl._end_audio_source_session(PLAYER_ID) is session
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID, session.playback_session_id
+    )
     assert ctrl.get_audio_source_session(PLAYER_ID) is None
     # ending twice is harmless
     assert ctrl._end_audio_source_session(PLAYER_ID) is None
@@ -232,6 +239,9 @@ def test_reconnecting_the_same_source_keeps_its_metadata() -> None:
     ctrl = _Controller(_plugin_provider())
     source = _audio_source()
     first = ctrl._start_audio_source_session(PLAYER_ID, source, PROVIDER_INSTANCE)
+    audio_details = MagicMock()
+    first.active_source_audio = audio_details
+    first_session_id = first.playback_session_id
     ctrl.update_source_metadata(
         PLAYER_ID, SOURCE_ID, PROVIDER_INSTANCE, StreamMetadata(title="Take Five")
     )
@@ -242,6 +252,12 @@ def test_reconnecting_the_same_source_keeps_its_metadata() -> None:
     assert again.stream_metadata is not None
     assert again.stream_metadata.title == "Take Five"
     assert again.started_at == first.started_at
+    assert again.active_source_audio is audio_details
+    cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source).assert_called_once_with(
+        PLAYER_ID,
+        first_session_id,
+        preserve_details=True,
+    )
 
 
 def test_selecting_a_different_source_does_not_keep_the_old_metadata() -> None:
@@ -355,6 +371,101 @@ def test_a_fallback_only_source_follows_a_changed_placeholder() -> None:
     assert session.stream_metadata_reported is False
 
 
+def test_claiming_a_session_stamps_the_stream_token() -> None:
+    """A stream request claiming the live session becomes the one serving it."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+
+    assert ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-1") is True
+    assert session.stream_session_id == "tok-1"
+
+
+def test_a_reconnect_does_not_take_away_a_player_the_source_is_moving_to() -> None:
+    """
+    Only the first stream request for a selection evicts the other players.
+
+    A player already streaming the source reconnects through the same claim, and
+    it must not undo a handover whose target has not started streaming yet.
+    """
+    ctrl = _Controller(_plugin_provider())
+    source = _audio_source()
+    session_a = ctrl._start_audio_source_session("player-a", source, PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session_a, session_a.playback_session_id, "tok-a1")
+    session_b = ctrl._start_audio_source_session("player-b", source, PROVIDER_INSTANCE)
+
+    # player-a's renderer drops and re-opens the stream while the move is pending
+    assert ctrl.claim_audio_source_session(session_a, session_a.playback_session_id, "tok-a2")
+
+    assert ctrl.get_audio_source_session("player-b") is session_b
+    assert "player-b" not in ctrl.updated_players
+
+    # the handover still completes once player-b actually streams
+    assert ctrl.claim_audio_source_session(session_b, session_b.playback_session_id, "tok-b1")
+
+    assert ctrl.get_audio_source_session("player-a") is None
+    assert ctrl.updated_players == ["player-a"]
+
+
+def test_a_claimed_token_outlives_the_stream_that_stamped_it() -> None:
+    """
+    The stream token records that a selection was streamed, not that it still is.
+
+    A paused source keeps the player while its stream is torn down, and what
+    separates it from one that was never streamed at all is this token.
+    """
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    ctrl.claim_audio_source_session(session, session.playback_session_id, "tok-1")
+
+    session.attach_streamdetails(_streamdetails(StreamMetadata(title="Take Five")))
+
+    assert session.stream_session_id == "tok-1"
+
+
+def test_claiming_a_superseded_session_is_refused() -> None:
+    """A stream request set up for a session the player has left behind is turned away."""
+    ctrl = _Controller(_plugin_provider())
+    first = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("first"), PROVIDER_INSTANCE)
+    second = ctrl._start_audio_source_session(PLAYER_ID, _audio_source("second"), PROVIDER_INSTANCE)
+
+    assert ctrl.claim_audio_source_session(first, first.playback_session_id, "tok-1") is False
+    assert first.stream_session_id is None
+    # the live session is not claimable with a stale playback token either
+    assert ctrl.claim_audio_source_session(second, "a-token-from-before", "tok-2") is False
+    assert second.stream_session_id is None
+
+
+def test_a_handover_evicts_the_old_player_only_on_claim() -> None:
+    """
+    A source moving between players leaves the old one only when the stream claims it.
+
+    Starting the new session is not the commit: a takeover that never produces a
+    stream request must leave the source untouched on the player that has it.
+    """
+    ctrl = _Controller(_plugin_provider())
+    source = _audio_source()
+    session_a = ctrl._start_audio_source_session("player-a", source, PROVIDER_INSTANCE)
+    session_b = ctrl._start_audio_source_session("player-b", source, PROVIDER_INSTANCE)
+
+    clear_source = cast("MagicMock", ctrl.mass.streams.audio_processing.clear_source)
+    assert ctrl.get_audio_source_session("player-a") is session_a
+    assert ctrl.get_audio_source_session("player-b") is session_b
+    assert "player-a" not in ctrl.updated_players
+    clear_source.assert_not_called()
+
+    assert ctrl.claim_audio_source_session(session_b, session_b.playback_session_id, "tok-1")
+
+    assert ctrl.get_audio_source_session("player-a") is None
+    assert ctrl.updated_players == ["player-a"]
+    clear_source.assert_called_once_with("player-a", session_a.playback_session_id)
+
+    # a renderer reconnect re-claims the same session without another eviction
+    assert ctrl.claim_audio_source_session(session_b, session_b.playback_session_id, "tok-2")
+
+    assert ctrl.updated_players == ["player-a"]
+    clear_source.assert_called_once()
+
+
 def test_a_reported_track_is_not_replaced_by_a_later_placeholder() -> None:
     """Once the source has reported, stream details stop overriding it."""
     ctrl = _Controller(_plugin_provider())
@@ -371,3 +482,17 @@ def test_a_reported_track_is_not_replaced_by_a_later_placeholder() -> None:
 
     assert session.stream_metadata is not None
     assert session.stream_metadata.title == "Take Five"
+
+
+def test_live_source_recognised_by_the_uri_it_publishes() -> None:
+    """The uri a session publishes as active source is recognised as MA's own."""
+    ctrl = _Controller(_plugin_provider())
+    session = ctrl._start_audio_source_session(PLAYER_ID, _audio_source(), PROVIDER_INSTANCE)
+    assert session.source_uri is not None
+
+    assert ctrl.is_live_audio_source(session.source_uri)
+    assert not ctrl.is_live_audio_source("tv")
+    assert not ctrl.is_live_audio_source(PLAYER_ID)
+
+    ctrl._end_audio_source_session(PLAYER_ID)
+    assert not ctrl.is_live_audio_source(session.source_uri)

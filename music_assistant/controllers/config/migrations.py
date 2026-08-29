@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from pathlib import PurePosixPath
+import re
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
@@ -35,6 +36,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
 )
+from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,6 +47,10 @@ LOGGER = logging.getLogger(__name__)
 
 # removed player config key, only referenced by its migration
 LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
+
+# removed automatic-player-selection sentinel of the connected-player plugins, only
+# referenced by their migration
+LEGACY_PLAYER_ID_AUTO = "__auto__"
 
 # shared prefix of the removed per-player Bose SoundTouch preset keys
 LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
@@ -341,8 +347,10 @@ _LEGACY_ICON_MAP: dict[str, str] = {
 # - plex_connect's "plex_provider_id"/"mass_player_id" are not secrets, but its setup flow
 #   collects them (the options are only known from live server state), so they live in
 #   setup_data like any other flow-collected value.
-# - spotify is deliberately absent: its own _migrate_legacy_token still reads the legacy
-#   "refresh_token" and "client_id" from `values`, so this migration must not move them.
+# - spotify's deprecated "refresh_token" stays in `values`: _migrate_legacy_token reads it
+#   from there to split it into the global/dev keys, and clears it once it has. That read
+#   runs in setup(), where seed_stored_config_values still exposes the stored values, so
+#   moving this one key here would leave the split with nothing to read.
 # TODO: remove after 2.13 release
 PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
@@ -415,6 +423,13 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "qqmusic": ("uin", "musicid", "musickey", "login_type", "credential_json"),
     "siriusxm": ("sxm_email_address", "sxm_password", "sxm_region"),
     "soundcloud": ("client_id", "authorization"),
+    "spotify": (
+        "refresh_token_global",
+        "refresh_token_dev",
+        "librespot_credentials",
+        "client_id",
+        "account_id",
+    ),
     "spotify_connect": ("mass_player_id", "publish_name"),
     "teddycloud": ("url",),
     "tidal": ("auth_token", "refresh_token", "expiry_time", "user_id"),
@@ -701,8 +716,7 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
             for key, value in PROVIDER_SETUP_FLOW_DEFAULTS.get(domain, {}).items()
             if key not in setup_data and key not in movable_keys
         }
-        needs_airplay_default = domain == "airplay_receiver" and "airplay_name" not in setup_data
-        if not movable_keys and not missing_defaults and not needs_airplay_default:
+        if not movable_keys and not missing_defaults:
             continue
         provider_cfg["setup_data"] = setup_data
         for key in movable_keys:
@@ -713,9 +727,6 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
             del values[key]
         for key, value in missing_defaults.items():
             setup_data[key] = encrypt(value) if isinstance(value, str) else value
-        # re-checked after the move: airplay_name may have just arrived from values
-        if needs_airplay_default and "airplay_name" not in setup_data:
-            setup_data["airplay_name"] = encrypt("Music Assistant")
         changed = True
     if changed:
         LOGGER.info("Migrated provider setup values into setup_data")
@@ -783,6 +794,238 @@ def migrate_nfs_subfolder_into_export_path(
     # claim the marker even when nothing was folded, so a subfolder stored later is safe
     data[CONF_NFS_SUBFOLDER_MIGRATED] = True
     return True
+
+
+# TODO: remove after 2.12 release
+def migrate_connected_player_plugins(
+    data: dict[str, Any],
+    decrypt: Callable[[str], str],
+    storage_path: str,
+) -> bool:
+    """
+    Move the connected-player plugins to the player-bound configuration model, once.
+
+    spotify_connect and airplay_receiver are single-instance providers now, driven by a
+    connected-players multi-select: existing instances collapse into one keyed by the
+    domain, the explicitly configured players carry over into the multi-select and the
+    per-instance device names are dropped (the advertised name follows the player now).
+    For ariacast_receiver and yandex_ynison the connected player became mandatory: the
+    removed automatic selection and players that no longer exist are cleared (so the
+    provider fails into reconfigure) and their free-form device name keys are dropped.
+
+    Runs after encryption is initialized, and after migrate_provider_setup_data so the
+    pre-setup-flow values have landed in setup_data by now.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
+    :param storage_path: The server storage path holding per-instance provider data dirs.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    stored_players = data.get(CONF_PLAYERS, {})
+    known_player_ids = set(stored_players) if isinstance(stored_players, dict) else set()
+    changed = False
+    for domain in ("spotify_connect", "airplay_receiver"):
+        if _collapse_connected_player_instances(
+            all_provider_configs, domain, known_player_ids, decrypt, storage_path
+        ):
+            changed = True
+    if _clear_invalid_connected_players(all_provider_configs, known_player_ids, decrypt):
+        changed = True
+    return changed
+
+
+def _collapse_connected_player_instances(
+    all_provider_configs: dict[str, Any],
+    domain: str,
+    known_player_ids: set[str],
+    decrypt: Callable[[str], str],
+    storage_path: str,
+) -> bool:
+    """
+    Collapse the instances of one per-player plugin domain into a single instance.
+
+    :param all_provider_configs: The stored provider configurations, modified in-place.
+    :param domain: The plugin domain to collapse (spotify_connect or airplay_receiver).
+    :param known_player_ids: The player ids present in the stored player configurations.
+    :param decrypt: Callback that decrypts a stored string value.
+    :param storage_path: The server storage path holding per-instance provider data dirs.
+    """
+    instances = {
+        instance_id: provider_cfg
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == domain
+    }
+    if not instances:
+        return False
+    # already collapsed (or created post-change): a single instance keyed by the bare
+    # domain can only originate from the new single-instance model — the legacy
+    # multi-instance era always minted suffixed ids. This check is durable, unlike the
+    # connected_players marker below, which the config store drops again when the
+    # stored value equals the entry default (an empty selection).
+    if len(instances) == 1 and domain in instances:
+        return False
+    if any(
+        isinstance(cfg.get("values"), dict) and CONF_CONNECTED_PLAYERS in cfg["values"]
+        for cfg in instances.values()
+    ):
+        # already collapsed by an earlier run
+        return False
+    # decrypt each instance's stored setup so the configured player and (for spotify)
+    # the backend can be read; an unreadable instance contributes nothing. Ordering
+    # follows the stored configs, so "first instance" ties resolve deterministically.
+    decrypted: dict[str, dict[str, Any]] = {}
+    for instance_id, provider_cfg in instances.items():
+        setup_data = provider_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            decrypted[instance_id] = {}
+            continue
+        try:
+            decrypted[instance_id] = {
+                key: decrypt(value) if isinstance(value, str) else value
+                for key, value in setup_data.items()
+            }
+        except InvalidDataError:
+            LOGGER.warning(
+                "Could not read the stored setup of %s; its configured player is not carried over",
+                instance_id,
+            )
+    # a disabled instance must not decide the surviving config or contribute players:
+    # its enabled flag becomes the whole provider's after the collapse
+    enabled_ids = [iid for iid, cfg in instances.items() if cfg.get("enabled", True)]
+    survivor_pool = enabled_ids or list(instances)
+    # the soloist instance carries the API key and ToS consent, so it must be the one
+    # that survives the collapse
+    survivor_id = survivor_pool[0]
+    if domain == "spotify_connect":
+        survivor_id = next(
+            (iid for iid in survivor_pool if decrypted.get(iid, {}).get("backend") == "soloist"),
+            survivor_id,
+        )
+    # ordered de-duped carry-over of the explicitly configured players; the removed
+    # automatic selection and vanished players contribute nothing
+    connected_players: list[str] = []
+    soloist_player_ids: dict[str, str] = {}
+    for instance_id in enabled_ids:
+        player_id = decrypted.get(instance_id, {}).get("mass_player_id")
+        if (
+            not isinstance(player_id, str)
+            or player_id == LEGACY_PLAYER_ID_AUTO
+            or player_id not in known_player_ids
+        ):
+            continue
+        if player_id not in connected_players:
+            connected_players.append(player_id)
+        if decrypted[instance_id].get("backend") == "soloist":
+            soloist_player_ids[instance_id] = player_id
+    survivor = instances[survivor_id]
+    setup_data = survivor.get("setup_data")
+    setup_data = setup_data if isinstance(setup_data, dict) else {}
+    dropped_keys = [
+        key
+        for key in ("mass_player_id", "publish_name", "airplay_name")
+        if setup_data.pop(key, None) is not None
+    ]
+    survivor["setup_data"] = setup_data
+    values = survivor.get("values")
+    values = values if isinstance(values, dict) else {}
+    # always stored (even empty): doubles as this migration's idempotency marker
+    values[CONF_CONNECTED_PLAYERS] = connected_players
+    survivor["values"] = values
+    survivor["instance_id"] = domain
+    for instance_id in instances:
+        del all_provider_configs[instance_id]
+    all_provider_configs[domain] = survivor
+    if len(instances) > 1 or connected_players or dropped_keys:
+        LOGGER.warning(
+            "Migrated %d %s configuration(s) into a single instance connected to %d "
+            "player(s). The advertised device name now follows the connected player's name.",
+            len(instances),
+            domain,
+            len(connected_players),
+        )
+    if domain == "spotify_connect":
+        _move_soloist_data_dirs(storage_path, soloist_player_ids)
+    return True
+
+
+def _move_soloist_data_dirs(storage_path: str, soloist_player_ids: dict[str, str]) -> None:
+    """
+    Move per-instance soloist data dirs to their per-player location, best effort.
+
+    A moved dir keeps the Spotify pairing of that player's device; a failed move only
+    costs the user a re-pair in the Spotify app and never fails startup.
+
+    :param storage_path: The server storage path.
+    :param soloist_player_ids: Old soloist instance id mapped to its carried-over player id.
+    """
+    base_path = Path(storage_path) / "spotify_connect"
+    for old_instance_id, player_id in soloist_player_ids.items():
+        src = base_path / old_instance_id / "soloist-data"
+        # matches the per-player identity key the provider derives its data dir from
+        safe_player_id = re.sub(r"[^A-Za-z0-9_.-]", "_", player_id)
+        dst = base_path / f"spotify_connect_{safe_player_id}" / "soloist-data"
+        if not src.is_dir() or dst.exists():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+        except OSError as err:
+            LOGGER.warning(
+                "Could not move the Spotify Connect (soloist) data of %s to %s: %s",
+                old_instance_id,
+                dst,
+                err,
+            )
+
+
+def _clear_invalid_connected_players(
+    all_provider_configs: dict[str, Any],
+    known_player_ids: set[str],
+    decrypt: Callable[[str], str],
+) -> bool:
+    """
+    Enforce the now-mandatory connected player on the single-player plugins.
+
+    :param all_provider_configs: The stored provider configurations, modified in-place.
+    :param known_player_ids: The player ids present in the stored player configurations.
+    :param decrypt: Callback that decrypts a stored string value.
+    """
+    changed = False
+    for instance_id, provider_cfg in all_provider_configs.items():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") not in (
+            "ariacast_receiver",
+            "yandex_ynison",
+        ):
+            continue
+        setup_data = provider_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            continue
+        # the free-form device names are gone; the advertised name follows the player now
+        for key in ("ariacast_name", "publish_name"):
+            if key in setup_data:
+                del setup_data[key]
+                changed = True
+        stored_player_id = setup_data.get("mass_player_id")
+        if not isinstance(stored_player_id, str):
+            continue
+        try:
+            player_id = decrypt(stored_player_id)
+        except InvalidDataError:
+            LOGGER.warning(
+                "Could not read the configured player of %s; leaving it in place", instance_id
+            )
+            continue
+        if player_id == LEGACY_PLAYER_ID_AUTO or player_id not in known_player_ids:
+            del setup_data["mass_player_id"]
+            changed = True
+            LOGGER.warning(
+                "The connected player of %s is no longer valid; open its settings and run "
+                "the setup again to select a player",
+                instance_id,
+            )
+    return changed
 
 
 # TODO: remove after 2.10 release
@@ -1311,6 +1554,16 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
             # encrypted receiver name is unavailable during this early migration.
             continue
         provider_values = provider_cfg.get("values")
+        if provider_cfg.get("instance_id") == "airplay_receiver" or (
+            isinstance(provider_values, dict) and CONF_CONNECTED_PLAYERS in provider_values
+        ):
+            # a per-player-model instance advertises player-derived names, so the
+            # legacy default names this cleanup matches on cannot originate there.
+            # The bare domain id is the durable signal (the legacy multi-instance
+            # era always minted suffixed ids); the connected_players marker alone
+            # is not, as the config store drops it again when the stored value
+            # equals the entry default (an empty selection).
+            continue
         airplay_name = (
             provider_values.get("airplay_name") if isinstance(provider_values, dict) else None
         )

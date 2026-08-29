@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
 _API_KEY = "sk-super-secret-key-123"
-_INSTANCE_ID = "spotify_connect--test1"
+_IDENTITY_KEY = "spotify_connect_player1"
 
 
 class _FakeServer:
@@ -163,9 +163,10 @@ class _FakeProc:
 def _make_backend(
     *,
     volume_mode: str = VOLUME_MODE_PLAYER_ONLY,
-    instance_id: str = _INSTANCE_ID,
+    identity_key: str = _IDENTITY_KEY,
     base_dir: Path | None = None,
     consent: bool = True,
+    audio_quality: str = AUDIO_QUALITY_LOSSLESS,
 ) -> tuple[SoloistBackend, list[BackendEvent]]:
     """Build a backend on a mocked mass, capturing every emitted BackendEvent."""
     mass = MagicMock()
@@ -178,7 +179,7 @@ def _make_backend(
 
     backend = SoloistBackend(
         mass,
-        instance_id=instance_id,
+        identity_key=identity_key,
         publish_name="Test Device",
         name="Spotify Test",
         logger=logging.getLogger("test.soloist_backend"),
@@ -186,6 +187,7 @@ def _make_backend(
         api_key=_API_KEY,
         consent=consent,
         volume_mode=volume_mode,
+        audio_quality=audio_quality,
     )
     return backend, events
 
@@ -332,9 +334,9 @@ async def test_daemon_argv_and_key_never_logged(
         "--api-key",
         _API_KEY,
         "--data-dir",
-        f"/fake/storage/spotify_connect/{_INSTANCE_ID}/soloist-data",
+        f"/fake/storage/spotify_connect/{_IDENTITY_KEY}/soloist-data",
         "--cache-dir",
-        f"/fake/cache/{_INSTANCE_ID}/soloist-cache",
+        f"/fake/cache/{_IDENTITY_KEY}/soloist-cache",
         "--cache-size",
         str(CACHE_SIZE_MB),
         "--initial-volume",
@@ -416,6 +418,8 @@ async def test_exit_code_10_with_failed_refresh_is_fatal(
     assert len(spawned) == 1  # the expired build is never restarted
     assert events[-1].type is BackendEventType.FATAL_ERROR
     assert "expired" in (events[-1].error or "")
+    # the shared binary expiring hits every daemon alike
+    assert events[-1].provider_wide is True
 
 
 async def test_five_daemon_failures_report_fatal_error(
@@ -432,6 +436,8 @@ async def test_five_daemon_failures_report_fatal_error(
     assert len(spawned) == 5
     assert sum(1 for e in events if e.type is BackendEventType.CONNECTION_LOST) == 5
     assert events[-1].type is BackendEventType.FATAL_ERROR
+    # soloist fatals take the whole provider down (engine-level failure)
+    assert events[-1].provider_wide is True
 
 
 @pytest.mark.parametrize(
@@ -440,7 +446,7 @@ async def test_five_daemon_failures_report_fatal_error(
         pytest.param(
             SoloistAuthState(logged_in=False, is_active=False),
             BackendEventType.SESSION_INACTIVE,
-            id="auth_state-initial-logged_out",
+            id="auth_state-logged_out",
         ),
         pytest.param(
             SoloistAuthState(logged_in=True, is_active=True),
@@ -506,25 +512,22 @@ async def test_event_adaptation(data: Any, expected_type: BackendEventType) -> N
     assert [event.type for event in events] == [expected_type]
 
 
-async def test_auth_required_only_after_login_loss() -> None:
-    """AUTH_REQUIRED is only emitted when an established login is lost, not before pairing."""
+async def test_account_takeover_is_a_session_change_not_an_auth_loss() -> None:
+    """Another account claiming the device reports sessions ending and starting, no error."""
     backend, events = _make_backend()
 
-    # a fresh daemon reports logged_in=False while advertising for pairing
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=False, is_active=False))
-    )
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=True, is_active=True))
-    )
-    await backend._handle_event(
-        _event("auth_state", SoloistAuthState(logged_in=False, is_active=False))
-    )
+    # a fresh daemon advertising for pairing, then one account, then a takeover
+    # by another: the daemon signs the first one out and the second one in
+    for logged_in, is_active in ((False, False), (True, True), (False, False), (True, True)):
+        await backend._handle_event(
+            _event("auth_state", SoloistAuthState(logged_in=logged_in, is_active=is_active))
+        )
 
     assert [event.type for event in events] == [
         BackendEventType.SESSION_INACTIVE,
         BackendEventType.SESSION_ACTIVE,
-        BackendEventType.AUTH_REQUIRED,
+        BackendEventType.SESSION_INACTIVE,
+        BackendEventType.SESSION_ACTIVE,
     ]
 
 
@@ -1346,22 +1349,79 @@ async def test_playback_state_snapshot_emits_metadata_for_unseen_track() -> None
 
 
 def test_sink_prefix_is_sanitized() -> None:
-    """Characters unsafe for PA sink names are stripped from the instance id."""
-    backend, _events = _make_backend(instance_id="weird id!*")
+    """Characters unsafe for PA sink names are stripped from the identity key."""
+    backend, _events = _make_backend(identity_key="weird id!*")
 
     assert backend._sink_prefix == "weird_id__"
 
 
-def test_audio_formats_report_the_capture_pcm() -> None:
-    """Display and decoded format both report the fixed capture PCM (s32le/44.1/2)."""
+def test_decoded_format_reports_the_capture_pcm() -> None:
+    """The decoded format is the fixed capture PCM (s32le/44.1/2) the pipe delivers."""
     backend, _events = _make_backend()
 
-    for fmt in (backend.audio_format, backend.decoded_audio_format):
-        assert fmt.content_type is ContentType.PCM_S32LE
-        assert fmt.sample_rate == 44100
-        assert fmt.bit_depth == 32
-        assert fmt.channels == 2
+    decoded = backend.decoded_audio_format
+    assert decoded.content_type is ContentType.PCM_S32LE
+    assert decoded.sample_rate == 44100
+    assert decoded.bit_depth == 32
+    assert decoded.channels == 2
     assert backend.get_audio_reader() is None
+
+
+def test_each_stream_gets_its_own_copy_of_the_capture_format() -> None:
+    """
+    Every stream is handed its own decoded format, not one shared object.
+
+    ffmpeg writes what it probes onto the format it is given, so a shared instance
+    would carry one stream's probe over into the next.
+    """
+    backend, _events = _make_backend()
+
+    first = backend.decoded_audio_format
+    second = backend.decoded_audio_format
+
+    assert first is not second
+    first.bit_rate = 12345
+    assert second.bit_rate != 12345
+    assert backend.decoded_audio_format.bit_rate != 12345
+
+
+@pytest.mark.parametrize(
+    ("audio_quality", "content_type", "bit_depth"),
+    [
+        (AUDIO_QUALITY_NORMAL, ContentType.OGG, 16),
+        (AUDIO_QUALITY_HIGH, ContentType.OGG, 16),
+        (AUDIO_QUALITY_VERY_HIGH, ContentType.OGG, 16),
+        (AUDIO_QUALITY_LOSSLESS, ContentType.FLAC, 24),
+    ],
+)
+def test_advertised_format_follows_the_configured_tier(
+    audio_quality: str, content_type: ContentType, bit_depth: int
+) -> None:
+    """The display format is the tier Spotify was asked for, not the capture PCM."""
+    backend, _events = _make_backend(audio_quality=audio_quality)
+
+    assert backend.audio_format.content_type is content_type
+    assert backend.audio_format.bit_depth == bit_depth
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "content_type"),
+    [
+        ("track", ContentType.FLAC),
+        ("episode", ContentType.OGG),
+        ("chapter", ContentType.OGG),
+    ],
+)
+async def test_spoken_content_is_never_advertised_as_lossless(
+    entity_type: str, content_type: ContentType
+) -> None:
+    """Spotify serves lossless for music only, whatever the tier is set to."""
+    backend, _events = _make_backend(audio_quality=AUDIO_QUALITY_LOSSLESS)
+    item = SoloistEntity(uri=f"spotify:{entity_type}:x1", entity_type=entity_type)
+
+    await backend._handle_event(_event("track_changed", SoloistTrackChanged(item=item)))
+
+    assert backend.audio_format.content_type is content_type
 
 
 async def test_transport_commands_map_to_client() -> None:

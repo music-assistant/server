@@ -22,20 +22,20 @@ spotify_connect/
 ├── provider.py      SpotifyConnectProvider: everything MA-facing (backend-agnostic)
 ├── base.py          SpotifyConnectBackend: the abstract backend contract
 ├── models.py        Normalized models shared across the boundary (BackendEvent, ...)
-├── setup_flow.py    Multi-step setup: engine choice, Soloist terms/API key, player/name
-├── helpers.py       Small shared utilities (device id, interface lookup)
+├── setup_flow.py    Multi-step setup: engine choice, Soloist terms/API key
+├── helpers.py       Small shared utilities (device id, go-librespot binary lookup)
 ├── soloist/         Official Spotify Soloist engine (backend + runtime + README)
 └── go_librespot/    Community go-librespot engine (backend + client + README)
 ```
 
 ## The provider / backend split
 
-**`SpotifyConnectProvider`** (`provider.py`) owns everything Music Assistant sees: the
-AudioSource item and StreamDetails, target-player selection, the queue claim, the
-play_media debounce, take-back-playback, volume-sync policy and live StreamMetadata. It
-never talks Spotify: it drives a **`SpotifyConnectBackend`** (`base.py`) and consumes the
-normalized `BackendEvent`s from `models.py`, so it does not know (or care) which engine is
-running.
+**`SpotifyConnectProvider`** (`provider.py`) owns everything Music Assistant sees: one
+Connect device (a backend daemon plus its AudioSource item) per connected player, the
+StreamDetails, the queue claim, the play_media debounce, take-back-playback, volume-sync
+policy and live StreamMetadata. It never talks Spotify: it drives a
+**`SpotifyConnectBackend`** (`base.py`) per daemon and consumes the normalized
+`BackendEvent`s from `models.py`, so it does not know (or care) which engine is running.
 
 A backend owns everything specific to one way of talking to Spotify: daemon lifecycle and
 supervision, credentials, the wire protocol, and audio delivery. It reports state changes
@@ -48,8 +48,8 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
   the standard `play_media` flow (`exclusive`, `allow_external_trigger`, `can_initiate`).
   Starting it from MA resumes the last known Spotify context on this device.
 - **Externally triggered playback**: a `PLAYING` event fires a debounced `play_media` on
-  the target player (configured, or auto: a currently playing player, else the first
-  available one).
+  the target player (an explicitly selected player, else the daemon's own connected
+  player).
 - **Taking playback back**: when the user moved the active device away in the Spotify app
   and presses play in MA, the last seen context is (re)started on this device — the
   backend's `play()` contract includes claiming active device status.
@@ -77,19 +77,25 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 | Volume | Two modes: pin at 100% (default) or sync with compensation | `external_volume`: MA owns volume |
 | Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry, ToS grey area | May break when Spotify changes the protocol |
 
-The setup flow defaults new instances to Soloist and presents both engines as expanded
+The setup flow defaults new setups to Soloist and presents both engines as expanded
 choices. Existing pre-backend-split configs migrate to go-librespot. Loudness normalization,
 crossfade and streaming quality are provider settings, applied by the engines themselves
 (see the per-engine READMEs for the mechanics). Streaming quality is a ceiling, not a
 guarantee: Spotify still downshifts on a slow connection and falls back when a track or the
 account has no file at that tier, and what it actually delivered is not observable — so the
-reported source format stays the capture PCM rather than a guess.
+reported source format is the tier that was asked for, the same ceiling the Spotify apps
+show.
 
-## Multi-instance support
+## One device per connected player
 
-Each instance runs its own daemon with its own credentials/cache directory and its own
-zeroconf advertisement, linked to one MA player — several Connect devices can coexist in
-one Music Assistant install. Soloist instances share one managed binary install.
+The provider runs as a single instance driven by the connected-players multi-select in its
+options: every selected player gets its own daemon with its own credentials/cache
+directory (keyed by `{instance_id}_{safe_player_id}`), its own zeroconf advertisement and
+its own AudioSource (`item_id` = player id). The advertised device name follows the
+connected player's name through a template setting, so a rename restarts that daemon with
+the new name. Players register after plugins load: daemons start (and stop) from player
+lifecycle events through a lock-serialized reconcile. All daemons share the Soloist
+managed binary install and API key.
 
 ## Related documentation
 

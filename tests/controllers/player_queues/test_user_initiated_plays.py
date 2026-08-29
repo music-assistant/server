@@ -190,3 +190,159 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     enqueued = ctrl._queue_data["q1"].enqueued_media_items
     assert enqueued == [track]
     assert ctrl._is_user_initiated_play(ctrl._queue_data["q1"], track) is True
+
+
+def test_track_picked_from_a_provider_listing_is_user_initiated() -> None:
+    """A track picked from a provider listing counts as explicit once it resolves to the library."""
+    mapping = ProviderMapping(
+        item_id="track-prov-1", provider_domain="spotify", provider_instance="spotify--abc"
+    )
+    # the track object a provider listing hands to play_media
+    provider_track = Track(
+        item_id="track-prov-1",
+        provider="spotify--abc",
+        name="T",
+        provider_mappings={mapping},
+    )
+    # the same track as it is reported once loaded for playback
+    library_track = Track(item_id="12", provider="library", name="T", provider_mappings={mapping})
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[provider_track]))
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    assert tracker._is_user_initiated_play(data, library_track) is True
+
+
+def test_library_ids_are_not_matched_across_media_types() -> None:
+    """The library numbers each media type from one, so an album id never matches a track id."""
+    album = Album(
+        item_id="7",
+        provider="library",
+        name="A",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
+    )
+    track = Track(item_id="7", provider="library", name="T", provider_mappings=set())
+    data = cast("PlayerQueueData", Mock(enqueued_media_items=[album]))
+
+    tracker = PlayerQueuesController.__new__(PlayerQueuesController)
+    assert tracker._is_user_initiated_play(data, track) is False
+
+
+def _play_media_controller(
+    media_item: MediaItemType, default_option: str
+) -> PlayerQueuesController:
+    """Build a bare controller whose play_media resolves its enqueue option from the config."""
+    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
+    ctrl.logger = Mock()
+    ctrl.mass = Mock()
+    ctrl.mass.music.get_item_by_uri = AsyncMock(return_value=media_item)
+    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    lock_cm = MagicMock()
+    lock_cm.__aenter__ = AsyncMock(return_value=None)
+    lock_cm.__aexit__ = AsyncMock(return_value=None)
+    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.get_config_value = Mock(return_value=default_option)  # type: ignore[method-assign]
+    ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
+    ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.on_player_update = Mock()  # type: ignore[method-assign]
+    ctrl.store_sources = Mock()  # type: ignore[method-assign]
+    ctrl._apply_shuffle = AsyncMock()  # type: ignore[method-assign]
+    ctrl._enqueue_with_option = AsyncMock()  # type: ignore[method-assign]
+    ctrl._media_resolver = Mock()
+    ctrl._media_resolver._resolve_media_items = AsyncMock(return_value=[media_item])
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl.get = Mock(return_value=queue)  # type: ignore[method-assign]
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    return ctrl
+
+
+async def test_configured_add_default_keeps_the_previously_enqueued_items() -> None:
+    """A caller that leaves the enqueue option to the config still gets an add treated as one."""
+    album = Album(item_id="a1", provider="library", name="A1", provider_mappings=set())
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    ctrl = _play_media_controller(track, QueueOption.ADD.value)
+    ctrl._queue_data["q1"].enqueued_media_items.append(album)
+
+    await ctrl._handle_play_media("q1", track)
+
+    # the album the queue is playing is what says its tracks belong together, so an add
+    # must not drop it the way starting a new queue does
+    assert ctrl._queue_data["q1"].enqueued_media_items == [album, track]
+
+
+async def test_configured_replace_default_clears_the_previously_enqueued_items() -> None:
+    """A config default that starts a new queue drops the parents of the previous one."""
+    album = Album(item_id="a1", provider="library", name="A1", provider_mappings=set())
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    ctrl = _play_media_controller(track, QueueOption.REPLACE.value)
+    ctrl._queue_data["q1"].enqueued_media_items.append(album)
+    ctrl._queue_data["q1"].credited_albums.add(album)
+
+    await ctrl._handle_play_media("q1", track)
+
+    assert ctrl._queue_data["q1"].enqueued_media_items == [track]
+    # the credits only mark which enqueued albums were counted, so they go with them
+    assert ctrl._queue_data["q1"].credited_albums == set()
+
+
+async def test_configured_add_default_feeds_a_dynamic_queue() -> None:
+    """An add onto a managed pool keeps the item as a source, config default or not."""
+    track = Track(
+        item_id="t1",
+        provider="library",
+        name="T1",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track-prov-1",
+                provider_domain="spotify",
+                provider_instance="spotify--abc",
+            )
+        },
+    )
+    dynamic_playlist = Playlist(
+        item_id="p1",
+        provider="spotify--abc",
+        name="Mix",
+        provider_mappings={
+            ProviderMapping(
+                item_id="p1", provider_domain="spotify", provider_instance="spotify--abc"
+            )
+        },
+        is_dynamic=True,
+    )
+    ctrl = _play_media_controller(track, QueueOption.ADD.value)
+    ctrl._enter_dynamic_mode = AsyncMock()  # type: ignore[method-assign]
+    queue_data = ctrl._queue_data["q1"]
+    queue_data.source_items = [dynamic_playlist]
+    queue_data.queue.is_dynamic = True
+    ctrl.store_sources = Mock(  # type: ignore[method-assign]
+        side_effect=lambda _queue, items: setattr(queue_data, "source_items", list(items))
+    )
+
+    await ctrl._handle_play_media("q1", track)
+
+    # expanding it into the queue would only have the pool rebuild discard those tracks again
+    cast("AsyncMock", ctrl._media_resolver._resolve_media_items).assert_not_called()
+    assert track in queue_data.source_items

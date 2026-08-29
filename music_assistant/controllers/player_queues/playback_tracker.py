@@ -47,6 +47,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
 from music_assistant.helpers.audio import resolve_output_player_ids
+from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 
@@ -449,6 +450,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
+                if self._queue_data.get(queue.queue_id) is not queue_data:
+                    # the queue was removed or re-registered while we waited
+                    return
                 if queue.state != PlaybackState.IDLE:
                     return
                 if queue.next_item is not None:
@@ -467,8 +471,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         await self.play_index(queue.queue_id, next_index)
                     return
             # If the queue was started from a dynamic source, fetch fresh tracks and continue.
-            qdata = self._queue_data.get(queue.queue_id)
-            dynamic_source = find_dynamic_source(qdata) if qdata else None
+            dynamic_source = find_dynamic_source(queue_data)
             if dynamic_source is not None:
                 try:
                     # Restore the queue owner's user context so provider filters and
@@ -483,6 +486,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
                     )
+                    if self._queue_data.get(queue.queue_id) is not queue_data:
+                        # the queue was removed or re-registered while tracks were fetched
+                        return
                     if dynamic_tracks:
                         queue_items = [
                             build_queue_item(queue.queue_id, x)
@@ -515,6 +521,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         queue.display_name,
                         err,
                     )
+            if self._queue_data.get(queue.queue_id) is not queue_data:
+                # the queue was removed or re-registered while the source was fetched
+                return
             self._finish_queue(queue, prev_item)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
@@ -684,9 +693,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 )
             )
             if fully_played and not is_playing:
-                if credit_album := self._enqueued_album_for_track(
-                    queue_data, item_to_report, media_item
-                ):
+                if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(
                         self._mark_album_played(credit_album, media_item, queue_data)
                     )
@@ -734,47 +741,52 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             ),
         )
 
-    def _enqueued_album_for_track(
-        self, queue_data: PlayerQueueData, item_to_report: QueueItem, media_item: MediaItemType
+    def _claim_enqueued_album_credit(
+        self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> Album | None:
         """
-        Return the album to credit for this played track, or None.
+        Claim the album play this track credits, or None when there is nothing to credit.
 
-        Only an album the user explicitly enqueued is eligible, and only on the first
-        track of a contiguous run of its tracks (the previous queue item must belong to
-        a different album), so a single album play is credited once.
+        Only an album the user explicitly enqueued is eligible, and only the first of its
+        tracks to complete since it was enqueued, so a single album play is credited once
+        however its tracks ended up ordered in the queue. Claiming marks the album as
+        credited on this queue, so a second call for the same enqueue returns None.
         """
         album = getattr(media_item, "album", None)
         if album is None:
             return None
+        # the album the user pressed play on keeps the shape of the listing it was picked
+        # from, while the queue's tracks carry the library album. Matching on the provider
+        # mappings recognises both shapes as the same album. The most recent enqueue wins,
+        # because that is the one whose credit was just armed; an earlier entry for the same
+        # album may still be a differently shaped (and therefore separately keyed) object.
         enqueued = next(
             (
                 item
-                for item in queue_data.enqueued_media_items
-                if isinstance(item, Album) and item == album
+                for item in reversed(queue_data.enqueued_media_items)
+                if isinstance(item, Album) and compare_item_ids(item, album)
             ),
             None,
         )
-        if enqueued is None:
+        if enqueued is None or enqueued in queue_data.credited_albums:
             return None
-        queue_id = queue_data.queue.queue_id
-        index = self.index_by_id(queue_id, item_to_report.queue_item_id)
-        if index:
-            prev_item = self.get_item(queue_id, index - 1)
-            prev_album = (
-                getattr(prev_item.media_item, "album", None)
-                if prev_item and prev_item.media_item
-                else None
-            )
-            if prev_album == album:
-                return None
-        return enqueued
+        queue_data.credited_albums.add(enqueued)
+        # credit the album the track carries, which is the library one whenever the album is
+        # in the library, so the play lands on the row an explicit library play writes instead
+        # of a second provider-scoped one.
+        return album if isinstance(album, Album) else enqueued
 
     def _is_user_initiated_play(
         self, queue_data: PlayerQueueData, media_item: MediaItemType
     ) -> bool:
         """Return whether a played item was explicitly chosen by the user."""
-        return media_item in queue_data.enqueued_media_items
+        # a played item is reported in its library shape while the enqueued item may still be
+        # the provider one it was picked from. The media type is compared alongside it because
+        # the library numbers each type from one, so ids collide freely across types.
+        return any(
+            item.media_type == media_item.media_type and compare_item_ids(item, media_item)
+            for item in queue_data.enqueued_media_items
+        )
 
     async def _mark_album_played(
         self, album: Album, track: MediaItemType, queue_data: PlayerQueueData

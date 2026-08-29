@@ -24,6 +24,7 @@ from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
@@ -175,6 +176,7 @@ class PartyPlugin(PluginProvider):
                             self.mass.players.all_players(False, False),
                             key=lambda p: p.display_name.lower(),
                         )
+                        if player.type in PLAYBACK_TARGET_TYPES
                     ],
                 ],
             ),

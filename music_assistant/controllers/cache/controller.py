@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,7 +34,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps
+from music_assistant.helpers.json import SerializableType, async_json_loads, json_dumps, json_loads
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -207,6 +207,46 @@ class CacheController(CoreController):
                 return data, is_fresh, True
         return None, False, False
 
+    async def get_all(
+        self,
+        provider: str = "default",
+        category: int = 0,
+        base_class: Any = None,
+    ) -> dict[str, Any]:
+        """
+        Return every non-expired cache entry for a provider/category as a key -> data mapping.
+
+        Use this instead of many individual :meth:`get` calls when a caller needs to check a
+        large number of keys against the cache at once (e.g. while scanning a whole library),
+        since it issues a single query and a single deserialization batch rather than one of
+        each per key.
+
+        :param provider: Provider id to group cache objects.
+        :param category: Category to group cache objects.
+        :param base_class: If provided, reconstruct each entry using base_class.from_dict().
+        """
+        assert self.database is not None
+        cur_time = int(time.time())
+        rows = await self.database.get_rows_from_query(
+            f"SELECT key, data FROM {DB_TABLE_CACHE} "
+            "WHERE category = :category AND provider = :provider AND expires >= :cur_time",
+            {"category": category, "provider": provider, "cur_time": cur_time},
+            limit=0,
+        )
+        # deserialize every row in one thread-pool submission instead of one per row, which
+        # otherwise means thousands of thread submissions/context switches on a large result
+        result = await asyncio.to_thread(self._deserialize_rows, rows, provider, category)
+        if base_class is not None:
+            for key, data in result.items():
+                if data is None:
+                    continue
+                result[key] = (
+                    [base_class.from_dict(item) for item in data]
+                    if isinstance(data, list)
+                    else base_class.from_dict(data)
+                )
+        return result
+
     async def get_expiration(
         self,
         key: str,
@@ -363,6 +403,31 @@ class CacheController(CoreController):
                 db_size_mb,
                 MAX_CACHE_DB_SIZE_MB,
             )
+
+    def _deserialize_rows(
+        self, rows: list[Mapping[str, Any]], provider: str, category: int
+    ) -> dict[str, Any]:
+        """
+        JSON-deserialize a batch of raw cache rows synchronously, skipping unparsable ones.
+
+        :param rows: Raw ``key``/``data`` rows selected from the cache table.
+        :param provider: Provider id the rows were selected for, used only for error logging.
+        :param category: Category the rows were selected for, used only for error logging.
+        """
+        result: dict[str, Any] = {}
+        for row in rows:
+            try:
+                result[row["key"]] = json_loads(row["data"])
+            except ValueError as exc:
+                LOGGER.error(
+                    "Error parsing cache data for %s/%s/%s: %s",
+                    provider,
+                    category,
+                    row["key"],
+                    str(exc),
+                    exc_info=exc if self.logger.isEnabledFor(10) else None,
+                )
+        return result
 
     async def _get_cache_db_size_mb(self) -> float:
         """Return the on-disk size of the cache database (in MB)."""

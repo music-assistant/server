@@ -10,7 +10,7 @@ flow, stored per instance):
   since December 2024 cannot use it.
 - **`backends/soloist.py`** — Spotify Soloist, Spotify's official headless client. One
   continuous session, fed one track ahead, playing into a private PulseAudio capture
-  sink (`helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
+  sink (`music_assistant/helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
   as s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API.
 
 Source capacity is **2** on either backend — for librespot two parallel fetches, for
@@ -38,6 +38,29 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   id lowercased), which is the only place that identity is written down. Checked after
   pairing and before keeping an existing pairing on reconfigure; a session whose account
   cannot be read never blocks setup, mirroring the librespot credential check.
+- **A lost pairing is caught from the engine's own report.** The daemon narrates its
+  startup on stdout — `restoring session`, then `logged in as <username>` — and with
+  nothing to restore it advertises itself for pairing instead (`waiting for login -
+  connect to "<name>" from your Spotify app`) and sits there. That line fails the item and
+  raises `LoginFailed(soloist_pairing_required)`, which takes the provider out of service
+  and sends the user back through setup — but only once it is confirmed against the stored
+  session: a daemon still restoring one can announce itself the same way, and acting on
+  the line alone would fail playback on a perfectly good pairing.
+- **A pairing Spotify no longer accepts** — a password change, "sign out everywhere", a
+  revoked device — **is a blind spot.** What the engine does then has never been captured,
+  and the first thing to establish is whether it wipes the stored session — which the case
+  above catches only if the daemon announces itself for pairing afterwards, since that
+  line is what triggers the check — or keeps it, which nothing detects. `auth_state`
+  cannot carry that decision on its own: `logged_in=false` is also what a healthy daemon
+  reports before it finishes restoring, and nothing tells it apart from a daemon that
+  simply cannot reach Spotify. Nor can a guessed stdout marker, which would fail healthy
+  playback. So playback fails with a plain `Timeout waiting for audio data`: the queue's
+  readiness budget (`BUFFER_READY_TIMEOUT`, plus any capacity wait) starts before the
+  session's own `_STARTUP_TIMEOUT_S` and runs out first, cancelling the producer where it
+  waits. That also leaves `_raise_startup_error`'s "never logged in" branch to the case it
+  can still reach — a login lost after it was established. The daemon's own output is
+  logged at DEBUG behind the `[soloist]` prefix; capturing a real revocation is what
+  unblocks handling it.
 - **Streaming quality** is a provider option, shared with the Spotify Connect provider's
   tiers and defaulting to lossless. It is a ceiling: Spotify serves the best the account
   is entitled to below it. Hidden on librespot, which passes Spotify's own file through.
@@ -58,22 +81,35 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   — and that one continuous audio stream is split into ordinary per-item streams: an
   item's stream ends where the session reports moving on, and the next item's stream
   begins there. Played back to back the items reproduce the session's audio sample for
-  sample, so the cut position does not matter and Spotify's crossfade simply lives
-  inside the bytes. Only consecutive tracks are stitched; a podcast episode or audiobook
-  chapter is played on its own.
+  sample, so the cut position does not matter. Only consecutive tracks are stitched; a
+  podcast episode or audiobook chapter is played on its own. Channels are per
+  occurrence rather than per track, so a queue holding the same track twice in a row
+  stitches through it like any other pair — the engine names both under one URI, and
+  the order they were fed in is what tells them apart.
 - **Use the engine's transport before respawning it.** A next-track lands on the item
-  that was fed one ahead, so the engine is told to skip to it and the session (with its
-  crossfade) survives. Tearing a session down and spawning another costs a login, an
-  activate and a re-feed, which is seconds — and the daemon never exits on its own, so
-  nothing is gained by waiting for it either: it is closed straight away.
+  that was fed one ahead, so the engine is told to skip to it and the session
+  survives. A next item the session was *not* fed — the queue was reordered after the
+  feed, or the user picked something else — is queued and skipped to in the same way,
+  as long as the engine has nothing else queued behind what it plays: its queue offers
+  no way to remove or replace an entry, only to append one and move past it. Tearing a
+  session down and spawning another costs a login, an activate and a re-feed, which is
+  seconds — and the daemon never exits on its own, so nothing is gained by waiting for
+  it either: it is closed straight away.
 - **A session in use is never cut short**: the engine allows one session, so an item
   the running one cannot serve would otherwise restart it and truncate whatever it is
   still delivering. That happens at boundaries the session does not drive — a podcast
-  episode or audiobook chapter (never stitched), the same track twice in a row, or
-  another player — so those are reported as `ProviderStreamLimitError` instead. A
+  episode or audiobook chapter (never stitched) or another player — so those are
+  reported as `ProviderStreamLimitError` instead. A
   speculative prepare then gives up softly, and the real request, made once the other
   item has been released, gets the session. The cost is a cold start at those
-  boundaries rather than a warm buffer.
+  boundaries rather than a warm buffer. The queue's own seek of the item being
+  delivered is the exception: the engine is seeked in place where it can be, and
+  otherwise the session restarts at the target — an audiobook's chapters are separate
+  URIs, so a seek across one asks for a URI the engine is not on. Only a request that
+  *starts* an item stream may take the session over: a chapter boundary is a fresh
+  session, so a stream the seek replaced can arrive at one having released its own
+  channel, and taking the session back there would undo the seek. Such a stream ends
+  with `StreamSupersededError` instead, rather than stitching its next chapter on.
 - **The Spotify app can reach in, and that ends the session.** The engine always
   advertises itself as a Connect device and offers no way to suppress that, so the
   device is listed in the user's Spotify apps for as long as Music Assistant is
@@ -90,9 +126,9 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
     a skip in the app lands there, which is also where the queue goes next, so the
     two stay in step. The engine's own autoplay and the item it restores at startup
     both fail the `mid_play` test, which is what keeps them out of it. Note the
-    last `crossfade + 10s` of an item is a blind spot by design: judging a boundary
-    needs that allowance, so a takeover inside it is missed rather than risking a
-    false one on every track.
+    last 10s of an item is a blind spot by design: judging a boundary needs that
+    allowance, so a takeover inside it is missed rather than risking a false one on
+    every track.
   - **Pause**, which is put back a couple of times (an accidental tap) and then
     taken at face value.
 
@@ -107,18 +143,12 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   item's audio does not exist until the session gets there. The session calls
   `prepare_next_audio_buffer()` when it does, identifying the item **by URI** (a queue
   reorder may have moved it).
-- **Crossfade comes from the queue**: Music Assistant cannot crossfade audio it is not
-  mixing, so the queue's own crossfade preference is written into the engine's prefs
-  before every spawn. Its unit is milliseconds and sub-second values silently disable
-  crossfade, which the seconds-based queue setting can never produce. Changing the
-  setting mid-playback takes effect on the next playback, which is also why
-  `delivers_crossfaded_audio(streamdetails)` reports the captured value of the session
-  serving *that item's* queue rather than the current setting. It answers per boundary:
-  a fade is only reported where the engine plays across the cut. Nothing is faded *into*
-  the item a session starts on, one it was jumped to, or one it was handed but has not
-  reached; those are credited only if the engine plays on out of them. Likewise nothing
-  is faded out of an item whose follower this session can no longer serve — a drained
-  channel or a repeat starts a fresh session, so that boundary is a hard cut.
+- **The engine never crossfades**: its own crossfade is written off in the prefs before
+  every spawn, so each track's audio arrives clean from its first sample. Music Assistant
+  mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
+  beat grids and light sync aligned with what is heard — a fade baked into the bytes
+  would shift every track's start against its analysis. It also means smart fades work
+  on Spotify audio.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
   unpaced, PulseAudio renders silence rather than pushing back, and the session runs
@@ -138,9 +168,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   through one place (`_apply_sink_state`).
 - **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
   WebSocket state delimits the items. An item stream is deliberately **not** capped at
-  the item duration — with crossfade it carries the head of the next track — but it is
-  bounded, and completeness is validated against the furthest playback position the
-  engine reported for it, with the crossfade added to the tolerance. The **last** item
+  the item duration, but it is bounded, and completeness is validated against the
+  furthest playback position the engine reported for it. The **last** item
   of a run gets no track change to cut it on, so a stop/idle/pause snapshot at its own
   end arms a bounded tail drain instead; a pause part-way through is treated as app
   interference, and the engine resuming cancels the drain. A channel is served **once**:

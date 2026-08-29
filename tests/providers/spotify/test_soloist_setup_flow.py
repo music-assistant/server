@@ -192,8 +192,7 @@ async def test_reconfigure_keeps_the_existing_paired_session(
     monkeypatch.setattr(setup_flow, "verify_platform_supported", MagicMock())
     paired_dirs = _record_pairing(monkeypatch)
     canonical = tmp_path / "spotify" / "spotify--test" / SOLOIST_DATA_DIR_NAME
-    canonical.mkdir(parents=True)
-    (canonical / "session.bin").write_bytes(b"session")
+    (canonical / "settings" / "Users" / "spotify-user-user").mkdir(parents=True)
     session = _make_session(
         tmp_path,
         [
@@ -404,7 +403,7 @@ async def test_pairing_captures_its_output_and_redacts_the_api_key(
     _install_fake_soloist(
         monkeypatch,
         0,
-        on_wait=lambda: (tmp_path / "data" / "session.bin").write_bytes(b"x"),
+        on_wait=lambda: _store_session(tmp_path / "data"),
         spawns=spawns,
         output_lines=(f"starting with --api-key {api_key}",),
     )
@@ -442,11 +441,30 @@ async def test_pairing_success_stores_a_session(
 ) -> None:
     """A pairing run that stores a session completes without error."""
     data_dir = tmp_path / "pairdir"
-    _install_fake_soloist(
-        monkeypatch, returncode=0, on_wait=lambda: (data_dir / "session.bin").write_bytes(b"x")
-    )
+    _install_fake_soloist(monkeypatch, returncode=0, on_wait=lambda: _store_session(data_dir))
     await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
-    assert (data_dir / "session.bin").is_file()
+    assert (data_dir / "settings" / "Users" / "spotify-user-user").is_dir()
+
+
+async def test_a_pairing_that_stored_no_account_is_not_mistaken_for_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run leaving only what every spawn leaves behind never paired: it must not be adopted."""
+    data_dir = tmp_path / "pairdir"
+
+    def _leave_spawn_debris() -> None:
+        (data_dir / "settings").mkdir(parents=True)
+        (data_dir / "settings" / "prefs").write_text("audio.normalize_v2=false\n", encoding="utf-8")
+        (data_dir / "soloist.pid").write_text("42", encoding="utf-8")
+
+    _install_fake_soloist(monkeypatch, returncode=0, on_wait=_leave_spawn_debris)
+    with pytest.raises(LoginFailed, match="did not store"):
+        await pair_soloist_session(MagicMock(), "k" * 20, data_dir)
+
+
+def _store_session(data_dir: Path, account: str = "spotify-user") -> None:
+    """Write a paired session the way the engine records it."""
+    (data_dir / "settings" / "Users" / f"{account}-user").mkdir(parents=True, exist_ok=True)
 
 
 async def _run_awaitable(awaitable: Any, **_kwargs: Any) -> Any:
@@ -529,3 +547,31 @@ def _install_fake_soloist(
             return returncode
 
     monkeypatch.setattr(spotify_helpers, "AsyncProcess", _FakePairProcess)
+
+
+@pytest.mark.parametrize(
+    ("stored", "account_id", "differs"),
+    [
+        # the engine records the canonical (lowercased) signed-in id
+        ("u1", "u1", False),
+        ("u2", "u1", True),
+        # non-ASCII usernames come back percent-encoded; still the same account
+        ("us%C3%A9rnam%C3%A9", "usérnamé", False),
+        # and a percent-encoded name that decodes to someone else is still spotted
+        ("s%C3%B6meone_else", "usérnamé", True),
+        # nothing stored, or no signed-in id: never block the setup
+        (None, "u1", False),
+        ("u1", None, False),
+    ],
+)
+async def test_paired_account_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stored: str | None,
+    account_id: str | None,
+    differs: bool,
+) -> None:
+    """A soloist session paired by another Spotify account is spotted, and only that."""
+    monkeypatch.setattr(setup_flow, "soloist_session_account", MagicMock(return_value=stored))
+
+    assert await setup_flow._paired_account_differs(tmp_path, account_id) is differs

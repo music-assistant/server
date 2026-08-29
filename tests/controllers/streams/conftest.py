@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,7 +11,7 @@ from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.tasks import TasksController
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
 
     from music_assistant.mass import MusicAssistant
 
@@ -32,3 +33,22 @@ async def streams_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Str
         # close unconditionally: a failed assertion must not leave the socket bound
         await streams.close()
         await mass_minimal.tasks.close()
+
+
+@pytest.fixture
+def streamserver_fallback(
+    streams_controller: StreamsController,
+) -> Iterator[AsyncMock]:
+    """
+    Make the streamserver report a successful fallback to all interfaces.
+
+    :param streams_controller: StreamsController whose server should report the fallback.
+    """
+    server = streams_controller._server
+
+    async def setup(*, bind_port: int, **_kwargs: object) -> None:
+        server._bind_ip = None
+        server._bind_port = bind_port
+
+    with patch.object(server, "setup", AsyncMock(side_effect=setup)) as setup_mock:
+        yield setup_mock

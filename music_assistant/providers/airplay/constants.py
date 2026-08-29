@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
+from music_assistant.controllers.streams.constants import SEEK_WAIT_THRESHOLD
 
 DOMAIN = "airplay"
 
@@ -66,10 +67,18 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself writes away
-# from: a receiver that never answers PTP is switched to NTP, while one whose
-# native control channel conclusively fails is switched to compatibility mode.
+# capability; Automatic is the default and the setting is only ever written by
+# the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Per-device 24-bit toggle, only offered for devices that advertise 24-bit
+# support. Defaults per device family (see default_hires_enabled).
+CONF_ENABLE_HIRES: Final[str] = "enable_hires"
+# Provider marker that the compatibility-mode pins were reset once. Earlier
+# releases switched a player here themselves when its native control channel
+# failed (usually a network dropout), pinning it to a lane many devices reject
+# outright, so those machine-written values are returned to Automatic a single
+# time; a deliberate choice can simply be made again.
+CONF_COMPAT_PINS_REVIEWED: Final[str] = "compat_pins_reviewed"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
 STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
@@ -170,6 +179,29 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+
+# How long a start waits for the source to hand over its first audio before it
+# judges the members on what they never received. A seek may land up to
+# SEEK_WAIT_THRESHOLD seconds ahead of what the source has produced, and the
+# wait has to outlast the producer covering that; the margin covers its own
+# spin-up. It is a backstop rather than a budget: this runs under the player
+# lock, so a producer that neither delivers nor gives up would otherwise hold
+# every command for the player behind it.
+AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
+# Hard cap on how long the stdin EOF withheld for a predicted replacement stream
+# is held. What normally releases that wait is the queue itself: it clears the
+# transition on any failure between rotating its stream session and the
+# play_media that carries the replacement (an item that fails to load, a
+# provider error), and that is the signal no replacement is coming. This only
+# covers a transition that neither completes nor clears. It sits past the load
+# that carries a replacement - the queue's buffer prepare (BUFFER_READY_TIMEOUT,
+# 15s) plus the provider source slot its producer may wait out first - so a slow
+# but real seek is never cut short into a cold restart.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 35.0
+# How often the queue is asked whether it is still loading that replacement.
+# It only bounds how quickly a cleared transition is noticed, so it trades no
+# accuracy for a poll this cheap (one dict lookup).
+AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
@@ -208,13 +240,14 @@ AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
 # footprint.
 AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 
-# Delay (seconds) before automatically re-joining a group member whose
+# Delays (seconds) between automatic re-join attempts for a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
-# network blackout longer than the binary's own keepalive tolerance). A single
-# attempt keeps the behaviour predictable: it waits long enough for a short
-# blackout to clear, and if the device is still gone the player is left idle.
-# Staged retries can be reintroduced by adding entries to the tuple.
-AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+# network blackout longer than the binary's own keepalive tolerance). A device
+# recovering from a network dropout typically needs tens of seconds to come
+# back, so the ladder stretches to a few minutes; every attempt re-validates
+# that the group still plays and the player was not repurposed meanwhile, and
+# the whole schedule is abandoned as soon as either no longer holds.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into
@@ -233,18 +266,22 @@ AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS: Final[int] = 2000
 # and out itself. <= -60 mutes the music entirely. -18 dB puts the music
 # clearly in the background under speech (-12 was field-judged too shallow).
 AIRPLAY_ANNOUNCE_DUCK_DB: Final[int] = -18
+# Silence prepended to every announcement clip. The binary holds the music duck
+# for the whole clip file, so this is a window in which the music is already
+# ducked and the announcement has not started yet: the announcement volume is
+# raised inside it, where it cannot be heard as the music getting louder. It
+# has to cover the duck's ramp plus the round trip of the volume command.
+AIRPLAY_ANNOUNCE_DUCK_LEAD_S: Final[float] = 0.5
 # Silence appended to every announcement clip, so the volume restore has a
-# cushion to land in. Mixed over live playback the binary holds the duck for
-# the whole clip, so the restore lands while the music is still ducked instead
-# of racing the duck's 200 ms tail ramp (a restore that lands after the ramp
-# plays a moment of full-level music at the still-bumped device volume). On a
-# dedicated announcement session it keeps the stream alive past the clip, which
-# is what a volume command needs to reach the receiver at all.
+# cushion to land in. The binary holds the duck for the whole clip, so the
+# restore lands while the music is still ducked instead of racing the duck's
+# 200 ms tail ramp (a restore that lands after the ramp plays a moment of
+# full-level music at the still-bumped device volume).
 AIRPLAY_ANNOUNCE_DUCK_TAIL_S: Final[float] = 1.0
 # On top of the lead to the commanded instant: how long to wait for a member's
 # announce_started before treating that member as not announcing. An outdated
-# binary silently ignores the unknown command, so this bounded wait is also
-# what detects that and routes the announcement to the fallback path.
+# binary silently ignores the unknown command, so this bounded wait is also what
+# detects that, and the announcement then fails instead of playing nowhere.
 AIRPLAY_ANNOUNCE_STARTED_TIMEOUT_MS: Final[int] = 3000
 # On top of the clip's audible end: how long to wait for announce_done. The
 # wait stays bounded because a queue that ends mid-clip emits its eof, which
@@ -253,11 +290,10 @@ AIRPLAY_ANNOUNCE_DONE_TIMEOUT_MS: Final[int] = 5000
 # Pad after the clip's audible end before the pre-announcement volume is
 # restored: covers the jitter between the acked instant and true audibility.
 AIRPLAY_ANNOUNCE_VOLUME_RESTORE_PAD_MS: Final[int] = 500
-# Delay of the announcement-volume bump past the clip's audible start: a bump
-# that lands early (a receiver playing out later than the reported instant)
-# raises the still-playing music, so it is biased into the clip where the duck
-# ramp masks it - the pre-announce chime covers the first moments anyway.
-AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
+# Where inside the ducked lead-in the announcement volume is raised: past the
+# duck's own ramp, with the rest of the lead left for the command to reach the
+# receiver before the announcement itself becomes audible.
+AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 200
 # The AirPlay volume parameter is linear dB: 0..100 maps onto -30..0 dB on
 # every flow (libraop raopcl_float_volume, reused verbatim by the native AP2
 # SET_PARAMETER path), so one volume point is exactly 0.3 dB of output. This
@@ -265,9 +301,6 @@ AIRPLAY_ANNOUNCE_VOLUME_BUMP_DELAY_MS: Final[int] = 300
 # the duck is deepened by the same amount to keep the music's perceived level
 # at the configured duck depth.
 AIRPLAY_VOLUME_DB_PER_POINT: Final[float] = 0.3
-# Drain margin for a dedicated announcement session: covers the receiver
-# playing out its buffered audio after the clip's last byte was fed.
-AIRPLAY_ANNOUNCE_SESSION_DRAIN_S: Final[float] = 2.0
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
@@ -296,6 +329,8 @@ CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 # Interactive setup-flow input keys (transient PIN/password form fields and the
 # optional "set up now?" choice for the control pairing steps).
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
+# every AirPlay pairing PIN (streaming, Companion, MRP) is 4 digits
+PAIRING_PIN_FORMAT: Final[str] = "####"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
@@ -303,6 +338,11 @@ CONF_PAIR_NOW: Final[str] = "pair_now"
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
+# How long a volume we sent ourselves keeps the device's own volume reports from
+# being acted on. A receiver echoes every level it is given back over DACP, and
+# an echo that arrives after the next level was already sent would otherwise be
+# read as the user turning the knob and written straight back to the device.
+AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16

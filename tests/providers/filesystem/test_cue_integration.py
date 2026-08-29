@@ -98,6 +98,9 @@ def _make_provider(base_path: str = "/music") -> LocalFileSystemProvider:
     provider.mass.cache.set = AsyncMock(return_value=None)
     provider.cache = MagicMock()
     provider._sync_tracks = True
+    provider.sync_running = False
+    provider._sync_nfo_by_dir = {}
+    provider._sync_nfo_index_ready = False
     provider._cue = CueSheetHandler(provider)
     return provider
 
@@ -399,6 +402,42 @@ class TestParseCueTracks:
             isrcs = [v for k, v in track.external_ids if k == ExternalID.ISRC]
             assert len(isrcs) == 1
             assert isrcs[0].startswith("GBAMU78")
+
+    @pytest.mark.asyncio
+    async def test_track_performer_registers_cue_sheet_as_representative(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A per-track PERFORMER (and the album artist) register the CUE sheet, not the audio.
+
+        The companion audio file is absorbed into CUE tracks and is never itself a synced
+        item, so only the CUE sheet's own path can later be re-queued to reparse a changed
+        artist.nfo/image for these performers.
+        """
+        audio_file = tmp_path / "album.flac"
+        audio_file.write_bytes(b"")
+        cue_item = _make_cue_item(tmp_path, SAMPLE_CUE)
+        provider = _make_provider(base_path=str(tmp_path))
+        tags = _make_audio_tags(duration=900.0)
+        album = Album(
+            item_id="a1",
+            provider=provider.instance_id,
+            name="Live at the BBC",
+            provider_mappings=set(),
+        )
+        self._wire_provider_for_parse(provider, album)
+
+        with patch(
+            "music_assistant.providers.filesystem_local.cue.async_parse_tags",
+            AsyncMock(return_value=tags),
+        ):
+            await provider._cue.parse_tracks(cue_item)
+
+        # every _parse_artist call made while building the per-track performers must carry
+        # the CUE sheet's own path, never the companion audio file's
+        parse_artist_mock = cast("AsyncMock", provider._parse_artist)
+        for call in parse_artist_mock.await_args_list:
+            assert call.kwargs.get("representative_track") == cue_item.relative_path
 
     @pytest.mark.asyncio
     async def test_track_durations(self, tmp_path: Path) -> None:
@@ -868,6 +907,7 @@ class TestClassifyScanItemCue:
             unchanged_cue_items=unchanged_cue_items,
             cue_stems=cue_stems,
             ignore_album_playlists=False,
+            metadata_files=[],
         )
         return items_to_process, unchanged_cue_items, cur_filenames, cue_stems
 

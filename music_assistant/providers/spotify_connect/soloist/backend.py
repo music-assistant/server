@@ -16,6 +16,7 @@ import asyncio
 import re
 from asyncio import FIRST_COMPLETED
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -34,6 +35,7 @@ from music_assistant.helpers.pulse_capture import (
 from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_LOSSLESS,
     SpotifyConnectBackend,
+    spotify_source_audio_format,
 )
 from music_assistant.providers.spotify_connect.models import (
     BackendEvent,
@@ -103,6 +105,9 @@ BINARY_REFRESH_INTERVAL_S: Final = 24 * 3600
 # of on the (side-effect-free) stream request.
 GENERATION_WATCH_INTERVAL_S: Final = 5
 
+# item uri prefixes Spotify never serves losslessly, whatever the tier is set to.
+_SPOKEN_URI_PREFIXES: Final = ("spotify:episode:", "spotify:chapter:")
+
 # playback_state/playback_changed status values mapped to normalized events;
 # undocumented values degrade to OTHER.
 _STATUS_EVENTS: Final[dict[str, BackendEventType]] = {
@@ -127,7 +132,7 @@ class SoloistBackend(SpotifyConnectBackend):
         self,
         mass: MusicAssistant,
         *,
-        instance_id: str,
+        identity_key: str,
         publish_name: str,
         name: str,
         logger: logging.Logger,
@@ -143,8 +148,8 @@ class SoloistBackend(SpotifyConnectBackend):
         Initialize the backend (cheap; the daemon is launched in ``start``).
 
         :param mass: The MusicAssistant instance.
-        :param instance_id: The owning provider's instance id; keys the
-            data/cache dirs and the capture sink name.
+        :param identity_key: Unique identity of this daemon (one per connected
+            player); keys the data/cache dirs and the capture sink name.
         :param publish_name: Device name advertised to the Spotify app.
         :param name: Display name of the owning provider instance (log messages).
         :param logger: Logger to use for diagnostics.
@@ -175,10 +180,10 @@ class SoloistBackend(SpotifyConnectBackend):
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
         self._audio_quality = audio_quality
-        self._data_dir = Path(mass.storage_path) / "spotify_connect" / instance_id / "soloist-data"
-        self._cache_dir = Path(mass.cache_path) / instance_id / "soloist-cache"
+        self._data_dir = Path(mass.storage_path) / "spotify_connect" / identity_key / "soloist-data"
+        self._cache_dir = Path(mass.cache_path) / identity_key / "soloist-cache"
         # PA sink names end up in space-delimited module arguments and env vars
-        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", instance_id)
+        self._sink_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", identity_key)
         self._binary: Path | None = None
         # digest of the build the running daemon was spawned from; the shared
         # install can move ahead of it when a sibling instance updates first
@@ -207,19 +212,11 @@ class SoloistBackend(SpotifyConnectBackend):
         self._spotify_volume: int | None = None
         # guards the player_only 100%-pin so overlapping resets are not issued
         self._pin_in_flight: bool = False
-        # whether an auth_state ever reported a completed login; a fresh daemon
-        # reports logged_in=False while advertising for pairing, which is normal
-        self._was_logged_in: bool = False
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
-        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM (the pulse
-        # capture format) — that is what actually arrives on the named pipe.
-        # Soloist decodes internally and never exposes the source codec or
-        # quality, so this capture format doubles as the display format: MA's
-        # input really is 32-bit PCM (24-bit lossless fits losslessly), while
-        # Spotify's upstream quality stays unknowable either way. The advertised
-        # format also decides the internal PCM depth and the ffmpeg-free
-        # passthrough for an AudioSource, so it has to stay what arrives.
+        # the capture sink delivers fixed s32le/44.1kHz/2ch PCM — that is what
+        # actually arrives on the named pipe, and every decision about the bytes
+        # follows it because it is reported as the decoded format
         self._capture_format = AudioFormat(
             content_type=ContentType.PCM_S32LE,
             codec_type=ContentType.PCM_S32LE,
@@ -227,21 +224,40 @@ class SoloistBackend(SpotifyConnectBackend):
             bit_depth=32,
             channels=CAPTURE_CHANNELS,
         )
-        self._audio_format = self._capture_format
+        self._tier_format = spotify_source_audio_format(
+            audio_quality, lossless=audio_quality == AUDIO_QUALITY_LOSSLESS
+        )
+        # spoken content is Ogg Vorbis whatever the tier says; on the lossy tiers
+        # that is the tier format itself
+        self._spoken_format = (
+            spotify_source_audio_format(audio_quality, lossless=False)
+            if audio_quality == AUDIO_QUALITY_LOSSLESS
+            else self._tier_format
+        )
 
     @property
     def audio_format(self) -> AudioFormat:
         """Return the source audio format (advertised to clients for display)."""
-        return self._audio_format
+        # a Connect session plays whatever the Spotify app picked, so the uri of the
+        # item playing when the stream starts is the only media-type signal there is;
+        # an unknown item is treated as music, the dominant case for a ceiling claim
+        if self._last_track_uri and self._last_track_uri.startswith(_SPOKEN_URI_PREFIXES):
+            return self._spoken_format
+        return self._tier_format
 
     @property
     def decoded_audio_format(self) -> AudioFormat:
         """Return the PCM format the capture sink's named pipe delivers."""
-        return self._capture_format
+        # a copy per stream: the core mirrors what ffmpeg probes onto this object,
+        # which must not land on the one format every stream shares
+        return replace(self._capture_format)
 
     @property
     def stream_ends_on_pause(self) -> bool:
-        """The pipe sink delivers silence on pause; the provider stops the player."""
+        """The pipe sink never signals end of stream; the provider stops the player."""
+        # the sink renders only while a client is connected: silence while the daemon
+        # holds its stream open, nothing at all once the daemon drops it. A reader
+        # therefore sees neither audio nor EOF, so MA has to end the stream itself.
         return False
 
     @property
@@ -651,6 +667,10 @@ class SoloistBackend(SpotifyConnectBackend):
                         # fatal errors are plain (non-localized) strings for now,
                         # matching the go-librespot backend
                         error="soloist daemon failed to start multiple times.",
+                        # repeated soloist exits are dominated by engine-level
+                        # problems (e.g. a bad or revoked API key) that hit every
+                        # daemon alike
+                        provider_wide=True,
                     )
                 )
                 return
@@ -755,6 +775,8 @@ class SoloistBackend(SpotifyConnectBackend):
                         "installed. Check the server's internet connection and reload "
                         "this provider."
                     ),
+                    # the binary (and its expiry) is shared by every daemon
+                    provider_wide=True,
                 )
             )
             return False
@@ -909,18 +931,12 @@ class SoloistBackend(SpotifyConnectBackend):
         """Map a raw soloist event onto the normalized BackendEvent model."""
         data = event.data
         if isinstance(data, SoloistAuthState):
-            if not data.logged_in:
-                if self._was_logged_in:
-                    # an established login was lost mid-session: real auth loss
-                    self._was_logged_in = False
-                    return self._make_event(BackendEventType.AUTH_REQUIRED)
-                # a fresh daemon reports logged_in=False while advertising for
-                # pairing; that is the normal pre-pairing state, not an auth loss
-                return self._make_event(BackendEventType.SESSION_INACTIVE)
-            self._was_logged_in = True
+            # a logged-out daemon keeps advertising itself for Connect, so being
+            # signed out is just a session that ended: awaiting a first pairing,
+            # the user signing out, or another account taking the device over
             return self._make_event(
                 BackendEventType.SESSION_ACTIVE
-                if data.is_active
+                if data.logged_in and data.is_active
                 else BackendEventType.SESSION_INACTIVE
             )
         if isinstance(data, SoloistDeviceChanged):
