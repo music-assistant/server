@@ -834,6 +834,57 @@ def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple(
     assert playlist_item.album.item_id == "alb1b"
 
 
+def test_media_item_to_playlist_item_album_deterministic_among_same_instance_mappings() -> None:
+    """
+    Two mappings sharing the track's own instance still resolve to the same one.
+
+    An album can hold more than one mapping for the same account (for example an
+    alternate catalog ID for the same release) - matching by instance alone is not
+    enough to guarantee a single candidate, so the deterministic ranking must still
+    apply among those matches instead of leaving the choice to set iteration order.
+    """
+    album = Album(
+        item_id="alb1",
+        provider="spotify--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1-alt",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                available=False,
+            ),
+            ProviderMapping(
+                item_id="alb1-main",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                available=True,
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "spotify--1"
+    assert playlist_item.album.item_id == "alb1-main"
+
+
 def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_without_match() -> (
     None
 ):

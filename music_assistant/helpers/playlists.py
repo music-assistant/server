@@ -734,21 +734,22 @@ def _select_provider_mapping(
     Pick the mapping to serialize for a related-item reference (album, artist, podcast).
 
     A set's iteration order is not guaranteed stable, so picking an arbitrary mapping
-    would nondeterministically choose an unrelated sibling account across runs. Prefer
-    the mapping matching ``preferred_instance`` - typically the track's own primary
-    instance - so the reference stays correlated with the account the rest of the entry
-    was captured from; otherwise fall back to the same deterministic ranking used to
-    pick the track's own primary provider.
+    would nondeterministically choose an unrelated sibling account across runs, or -
+    when several mappings happen to share ``preferred_instance`` - an arbitrary one of
+    those. Ranking ``preferred_instance`` as the first tie-break criterion, ahead of the
+    same deterministic ranking used to pick the track's own primary provider, keeps the
+    reference correlated with the account the rest of the entry was captured from while
+    remaining fully deterministic even among same-instance mappings.
 
     :param provider_mappings: The related item's provider mappings, if any.
     :param preferred_instance: Provider instance to prefer among the mappings.
     """
     if not provider_mappings:
         return None
-    return next(
-        (m for m in provider_mappings if m.provider_instance == preferred_instance),
-        None,
-    ) or min(provider_mappings, key=_provider_mapping_sort_key)
+    return min(
+        provider_mappings,
+        key=lambda m: (m.provider_instance != preferred_instance, *_provider_mapping_sort_key(m)),
+    )
 
 
 def collect_artist_infos(
