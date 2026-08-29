@@ -877,6 +877,113 @@ def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_wi
     assert playlist_item.album.item_id == "alb1a"
 
 
+def test_media_item_to_playlist_item_album_prefers_available_mapping() -> None:
+    """
+    An available mapping wins over an unavailable one, regardless of iteration order.
+
+    Without a match to the track's own instance, the fallback ranking must still put an
+    available sibling ahead of an unavailable one.
+    """
+    album = Album(
+        item_id="alb1",
+        provider="tidal--2",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(
+                item_id="alb1a",
+                provider_domain="tidal",
+                provider_instance="tidal--1",
+                available=False,
+            ),
+            ProviderMapping(
+                item_id="alb1b",
+                provider_domain="tidal",
+                provider_instance="tidal--2",
+                available=True,
+            ),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="spotify--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="spotify",
+                provider_instance="spotify--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.album is not None
+    assert playlist_item.album.provider_instance == "tidal--2"
+    assert playlist_item.album.item_id == "alb1b"
+
+
+def test_media_item_to_playlist_item_track_round_trip_preserves_exact_capable_album() -> None:
+    """
+    An album with several sibling mappings round-trips to the account holding exact evidence.
+
+    Exporting must pick the mapping matching the track's own account (rather than an
+    arbitrary sibling) so the reconstructed reference resolves to the same account that
+    supplied the track, keeping strict Exact-tier evidence available after a round trip.
+    """
+    mass = MagicMock()
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    tidal_1 = DummyProvider("tidal", "tidal--1")
+    mass.get_provider.side_effect = lambda ref: {
+        "tidal": tidal_1,
+        "tidal--1": tidal_1,
+    }.get(ref)
+    album = Album(
+        item_id="alb1",
+        provider="tidal--1",
+        name="Kid A",
+        provider_mappings={
+            ProviderMapping(item_id="alb1a", provider_domain="tidal", provider_instance="tidal--1"),
+            ProviderMapping(item_id="alb1b", provider_domain="tidal", provider_instance="tidal--2"),
+            ProviderMapping(item_id="alb1c", provider_domain="tidal", provider_instance="tidal--3"),
+        },
+    )
+    track = Track(
+        item_id="abc123",
+        provider="tidal--1",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123",
+                provider_domain="tidal",
+                provider_instance="tidal--1",
+                audio_format=AudioFormat(content_type=ContentType.FLAC),
+            ),
+        },
+        album=album,
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+    parsed = parse_m3u(generate_m3u("Kid A", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert isinstance(reconstructed, Track)
+    assert reconstructed.album is not None
+    # the track's own account (tidal--1) holds the album's exact-evidence mapping (alb1a) -
+    # the round trip must resolve to that specific instance, not an arbitrary sibling
+    assert reconstructed.album.provider == "tidal--1"
+    assert reconstructed.album.item_id == "alb1a"
+
+
 def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> None:
     """Conflicting merged external IDs from different providers are not exported arbitrarily."""
     track = Track(

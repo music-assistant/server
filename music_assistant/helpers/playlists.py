@@ -727,18 +727,51 @@ def _provider_mapping_sort_key(mapping: ProviderMapping) -> tuple[bool, int, str
     )
 
 
-def collect_artist_infos(full_item: MediaItem) -> list[ArtistInfo]:
-    """Extract artist info from a media item for M3U serialization."""
+def _select_provider_mapping(
+    provider_mappings: set[ProviderMapping] | None, preferred_instance: str | None
+) -> ProviderMapping | None:
+    """
+    Pick the mapping to serialize for a related-item reference (album, artist, podcast).
+
+    A set's iteration order is not guaranteed stable, so picking an arbitrary mapping
+    would nondeterministically choose an unrelated sibling account across runs. Prefer
+    the mapping matching ``preferred_instance`` - typically the track's own primary
+    instance - so the reference stays correlated with the account the rest of the entry
+    was captured from; otherwise fall back to the same deterministic ranking used to
+    pick the track's own primary provider.
+
+    :param provider_mappings: The related item's provider mappings, if any.
+    :param preferred_instance: Provider instance to prefer among the mappings.
+    """
+    if not provider_mappings:
+        return None
+    return next(
+        (m for m in provider_mappings if m.provider_instance == preferred_instance),
+        None,
+    ) or min(provider_mappings, key=_provider_mapping_sort_key)
+
+
+def collect_artist_infos(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> list[ArtistInfo]:
+    """
+    Extract artist info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among each artist's mappings,
+        typically the track's own primary instance.
+    """
     artist_infos: list[ArtistInfo] = []
     if not hasattr(full_item, "artists") or not full_item.artists:
         return artist_infos
     for artist in full_item.artists:
-        prov_mappings = getattr(artist, "provider_mappings", None)
-        if prov_mappings:
-            first_mapping = next(iter(prov_mappings))
-            a_domain = first_mapping.provider_domain
-            a_item_id = first_mapping.item_id
-            a_instance = first_mapping.provider_instance
+        mapping = _select_provider_mapping(
+            getattr(artist, "provider_mappings", None), preferred_instance
+        )
+        if mapping:
+            a_domain = mapping.provider_domain
+            a_item_id = mapping.item_id
+            a_instance = mapping.provider_instance
         else:
             a_domain = artist.provider
             a_item_id = artist.item_id
@@ -768,16 +801,10 @@ def collect_album_info(
     if not hasattr(full_item, "album") or not full_item.album:
         return None
     album = full_item.album
-    prov_mappings = getattr(album, "provider_mappings", None)
-    if prov_mappings:
-        # a set's iteration order is not guaranteed stable, so picking an arbitrary
-        # mapping here would nondeterministically pin an unrelated sibling account as
-        # authoritative album evidence; prefer the mapping matching the track's own
-        # instance, falling back to the same deterministic ranking used for tracks
-        mapping = next(
-            (m for m in prov_mappings if m.provider_instance == preferred_instance),
-            None,
-        ) or min(prov_mappings, key=_provider_mapping_sort_key)
+    mapping = _select_provider_mapping(
+        getattr(album, "provider_mappings", None), preferred_instance
+    )
+    if mapping:
         al_domain = mapping.provider_domain
         al_item_id = mapping.item_id
         al_instance = mapping.provider_instance
@@ -794,17 +821,26 @@ def collect_album_info(
     )
 
 
-def collect_podcast_info(full_item: MediaItem) -> PodcastInfo | None:
-    """Extract podcast info from a media item for M3U serialization."""
+def collect_podcast_info(
+    full_item: MediaItem, preferred_instance: str | None = None
+) -> PodcastInfo | None:
+    """
+    Extract podcast info from a media item for M3U serialization.
+
+    :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
+    :param preferred_instance: Provider instance to prefer among the podcast's mappings,
+        typically the track's own primary instance.
+    """
     if not hasattr(full_item, "podcast") or not full_item.podcast:
         return None
     podcast = full_item.podcast
-    prov_mappings = getattr(podcast, "provider_mappings", None)
-    if prov_mappings:
-        first_mapping = next(iter(prov_mappings))
-        p_domain = first_mapping.provider_domain
-        p_item_id = first_mapping.item_id
-        p_instance = first_mapping.provider_instance
+    mapping = _select_provider_mapping(
+        getattr(podcast, "provider_mappings", None), preferred_instance
+    )
+    if mapping:
+        p_domain = mapping.provider_domain
+        p_item_id = mapping.item_id
+        p_instance = mapping.provider_instance
     else:
         p_domain = podcast.provider
         p_item_id = podcast.item_id
@@ -885,14 +921,14 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     if prov_infos:
         primary = prov_infos[0]
         primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
+        preferred_instance = primary.instance_id
     else:
         primary_uri = full_item.uri or ""
+        preferred_instance = None
 
-    artist_infos = collect_artist_infos(full_item)
-    album_info = collect_album_info(
-        full_item, preferred_instance=primary.instance_id if prov_infos else None
-    )
-    podcast_info = collect_podcast_info(full_item)
+    artist_infos = collect_artist_infos(full_item, preferred_instance=preferred_instance)
+    album_info = collect_album_info(full_item, preferred_instance=preferred_instance)
+    podcast_info = collect_podcast_info(full_item, preferred_instance=preferred_instance)
 
     # collect images
     images: list[ImageInfo] = []
