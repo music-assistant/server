@@ -326,6 +326,49 @@ async def test_update_user_profile(auth_manager: AuthenticationManager) -> None:
     assert updated_user.username == user.username
 
 
+async def test_update_user_profile_notifies_dashboard_viewers(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a preferences update reaches the dashboard controller.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="prefsuser",
+        role=UserRole.USER,
+        preferences={"visualizer_preset": "one"},
+    )
+    set_current_user(user)
+    dashboard = MagicMock()
+    auth_manager.mass.dashboard = dashboard
+
+    await auth_manager.update_user_profile(preferences={"visualizer_preset": "two"})
+
+    # the preferences as they were, so the controller can tell a real change from a rewrite
+    dashboard.notify_user_preferences_changed.assert_called_once_with(
+        user.user_id, {"visualizer_preset": "one"}, {"visualizer_preset": "two"}
+    )
+
+
+async def test_update_user_profile_leaves_dashboards_alone_without_preferences(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a profile update touching no preferences signals nothing.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="nameonlyuser", role=UserRole.USER)
+    set_current_user(user)
+    dashboard = MagicMock()
+    auth_manager.mass.dashboard = dashboard
+
+    await auth_manager.update_user_profile(display_name="New Name")
+
+    dashboard.notify_user_preferences_changed.assert_not_called()
+
+
 async def test_change_password(auth_manager: AuthenticationManager) -> None:
     """
     Test changing user password.
