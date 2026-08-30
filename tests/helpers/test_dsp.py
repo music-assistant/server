@@ -29,6 +29,7 @@ from music_assistant.helpers.dsp import (
 )
 
 INPUT_FORMAT = AudioFormat(sample_rate=48000)
+MONO_INPUT_FORMAT = AudioFormat(sample_rate=48000, channels=1)
 IR_DIR = "/irs"
 
 
@@ -76,11 +77,42 @@ def test_balance_filter_zero_is_passthrough() -> None:
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == []
 
 
-def test_balance_filter_mono_is_skipped() -> None:
-    """Test that balance is skipped on a mono source (stereo-only operation)."""
+def test_balance_filter_mono_right() -> None:
+    """Test that balance towards the right widens a mono source and attenuates the left."""
     dsp_filter = BalanceFilter(enabled=True, balance=40)
-    mono_format = AudioFormat(sample_rate=48000, channels=1)
-    assert filter_to_ffmpeg_params(dsp_filter, mono_format, ir_dir=IR_DIR) == []
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=0.424264*c0|FR=0.707107*c0"
+    ]
+
+
+def test_balance_filter_mono_left() -> None:
+    """Test that balance towards the left widens a mono source and attenuates the right."""
+    dsp_filter = BalanceFilter(enabled=True, balance=-40)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=0.707107*c0|FR=0.424264*c0"
+    ]
+
+
+def test_balance_filter_mono_full_deflection_mutes_opposite_channel() -> None:
+    """Test that full balance deflection fully mutes the opposite channel on a mono source."""
+    dsp_filter = BalanceFilter(enabled=True, balance=100)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "pan=stereo|FL=0*c0|FR=0.707107*c0"
+    ]
+
+
+def test_balance_filter_mono_keeps_constant_power_level() -> None:
+    """Test that the undimmed channel of a balanced mono source keeps the upmix level."""
+    dsp_filter = BalanceFilter(enabled=True, balance=40)
+    params = filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR)
+    assert isinstance(params[0], str)
+    assert f"FR={math.sqrt(0.5):.6g}*c0" in params[0]
+
+
+def test_balance_filter_mono_zero_is_passthrough() -> None:
+    """Test that a centered balance filter emits no ffmpeg filter on a mono source."""
+    dsp_filter = BalanceFilter(enabled=True, balance=0)
+    assert filter_to_ffmpeg_params(dsp_filter, MONO_INPUT_FORMAT, ir_dir=IR_DIR) == []
 
 
 def test_transpose_filter_octaves() -> None:
