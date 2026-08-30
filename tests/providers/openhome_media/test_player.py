@@ -400,56 +400,42 @@ class TestEventHandling:
     def test_handle_event_source_xml_update(
         self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
     ) -> None:
-        """Test handling SOURCE_XML change updates visible sources."""
-        player.product_source_xml = None
-        mock_ohm_device.async_visible_sources = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
-                {"Index": 0, "Name": "Spotify", "Type": "PLAYLIST", "SystemName": "spotify"},
-                {"Index": 1, "Name": "TIDAL", "Type": "PLAYLIST", "SystemName": "tidal"},
-            ]
-        )
-
+        """Test handling SOURCE_XML change updates only visible sources."""
+        player._attr_source_list = []  # initialise as empty
         service = MagicMock(service_id=ServiceId.PRODUCT)
         xml_value = """<Sources>
-            <Source><Visible>true</Visible><Name>Spotify</Name><Type>PLAYLIST</Type></Source>
-            <Source><Visible>true</Visible><Name>TIDAL</Name><Type>PLAYLIST</Type></Source>
+            <Source><Visible>true</Visible><Name>Playlist</Name><Type>Playlist</Type><SystemName>Playlist</SystemName></Source>
+            <Source><Visible>true</Visible><Name>Radio</Name><Type>Radio</Type><SystemName>Radio</SystemName></Source>
+            <Source><Visible>false</Visible><Name>CD</Name><Type>Digital</Type><SystemName>TOSLINK1</SystemName></Source>
         </Sources>"""
         state_var = MagicMock(value=xml_value)
         state_var.name = ProductState.SOURCE_XML
         player.state_update_pending = True
-
         player._handle_event(service, [state_var])
 
-        # assert player.visible_sources is not None
-        assert len(player._attr_source_list) >= 0  # May be empty if XML parsing fails
+        assert [source.name for source in player._attr_source_list] == ["Playlist", "Radio"]
 
     def test_handle_event_schedules_deferred_update(self, player: OpenHomePlayer) -> None:
         """Test that state changes schedule deferred update."""
         service = MagicMock(service_id=ServiceId.VOLUME)
         state_var = MagicMock(value=50)
         state_var.name = VolumeState.VOLUME
-
         player.state_update_pending = False
-
-        # Patch create_task to capture the scheduled task
-        with patch("asyncio.create_task") as mock_create_task:
+        with patch.object(player.mass, "create_task") as mock_create_task:
             player._handle_event(service, [state_var])
-            # Task should be scheduled if not already pending
-            assert mock_create_task.called
+            mock_create_task.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handle_event_doesnt_schedule_duplicate(self, player: OpenHomePlayer) -> None:
-        """Test that duplicate state changes don't schedule multiple updates."""
-        player.state_update_pending = True
-
+        """Test that handle event doesn't schedule new task if already pending."""
         service = MagicMock(service_id=ServiceId.VOLUME)
-        state_var = MagicMock(value=50)
+        state_var = MagicMock(value=42)
         state_var.name = VolumeState.VOLUME
-
-        with patch("asyncio.create_task") as mock_create_task:
+        player.state_update_pending = True
+        with patch.object(player.mass, "create_task") as mock_create_task:
             player._handle_event(service, [state_var])
-            # Should NOT schedule since already pending
-            assert not mock_create_task.called
+            mock_create_task.assert_not_called()
+            assert player.state_update_pending
 
 
 # =============================================================================

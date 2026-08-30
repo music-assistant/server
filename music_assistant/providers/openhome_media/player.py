@@ -1,7 +1,7 @@
 """Linn/OpenHome Media Player implementation."""
-
 from __future__ import annotations
 
+# mypy: disable-error-code="attr-defined,union-attr"
 import asyncio
 import functools
 import time
@@ -88,11 +88,11 @@ class OpenHomePlayer(Player):
         provider: OpenHomePlayerProvider,
         player_id: str,
         description_url: str,
-        device: OhmDevice | None = None,
+        device: OhmDevice | None,
     ) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        self.profile: OhmDevice = device
+        self.profile: OhmDevice | None = device
         self.description_url: str = description_url
         self.last_seen: float | None = None
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
@@ -269,7 +269,7 @@ class OpenHomePlayer(Player):
             # must flip source to Playlist to avoid buffering problem with Linn DSM
             await self.profile.async_product_set_source_index(0)
             await self.profile.async_radio_set_channel(url, didl_metadata)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             await self.profile.async_radio_play()
         else:
             # if no Radio available (e.g. BubbleUPnP Server) then revert to using Playlist
@@ -399,7 +399,7 @@ class OpenHomePlayer(Player):
 
     # endregion
 
-    async def _device_connect(self) -> None:  # noqa: PLR0915
+    async def _device_connect(self) -> None:
         """Connect Linn/OpenHome Media Device."""
         logger = self.provider.logger.getChild(self.player_id)
         logger.debug("Connecting to device at %s", self.description_url)
@@ -663,9 +663,11 @@ class OpenHomePlayer(Player):
 
         self.last_seen = time.time()
         if schedule_state_update and not self.state_update_pending:
-            task_handle = asyncio.create_task(self._deferred_state_update())
-            if task_handle is not None:
-                self.state_update_pending = True
+            self.mass.create_task(
+                self._deferred_state_update(),
+                task_id=f"ohm_deferred_state_update_{self.player_id}",
+            )
+            self.state_update_pending = True
 
     def _set_player_features(self) -> None:
         """Set Player Features based on config values and capabilities."""

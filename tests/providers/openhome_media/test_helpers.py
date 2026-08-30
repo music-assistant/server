@@ -352,34 +352,34 @@ class TestSourceList:
         """Test that visible sources maintain their relative order."""
         xml = """<Sources>
             <Source>
-                <Visible>false</Visible>
-                <Name>Hidden 1</Name>
-                <Type>Playlist</Type>
-                <SystemName>h1</SystemName>
-            </Source>
-            <Source>
                 <Visible>true</Visible>
                 <Name>Visible 1</Name>
-                <Type>Radio</Type>
-                <SystemName>v1</SystemName>
-            </Source>
-            <Source>
-                <Visible>false</Visible>
-                <Name>Hidden 2</Name>
-                <Type>Digital</Type>
-                <SystemName>h2</SystemName>
+                <Type>Playlist</Type>
+                <SystemName>Playlist</SystemName>
             </Source>
             <Source>
                 <Visible>true</Visible>
                 <Name>Visible 2</Name>
+                <Type>Radio</Type>
+                <SystemName>Radio</SystemName>
+            </Source>
+            <Source>
+                <Visible>false</Visible>
+                <Name>Hidden 1</Name>
                 <Type>Digital</Type>
-                <SystemName>v2</SystemName>
+                <SystemName>TOSLINK1</SystemName>
             </Source>
             <Source>
                 <Visible>true</Visible>
                 <Name>Visible 3</Name>
                 <Type>Digital</Type>
-                <SystemName>v3</SystemName>
+                <SystemName>TOSLINK2</SystemName>
+            </Source>
+            <Source>
+                <Visible>false</Visible>
+                <Name>Hidden 2</Name>
+                <Type>Digital</Type>
+                <SystemName>TOSLINK3</SystemName>
             </Source>
         </Sources>"""
 
@@ -391,9 +391,9 @@ class TestSourceList:
         assert result[1].name == "Visible 2"
         assert result[2].name == "Visible 3"
         # Id should match original index position in source_xml
-        assert result[0].id == "1"
-        assert result[1].id == "3"
-        assert result[2].id == "4"
+        assert result[0].id == "0"
+        assert result[1].id == "1"
+        assert result[2].id == "3"
 
     def test_case_sensitive_type_values_preserved(self) -> None:
         """Test that Type values preserve case."""

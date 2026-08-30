@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from ipaddress import IPv4Address
 from typing import TYPE_CHECKING
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.search import async_search
-from ipaddress import IPv4Address
 from music_assistant_models.player import DeviceInfo
 from zeroconf import ServiceStateChange
 
@@ -18,13 +18,11 @@ from music_assistant.helpers.util import (
     TaskManager,
     get_primary_ip_address_from_zeroconf,
 )
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
-
-from .constants import CALLBACK_URL, CONF_NETWORK_SCAN
-from .helpers import OpenHomeNotifyServer
-from .player import OpenHomePlayer
-
-from ... import MusicAssistant
+from music_assistant.providers.openhome_media.constants import CALLBACK_URL, CONF_NETWORK_SCAN, PLAYER_ID_PREFIX
+from music_assistant.providers.openhome_media.helpers import OpenHomeNotifyServer
+from music_assistant.providers.openhome_media.player import OpenHomePlayer
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester
@@ -78,14 +76,14 @@ class OpenHomePlayerProvider(PlayerProvider):
             self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-
         if not info:
-            return  # guard
+            return
 
         name = name.split("@", 1)[1] if "@" in name else name
-        player_id = info.decoded_properties["uuid"]  # this is just an example!
+        udn = info.decoded_properties["uuid"] if info.decoded_properties else None
+        player_id = f"{PLAYER_ID_PREFIX}{udn}" if udn else None
         if not player_id:
-            return  # guard, we need a player_id to work with
+            return
 
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
@@ -109,7 +107,6 @@ class OpenHomePlayerProvider(PlayerProvider):
 
     async def discover_players(self, use_multicast: bool = False) -> None:
         """Discover OpenHome players on the network."""
-
         if self._discovery_running:
             return
         discovered_devices: set[str] = set()
@@ -181,6 +178,7 @@ class OpenHomePlayerProvider(PlayerProvider):
                     provider=self,
                     player_id=udn,
                     description_url=description_url,
+                    device=None,
                 )
 
                 # will be updated later when device connects.
