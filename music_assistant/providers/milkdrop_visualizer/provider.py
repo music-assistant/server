@@ -144,8 +144,8 @@ class MilkdropVisualizerProvider(PluginProvider):
         gpu_part = ""
         if render.get("gpu_warp") is not None:
             gpu_part = (
-                f" gpu={_trim(render.get('gpu_warp'))}/{_trim(render.get('gpu_blur'))}"
-                f"/{_trim(render.get('gpu_comp'))}ms"
+                f" gpu={_trim(render.get('gpu_warp'))}/{_trim(render.get('gpu_blur')) or '-'}"
+                f"/{_trim(render.get('gpu_comp')) or '-'}ms"
             )
         preset = _trim(render.get("preset") or "")
         preset_part = f' preset="{preset}"' if preset else ""
