@@ -1,4 +1,5 @@
 """Linn/OpenHome Media Player implementation."""
+
 from __future__ import annotations
 
 # mypy: disable-error-code="attr-defined,union-attr"
@@ -578,7 +579,11 @@ class OpenHomePlayer(Player):
                     match sv.name:
                         case ProductState.SOURCE_INDEX:
                             try:
-                                if sv.value and self.profile.product_source_count and 0 <= sv.value < self.profile.product_source_count:
+                                if (
+                                    sv.value
+                                    and self.profile.product_source_count
+                                    and 0 <= sv.value < self.profile.product_source_count
+                                ):
                                     schedule_state_update = True
                                     if self.product_source_xml is not None:
                                         self._attr_active_source = self.product_source_xml[

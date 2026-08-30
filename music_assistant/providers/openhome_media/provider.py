@@ -20,7 +20,11 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.openhome_media.constants import CALLBACK_URL, CONF_NETWORK_SCAN, PLAYER_ID_PREFIX
+from music_assistant.providers.openhome_media.constants import (
+    CALLBACK_URL,
+    CONF_NETWORK_SCAN,
+    PLAYER_ID_PREFIX,
+)
 from music_assistant.providers.openhome_media.helpers import OpenHomeNotifyServer
 from music_assistant.providers.openhome_media.player import OpenHomePlayer
 
@@ -73,7 +77,7 @@ class OpenHomePlayerProvider(PlayerProvider):
             await self.mass.players.unregister(player.player_id)
 
     async def on_mdns_service_state_change(
-            self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
@@ -122,8 +126,10 @@ class OpenHomePlayerProvider(PlayerProvider):
                     return
 
                 ssdp_usn: str = discovery_info["USN"]
-                if not (("urn:linn-co-uk:device:Source:1" in ssdp_usn) or
-                        ("urn:av-openhome-org:device:Source:1" in ssdp_usn)):
+                if not (
+                    ("urn:linn-co-uk:device:Source:1" in ssdp_usn)
+                    or ("urn:av-openhome-org:device:Source:1" in ssdp_usn)
+                ):
                     return
 
                 ssdp_udn: str | None = discovery_info.get("_udn")
@@ -143,7 +149,7 @@ class OpenHomePlayerProvider(PlayerProvider):
                 await async_search(
                     async_callback=on_response,
                     target=(str(IPv4Address("239.255.255.250")), 1900),
-                    timeout = 9
+                    timeout=9,
                 )
             else:
                 await async_search(async_callback=on_response)
@@ -152,9 +158,7 @@ class OpenHomePlayerProvider(PlayerProvider):
             self._discovery_running = False
 
         def reschedule() -> None:
-            self.mass.create_task(
-                self.discover_players(use_multicast=not use_multicast)
-            )
+            self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
 
         self.mass.loop.call_later(300, reschedule)
 
