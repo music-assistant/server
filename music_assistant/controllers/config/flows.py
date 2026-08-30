@@ -534,7 +534,7 @@ class SetupFlowMixin:
         self, player: Player, *, needing_only: bool
     ) -> list[Player]:
         """
-        Return the player's protocol child players that implement a setup flow.
+        Return the player's protocol child players whose setup flow is available.
 
         Covers the wrapper case: a universal player, or a native player wrapping
         protocol children, whose own setup is a no-op but whose linked protocol
@@ -551,7 +551,7 @@ class SetupFlowMixin:
                 continue
             seen.add(child_id)
             child = self.mass.players.get_player(child_id)
-            if child is None or not child.implements_setup_flow:
+            if child is None or not child.has_setup_flow:
                 continue
             if needing_only and not child.needs_setup:
                 continue
