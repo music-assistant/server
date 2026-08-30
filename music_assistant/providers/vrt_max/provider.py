@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -38,29 +43,33 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
+from .api_client import VrtMaxClient
+from .auth import VrtMaxAuth
 from .constants import (
     BROWSE_PODCASTS,
     BROWSE_RADIO_PROGRAMS,
     BROWSE_RADIOS,
-    MAX_TRACKLIST_EPISODES,
-    PODCAST_ROW_TYPE,
-    RADIO_ROW_TYPE,
-)
-from .helpers import (
     PODCAST_LANDING_PAGE,
+    PODCAST_ROW_TYPE,
     RADIO_LANDING_PAGE,
+    RADIO_ROW_TYPE,
+    SEARCH_TIMEOUT,
     STATIONS,
     STATIONS_BY_ID,
+    TRACKLIST_CONCURRENCY,
+    TRACKLIST_EPISODES,
+)
+from .models import (
     VrtApiError,
     VrtAuthError,
     VrtEpisode,
-    VrtMaxAuth,
-    VrtMaxClient,
-    VrtNotFoundError,
     VrtProgram,
     VrtProgramTile,
+    VrtResumeTarget,
     VrtStation,
 )
 
@@ -70,9 +79,14 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
+LOGGER = logging.getLogger(__name__)
+
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+}
+# Only meaningful with a VRT account: the favourites ("Mijn lijst") they sync from.
+ACCOUNT_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
@@ -99,16 +113,38 @@ class VrtMaxProvider(MusicProvider):
         )
 
     @property
-    def is_streaming_provider(self) -> bool:
-        """Return True for streaming providers."""
-        return True
+    def has_account(self) -> bool:
+        """Return True when VRT account credentials are configured."""
+        # Read from config rather than the auth manager: MA resolves a provider's config
+        # entries (and so its features) before handle_async_init has built one.
+        return bool(self.config.get_value(CONF_USERNAME) and self.config.get_value(CONF_PASSWORD))
+
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this provider."""
+        # Without an account there are no favourites to sync. Declaring the library
+        # features anyway would add sync switches that cannot work, and the enabled
+        # by default "sync library deletions" would then prune previously synced
+        # podcasts on the first run that legitimately finds nothing.
+        if self.has_account:
+            return {*SUPPORTED_FEATURES, *ACCOUNT_FEATURES}
+        return {*SUPPORTED_FEATURES}
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        return {MediaType.RADIO, MediaType.PODCAST, MediaType.PODCAST_EPISODE}
 
     async def handle_async_init(self) -> None:
         """Initialize the VRT MAX GraphQL client and (optional) auth manager."""
         self._client = VrtMaxClient(self.mass.http_session, self.logger)
         username = str(self.config.get_value(CONF_USERNAME) or "")
         password = str(self.config.get_value(CONF_PASSWORD) or "")
-        self._auth = VrtMaxAuth(self.mass.http_session, self.logger, username, password)
+        self._auth = VrtMaxAuth(self.mass, self.mass.http_session, self.logger, username, password)
+        # Fail setup on bad credentials rather than at first playback, where the error
+        # would read as a login problem instead of a wrong password.
+        if self._auth.enabled:
+            await self._auth.get_access_token()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
@@ -117,22 +153,9 @@ class VrtMaxProvider(MusicProvider):
         :param path: The path to browse (e.g. provider_id://radio).
         """
         subpath = path.split("://", 1)[1] if "://" in path else ""
-
-        if subpath == BROWSE_RADIOS:
-            return [self._radio_item(station) for station in STATIONS]
-        if subpath == BROWSE_RADIO_PROGRAMS:
-            return await self._browse_landing(
-                RADIO_LANDING_PAGE, RADIO_ROW_TYPE, BROWSE_RADIO_PROGRAMS
-            )
-        if subpath == BROWSE_PODCASTS:
-            return await self._browse_landing(
-                PODCAST_LANDING_PAGE, PODCAST_ROW_TYPE, BROWSE_PODCASTS
-            )
-        if subpath.startswith((f"{BROWSE_RADIO_PROGRAMS}/", f"{BROWSE_PODCASTS}/")):
-            _, encoded = subpath.split("/", 1)
-            return await self._browse_programs(_decode(encoded))
-
-        return self._browse_root()
+        items = await self._browse(subpath)
+        self.logger.debug("Browse %s returned %s item(s)", path, len(items))
+        return items
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
@@ -150,24 +173,41 @@ class VrtMaxProvider(MusicProvider):
             ][:limit]
 
         if MediaType.PODCAST in media_types:
+            # The two catalogue queries are independent, so they run together rather than
+            # one after the other, under a deadline inside the window MA gives a provider
+            # search. Live radio above needs no network and is returned either way.
+            try:
+                async with asyncio.timeout(SEARCH_TIMEOUT):
+                    tiles, radio_episodes = await asyncio.gather(
+                        self._client.search_podcast_programs(query, limit),
+                        self._client.search_radio_episodes(query, limit),
+                    )
+            except (TimeoutError, MusicAssistantError) as err:
+                self.logger.debug("VRT MAX catalogue search for %r failed: %s", query, err)
+                tiles, radio_episodes = [], []
             podcasts: list[Podcast] = []
             seen: set[str] = set()
-            for tile in await self._client.search_podcast_programs(query, limit):
+            for tile in tiles:
                 if tile.page_id not in seen:
                     seen.add(tile.page_id)
                     podcasts.append(self._podcast_from_tile(tile))
             # Radio archives are only searchable as episodes; fold them up to their
             # parent programme so search returns the show, not individual broadcasts.
-            for episode in await self._client.search_radio_episodes(query, limit):
+            for episode in radio_episodes:
                 program_id = _program_id_from_episode(episode.page_id)
                 if program_id not in seen:
                     seen.add(program_id)
                     podcasts.append(self._podcast_base(program_id, episode.title))
             results.podcasts = podcasts[:limit]
 
+        self.logger.debug(
+            "Search for %r returned %s radio station(s) and %s podcast(s)",
+            query,
+            len(results.radio),
+            len(results.podcasts),
+        )
         return results
 
-    @use_cache(3600 * 24)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get a single radio station by id."""
         station = STATIONS_BY_ID.get(prov_radio_id)
@@ -175,47 +215,16 @@ class VrtMaxProvider(MusicProvider):
             raise MediaNotFoundError("Radio not found.")
         return self._radio_item(station)
 
-    @use_cache(3600 * 6)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get a single podcast / radio programme archive by page id."""
-        # Only a genuine "not found" maps to MediaNotFoundError; a transient
-        # VrtApiError propagates so the library sync aborts instead of pruning.
-        try:
-            program = await self._client.get_program(prov_podcast_id)
-        except VrtNotFoundError as err:
-            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}") from err
+        # A genuine "not found" surfaces as MediaNotFoundError and a transient failure as
+        # ResourceTemporarilyUnavailable, so the library sync aborts instead of pruning.
+        program = await self._fetch_program(prov_podcast_id)
         return self._podcast_from_program(program)
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all listen-back episodes of a podcast / radio programme archive."""
-        try:
-            program = await self._client.get_program(prov_podcast_id)
-        except VrtApiError as err:
-            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}") from err
-        podcast_mapping = ItemMapping(
-            media_type=MediaType.PODCAST,
-            item_id=prov_podcast_id,
-            provider=self.instance_id,
-            name=program.title,
-        )
-        # With credentials, fetch the per-user played/resume progress alongside the list.
-        access_token: str | None = None
-        if self._auth.enabled:
-            try:
-                access_token = await self._auth.get_access_token()
-            except VrtAuthError as err:
-                self.logger.debug("No access token for episode progress: %s", err)
-        episodes: list[PodcastEpisode] = []
-        for season in program.seasons:
-            try:
-                async for episode in self._client.iter_season_episodes(
-                    season.component_id, access_token
-                ):
-                    episodes.append(self._episode_item(episode, podcast_mapping, len(episodes) + 1))
-            except VrtApiError as err:
-                # A transient failure mid-pagination shouldn't drop the whole list.
-                self.logger.warning("Stopped listing episodes for %s: %s", prov_podcast_id, err)
-                break
+        episodes = await self._fetch_episodes(prov_podcast_id)
         # MA plays the episode object from this list directly (there is no episode-detail
         # fetch on the play path), so a radio episode's played-songs tracklist must be
         # attached here rather than only in get_podcast_episode.
@@ -223,19 +232,17 @@ class VrtMaxProvider(MusicProvider):
         for item in episodes:
             yield item
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 6, base_class=PodcastEpisode)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get a single podcast / radio programme episode by page id."""
-        try:
-            episode = await self._client.get_episode(prov_episode_id)
-        except VrtApiError as err:
-            raise MediaNotFoundError(f"Episode not found: {prov_episode_id}") from err
+        episode = await self._client.get_episode(prov_episode_id)
         podcast_id = _program_id_from_episode(prov_episode_id)
+        program = await self._fetch_program(podcast_id)
         podcast_mapping = ItemMapping(
             media_type=MediaType.PODCAST,
             item_id=podcast_id,
             provider=self.instance_id,
-            name=episode.title,
+            name=program.title,
         )
         item = self._episode_item(episode, podcast_mapping, 0)
         chapters = await self._episode_chapters(prov_episode_id)
@@ -247,11 +254,10 @@ class VrtMaxProvider(MusicProvider):
         """Sync the user's 'Mijn lijst' favourites (podcasts + radio archives) to the library."""
         if not self._auth.enabled:
             return
-        try:
-            access_token = await self._auth.get_access_token()
-        except VrtAuthError as err:
-            self.logger.warning("Cannot sync VRT favourites: %s", err)
-            return
+        # A failure here has to abort the sync. Yielding nothing instead would tell MA the
+        # user's favourites are all gone, and the deletion pass would then prune every
+        # podcast previously synced from VRT.
+        access_token = await self._auth.get_access_token()
         async for page_id in self._client.iter_favourite_ids(access_token):
             try:
                 yield await self.get_podcast(page_id)
@@ -260,14 +266,15 @@ class VrtMaxProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add a podcast to the user's 'Mijn lijst' (mirrors an MA library add)."""
-        if item.media_type != MediaType.PODCAST:
-            return True
+        # Anything else stays local; the base class logs that it does.
+        if item.media_type != MediaType.PODCAST or not self._auth.enabled:
+            return await super().library_add(item)
         return await self._set_favourite(item.item_id, favourite=True)
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove a podcast from the user's 'Mijn lijst' (mirrors an MA library remove)."""
-        if media_type != MediaType.PODCAST:
-            return True
+        if media_type != MediaType.PODCAST or not self._auth.enabled:
+            return await super().library_remove(prov_item_id, media_type)
         return await self._set_favourite(prov_item_id, favourite=False)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -302,12 +309,16 @@ class VrtMaxProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Write the playback position back to VRT ('resume point')."""
-        if media_type != MediaType.PODCAST_EPISODE or not self._auth.enabled:
+        if (
+            media_type != MediaType.PODCAST_EPISODE
+            or not isinstance(media_item, PodcastEpisode)
+            or not self._auth.enabled
+        ):
             return
         try:
             access_token = await self._auth.get_access_token()
-            target = await self._client.get_resume_target(prov_item_id)
-            total = target.duration or getattr(media_item, "duration", 0) or 0
+            target = await self._fetch_resume_target(prov_item_id)
+            total = target.duration or media_item.duration or 0
             at = total if (fully_played and total) else position
             await self._client.post_resume_point(target, at, access_token, total=total)
         except (VrtAuthError, VrtApiError) as err:
@@ -335,8 +346,32 @@ class VrtMaxProvider(MusicProvider):
     # Browse helpers
     # ----------------------------
 
+    async def _browse(self, subpath: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items of a browse subpath.
+
+        :param subpath: The path after "<instance>://".
+        """
+        if subpath == BROWSE_RADIOS:
+            return [self._radio_item(station) for station in STATIONS]
+        if subpath == BROWSE_RADIO_PROGRAMS:
+            return await self._browse_landing(
+                RADIO_LANDING_PAGE, RADIO_ROW_TYPE, BROWSE_RADIO_PROGRAMS
+            )
+        if subpath == BROWSE_PODCASTS:
+            return await self._browse_landing(
+                PODCAST_LANDING_PAGE, PODCAST_ROW_TYPE, BROWSE_PODCASTS
+            )
+        if subpath.startswith((f"{BROWSE_RADIO_PROGRAMS}/", f"{BROWSE_PODCASTS}/")):
+            _, encoded = subpath.split("/", 1)
+            return await self._browse_programs(_decode(encoded))
+
+        return self._browse_root()
+
     def _browse_root(self) -> list[BrowseFolder]:
-        return [
+        # On-demand needs an account, so without one the archive and podcast folders
+        # would offer hundreds of programmes that all refuse to play. Live radio is free.
+        folders = [
             BrowseFolder(
                 item_id=BROWSE_RADIOS,
                 provider=self.instance_id,
@@ -359,7 +394,11 @@ class VrtMaxProvider(MusicProvider):
                 translation_key="podcasts",
             ),
         ]
+        if not self._auth.enabled:
+            return [folder for folder in folders if folder.item_id == BROWSE_RADIOS]
+        return folders
 
+    @use_cache(3600 * 6, base_class=BrowseFolder)
     async def _browse_landing(self, page_id: str, row_type: str, prefix: str) -> list[BrowseFolder]:
         """Return one folder per program/podcast row of a landing page."""
         rows = await self._client.get_landing_rows(page_id)
@@ -378,6 +417,7 @@ class VrtMaxProvider(MusicProvider):
             )
         return folders
 
+    @use_cache(3600 * 6, base_class=Podcast)
     async def _browse_programs(self, component_id: str) -> list[Podcast]:
         """Return all programs/podcasts of a landing-page component as Podcast items."""
         podcasts: list[Podcast] = []
@@ -437,15 +477,23 @@ class VrtMaxProvider(MusicProvider):
         return podcast
 
     def _podcast_base(self, page_id: str, title: str) -> Podcast:
+        # On-demand audio needs an account, so without one these are greyed out in the
+        # interface rather than failing only once playback is attempted. This is baked
+        # into items that get cached, which is safe because every path that reaches them
+        # is itself account-gated: the browse folders are hidden and the library features
+        # are undeclared without credentials, and caches are keyed per provider instance.
+        playable = self._auth.enabled
         return Podcast(
             name=title,
             item_id=page_id,
             provider=self.instance_id,
+            is_playable=playable,
             provider_mappings={
                 ProviderMapping(
                     item_id=page_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    available=playable,
                 )
             },
         )
@@ -456,6 +504,7 @@ class VrtMaxProvider(MusicProvider):
         name = episode.title
         if episode.date_label and episode.date_label not in name:
             name = f"{episode.date_label} - {name}"
+        playable = self._auth.enabled
         item = PodcastEpisode(
             name=name,
             item_id=episode.page_id,
@@ -463,11 +512,13 @@ class VrtMaxProvider(MusicProvider):
             position=position,
             duration=episode.duration,
             podcast=podcast,
+            is_playable=playable,
             provider_mappings={
                 ProviderMapping(
                     item_id=episode.page_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    available=playable,
                 )
             },
         )
@@ -496,13 +547,17 @@ class VrtMaxProvider(MusicProvider):
         station = STATIONS_BY_ID.get(item_id)
         if station is None:
             raise MediaNotFoundError("Radio not found.")
+        # VRT serves both at 128kbps, so AAC is the better of the two at the same
+        # bandwidth. One station (VRT NWS) is MP3-only, hence the fallback.
+        path = station.aac_url or station.stream_url
+        codec = "aac" if station.aac_url else "mp3"
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             media_type=MediaType.RADIO,
             stream_type=StreamType.HTTP,
-            path=station.stream_url,
-            audio_format=AudioFormat(content_type=ContentType.try_parse("mp3")),
+            path=path,
+            audio_format=AudioFormat(content_type=ContentType.try_parse(codec)),
             can_seek=False,
             allow_seek=False,
         )
@@ -512,14 +567,11 @@ class VrtMaxProvider(MusicProvider):
             raise UnplayableMediaError(
                 "Log in with your VRT account in the provider settings to play on-demand audio."
             )
-        try:
-            info = await self._client.get_stream_info(item_id)
-            token = await self._auth.get_player_token()
-            hls_url = await self._client.resolve_ondemand_hls(info.stream_id, token)
-        except VrtAuthError as err:
-            raise UnplayableMediaError(f"VRT authentication failed: {err}") from err
-        except VrtApiError as err:
-            raise MediaNotFoundError(f"Could not resolve episode stream: {err}") from err
+        # A VRT auth failure surfaces as LoginFailed and a transport failure as
+        # ResourceTemporarilyUnavailable; both are already the right MA error type.
+        info = await self._client.get_stream_info(item_id)
+        token = await self._auth.get_player_token()
+        hls_url = await self._client.resolve_ondemand_hls(info.stream_id, token)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -532,9 +584,74 @@ class VrtMaxProvider(MusicProvider):
             allow_seek=True,
         )
 
+    @use_cache(3600 * 24, base_class=VrtResumeTarget)
+    async def _fetch_resume_target(self, page_id: str) -> VrtResumeTarget:
+        """
+        Fetch an episode's resume-point write target, which is stable per episode.
+
+        :param page_id: The episode page path.
+        """
+        return await self._client.get_resume_target(page_id)
+
+    @use_cache(3600 * 6, base_class=VrtProgram)
+    async def _fetch_program(self, page_id: str) -> VrtProgram:
+        """
+        Fetch a programme/podcast page, cached so listing its episodes does not refetch it.
+
+        :param page_id: The programme/podcast page path.
+        """
+        return await self._client.get_program(page_id)
+
+    @use_cache(900, base_class=PodcastEpisode)
+    async def _fetch_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+        """
+        Fetch every episode of a programme, in the order VRT lists them.
+
+        Cached briefly: the listing costs one request per season page, and these lists
+        change daily at most. The per-user progress it carries is refreshed on the same
+        interval, while playback resume is read live from ``get_resume_position``.
+
+        :param prov_podcast_id: The programme/podcast page path.
+        """
+        program = await self._fetch_program(prov_podcast_id)
+        podcast_mapping = ItemMapping(
+            media_type=MediaType.PODCAST,
+            item_id=prov_podcast_id,
+            provider=self.instance_id,
+            name=program.title,
+        )
+        # With credentials, fetch the per-user played/resume progress alongside the list.
+        access_token: str | None = None
+        if self._auth.enabled:
+            try:
+                access_token = await self._auth.get_access_token()
+            except VrtAuthError as err:
+                self.logger.debug("No access token for episode progress: %s", err)
+        listed: list[VrtEpisode] = []
+        for season in program.seasons:
+            try:
+                async for episode in self._client.iter_season_episodes(
+                    season.component_id, access_token
+                ):
+                    listed.append(episode)
+            except VrtApiError as err:
+                # A transient failure mid-pagination shouldn't drop the whole list.
+                self.logger.warning("Stopped listing episodes for %s: %s", prov_podcast_id, err)
+                break
+        # VRT lists newest first, both within a season and across season tabs, while MA
+        # numbers episodes oldest to newest. The episodes carry no machine-readable date,
+        # which is the newest-first case rank_episodes_by_date is written for.
+        positions = rank_episodes_by_date([None] * len(listed))
+        return [
+            self._episode_item(episode, podcast_mapping, position)
+            for episode, position in zip(listed, positions, strict=True)
+        ]
+
     async def _attach_tracklists(self, episodes: list[PodcastEpisode]) -> None:
-        """Concurrently attach the played-songs tracklist (as chapters) to radio episodes."""
-        targets = [ep for ep in episodes if _has_tracklist(ep.item_id)][:MAX_TRACKLIST_EPISODES]
+        """Attach the played-songs tracklist (as chapters) to the newest radio episodes."""
+        # Episodes arrive newest first, and each tracklist costs several requests, so only
+        # the newest few are worth fetching: they are the ones a listener actually opens.
+        targets = [ep for ep in episodes if _has_tracklist(ep.item_id)][:TRACKLIST_EPISODES]
         if not targets:
             return
 
@@ -543,7 +660,9 @@ class VrtMaxProvider(MusicProvider):
             if chapters:
                 episode.metadata.chapters = chapters
 
-        await asyncio.gather(*(attach(episode) for episode in targets))
+        async with TaskManager(self.mass, limit=TRACKLIST_CONCURRENCY) as tasks:
+            for episode in targets:
+                await tasks.create_task_with_limit(attach(episode))
 
     async def _episode_chapters(self, page_id: str) -> list[MediaItemChapter] | None:
         """Return a radio episode's played-songs tracklist as chapters, if it has one."""
@@ -601,7 +720,16 @@ def _program_id_from_episode(episode_id: str) -> str:
     Podcast episodes nest one extra (season) path segment under the podcast,
     radio episodes nest directly under the programme archive.
     """
+    is_podcast = episode_id.startswith("/vrtmax/podcasts/")
+    if not is_podcast and not episode_id.startswith("/vrtmax/luister/radio/"):
+        # The shape comes from VRT, not from us, so it can change. Say so rather than
+        # returning a plausible-looking parent that would silently attach episodes to
+        # the wrong podcast.
+        LOGGER.warning(
+            "Unrecognised VRT episode path %r; the derived programme id may be wrong",
+            episode_id,
+        )
     segments = [seg for seg in episode_id.split("/") if seg]
-    trim = 2 if episode_id.startswith("/vrtmax/podcasts/") else 1
+    trim = 2 if is_podcast else 1
     parent = segments[:-trim] if len(segments) > trim else segments
     return "/" + "/".join(parent) + "/"

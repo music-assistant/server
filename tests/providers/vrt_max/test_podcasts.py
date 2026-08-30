@@ -6,11 +6,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import ItemMapping
 
-from music_assistant.providers.vrt_max.constants import MAX_TRACKLIST_EPISODES
-from music_assistant.providers.vrt_max.helpers import (
+from music_assistant.providers.vrt_max.constants import TRACKLIST_EPISODES
+from music_assistant.providers.vrt_max.models import (
     VrtApiError,
     VrtChapter,
     VrtEpisode,
@@ -87,7 +90,8 @@ async def test_get_podcast_episodes_radio_attaches_tracklist_chapters(
     episodes = [ep async for ep in provider.get_podcast_episodes(RADIO_PROGRAM_ID)]
 
     assert len(episodes) == 3
-    assert [ep.position for ep in episodes] == [1, 2, 3]
+    # VRT lists newest first; MA numbers oldest to newest, so the first listed is highest.
+    assert [ep.position for ep in episodes] == [3, 2, 1]
     for episode in episodes:
         assert episode.metadata.chapters is not None
         assert len(episode.metadata.chapters) == 2
@@ -118,7 +122,7 @@ async def test_get_podcast_episodes_podcast_has_no_tracklist(provider: VrtMaxPro
 
 
 async def test_get_podcast_episodes_caps_tracklist_fetches(provider: VrtMaxProvider) -> None:
-    """Tracklist attachment is capped at MAX_TRACKLIST_EPISODES, even for a long archive."""
+    """Tracklists are fetched for the newest TRACKLIST_EPISODES only."""
     program = VrtProgram(
         RADIO_PROGRAM_ID, "Show", seasons=(VrtSeason(title="S1", component_id="comp-s1"),)
     )
@@ -134,10 +138,10 @@ async def test_get_podcast_episodes_caps_tracklist_fetches(provider: VrtMaxProvi
     episodes = [ep async for ep in provider.get_podcast_episodes(RADIO_PROGRAM_ID)]
 
     assert len(episodes) == 60
-    assert provider._client.get_episode_chapters.call_count == MAX_TRACKLIST_EPISODES
-    for episode in episodes[:MAX_TRACKLIST_EPISODES]:
+    assert provider._client.get_episode_chapters.call_count == TRACKLIST_EPISODES
+    for episode in episodes[:TRACKLIST_EPISODES]:
         assert episode.metadata.chapters is not None
-    for episode in episodes[MAX_TRACKLIST_EPISODES:]:
+    for episode in episodes[TRACKLIST_EPISODES:]:
         assert episode.metadata.chapters is None
 
 
@@ -191,6 +195,9 @@ async def test_get_podcast_episode_radio_attaches_chapters(provider: VrtMaxProvi
     provider._client.get_episode = AsyncMock(  # type: ignore[method-assign]
         return_value=VrtEpisode(radio_episode_id, "Ep")
     )
+    provider._client.get_program = AsyncMock(  # type: ignore[method-assign]
+        return_value=VrtProgram(RADIO_PROGRAM_ID, "Show")
+    )
     provider._client.get_episode_chapters = AsyncMock(  # type: ignore[method-assign]
         return_value=[VrtChapter(1, "S", 0.0)]
     )
@@ -199,6 +206,9 @@ async def test_get_podcast_episode_radio_attaches_chapters(provider: VrtMaxProvi
 
     assert episode.metadata.chapters is not None
     assert len(episode.metadata.chapters) == 1
+    # The mapping describes the parent programme, so it carries the programme's name.
+    assert episode.podcast is not None
+    assert episode.podcast.name == "Show"
 
 
 async def test_get_podcast_episode_podcast_has_no_chapters(provider: VrtMaxProvider) -> None:
@@ -206,6 +216,9 @@ async def test_get_podcast_episode_podcast_has_no_chapters(provider: VrtMaxProvi
     podcast_episode_id = f"{PODCAST_PROGRAM_ID}1/1--ep/"
     provider._client.get_episode = AsyncMock(  # type: ignore[method-assign]
         return_value=VrtEpisode(podcast_episode_id, "Ep")
+    )
+    provider._client.get_program = AsyncMock(  # type: ignore[method-assign]
+        return_value=VrtProgram(PODCAST_PROGRAM_ID, "Pod")
     )
     provider._client.get_episode_chapters = AsyncMock(  # type: ignore[method-assign]
         return_value=[VrtChapter(1, "S", 0.0)]
@@ -218,12 +231,22 @@ async def test_get_podcast_episode_podcast_has_no_chapters(provider: VrtMaxProvi
 
 
 async def test_get_podcast_episode_not_found(provider: VrtMaxProvider) -> None:
-    """A client error on the single-episode fetch maps to MediaNotFoundError."""
+    """A genuinely missing episode surfaces as MediaNotFoundError."""
+    provider._client.get_episode = AsyncMock(  # type: ignore[method-assign]
+        side_effect=VrtNotFoundError("nope")
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_podcast_episode(f"{RADIO_PROGRAM_ID}show~1-3-0/")
+
+
+async def test_get_podcast_episode_transient_error_propagates(provider: VrtMaxProvider) -> None:
+    """A transient failure stays transient rather than being reported as 'not found'."""
     provider._client.get_episode = AsyncMock(  # type: ignore[method-assign]
         side_effect=VrtApiError("boom")
     )
 
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(ResourceTemporarilyUnavailable):
         await provider.get_podcast_episode(f"{RADIO_PROGRAM_ID}show~1-3-0/")
 
 

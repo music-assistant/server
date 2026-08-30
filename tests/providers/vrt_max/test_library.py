@@ -5,17 +5,19 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import LoginFailed
 
-from music_assistant.providers.vrt_max.helpers import (
-    STATIONS_BY_ID,
+from music_assistant.providers.vrt_max.constants import STATIONS_BY_ID
+from music_assistant.providers.vrt_max.models import (
     VrtApiError,
+    VrtAuthError,
     VrtNotFoundError,
     VrtProgram,
 )
 from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
-from .conftest import async_gen
+from .conftest import _set_credentials, async_gen
 
 
 async def test_get_library_podcasts_disabled_yields_nothing(provider: VrtMaxProvider) -> None:
@@ -78,6 +80,7 @@ async def test_get_library_podcasts_aborts_on_transient_error(provider: VrtMaxPr
 
 async def test_library_add_podcast_calls_set_favourite(provider: VrtMaxProvider) -> None:
     """Adding a Podcast to the library syncs it to VRT's 'Mijn lijst'."""
+    provider._auth.enabled = True  # type: ignore[misc]
     podcast = provider._podcast_base("/p/1", "Show")
     provider._set_favourite = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
@@ -100,6 +103,7 @@ async def test_library_add_non_podcast_skips_set_favourite(provider: VrtMaxProvi
 
 async def test_library_remove_podcast_calls_set_favourite(provider: VrtMaxProvider) -> None:
     """Removing a podcast from the library syncs the removal to VRT's 'Mijn lijst'."""
+    provider._auth.enabled = True  # type: ignore[misc]
     provider._set_favourite = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     result = await provider.library_remove("/p/1", MediaType.PODCAST)
@@ -196,3 +200,69 @@ async def test_set_favourite_disabled_returns_true_without_calling_client(
 
     assert result is True
     provider._client.get_favourite_action.assert_not_called()  # type: ignore[attr-defined]
+
+
+async def test_library_add_without_account_stays_local(provider: VrtMaxProvider) -> None:
+    """Without credentials there is no 'Mijn lijst' to sync to, so the add stays local."""
+    provider._auth.enabled = False  # type: ignore[misc]
+    podcast = provider._podcast_base("/p/1", "Show")
+    provider._set_favourite = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result = await provider.library_add(podcast)
+
+    assert result is True
+    provider._set_favourite.assert_not_called()
+
+
+def test_supported_features_without_account_excludes_library(provider: VrtMaxProvider) -> None:
+    """Without credentials the library features are not declared at all."""
+    features = provider.supported_features
+
+    # Declaring these without an account would add sync switches that cannot work, and
+    # "sync library deletions" would then prune previously synced podcasts.
+    assert ProviderFeature.LIBRARY_PODCASTS not in features
+    assert ProviderFeature.LIBRARY_PODCASTS_EDIT not in features
+    assert ProviderFeature.BROWSE in features
+    assert ProviderFeature.SEARCH in features
+
+
+def test_supported_features_with_account_includes_library(provider: VrtMaxProvider) -> None:
+    """With credentials the favourites sync features are declared."""
+    _set_credentials(provider)
+
+    features = provider.supported_features
+
+    assert ProviderFeature.LIBRARY_PODCASTS in features
+    assert ProviderFeature.LIBRARY_PODCASTS_EDIT in features
+
+
+def test_supported_media_types_includes_radio(provider: VrtMaxProvider) -> None:
+    """Radio must be declared so the provider joins radio matching and per-type search."""
+    assert MediaType.RADIO in provider.supported_media_types
+    assert MediaType.PODCAST in provider.supported_media_types
+
+
+def test_supported_features_before_async_init(provider: VrtMaxProvider) -> None:
+    """
+    The features must be readable before handle_async_init has run.
+
+    MA resolves a provider's config entries, and with them its features, while setting the
+    provider up, which is before the auth manager exists. Reading runtime state here made
+    adding the provider fail with an AttributeError.
+    """
+    del provider._auth
+
+    assert ProviderFeature.BROWSE in provider.supported_features
+
+
+async def test_get_library_podcasts_aborts_on_token_failure(provider: VrtMaxProvider) -> None:
+    """A failed token refresh must abort the sync, not report an empty favourites list."""
+    provider._auth.enabled = True  # type: ignore[misc]
+    provider._auth.get_access_token = AsyncMock(  # type: ignore[method-assign]
+        side_effect=VrtAuthError("token refresh failed")
+    )
+
+    # Yielding nothing here would tell MA every synced favourite had been removed, and
+    # the deletion pass would prune them all.
+    with pytest.raises(LoginFailed):
+        [podcast async for podcast in provider.get_library_podcasts()]

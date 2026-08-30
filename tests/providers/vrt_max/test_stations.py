@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from music_assistant_models.enums import MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Radio
 
-from music_assistant.providers.vrt_max.helpers import STATIONS, STATIONS_BY_ID
+from music_assistant.providers.vrt_max.constants import (
+    STATIONS,
+    STATIONS_BY_ID,
+)
 from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 
 
@@ -73,14 +76,28 @@ async def test_get_radio_unknown(provider: VrtMaxProvider) -> None:
 async def test_get_stream_details_known(provider: VrtMaxProvider) -> None:
     """get_stream_details resolves a live, unseekable HTTP stream for a known station."""
     station = STATIONS_BY_ID["radio1"]
+    assert station.aac_url
 
     details = await provider.get_stream_details(station.id, MediaType.RADIO)
 
     assert details.stream_type == StreamType.HTTP
-    assert details.path == station.stream_url
+    # AAC is preferred where offered: same 128kbps as the MP3 stream, better codec.
+    assert details.path == station.aac_url
+    assert details.audio_format.content_type == ContentType.AAC
     assert details.can_seek is False
     # Multi-instance: streams and images are scoped to the instance, not the domain.
     assert details.provider == provider.instance_id
+
+
+async def test_get_stream_details_falls_back_to_mp3(provider: VrtMaxProvider) -> None:
+    """A station without an AAC stream falls back to its MP3 one."""
+    station = STATIONS_BY_ID["vrtnws"]
+    assert station.aac_url is None
+
+    details = await provider.get_stream_details(station.id, MediaType.RADIO)
+
+    assert details.path == station.stream_url
+    assert details.audio_format.content_type == ContentType.MP3
 
 
 async def test_get_stream_details_unknown(provider: VrtMaxProvider) -> None:

@@ -11,8 +11,13 @@ from music_assistant.providers.vrt_max.constants import (
     BROWSE_PODCASTS,
     BROWSE_RADIO_PROGRAMS,
     BROWSE_RADIOS,
+    STATIONS,
 )
-from music_assistant.providers.vrt_max.helpers import STATIONS, VrtEpisode, VrtProgramTile, VrtRow
+from music_assistant.providers.vrt_max.models import (
+    VrtEpisode,
+    VrtProgramTile,
+    VrtRow,
+)
 from music_assistant.providers.vrt_max.provider import (
     VrtMaxProvider,
     _encode,
@@ -22,8 +27,10 @@ from music_assistant.providers.vrt_max.provider import (
 from .conftest import async_gen
 
 
-async def test_browse_root(provider: VrtMaxProvider) -> None:
-    """Browsing the provider root returns the three top-level folders."""
+async def test_browse_root_with_account(provider: VrtMaxProvider) -> None:
+    """With an account, browsing the root returns the three top-level folders."""
+    provider._auth.enabled = True  # type: ignore[misc]
+
     result = await provider.browse(f"{provider.instance_id}://")
 
     assert len(result) == 3
@@ -33,6 +40,17 @@ async def test_browse_root(provider: VrtMaxProvider) -> None:
         BROWSE_RADIO_PROGRAMS,
         BROWSE_PODCASTS,
     }
+
+
+async def test_browse_root_without_account_offers_only_live_radio(
+    provider: VrtMaxProvider,
+) -> None:
+    """Without an account only live radio is playable, so only that folder is offered."""
+    provider._auth.enabled = False  # type: ignore[misc]
+
+    result = await provider.browse(f"{provider.instance_id}://")
+
+    assert [item.item_id for item in result] == [BROWSE_RADIOS]
 
 
 async def test_browse_radios(provider: VrtMaxProvider) -> None:

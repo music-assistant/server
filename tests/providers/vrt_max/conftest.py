@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 from music_assistant_models.enums import ProviderType
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.providers.vrt_max.provider import VrtMaxProvider
 from tests.common import use_real_create_task
 
@@ -57,3 +58,12 @@ def async_gen_then_raise(items: Iterable[_T], exc: Exception) -> Callable[..., A
         raise exc
 
     return _gen
+
+
+def _set_credentials(provider: VrtMaxProvider) -> None:
+    """Configure VRT account credentials on a test provider."""
+    values = {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "secret"}
+    provider.config.get_value.side_effect = (  # type: ignore[attr-defined]
+        lambda key, default=None: values.get(key, default)
+    )
+    provider._auth.enabled = True  # type: ignore[misc]

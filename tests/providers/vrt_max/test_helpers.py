@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from music_assistant.providers.vrt_max.parsers import _image_url
 from music_assistant.providers.vrt_max.provider import (
     _decode,
     _encode,
@@ -46,3 +47,33 @@ def test_encode_decode_round_trip() -> None:
     assert "+" not in encoded
     assert "/" not in encoded
     assert _decode(encoded) == value
+
+
+def test_image_url_requests_a_rendition_not_the_original() -> None:
+    """A VRT image url is rewritten to a sized rendition instead of the full original."""
+    image = {"templateUrl": "https://images.vrt.be/orig/2026/06/30/abc.jpg"}
+
+    # 'orig' is several times the size of anything rendered, and a browse list of them
+    # is enough concurrent traffic to earn a 429 from VRT's image CDN.
+    assert _image_url(image) == "https://images.vrt.be/w1280hx/2026/06/30/abc.jpg"
+
+
+def test_image_url_strips_sizing_placeholders() -> None:
+    """Any leftover template placeholder is removed."""
+    image = {"templateUrl": "https://images.vrt.be/orig/2026/06/30/abc.jpg{?width}"}
+
+    assert _image_url(image) == "https://images.vrt.be/w1280hx/2026/06/30/abc.jpg"
+
+
+def test_image_url_leaves_other_hosts_untouched() -> None:
+    """A url that is not a VRT image-CDN original is passed through unchanged."""
+    image = {"templateUrl": "https://example.com/orig/pic.jpg"}
+
+    assert _image_url(image) == "https://example.com/orig/pic.jpg"
+
+
+def test_image_url_rejects_non_urls() -> None:
+    """A missing or non-http template url yields None."""
+    assert _image_url({}) is None
+    assert _image_url({"templateUrl": "not-a-url"}) is None
+    assert _image_url(None) is None
