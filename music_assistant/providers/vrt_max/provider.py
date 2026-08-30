@@ -625,7 +625,8 @@ class VrtMaxProvider(MusicProvider):
         if self._auth.enabled:
             try:
                 access_token = await self._auth.get_access_token()
-            except VrtAuthError as err:
+            except (VrtAuthError, VrtApiError) as err:
+                # Progress is a nice-to-have here; list the episodes without it either way.
                 self.logger.debug("No access token for episode progress: %s", err)
         listed: list[VrtEpisode] = []
         for season in program.seasons:

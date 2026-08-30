@@ -18,7 +18,7 @@ from .constants import (
     SSO_LOGIN_URL,
     TOKEN_URL,
 )
-from .models import VrtAuthError
+from .models import VrtApiError, VrtAuthError
 
 if TYPE_CHECKING:
     import logging
@@ -35,6 +35,11 @@ class VrtMaxAuth:
     Performs the SSO username/password login to obtain an identity token, then
     exchanges it for a short-lived vrtPlayerToken which it caches until shortly
     before expiry. A single lock serialises concurrent refreshes.
+
+    Only credentials VRT actually rejects are reported as a login failure, which MA
+    never retries. Everything else - transport failures, timeouts, unexpected response
+    shapes - is reported as temporary, so it is retried instead of disabling the
+    provider until somebody reloads it by hand.
     """
 
     def __init__(
@@ -112,7 +117,7 @@ class VrtMaxAuth:
                     await resp.read()
                 xsrf = _cookie_value(jar, "OIDCXSRF")
                 if not xsrf:
-                    raise VrtAuthError("VRT SSO init failed (no OIDCXSRF cookie)")
+                    raise VrtApiError("VRT SSO init failed (no OIDCXSRF cookie)")
                 payload = {
                     "clientId": "vrtnu-site",
                     "loginID": self._username,
@@ -130,15 +135,18 @@ class VrtMaxAuth:
                     raise VrtAuthError(f"VRT login failed: {message}")
                 redirect_url = info.get("redirectUrl")
                 if not redirect_url:
-                    raise VrtAuthError("VRT login returned no redirect url")
+                    raise VrtApiError("VRT login returned no redirect url")
                 async with session.get(redirect_url, timeout=GRAPHQL_TIMEOUT) as resp:
                     await resp.read()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise VrtAuthError(f"VRT login request failed: {err}") from err
+            # A transport failure is temporary. Reporting it as a login failure would
+            # have MA treat it as a wrong password and never retry, leaving the provider
+            # switched off after a brief network problem at startup.
+            raise VrtApiError(f"VRT login request failed: {err}") from err
         access_token = _cookie_value(jar, "vrtnu-site_profile_at")
         identity_token = _cookie_value(jar, "vrtnu-site_profile_vt")
         if not access_token or not identity_token:
-            raise VrtAuthError("VRT login did not yield the expected tokens")
+            raise VrtApiError("VRT login did not yield the expected tokens")
         self._access_token = access_token
         self._identity_token = identity_token
         self._login_expiry = min(_jwt_expiry(access_token), _jwt_expiry(identity_token))
@@ -156,10 +164,10 @@ class VrtMaxAuth:
                 resp.raise_for_status()
                 body = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise VrtAuthError(f"Player token request failed: {err}") from err
+            raise VrtApiError(f"Player token request failed: {err}") from err
         token = body.get("vrtPlayerToken") if isinstance(body, dict) else None
         if not isinstance(token, str) or not token:
-            raise VrtAuthError("No vrtPlayerToken in token response")
+            raise VrtApiError("No vrtPlayerToken in token response")
         return token, _jwt_expiry(token)
 
 
@@ -183,8 +191,8 @@ def _jwt_expiry(token: str) -> float:
     try:
         claims: dict[str, Any] = jwt.decode(token, options={"verify_signature": False})
     except jwt.PyJWTError as err:
-        raise VrtAuthError(f"Could not read the expiry from a VRT token: {err}") from err
+        raise VrtApiError(f"Could not read the expiry from a VRT token: {err}") from err
     exp = claims.get("exp")
     if not isinstance(exp, (int, float)):
-        raise VrtAuthError("VRT token has no usable 'exp' claim")
+        raise VrtApiError("VRT token has no usable 'exp' claim")
     return float(exp)
