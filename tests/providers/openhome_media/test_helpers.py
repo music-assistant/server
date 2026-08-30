@@ -1,10 +1,14 @@
 """Tests for Linn/OpenHome Media helpers."""
+
 import defusedxml.ElementTree as DefusedET
 import pytest
 from async_upnp_client.profiles.ohmedia import TransportStateAllowedValues
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.providers.openhome_media.player import OpenHomePlayer, PlayerSource
+from music_assistant.providers.openhome_media.player import (  # type: ignore[attr-defined]
+    OpenHomePlayer,
+    PlayerSource,
+)
 
 
 class TestIsValidUuid:
@@ -22,7 +26,7 @@ class TestIsValidUuid:
             (None, False),
         ],
     )
-    def test_is_valid_uuid(self, uuid: str | None, expected:bool) -> None:
+    def test_is_valid_uuid(self, uuid: str | None, expected: bool) -> None:
         """Test valid UUID detection."""
         actual = OpenHomePlayer.is_valid_uuid(uuid)
         assert actual is expected
@@ -59,7 +63,9 @@ class TestTransportStateConversion:
             ("UnknownState", PlaybackState.UNKNOWN),
         ],
     )
-    def test_transport_state_to_playback_state(self, transport_state:TransportStateAllowedValues, expected_playback: PlaybackState) -> None:
+    def test_transport_state_to_playback_state(
+        self, transport_state: TransportStateAllowedValues, expected_playback: PlaybackState
+    ) -> None:
         """Test conversion from device transport state to MA playback state."""
         result = OpenHomePlayer._transport_state_to_playback_state(transport_state)
         assert result == expected_playback
@@ -88,7 +94,6 @@ class TestSourceList:
         assert len(result) == 1
         assert result[0].id == "0"
         assert result[0].name == "CD"
-
 
     def test_multiple_sources(self) -> None:
         """Test multiple visible sources extraction."""
@@ -291,14 +296,19 @@ class TestSourceList:
 
     def test_large_number_of_sources(self) -> None:
         """Test handling of many sources."""
-        sources = "".join([f"""
+        sources = "".join(
+            [
+                f"""
             <Source>
                 <Visible>true</Visible>
                 <Name>Source {i}</Name>
                 <Type>Digital</Type>
                 <SystemName>source{i}</SystemName>
             </Source>
-        """ for i in range(50)])
+        """
+                for i in range(50)
+            ]
+        )
 
         xml = f"<Sources>{sources}</Sources>"
 
@@ -433,6 +443,12 @@ class TestSourceList:
                 <Visible>true</Visible>
                 <Name>Test</Name>
                 <Type>PLAYLIST</Type>
+                <SystemName>test</SystemName>
+            </Source>
+            <Source>
+                <Visible>true</Visible>
+                <Name>Test</Name>
+                <Type>RADIO</Type>
                 <SystemName>test</SystemName>
             </Source>
         </Sources>"""
