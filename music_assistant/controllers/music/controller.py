@@ -2676,7 +2676,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             if not provider.library_sync_album_tracks_enabled():
                 continue
-            self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
+            self.mass.create_task(
+                provider.import_album_tracks(prov_mapping.item_id, album.name, album)
+            )
 
     async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
         """Return all sound effect items from a single provider."""
