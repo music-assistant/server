@@ -53,6 +53,10 @@
         "very_high": "Very high (about 320 kbps)",
         "lossless": "Lossless (Spotify Soloist engine only)"
       }
+    },
+    "zeroconf_port": {
+      "label": "Static Zeroconf port",
+      "description": "The network port the Spotify app connects to when it discovers this device on your LAN. By default (0) go-librespot picks a random free port on every start, which strict firewalls (firewalld/ufw) and container setups using host networking may block. Set a fixed port here and allow it through your firewall instead."
     }
   },
   "setup_flow": {

@@ -2401,6 +2401,8 @@
   "provider.spotify_connect.config_entries.volume_mode.label": "Spotify app volume behavior",
   "provider.spotify_connect.config_entries.volume_mode.options.player_only": "Player volume only (quality-first, default)",
   "provider.spotify_connect.config_entries.volume_mode.options.sync_spotify": "Sync Spotify app volume",
+  "provider.spotify_connect.config_entries.zeroconf_port.description": "The network port the Spotify app connects to when it discovers this device on your LAN. By default (0) go-librespot picks a random free port on every start, which strict firewalls (firewalld/ufw) and container setups using host networking may block. Set a fixed port here and allow it through your firewall instead.",
+  "provider.spotify_connect.config_entries.zeroconf_port.label": "Static Zeroconf port",
   "provider.spotify_connect.errors.not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again.",
   "provider.spotify_connect.errors.soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
   "provider.spotify_connect.errors.soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later.",

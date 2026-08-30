@@ -82,6 +82,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         crossfade_ms: int = 0,
         loudness_normalization: bool = True,
         audio_quality: str = AUDIO_QUALITY_LOSSLESS,
+        zeroconf_port: int = 0,
     ) -> None:
         """
         Initialize the backend (cheap; the daemon is launched in ``start``).
@@ -101,6 +102,8 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             should be applied to the audio.
         :param audio_quality: Ceiling for the streaming quality Spotify is asked
             to deliver (one of the AUDIO_QUALITY_* tiers).
+        :param zeroconf_port: Static port for the daemon's Zeroconf/Connect
+            service (0 for an ephemeral port).
         """
         self.mass = mass
         self.logger = logger
@@ -111,6 +114,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
         self._crossfade_ms = crossfade_ms
         self._loudness_normalization = loudness_normalization
         self._audio_quality = audio_quality
+        self._zeroconf_port = zeroconf_port
         self.cache_dir = os.path.join(self.mass.cache_path, identity_key)
         self._binary: str | None = None
         self._api_port: int = 0
@@ -285,6 +289,9 @@ class GoLibrespotBackend(SpotifyConnectBackend):
             "normalisation_disabled": not self._loudness_normalization,
             "crossfade_duration": self._crossfade_ms,
             "zeroconf_enabled": True,
+            # The Zeroconf/Connect service is what the Spotify app reaches over the
+            # LAN, 0 keeps go-librespot's default random-port behavior
+            "zeroconf_port": self._zeroconf_port,
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
         }

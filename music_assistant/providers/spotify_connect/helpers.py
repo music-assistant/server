@@ -40,3 +40,14 @@ def generate_device_id(identity_key: str) -> str:
     :param identity_key: The daemon's unique identity key.
     """
     return hashlib.sha256(identity_key.encode()).hexdigest()[:40]
+
+
+def validate_port_range(value: str) -> bool:
+    """Return whether a Zeroconf port value is a valid TCP port (0 = automatic)."""
+    # the callback receives the raw, not-yet-coerced form value (a str while the
+    # user is typing), not an already-parsed int
+    try:
+        port = int(value)
+    except TypeError, ValueError:
+        return False
+    return 0 <= port <= 65535

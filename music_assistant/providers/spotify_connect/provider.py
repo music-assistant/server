@@ -49,7 +49,10 @@ from .base import (
     AUDIO_QUALITY_OPTIONS,
 )
 from .go_librespot import GoLibrespotBackend
-from .helpers import get_go_librespot_binary
+from .helpers import (
+    get_go_librespot_binary,
+    validate_port_range,
+)
 from .models import BackendEventType
 from .soloist import (
     VOLUME_MODE_PLAYER_ONLY,
@@ -85,6 +88,10 @@ CONF_VOLUME_MODE = "volume_mode"
 CONF_LOUDNESS_NORMALIZATION = "loudness_normalization"
 MAX_CROSSFADE_DURATION = 12  # seconds, matching the Spotify apps' slider
 CONF_AUDIO_QUALITY = "audio_quality"
+
+# go-librespot-specific: pinning port of the ZeroConf/Connect LAN-facing listener
+CONF_ZEROCONF_PORT = "zeroconf_port"
+MAX_PORT = 65535
 
 AUDIO_QUALITY_VALUES: Final = {option.value for option in AUDIO_QUALITY_OPTIONS}
 
@@ -261,6 +268,15 @@ class SpotifyConnectProvider(PluginProvider):
                 default_value=AUDIO_QUALITY_LOSSLESS,
                 required=False,
                 options=AUDIO_QUALITY_OPTIONS,
+            ),
+            ConfigEntry(
+                key=CONF_ZEROCONF_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                required=False,
+                advanced=True,
+                hidden=is_soloist,
+                validate=lambda val: validate_port_range(cast("str", val)),
             ),
         )
 
@@ -779,6 +795,7 @@ class SpotifyConnectProvider(PluginProvider):
             crossfade_ms=self._resolve_crossfade_ms(),
             loudness_normalization=self._resolve_loudness_normalization(),
             audio_quality=self._resolve_audio_quality(),
+            zeroconf_port=self._resolve_zeroconf_port(),
         )
 
     def _resolve_volume_mode(self) -> str:
@@ -804,6 +821,11 @@ class SpotifyConnectProvider(PluginProvider):
         if value in AUDIO_QUALITY_VALUES:
             return cast("str", value)
         return AUDIO_QUALITY_LOSSLESS
+
+    def _resolve_zeroconf_port(self) -> int:
+        """Return the configured static Zeroconf port (0 lets go-librespot pick one)."""
+        value = cast("int | None", self.config.get_value(CONF_ZEROCONF_PORT))
+        return max(0, min(int(value or 0), MAX_PORT))
 
     def _not_active_error(self, daemon: _PlayerDaemon) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming the device."""

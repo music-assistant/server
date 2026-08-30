@@ -76,6 +76,7 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 | Queue control | Session-side queue verbs (add-to-queue, shuffle, repeat) + queue/options events | Transport only |
 | Volume | Two modes: pin at 100% (default) or sync with compensation | `external_volume`: MA owns volume |
 | Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry, ToS grey area | May break when Spotify changes the protocol |
+| Static Zeroconf port | Not configurable | Configurable (`zeroconf_port`), for strict firewalls / host networking |
 
 The setup flow defaults new setups to Soloist and presents both engines as expanded
 choices. Existing pre-backend-split configs migrate to go-librespot. Loudness normalization,

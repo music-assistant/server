@@ -46,6 +46,10 @@ and quoting pitfalls:
   recognising the same device), zeroconf advertised on the streams bind interface,
   credentials persisted per daemon.
 - The local HTTP/WS API binds to `127.0.0.1` on a free port per daemon.
+- The Zeroconf/Connect service itself (what the Spotify app actually reaches over the
+  LAN). By default it is a ephemeral port (`zeroconf_port: 0`) but can be pinned to a fixed
+  value through the provider's "Static Zeroconf port" setting, for firewalld/ufw/host-networking
+  setups that don't tolerate ephemeral ports.
 
 The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
 the provider gives up this one daemon (stopping it and keeping the other players' daemons

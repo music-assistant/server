@@ -36,6 +36,7 @@ from music_assistant.providers.spotify_connect.models import BackendEvent, Backe
 from music_assistant.providers.spotify_connect.provider import (
     CONF_AUDIO_QUALITY,
     CONF_LOUDNESS_NORMALIZATION,
+    CONF_ZEROCONF_PORT,
     _PlayerDaemon,
 )
 from music_assistant.providers.spotify_connect.soloist.backend import (
@@ -504,6 +505,31 @@ def test_audio_behavior_values_reach_the_backend(tmp_path: Path) -> None:
     assert backend._audio_quality == AUDIO_QUALITY_HIGH
 
 
+def test_zeroconf_port_defaults_to_automatic(tmp_path: Path) -> None:
+    """Without a stored value, the go-librespot backend gets 0 (automatic)."""
+    provider = _provider_with_stored_config({}, tmp_path)
+
+    backend = provider._create_backend(_make_daemon(), "Player 1")
+
+    assert isinstance(backend, GoLibrespotBackend)
+    assert backend._zeroconf_port == 0
+
+
+def test_zeroconf_port_value_reaches_the_backend(tmp_path: Path) -> None:
+    """A configured static Zeroconf port reaches the go-librespot backend."""
+    provider = _provider_with_stored_config({}, tmp_path)
+    provider.config.values[CONF_ZEROCONF_PORT] = ConfigEntry(
+        key=CONF_ZEROCONF_PORT,
+        type=ConfigEntryType.INTEGER,
+        value=5030,
+    )
+
+    backend = provider._create_backend(_make_daemon(), "Player 1")
+
+    assert isinstance(backend, GoLibrespotBackend)
+    assert backend._zeroconf_port == 5030
+
+
 def test_source_processing_defaults_are_reported(tmp_path: Path) -> None:
     """Spotify reports its default source processing as normalization only."""
     provider = _provider_with_stored_config({}, tmp_path)
@@ -542,6 +568,7 @@ def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     backend._crossfade_ms = 8000
     backend._loudness_normalization = False
     backend._audio_quality = AUDIO_QUALITY_HIGH
+    backend._zeroconf_port = 0
 
     backend._write_config(None)
 
@@ -549,6 +576,7 @@ def test_write_config_carries_the_audio_behavior_keys(tmp_path: Path) -> None:
     assert config["crossfade_duration"] == 8000
     assert config["normalisation_disabled"] is True
     assert config["bitrate"] == 160
+    assert config["zeroconf_port"] == 0
 
 
 def test_write_config_caps_lossless_at_the_engine_maximum(tmp_path: Path) -> None:
@@ -563,11 +591,44 @@ def test_write_config_caps_lossless_at_the_engine_maximum(tmp_path: Path) -> Non
     backend._crossfade_ms = 0
     backend._loudness_normalization = True
     backend._audio_quality = AUDIO_QUALITY_LOSSLESS
+    backend._zeroconf_port = 0
 
     backend._write_config(None)
 
     config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
     assert config["bitrate"] == 320
+
+
+def test_write_config_zeroconf_port_is_a_verbatim_passthrough(tmp_path: Path) -> None:
+    """
+    MA never substitutes its own value for the Zeroconf port, either way.
+
+    0 is written through unchanged, which is what delegates the actual port
+    choice to go-librespot's own ephemeral-port allocator (confirmed by hand
+    against the real binary; this hermetic suite never spawns it - see the
+    other backend tests here for why). A configured value is written through
+    unchanged too, which is what pins it.
+    """
+    backend = object.__new__(GoLibrespotBackend)
+    backend.mass = MagicMock()
+    backend.logger = MagicMock()
+    backend._publish_name = "Test Speaker"
+    backend._identity_key = "spotify_connect_player1"
+    backend._api_port = 38800
+    backend.cache_dir = str(tmp_path)
+    backend._crossfade_ms = 0
+    backend._loudness_normalization = True
+    backend._audio_quality = AUDIO_QUALITY_LOSSLESS
+
+    backend._zeroconf_port = 0
+    backend._write_config(None)
+    auto_config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert auto_config["zeroconf_port"] == 0
+
+    backend._zeroconf_port = 5030
+    backend._write_config(None)
+    config = json.loads((tmp_path / "config.yml").read_text(encoding="utf-8"))
+    assert config["zeroconf_port"] == 5030
 
 
 async def test_soloist_data_dir_matches_the_migration_target(tmp_path: Path) -> None:
