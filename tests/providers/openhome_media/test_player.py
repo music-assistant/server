@@ -526,7 +526,8 @@ class TestPolling:
             do_ping=True
         )
 
-    @pytest.mark.parametrize("mock_last_seen", [time.time(), None])
+    # use fixed timestamp for mock_last_seen, just sometime in the past
+    @pytest.mark.parametrize("mock_last_seen", [1234567890.0, None])
     @pytest.mark.asyncio
     async def test_poll_raises_on_device_unavailable(
         self, player: OpenHomePlayer, mock_ohm_device: OhmDevice, mock_last_seen: float | None
