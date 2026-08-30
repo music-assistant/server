@@ -1,7 +1,6 @@
 """Tests for Linn/OpenHome Media player integration."""
 
 import asyncio
-import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
