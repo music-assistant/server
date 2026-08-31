@@ -397,8 +397,7 @@ class AIRadioQueueDJMixin:
         """Return the highest queue index the player already owns."""
         # the player owns the current and the already buffered item, and the slot right
         # after the buffered one may be handed to the player at any moment
-        # not the shared committed_index: this guard needs the furthest index reached in list
-        # order, where that helper follows playback order and wraps back to the front on repeat
+        # list order, not the playback order committed_index follows
         current_index = queue.current_index if queue.current_index is not None else -1
         index_in_buffer = queue.index_in_buffer if queue.index_in_buffer is not None else -1
         return max(current_index, index_in_buffer)

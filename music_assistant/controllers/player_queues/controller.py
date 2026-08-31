@@ -564,8 +564,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         - pos_shift: move item x positions down if positive value
         - pos_shift: move item x positions up if negative value
-        - pos_shift: move item to the front of the upcoming items if 0, which is behind the
-          track the player already holds while playing.
+        - pos_shift: move item to the front of the upcoming items if 0
         """
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
@@ -579,10 +578,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             and queue.current_index is not None
             and queue.index_in_buffer < queue.current_index
         ):
-            # repeat looped the buffered track back to the front, so the upcoming items are split
-            # across the end and the start of the list. A move would carry an item across the
-            # playing one, whose index is not re-anchored here and would then name a different
-            # track. Refuse until the queue has wrapped and the two indexes line up again.
+            # the upcoming items are split across the end and the start of the list, so a move
+            # would carry an item past the playing one, whose index is not re-anchored here
             msg = "queue is wrapping around to its start"
             raise IndexError(msg)
 
@@ -590,9 +587,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = queue_items.copy()
 
         if pos_shift == 0 and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            # land behind the track the player already holds rather than behind the playing one:
-            # that track is handed over long before it starts (an item ahead with crossfade), so
-            # writing into its slot leaves the player playing what the queue no longer says is next
+            # the buffered track is handed over long before it starts, so writing into its
+            # slot leaves the player playing what the queue no longer says is next
             boundary_index = committed_index(queue)
             new_index = (boundary_index if boundary_index is not None else 0) + 1
         elif pos_shift == 0:

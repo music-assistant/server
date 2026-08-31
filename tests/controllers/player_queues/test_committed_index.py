@@ -1,8 +1,4 @@
-"""
-Tests for the shared boundary index every queue insert path places new items behind.
-
-The concept used to be spelled out inline at each call site in three slightly different ways.
-"""
+"""Tests for the shared boundary index every queue insert path places new items behind."""
 
 from __future__ import annotations
 
@@ -40,10 +36,5 @@ def test_committed_index(
 
 
 def test_a_wrapped_buffer_reports_the_buffered_track_at_the_front() -> None:
-    """
-    Repeat loops the buffered track to the front and the boundary follows it there.
-
-    That is where the player will actually continue, so new items belong right behind index 0
-    rather than behind the last track that happens to be playing.
-    """
+    """Repeat loops the buffered track to the front and the boundary follows it there."""
     assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 0

@@ -204,15 +204,10 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
 
 def committed_index(queue: PlayerQueue) -> int | None:
     """
-    Return the last queue index the player has committed to, or None if it has none.
+    Return the index of the track the player was already handed, or None if there is none.
 
-    The next track is handed to the player long before it starts, so everything up to and
-    including this index is settled: changing the queue there leaves the player playing something
-    the queue no longer lists. New items belong behind it.
-
-    Repeat loops this back to the front of the queue while the last track plays, so it can sit
-    before `current_index`. That is the buffered track's real position and inserts should still
-    follow it, but callers that reorder existing items have to handle the split themselves.
+    New items belong behind it. Repeat can put it before `current_index`, so callers that reorder
+    existing items have to handle the queue being split across its end and its start.
 
     :param queue: The queue to resolve the index for.
     """

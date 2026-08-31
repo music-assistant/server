@@ -1,9 +1,4 @@
-"""
-Tests for moving items around a playing queue.
-
-"Play next" used to land behind the playing track, which with crossfade enabled is the slot the
-player has already been handed: the queue then said one thing and the speaker played another.
-"""
+"""Tests for moving items around a playing queue."""
 
 from __future__ import annotations
 
@@ -79,12 +74,7 @@ def _order(ctrl: Any) -> list[str]:
 
 
 async def test_play_next_lands_behind_the_buffered_track() -> None:
-    """
-    With a track already buffered ahead, "play next" queues behind it rather than into its slot.
-
-    The buffered track was handed to the player long before it starts, so its slot can no longer
-    be changed; writing into it leaves the player playing what the queue no longer lists as next.
-    """
+    """With a track buffered ahead, "play next" queues behind it rather than into its slot."""
     ctrl = _controller(current_index=0, index_in_buffer=1)
     buffered_item_id = _item_id_at(ctrl, 1)
 
@@ -113,12 +103,7 @@ async def test_play_next_on_the_item_already_next_keeps_the_order() -> None:
 
 
 async def test_play_next_on_a_paused_queue_respects_the_buffered_track() -> None:
-    """
-    A paused player still holds the track it was handed, so the move goes behind it.
-
-    Landing in front of it would put the picked track before the one the speaker resumes on,
-    which then plays past it and never reaches it.
-    """
+    """A paused player still holds the track it was handed, so the move goes behind it."""
     ctrl = _controller(state=PlaybackState.PAUSED, current_index=1, index_in_buffer=2)
 
     ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=0)
@@ -145,12 +130,7 @@ async def test_play_next_clears_a_track_buffered_two_ahead() -> None:
 
 
 async def test_moving_is_refused_while_repeat_wraps_the_queue() -> None:
-    """
-    A queue whose buffered track wrapped back to the front refuses moves instead of reordering.
-
-    The upcoming items are split across the end and the start of the list there, so any move
-    carries an item past the playing one, which is left naming a different track.
-    """
+    """A queue whose buffered track wrapped back to the front refuses moves."""
     ctrl = _controller(current_index=4, index_in_buffer=0)
 
     with pytest.raises(IndexError):
