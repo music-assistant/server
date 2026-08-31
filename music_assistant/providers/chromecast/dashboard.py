@@ -201,7 +201,7 @@ class ChromecastDashboards:
         # only tear down a connection we opened on-demand; never an active player's own cc
         on_demand = self._dashboard_connections.pop(device_id, None)
         if on_demand is not None:
-            await self.mass.loop.run_in_executor(None, on_demand.disconnect, 10)
+            await self.mass.loop.run_in_executor(None, disconnect_cast, on_demand, 10)
 
     async def _get_or_create_chromecast(self, device_id: str) -> pychromecast.Chromecast:
         """Resolve a device_id to a connected Chromecast, reusing an existing connection."""
