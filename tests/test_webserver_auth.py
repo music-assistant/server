@@ -726,11 +726,21 @@ async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> 
             "created_at": utc().isoformat(),
         },
     )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "orphan-code",
+            "code": "ORPHANCODE12",
+            "user_id": "deleted-user-id",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
 
     await auth_manager._prune_orphaned_user_rows()
 
-    assert await auth_manager.database.get_rows("auth_tokens", {"user_id": "deleted-user-id"}) == []
-    assert await auth_manager.database.get_rows("user_auth_providers") == []
+    for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        assert await auth_manager.database.get_rows(table, {"user_id": "deleted-user-id"}) == []
     # the live user's token is untouched
     rows = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
     assert [row["name"] for row in rows] == ["Keep Me"]
