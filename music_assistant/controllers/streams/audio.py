@@ -2147,9 +2147,14 @@ class StreamsAudio:
                     )
                     crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
             if not crossfade_allowed:
-                # no crossfade enabled/allowed, just yield the buffer last part
-                bytes_written += len(buffer)
-                for pcm_slice in iter_pcm_slices(bytes(buffer), pcm_format, 1000):
+                # No fade lands on this boundary, so the trailing silence retained for
+                # one has no job left - playing it out is heard as dead air before the
+                # next track. Deliver the audible part and skip the silence, counting
+                # it as consumed media time so the item's duration stays honest.
+                audible_len = len(buffer) - min(silent_tail, len(buffer))
+                uncredited_tail_bytes = len(buffer) - audible_len
+                bytes_written += audible_len
+                for pcm_slice in iter_pcm_slices(bytes(buffer[:audible_len]), pcm_format, 1000):
                     yield pcm_slice
                     await asyncio.sleep(0)
             else:
@@ -2626,6 +2631,7 @@ class StreamsAudio:
                 bytes_written = 0
                 crossfade_buffer = bytearray()
                 silent_tail = 0
+                trimmed_tail_bytes = 0
                 warmup_bytes = 0
                 first_chunk_received = False
                 # the holdback is grown out of the audio banked ahead of playback instead
@@ -2954,8 +2960,14 @@ class StreamsAudio:
                         bytes_written += len(remaining_bytes)
                     del remaining_bytes
                 elif item_crossfade_mode != CrossfadeMode.DISABLED and crossfade_buffer:
-                    bytes_written += len(crossfade_buffer)
-                    for pcm_slice in iter_pcm_slices(bytes(crossfade_buffer), pcm_format, 1000):
+                    # no fade on this boundary: deliver the audible tail and skip the
+                    # trailing silence retained for a fade that never happened
+                    audible_len = len(crossfade_buffer) - min(silent_tail, len(crossfade_buffer))
+                    trimmed_tail_bytes = len(crossfade_buffer) - audible_len
+                    bytes_written += audible_len
+                    for pcm_slice in iter_pcm_slices(
+                        bytes(crossfade_buffer[:audible_len]), pcm_format, 1000
+                    ):
                         yield pcm_slice
                         await asyncio.sleep(0)
                 crossfade_buffer = bytearray()
@@ -2972,8 +2984,9 @@ class StreamsAudio:
                 source_buffer = queue_track.streamdetails.buffer
                 source_aborted = source_buffer is not None and source_buffer.cancelled
                 if not source_aborted:
-                    # the held-back crossfade tail still counts as this track's media-time
-                    tail_seconds = len(last_fadeout_part) / pcm_sample_size
+                    # the held-back crossfade tail still counts as this track's media-time,
+                    # and so does trailing silence that was trimmed instead of played
+                    tail_seconds = (len(last_fadeout_part) + trimmed_tail_bytes) / pcm_sample_size
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
                     queue_track.streamdetails.duration = int(

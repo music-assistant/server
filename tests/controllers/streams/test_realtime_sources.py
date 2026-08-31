@@ -571,8 +571,9 @@ async def test_a_tail_with_nothing_audible_left_is_a_cut_not_a_token_fade(
         _queue_item: object, *_args: object, **_kwargs: object
     ) -> AsyncGenerator[bytes]:
         # the warmup goes straight out, then the item runs out and pads its tail
+        # (kept under the retention cap, so the whole run is held back)
         yield _audio(pcm_format, WARMUP_DURATION)
-        yield b"\x00" * int(pcm_format.pcm_sample_size * 30)
+        yield b"\x00" * int(pcm_format.pcm_sample_size * 15)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -582,13 +583,20 @@ async def test_a_tail_with_nothing_audible_left_is_a_cut_not_a_token_fade(
         crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration=8,
     )
-    async for _chunk in stream:
-        pass
+    output = b"".join([chunk async for chunk in stream])
 
     # the mixer is never asked, and nothing is stashed: the next item starts on its
     # own audio, gapless
     assert asked == [], f"a fade was planned from {asked[0] if asked else 0} bytes of tail"
     assert "queue-1" not in audio._crossfade_data
+    # and the retained silence is trimmed, not played: dead air before the next
+    # track is exactly what the listener reported
+    trailing = len(output) - len(output.rstrip(b"\x00"))
+    assert trailing < pcm_format.pcm_sample_size, (
+        f"{trailing / pcm_format.pcm_sample_size:.1f}s of silence reached the player"
+    )
+    # the audible audio itself is intact
+    assert len(output.rstrip(b"\x00")) >= pcm_format.pcm_sample_size * (WARMUP_DURATION - 1)
 
 
 # -- StreamsAudio._select_buffered_crossfade --
