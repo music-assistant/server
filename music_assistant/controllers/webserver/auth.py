@@ -153,6 +153,9 @@ class AuthenticationManager:
         # repair filters that were left pointing at removed providers/players
         await self._prune_stale_user_filters()
 
+        # clear rows left behind by user deletions from before those were cleaned up
+        await self._prune_orphaned_user_rows()
+
         self._schedule_periodic_cleanup()
 
         self.logger.info(
@@ -1978,6 +1981,18 @@ class AuthenticationManager:
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
             )
 
+    async def _prune_orphaned_user_rows(self) -> None:
+        """Drop rows in the user-linked tables whose user no longer exists."""
+        total = 0
+        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            cursor = await self.database.execute(
+                f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
+            )
+            total += int(cursor.rowcount)
+        await self.database.commit()
+        if total > 0:
+            self.logger.debug("Cleaned up %d row(s) of deleted user(s)", total)
+
     async def _prune_stale_user_filters(self) -> None:
         """Drop user access filter entries for providers or players that no longer exist."""
         known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
@@ -2203,9 +2218,7 @@ class AuthenticationManager:
 
         user = await self.get_user(row["user_id"])
         if not user:
-            self.logger.error(
-                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
-            )
+            self.logger.error("User not found for join code (user_id=%s)", row["user_id"])
             return None
 
         device_name = row["device_name"] or "Short Code Login"
