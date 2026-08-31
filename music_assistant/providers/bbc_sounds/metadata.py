@@ -36,7 +36,7 @@ def _segment_to_metadata(now_playing: Segment) -> StreamMetadata | None:
     return None
 
 
-async def _station_programme_display(station: LiveStation) -> StreamMetadata | None:
+def _station_programme_display(station: LiveStation) -> StreamMetadata | None:
     if station and station.titles:
         title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
         return StreamMetadata(title=title, artist=None, image_url=station.image_url)

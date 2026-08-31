@@ -8,11 +8,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -426,7 +422,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         else:
             self.logger.debug(f"No song playing on {station_id}, displaying current programme info")
             programme = await self._station_current_programme(station_id)
-            stream_details.stream_metadata = await _station_programme_display(programme)
+            if programme:
+                stream_details.stream_metadata = _station_programme_display(programme)
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _vod_programme_display(self, pid: str) -> StreamMetadata | None:
@@ -443,7 +440,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
             if station and station.item_id:
-                station_info = await _station_programme_display(station=station)
+                station_info = _station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
