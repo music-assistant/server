@@ -119,6 +119,17 @@ async def test_crossfade_hands_the_same_track_over_again() -> None:
     assert _enqueued(ctrl) == "t1"
 
 
+async def test_nothing_is_handed_over_while_a_track_is_starting() -> None:
+    """A starting track moves the two positions one after the other, so the gap is skipped."""
+    ctrl = _controller(current_index=0, index_in_buffer=3)
+    ctrl._queue_data["q1"].transitioning = True
+    items = ctrl._queue_data["q1"].items
+
+    ctrl.update_items("q1", [items[0], items[4], items[1], items[2], items[3]])
+
+    assert _enqueued(ctrl) is None
+
+
 async def test_nothing_is_handed_over_while_the_queue_holds_no_position() -> None:
     """A queue mid-replace has no committed position, so no upcoming track is picked for it."""
     ctrl = _controller(current_index=0, index_in_buffer=None)
