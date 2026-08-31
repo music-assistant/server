@@ -731,8 +731,7 @@ class AriaCastReceiver(PluginProvider):
                 self._last_artwork_url = artwork
                 self._artwork_bytes = None
                 m.image_url = None
-                # one fetch at a time: the artwork is single-valued, and a peer
-                # feeding a fresh URL per update would otherwise stack them up
+                # a peer feeding a fresh URL per update must not stack up fetches
                 self.mass.create_task(
                     self._fetch_artwork(artwork_url),
                     task_id=f"ariacast_artwork_{self.instance_id}",
@@ -813,8 +812,7 @@ class AriaCastReceiver(PluginProvider):
             ) as resp:
                 if resp.status != 200:
                     return
-                # a single read returns only what is buffered, so iterate to EOF,
-                # bailing as soon as the body exceeds the cap
+                # a single read returns only what is buffered, so accumulate to EOF
                 buffer = bytearray()
                 async for chunk in resp.content:
                     buffer += chunk
@@ -1018,8 +1016,7 @@ def _sender_artwork_url(url: str, sender: str | None) -> URL | None:
     if not sender:
         return None
     try:
-        # yarl is the parser aiohttp fetches with, so the URL that passes this
-        # check is exactly the URL that gets requested; no parser differential
+        # yarl is aiohttp's own parser, so what passes this check is what gets requested
         parsed = URL(url)
         if parsed.scheme not in ("http", "https"):
             return None
