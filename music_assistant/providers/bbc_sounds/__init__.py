@@ -200,7 +200,10 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def _fetch_menu(self) -> None:
         self.logger.debug("No cached menu, fetching from API")
-        self.menu = await self.client.get_menu(recommendations=MenuRecommendationOptions.EXCLUDE)
+        self.menu = await self.client.get_menu(
+            include_local_stations=self.show_local_stations,
+            recommendations=MenuRecommendationOptions.EXCLUDE,
+        )
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:
