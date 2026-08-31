@@ -2341,6 +2341,18 @@ class StreamsAudio:
                         * fade_in_playback_speed,
                         normalization_mode=next_queue_item.streamdetails.volume_normalization_mode,
                     )
+                    self.logger.debug(
+                        "DIAG boundary shipped: mode=%s pre=%.2fs cf=%.2fs post=%.2fs "
+                        "trimmed_in=%.2fs tail_held=%.2fs to_this_item=%.2fs to_next_item=%.2fs",
+                        applied_mode.value,
+                        crossfade_timing.pre_crossfade_duration,
+                        crossfade_timing.crossfade_duration,
+                        getattr(crossfade_timing, "post_crossfade_duration", 0.0),
+                        crossfade_timing.fadein_trimmed_duration,
+                        len(fade_out_data) / pcm_format.pcm_sample_size,
+                        first_part_written / pcm_format.pcm_sample_size,
+                        len(second_part_buf) / pcm_format.pcm_sample_size,
+                    )
                     crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                     self.logger.debug(
                         "Stored crossfade data for queue %s"
