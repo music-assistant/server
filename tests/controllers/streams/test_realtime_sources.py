@@ -510,8 +510,7 @@ async def test_the_banked_lead_counts_emitted_audio_not_what_arrived() -> None:
     # 30s emitted in 10s, on top of a 10s carry
     now = asyncio.get_event_loop().time()
     hold.note_bytes(30 * pss)
-    hold._started = now - 10.0
-    hold._last_noted = now
+    hold._first_noted = now - 10.0
     assert 29.5 < hold.banked_lead(30 * pss) <= 30.0
 
     # the source handed over 30s but the mix only emitted 12s of it: the 18s it
@@ -521,15 +520,20 @@ async def test_the_banked_lead_counts_emitted_audio_not_what_arrived() -> None:
     # a stream that fell behind the wall clock reports no lead, never a debt
     behind = _TailHold(pcm_format, cast("Any", queue_item))
     behind.note_bytes(pss)
-    behind._started = asyncio.get_event_loop().time() - 30.0
+    behind._first_noted = asyncio.get_event_loop().time() - 30.0
     assert behind.banked_lead(pss) == 0.0
 
-    # a source stalled mid-track is not lead, however long note_bytes forgives it
+    # A stalled source is not lead, however much note_bytes forgave it. That
+    # forgiveness moves _started, which is what keeps the in-track holdback alive
+    # across a suspension; the banked value reads the unforgiven clock instead, so
+    # 30s emitted over 40 real seconds is no lead whatever _started was moved to.
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     stalled = _TailHold(pcm_format, cast("Any", queue_item))
     stalled.note_bytes(30 * pss)
     stalled._started = asyncio.get_event_loop().time() - 10.0
-    stalled._last_noted = asyncio.get_event_loop().time() - 25.0
+    stalled._first_noted = asyncio.get_event_loop().time() - 40.0
     assert stalled.banked_lead(30 * pss) == 0.0
+    assert stalled.hold_target(45 * pss, frame_size) > 0
 
 
 async def test_a_carried_lead_is_aged_by_the_gap_before_the_stream_starts() -> None:

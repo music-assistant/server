@@ -316,6 +316,9 @@ class _TailHold:
         self._carried_lead = max(0.0, carried_lead)
         self._carried_at = carried_at if carried_at is not None else asyncio.get_event_loop().time()
         self._started: float | None = None
+        # note_bytes moves _started to forgive a suspension; this one never moves, so
+        # what is banked for the next item is measured against real elapsed time
+        self._first_noted: float | None = None
         self._last_noted = 0.0
         self._received_bytes = 0
 
@@ -332,6 +335,7 @@ class _TailHold:
         now = asyncio.get_event_loop().time()
         if self._started is None:
             self._started = now
+            self._first_noted = now
             # the player drained while the boundary was being worked out and this
             # stream was opening; what it still holds is that much less
             self._carried_lead = max(0.0, self._carried_lead - (now - self._carried_at))
@@ -379,16 +383,15 @@ class _TailHold:
 
         :param emitted_bytes: PCM bytes this stream yielded downstream.
         """
-        if self._started is None:
+        if self._first_noted is None:
             return 0.0
         now = asyncio.get_event_loop().time()
         emitted_seconds = emitted_bytes / self._pcm_format.pcm_sample_size
-        # note_bytes forgives a long arrival gap to keep the in-track holdback alive
-        # across a suspension. A stalled source looks the same as a paused player from
-        # here, and it is only safe to forgive the second, so the banked value pays for
-        # every second since audio last arrived.
-        idle = max(0.0, now - self._last_noted)
-        return max(0.0, self._carried_lead + emitted_seconds - (now - self._started) - idle)
+        # measured against the unforgiven clock: a stalled source emits nothing while
+        # time runs on, so the lead falls out of the subtraction on its own. Charging
+        # the gap on top would bill this item for the mix it was still pushing, which
+        # the elapsed term already covers.
+        return max(0.0, self._carried_lead + emitted_seconds - (now - self._first_noted))
 
     def _take_fraction(self, received_seconds: float, max_bytes: int) -> float:
         """
