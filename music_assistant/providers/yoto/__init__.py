@@ -182,9 +182,13 @@ class YotoProvider(MusicProvider):
 
             track_paths = []
             total_duration = 0
+            format_str: str | None = None
             for chapter in card.chapters.values():
                 for track in chapter.tracks.values():
                     if track.trackUrl:
+                        # Assume the first non-None track format is the format for the whole stream.
+                        if format_str is None and track.format:
+                            format_str = track.format
                         track_paths.append(
                             MultiPartPath(path=track.trackUrl, duration=track.duration)
                         )
@@ -194,12 +198,6 @@ class YotoProvider(MusicProvider):
             if not track_paths:
                 raise MediaNotFoundError(f"No audio URLs found for card {card_id}")
 
-            # Use format from first track
-            first_chapter = next(iter(card.chapters.values()), None)
-            assert first_chapter  # We know there are chapters due to the track enumeration above
-            first_track = next(iter(first_chapter.tracks.values()), None)
-            assert first_track  # We know there are tracks due to the track enumeration above
-            format_str = first_track.format if first_track else None
             content_type = ContentType.try_parse(format_str) if format_str else ContentType.AAC
 
             return StreamDetails(
