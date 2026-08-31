@@ -2179,6 +2179,9 @@ class StreamsAudio:
                 bytes_written += len(pcm_slice)
                 del buffer[: len(pcm_slice)]
                 await asyncio.sleep(0)
+            # a silent run past the allowance is yielded like any other audio, so the
+            # run cannot describe more bytes than the buffer still holds
+            silent_tail = min(silent_tail, len(buffer))
 
         #### HANDLE END OF TRACK
 
@@ -3027,6 +3030,7 @@ class StreamsAudio:
                             bytes_written += len(pcm_slice)
                             del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
+                        silent_tail = min(silent_tail, len(crossfade_buffer))
 
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
