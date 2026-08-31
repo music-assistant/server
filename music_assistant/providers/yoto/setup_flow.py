@@ -86,7 +86,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str) -> str:
     params = {
         "response_type": "code",
         "client_id": client_id,
-        "scope": "family:library:view user:content:view offline_access",
+        "scope": "family:library:view offline_access",
         "audience": AUDIENCE,
         "code_challenge_method": "S256",
         "code_challenge": code_challenge,
