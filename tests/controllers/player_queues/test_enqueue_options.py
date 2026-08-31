@@ -270,6 +270,34 @@ def _dynamic_controller() -> PlayerQueuesController:
     return ctrl
 
 
+async def test_enter_dynamic_mode_hands_the_replacement_to_the_player() -> None:
+    """
+    The rebuilt pool reaches the player once the queue has settled.
+
+    The rebuild publishes its items while the queue is still transitioning, which suppresses the
+    hand-over, so it has to be repeated afterwards or the player keeps a track that is gone.
+    """
+    ctrl = _dynamic_controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    calls: list[str] = []
+    ctrl.update_next_item_on_player = Mock(  # type: ignore[method-assign]
+        side_effect=lambda *_a, **_kw: calls.append("notified")
+    )
+    original_set_transitioning = ctrl._set_transitioning
+
+    def _spy(queue_id: str, value: bool) -> None:
+        calls.append(f"transitioning={value}")
+        original_set_transitioning(queue_id, value)
+
+    ctrl._set_transitioning = _spy  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
+
+    assert calls[-2:] == ["transitioning=False", "notified"]
+
+
 async def test_enter_dynamic_mode_add_on_idle_does_not_start_playback() -> None:
     """ADD of a dynamic source onto an idle/empty queue stages the pool but does not start playing."""
     ctrl = _dynamic_controller()
