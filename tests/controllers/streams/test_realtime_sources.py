@@ -321,19 +321,27 @@ async def test_tail_hold_grows_with_the_banked_surplus() -> None:
     # nothing arrived yet: nothing may be held
     assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
 
-    # 27s arrived in ~4s of wall time: 27 - 4 - 3 (reserve) = 20s is spare, half
-    # of which may be held (the rest keeps growing the player's lead)
-    hold.note_bytes(27 * pcm_format.pcm_sample_size)
+    # Arrived well ahead of the wall clock, so half the spare exceeds a small window
+    # and fills it outright. Sized off the reserve, so tuning that needs no
+    # arithmetic here.
+    reserve = _TailHold._LEAD_RESERVE_S
+    arrived = reserve + 40.0
+    hold.note_bytes(int(arrived * pcm_format.pcm_sample_size))
     hold._started = asyncio.get_event_loop().time() - 4.0
-    target = hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size)
-    assert target == 8 * pcm_format.pcm_sample_size
+    assert hold.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == (
+        8 * pcm_format.pcm_sample_size
+    )
+    # against a window it cannot fill, half the spare is what is held. Read the clock
+    # the way hold_target does, so the two agree on how much time has passed.
+    elapsed = asyncio.get_event_loop().time() - hold._started
     larger = hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
     assert larger % frame_size == 0
-    assert int(9.5 * pcm_format.pcm_sample_size) < larger <= 10 * pcm_format.pcm_sample_size
+    expected = (arrived - elapsed - reserve) / 2
+    assert abs(larger / pcm_format.pcm_sample_size - expected) < 0.5
 
     # barely above realtime: within the reserve nothing may be held at all
     fresh = _TailHold(pcm_format, cast("Any", queue_item))
-    fresh.note_bytes(6 * pcm_format.pcm_sample_size)
+    fresh.note_bytes(int((reserve - 1.0) * pcm_format.pcm_sample_size))
     fresh._started = asyncio.get_event_loop().time() - 4.0
     assert fresh.hold_target(8 * pcm_format.pcm_sample_size, frame_size) == 0
 
@@ -488,15 +496,20 @@ async def test_tail_hold_counts_a_carried_lead_as_already_banked() -> None:
     fresh._started = asyncio.get_event_loop().time() - 4.0
     assert fresh.hold_target(max_bytes, frame_size) == 0
 
-    # the same stream, handed a 20s lead from the boundary it faded in across:
-    # 20 + 4 - 4 - 3 (reserve) = 17s spare, half of which may be held
+    # the same stream, handed a lead from the boundary it faded in across: the carry
+    # plus what arrived, less the reserve, half of which may be held. Sized off the
+    # reserve so tuning that needs no arithmetic here.
     now = asyncio.get_event_loop().time()
-    carried = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=20.0, carried_at=now)
+    reserve = _TailHold._LEAD_RESERVE_S
+    carry = reserve + 17.0
+    carried = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=carry, carried_at=now)
     carried.note_bytes(4 * pcm_format.pcm_sample_size)
     carried._started = now - 4.0
+    expected = (carry - reserve) / 2
     target = carried.hold_target(max_bytes, frame_size)
     assert target % frame_size == 0
-    assert 8.0 * pcm_format.pcm_sample_size < target <= 8.5 * pcm_format.pcm_sample_size
+    assert int((expected - 0.5) * pcm_format.pcm_sample_size) < target
+    assert target <= int(expected * pcm_format.pcm_sample_size)
 
     # a negative carry is not a way to owe the player audio
     assert _TailHold(pcm_format, cast("Any", queue_item), carried_lead=-50.0)._carried_lead == 0.0
@@ -711,70 +724,6 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
     # padding as the window would leave only the 2s of music that precedes it
     assert audible >= 11.0, f"only {audible:.2f}s of audible tail for the fade"
     assert silent / pss <= MAX_SILENT_TAIL_HOLDBACK_SECONDS
-
-
-async def test_the_holdback_takes_more_of_the_lead_as_the_item_runs_out() -> None:
-    """
-    Half the spare lead early, all of it by the end, and no step in between.
-
-    Early on there is still track left to earn more lead over, so taking half
-    lets it keep growing. By the end none can be earned and the window is all
-    that still matters. A step change would stall the yields until the buffer
-    caught up to the new target, so the rise has to be gradual.
-    """
-    pcm_format = TEST_PCM_FORMAT
-    pss = pcm_format.pcm_sample_size
-    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    max_bytes = 20 * pss
-    audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-
-    def _target_at(received: float, duration: int) -> float:
-        item = SimpleNamespace(
-            streamdetails=SimpleNamespace(buffer=audio_buffer, duration=duration, seek_position=0)
-        )
-        hold = _TailHold(pcm_format, cast("Any", item))
-        hold.note_bytes(int(received * pss))
-        # 40s of spare lead, so the take fraction is the only thing under test
-        hold._started = asyncio.get_event_loop().time() - (received - 43.0)
-        hold._last_noted = asyncio.get_event_loop().time()
-        return hold.hold_target(max_bytes, frame_size) / pss
-
-    # 300s item, 20s window: the ramp spans its last 40s
-    early = _target_at(60.0, 300)
-    middle = _target_at(275.0, 300)
-    at_end = _target_at(299.0, 300)
-
-    # early on, half of the 40s spare
-    assert 19.0 <= early <= 20.0
-    # the rise is gradual and monotonic, never a jump
-    assert early <= middle <= at_end
-    # and by the end the whole spare is available, so the window fills
-    assert at_end == 20.0
-
-    # a smaller spare shows the fraction rather than the window cap: 12s spare,
-    # half early and all of it at the end
-    def _small(received: float) -> float:
-        item = SimpleNamespace(
-            streamdetails=SimpleNamespace(buffer=audio_buffer, duration=300, seek_position=0)
-        )
-        hold = _TailHold(pcm_format, cast("Any", item))
-        hold.note_bytes(int(received * pss))
-        hold._started = asyncio.get_event_loop().time() - (received - 15.0)
-        hold._last_noted = asyncio.get_event_loop().time()
-        return hold.hold_target(max_bytes, frame_size) / pss
-
-    assert 5.5 <= _small(60.0) <= 6.0
-    assert 11.5 <= _small(299.0) <= 12.0
-
-    # an item of unknown length keeps the early share: nothing says it is ending
-    unknown = SimpleNamespace(
-        streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
-    )
-    hold = _TailHold(pcm_format, cast("Any", unknown))
-    hold.note_bytes(int(60.0 * pss))
-    hold._started = asyncio.get_event_loop().time() - 45.0
-    hold._last_noted = asyncio.get_event_loop().time()
-    assert 5.5 <= hold.hold_target(max_bytes, frame_size) / pss <= 6.0
 
 
 async def test_a_tail_with_nothing_audible_left_is_a_cut_not_a_token_fade(

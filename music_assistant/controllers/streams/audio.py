@@ -284,8 +284,13 @@ class _TailHold:
     the two are not the same number and only the first one the player ever hears.
     """
 
-    # the player's supply must stay at least this far ahead of the wall clock
-    _LEAD_RESERVE_S = 3.0
+    # The player's supply must stay at least this far ahead of the wall clock. What
+    # the stream reads ahead is not what the player holds: it buffers what it wants
+    # and no more, so this is the margin that absorbs the difference. Measured on
+    # Sonos with a live source, 3s left a short gap audible at the boundary; the cost
+    # of raising it is half a second of window per second of margin, since it comes
+    # off the spare before the half share is taken.
+    _LEAD_RESERVE_S = 8.0
 
     # share of the spare lead the holdback takes while there is still track left to
     # earn more over; it rises towards all of it as the item runs out
