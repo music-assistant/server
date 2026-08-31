@@ -67,6 +67,42 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 SINGLE_ITEM_READRATE: Final[str] = "1.2"
 SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
 
+# Pacing for an item from a realtime source (streamdetails.is_realtime). Such a source
+# delivers barely above playback pace, and the head start it banks into the item's
+# buffer ahead of the stream is the only material a crossfade at the item's end can
+# ever be built from. The standard 60s burst hands that whole head start to the player
+# the moment the stream opens, and a drain above the source's own pace keeps the buffer
+# empty from then on - so the crossfade always finds nothing. Matching the source's
+# ceiling keeps the head start resident until EOF while the player still receives
+# playback speed, and a realtime source cannot be collected faster than it plays, so
+# the usage-policy purpose of the standard pacing is unaffected. Players that need a
+# big opening burst for gapless (MusicCast) keep it: this only applies to realtime
+# sources, which they receive at the same >= playback rate as before.
+REALTIME_ITEM_READRATE: Final[str] = "1.1"
+REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "5"
+
+
+def single_item_pacing_args(is_realtime: bool) -> list[str]:
+    """
+    Return the ffmpeg pacing arguments for one queue item's output stream.
+
+    :param is_realtime: Whether the item's source is marked realtime.
+    """
+    if is_realtime:
+        return [
+            "-readrate",
+            REALTIME_ITEM_READRATE,
+            "-readrate_initial_burst",
+            REALTIME_ITEM_READRATE_INITIAL_BURST,
+        ]
+    return [
+        "-readrate",
+        SINGLE_ITEM_READRATE,
+        "-readrate_initial_burst",
+        SINGLE_ITEM_READRATE_INITIAL_BURST,
+    ]
+
+
 # Time to keep the flow stream response open after the last audio byte of a queue.
 # Players buffer a few seconds ahead of what they actually render; some of them drop
 # that buffer the moment the connection is closed, cutting off the end of the queue.

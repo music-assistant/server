@@ -90,6 +90,7 @@ from music_assistant.controllers.streams.constants import (
     SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
     get_available_buffer_sizes,
+    single_item_pacing_args,
 )
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
@@ -906,12 +907,7 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=[
-                        "-readrate",
-                        SINGLE_ITEM_READRATE,
-                        "-readrate_initial_burst",
-                        SINGLE_ITEM_READRATE_INITIAL_BURST,
-                    ],
+                    extra_input_args=single_item_pacing_args(queue_item.streamdetails.is_realtime),
                 )
             first_chunk_received = False
             bytes_sent = 0

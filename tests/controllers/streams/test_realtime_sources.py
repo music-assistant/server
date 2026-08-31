@@ -38,7 +38,7 @@ from music_assistant.controllers.streams.audio import (
     tail_hold_target,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import BufferSize
+from music_assistant.controllers.streams.constants import BufferSize, single_item_pacing_args
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
@@ -303,6 +303,31 @@ async def test_eof_reflects_producer_completion() -> None:
     assert not buf.eof
     await buf._set_eof()
     assert buf.eof
+
+
+def test_a_realtime_item_is_paced_to_keep_its_head_start_resident() -> None:
+    """
+    A realtime item's output pacing must not flush its banked head start.
+
+    The head start a realtime source banks into the item's buffer is the only
+    material its end-of-track crossfade can be built from. The standard pacing
+    hands it to the player in the opening burst and then drains above the fill
+    rate, so the buffer is empty by EOF and every boundary loses its fade.
+    """
+    realtime = single_item_pacing_args(True)
+    buffered = single_item_pacing_args(False)
+
+    def value(args: list[str], key: str) -> float:
+        return float(args[args.index(key) + 1])
+
+    # the drain must not exceed the ~1.1x a realtime source can deliver, and the
+    # opening burst must not swallow a whole banked window
+    assert value(realtime, "-readrate") <= 1.1
+    assert value(realtime, "-readrate_initial_burst") <= 10
+    # buffered sources keep the pacing gapless players rely on (MusicCast needs
+    # a large opening burst before it will do gapless at all)
+    assert value(buffered, "-readrate") == 1.2
+    assert value(buffered, "-readrate_initial_burst") == 60
 
 
 # -- the holdback decision --
