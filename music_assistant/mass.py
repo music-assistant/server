@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import pathlib
+import random
 import threading
 import time
 from base64 import b64encode
@@ -123,6 +124,7 @@ PROVIDER_ASYNC_INIT_TIMEOUT = 300
 PROVIDER_LOAD_CONCURRENCY = 8
 # Seconds before each retry of a failed provider load; the last delay repeats.
 PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
+PROVIDER_RETRY_JITTER = 3
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -1034,6 +1036,7 @@ class MusicAssistant:
             )
             retry_delay = (
                 PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
                 if will_retry
                 else None
             )
@@ -1050,7 +1053,7 @@ class MusicAssistant:
                 "Error loading provider(instance) %s: %s%s",
                 prov_conf.name or prov_conf.instance_id,
                 str(exc) or exc.__class__.__name__,
-                f" (will be retried in {retry_delay} seconds)" if retry_delay else "",
+                f" (will be retried in {retry_delay:.0f} seconds)" if retry_delay else "",
                 exc_info=_provider_error_traceback(exc),
             )
             return

@@ -15,7 +15,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 
-from music_assistant.mass import MusicAssistant
+from music_assistant.mass import PROVIDER_RETRY_JITTER, MusicAssistant
 
 
 def _mass_with_load_error(error: MusicAssistantError) -> MusicAssistant:
@@ -54,14 +54,9 @@ async def test_transient_handled_load_error_is_retried() -> None:
 
     await mass.load_provider("test--instance", allow_retry=True)
 
-    cast("MagicMock", mass.call_later).assert_called_once_with(
-        10,
-        mass.load_provider,
-        "test--instance",
-        True,
-        retry_attempt=1,
-        task_id="load_provider_test--instance",
-    )
+    call = cast("MagicMock", mass.call_later).call_args
+    assert call.args[1:] == (mass.load_provider, "test--instance", True)
+    assert call.kwargs == {"retry_attempt": 1, "task_id": "load_provider_test--instance"}
 
 
 @pytest.mark.parametrize(
@@ -76,11 +71,20 @@ async def test_retry_delay_grows_with_each_failed_attempt(
 
     await mass.load_provider("test--instance", allow_retry=True, retry_attempt=retry_attempt)
 
-    cast("MagicMock", mass.call_later).assert_called_once_with(
-        expected_delay,
-        mass.load_provider,
-        "test--instance",
-        True,
-        retry_attempt=retry_attempt + 1,
-        task_id="load_provider_test--instance",
+    call = cast("MagicMock", mass.call_later).call_args
+    assert call.args[0] == pytest.approx(expected_delay, abs=PROVIDER_RETRY_JITTER)
+    assert call.kwargs["retry_attempt"] == retry_attempt + 1
+
+
+async def test_retries_are_jittered() -> None:
+    """Providers that failed together must not all retry in the same instant."""
+    mass = _mass_with_load_error(ProviderUnavailableError("Temporarily unavailable"))
+
+    for _ in range(10):
+        await mass.load_provider("test--instance", allow_retry=True)
+
+    delays = {call.args[0] for call in cast("MagicMock", mass.call_later).call_args_list}
+    assert len(delays) > 1
+    assert all(
+        10 - PROVIDER_RETRY_JITTER <= delay <= 10 + PROVIDER_RETRY_JITTER for delay in delays
     )
