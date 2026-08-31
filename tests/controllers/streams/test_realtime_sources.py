@@ -446,9 +446,10 @@ async def test_tail_hold_counts_a_carried_lead_as_already_banked() -> None:
 
     # the same stream, handed a 20s lead from the boundary it faded in across:
     # 20 + 4 - 4 - 3 (reserve) = 17s spare, half of which may be held
-    carried = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=20.0)
+    now = asyncio.get_event_loop().time()
+    carried = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=20.0, carried_at=now)
     carried.note_bytes(4 * pcm_format.pcm_sample_size)
-    carried._started = asyncio.get_event_loop().time() - 4.0
+    carried._started = now - 4.0
     target = carried.hold_target(max_bytes, frame_size)
     assert target % frame_size == 0
     assert 8.0 * pcm_format.pcm_sample_size < target <= 8.5 * pcm_format.pcm_sample_size
@@ -457,25 +458,73 @@ async def test_tail_hold_counts_a_carried_lead_as_already_banked() -> None:
     assert _TailHold(pcm_format, cast("Any", queue_item), carried_lead=-50.0)._carried_lead == 0.0
 
 
-async def test_current_lead_reports_what_the_player_still_holds() -> None:
-    """The lead a stream banked is what seeds the next item's holdback."""
+async def test_the_banked_lead_counts_emitted_audio_not_what_arrived() -> None:
+    """
+    Only emitted audio may seed the next item, never what a source delivered.
+
+    A fade consumes an overlap from both tracks and emits it once, so crediting
+    arrivals banks a lead the player never received, and carrying that compounds.
+    """
     pcm_format = TEST_PCM_FORMAT
+    pss = pcm_format.pcm_sample_size
     queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
 
     # nothing streamed yet: nothing banked
     hold = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=10.0)
-    assert hold.current_lead() == 0.0
+    assert hold.banked_lead(30 * pss) == 0.0
 
-    # 30s delivered in 10s, on top of a 10s carry
-    hold.note_bytes(30 * pcm_format.pcm_sample_size)
-    hold._started = asyncio.get_event_loop().time() - 10.0
-    assert 29.5 < hold.current_lead() <= 30.0
+    # 30s emitted in 10s, on top of a 10s carry
+    now = asyncio.get_event_loop().time()
+    hold.note_bytes(30 * pss)
+    hold._started = now - 10.0
+    hold._last_noted = now
+    assert 29.5 < hold.banked_lead(30 * pss) <= 30.0
+
+    # the source handed over 30s but the mix only emitted 12s of it: the 18s it
+    # consumed for the overlap and the planner's trim never reached the player
+    assert 11.5 < hold.banked_lead(12 * pss) <= 12.0
 
     # a stream that fell behind the wall clock reports no lead, never a debt
     behind = _TailHold(pcm_format, cast("Any", queue_item))
-    behind.note_bytes(pcm_format.pcm_sample_size)
+    behind.note_bytes(pss)
     behind._started = asyncio.get_event_loop().time() - 30.0
-    assert behind.current_lead() == 0.0
+    assert behind.banked_lead(pss) == 0.0
+
+    # a source stalled mid-track is not lead, however long note_bytes forgives it
+    stalled = _TailHold(pcm_format, cast("Any", queue_item))
+    stalled.note_bytes(30 * pss)
+    stalled._started = asyncio.get_event_loop().time() - 10.0
+    stalled._last_noted = asyncio.get_event_loop().time() - 25.0
+    assert stalled.banked_lead(30 * pss) == 0.0
+
+
+async def test_a_carried_lead_is_aged_by_the_gap_before_the_stream_starts() -> None:
+    """The player drains while a boundary is worked out, so the carry must shrink too."""
+    pcm_format = TEST_PCM_FORMAT
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
+    now = asyncio.get_event_loop().time()
+    max_bytes = 45 * pcm_format.pcm_sample_size
+
+    # a 20s lead measured 15s ago is only ~5s of audio by the time this stream
+    # produces, and 5 - 3 (reserve) halved is under a second of holdback
+    stale = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=20.0, carried_at=now - 15.0)
+    stale.note_bytes(pcm_format.pcm_sample_size)
+    assert stale.banked_lead(0) < 6.0
+    assert stale.hold_target(max_bytes, frame_size) < 1.5 * pcm_format.pcm_sample_size
+
+    # the same lead measured just now survives intact
+    fresh = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=20.0, carried_at=now)
+    fresh.note_bytes(pcm_format.pcm_sample_size)
+    assert fresh.banked_lead(0) > 19.0
+
+    # a lead older than itself is spent, not a debt the next item owes
+    ancient = _TailHold(
+        pcm_format, cast("Any", queue_item), carried_lead=5.0, carried_at=now - 600.0
+    )
+    ancient.note_bytes(pcm_format.pcm_sample_size)
+    assert ancient.banked_lead(0) <= 1.0
+    assert ancient.hold_target(max_bytes, frame_size) == 0
 
 
 # -- StreamsAudio._select_buffered_crossfade --
@@ -804,7 +853,7 @@ async def test_a_lead_is_only_carried_across_a_fade_that_handed_over(
     audio.setup()
 
     # this item was faded into, so the lead its predecessor banked is still the player's
-    audio._playback_lead["queue-1"] = 20.0
+    audio._playback_lead["queue-1"] = (20.0, asyncio.get_event_loop().time())
     audio._crossfade_data["queue-1"] = CrossfadeData(
         data=b"",
         fade_in_media_duration=0.0,
@@ -814,12 +863,14 @@ async def test_a_lead_is_only_carried_across_a_fade_that_handed_over(
     carried: list[float] = []
     await _run_smartfade_for_lead(monkeypatch, audio, pcm_format, carried)
     assert carried == [20.0]
-    # and this item banked its own lead for whatever follows it
-    assert audio._playback_lead["queue-1"] > 0
+    # and this item banked its own lead for whatever follows it, stamped with the time
+    banked, banked_at = audio._playback_lead["queue-1"]
+    assert banked > 0
+    assert banked_at > 0
 
     # a start with nothing handed over cannot trust a lead measured before the break:
     # the player's buffer is unaccounted for, so the holdback is earned again from zero
-    audio._playback_lead["queue-1"] = 20.0
+    audio._playback_lead["queue-1"] = (20.0, asyncio.get_event_loop().time())
     audio._crossfade_data.pop("queue-1", None)
     carried.clear()
     await _run_smartfade_for_lead(monkeypatch, audio, pcm_format, carried)
@@ -1443,11 +1494,11 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
     monkeypatch.setattr("music_assistant.controllers.streams.audio._TailHold", _spy)
 
     def _details(uri: str) -> SimpleNamespace:
+        # each track is both the outgoing and the incoming side of a boundary here,
+        # so the buffer has to satisfy both: resident audio and a finished source
         return SimpleNamespace(
             audio_format=pcm_format,
-            buffer=SimpleNamespace(
-                eof=True, cancelled=False, has_error=False, max_size_seconds=300
-            ),
+            buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True, eof=True),
             fade_in=False,
             stream_error=False,
             uri=uri,
@@ -1472,6 +1523,8 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
 
     first_item = _item("item-1", "First", _details("test://first"))
     second_item = _item("item-2", "Second", _details("test://second"))
+    third_item = _item("item-3", "Third", _details("test://third"))
+    fourth_item = _item("item-4", "Fourth", _details("test://fourth"))
     queue = SimpleNamespace(
         queue_id="queue-1",
         display_name="Queue",
@@ -1483,7 +1536,9 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
     mass.player_queues.queue_data.return_value = SimpleNamespace(
         session_id="session-1", flow_mode_stream_log=[]
     )
-    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[second_item, QueueEmpty])
+    mass.player_queues.load_next_queue_item = AsyncMock(
+        side_effect=[second_item, third_item, fourth_item, QueueEmpty]
+    )
     mass.player_queues.get.return_value = queue
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.SMART_CROSSFADE
     mass.config.get_raw_core_config_value.return_value = 8
@@ -1493,7 +1548,16 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
     mass.players.get_player.return_value = player
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
-    audio.crossfade_allowed = MagicMock(return_value=False)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    # a standard fade, so every boundary really runs the mixer and its overlap
+    standard = StandardCrossFade(logger=MagicMock(), crossfade_duration=8)
+    standard.build(
+        pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION,
+        pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION,
+        pcm_format,
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", AsyncMock(return_value=standard))
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _empty_mix)
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
         # delivered far faster than playback, so this track banks a real lead
@@ -1504,13 +1568,29 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
     stream = audio.get_queue_flow_stream(
         cast("Any", queue), cast("Any", first_item), pcm_format, session_id="session-1"
     )
-    async for _chunk in stream:
-        pass
+    emitted_at_carry: list[float] = []
+    emitted = 0
+    seen = 0
+    async for chunk in stream:
+        emitted += len(chunk)
+        # record what had actually gone out by the time each carry was claimed
+        while seen < len(carried_seen):
+            emitted_at_carry.append(emitted / pcm_format.pcm_sample_size)
+            seen += 1
 
-    # the first track starts from nothing; the second inherits what the first earned
-    assert len(carried_seen) == 2
+    # the first track starts from nothing; the later ones inherit what was earned
+    assert len(carried_seen) >= 3
     assert carried_seen[0] == 0.0
     assert carried_seen[1] > 0.0
+
+    # and no carry may ever exceed the audio the player was actually sent by then.
+    # Crediting what a source delivered instead double-counts every fade's overlap,
+    # which compounds across boundaries into a holdback larger than the real lead -
+    # the generator then withholds audio the player needs and it drops out mid-track.
+    for index, carried in enumerate(carried_seen):
+        assert carried <= emitted_at_carry[index] + 0.001, (
+            f"carry {index} claimed {carried}s of lead with only {emitted_at_carry[index]}s emitted"
+        )
 
 
 async def test_flow_standard_fade_only_holds_back_its_overlap(

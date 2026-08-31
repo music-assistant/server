@@ -267,14 +267,21 @@ class _TailHold:
     A source read faster than playback banks that lead a little at a time, so it is
     carried across a crossfaded boundary rather than remeasured per track: a queue
     played from a source barely above playback pace only earns a full window several
-    tracks in, and starting from zero every track would never earn one at all.
+    tracks in, and starting from zero every track would never earn one at all. What
+    is carried is measured from audio emitted downstream, never from what a source
+    delivered - a fade consumes an overlap from both tracks and emits it once, so
+    the two are not the same number and only the first one the player ever hears.
     """
 
     # the player's supply must stay at least this far ahead of the wall clock
     _LEAD_RESERVE_S = 3.0
 
     def __init__(
-        self, pcm_format: AudioFormat, queue_item: QueueItem, carried_lead: float = 0.0
+        self,
+        pcm_format: AudioFormat,
+        queue_item: QueueItem,
+        carried_lead: float = 0.0,
+        carried_at: float | None = None,
     ) -> None:
         """
         Initialize the tracker for one track's stream.
@@ -285,10 +292,14 @@ class _TailHold:
             reselection can hand the item different details altogether.
         :param carried_lead: Seconds of audio the player still held unplayed when this
             stream took over, from the boundary this item was faded in across.
+        :param carried_at: When that lead was measured. Nothing is handed over between
+            then and this stream's first bytes while the player keeps playing, so the
+            carry is aged by that gap; defaults to now.
         """
         self._pcm_format = pcm_format
         self._queue_item = queue_item
         self._carried_lead = max(0.0, carried_lead)
+        self._carried_at = carried_at if carried_at is not None else asyncio.get_event_loop().time()
         self._started: float | None = None
         self._last_noted = 0.0
         self._received_bytes = 0
@@ -306,6 +317,9 @@ class _TailHold:
         now = asyncio.get_event_loop().time()
         if self._started is None:
             self._started = now
+            # the player drained while the boundary was being worked out and this
+            # stream was opening; what it still holds is that much less
+            self._carried_lead = max(0.0, self._carried_lead - (now - self._carried_at))
         elif now - self._last_noted > self._SUSPEND_FORGIVE_S:
             self._started += now - self._last_noted
         self._last_noted = now
@@ -336,18 +350,28 @@ class _TailHold:
         surplus_bytes = int(max(0.0, spare_seconds) * self._pcm_format.pcm_sample_size) // 2
         return min(max_bytes, surplus_bytes // frame_size * frame_size)
 
-    def current_lead(self) -> float:
+    def banked_lead(self, emitted_bytes: int) -> float:
         """
-        Return the seconds of audio the player is ahead by, right now.
+        Return the lead to hand the next item, out of what was actually emitted.
 
-        Reads as 0 until the stream produced its first bytes. Call it once the item's
-        audio (its fade included) has been handed over, to seed the next item.
+        Measured against audio yielded downstream rather than audio the source
+        delivered: a crossfade consumes an overlap from both tracks and emits it
+        once, and the planner trims what it does not use, so what a source handed
+        over is not what the player received. Reads as 0 until this stream
+        produced its first bytes.
+
+        :param emitted_bytes: PCM bytes this stream yielded downstream.
         """
         if self._started is None:
             return 0.0
-        elapsed = asyncio.get_event_loop().time() - self._started
-        received_seconds = self._received_bytes / self._pcm_format.pcm_sample_size
-        return max(0.0, self._carried_lead + received_seconds - elapsed)
+        now = asyncio.get_event_loop().time()
+        emitted_seconds = emitted_bytes / self._pcm_format.pcm_sample_size
+        # note_bytes forgives a long arrival gap to keep the in-track holdback alive
+        # across a suspension. A stalled source looks the same as a paused player from
+        # here, and it is only safe to forgive the second, so the banked value pays for
+        # every second since audio last arrived.
+        idle = max(0.0, now - self._last_noted)
+        return max(0.0, self._carried_lead + emitted_seconds - (now - self._started) - idle)
 
 
 async def _incoming_overlap_stream(
@@ -604,9 +628,10 @@ class StreamsAudio:
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.streams.audio")
         self._crossfade_data: dict[str, CrossfadeData] = {}
-        # seconds of audio a queue's player still held unplayed at the last crossfaded
-        # boundary, so the next item's holdback continues from the lead already earned
-        self._playback_lead: dict[str, float] = {}
+        # per queue: seconds of audio the player still held unplayed at the last
+        # crossfaded boundary, and when that was measured. The next item's holdback
+        # continues from the lead already earned, aged by the gap in between.
+        self._playback_lead: dict[str, tuple[float, float]] = {}
         # queue_id -> (item the fade is being built for, set once its data is stored).
         # The speaker asks for the next item's url before the outgoing stream is done,
         # so without this the handoff is a race the fade loses.
@@ -1943,8 +1968,10 @@ class StreamsAudio:
         streamdetails = queue_item.streamdetails
         assert streamdetails
         crossfade_data = self._crossfade_data.get(queue.queue_id)
-        if crossfade_data is None:
-            # the outgoing stream may still be building this item's fade
+        if crossfade_data is None and not streamdetails.seek_position:
+            # the outgoing stream may still be building this item's fade. A seek
+            # discards the fade below either way, and waiting for one would only
+            # hold the response open on audio that is about to be thrown away.
             crossfade_data = await self._await_pending_crossfade(queue, queue_item)
 
         if crossfade_data and streamdetails.seek_position > 0:
@@ -1976,8 +2003,9 @@ class StreamsAudio:
         # only a fade actually handed over proves the player still holds the lead it
         # earned; a fresh start, a seek or a lost handoff leaves its buffer unknown,
         # so the holdback starts from nothing again
-        earned_lead = self._playback_lead.pop(queue.queue_id, 0.0)
+        earned_lead, earned_at = self._playback_lead.pop(queue.queue_id, (0.0, 0.0))
         carried_lead = earned_lead if crossfade_data else 0.0
+        carried_at = earned_at if crossfade_data else None
 
         self.logger.debug(
             "Start Streaming queue track: %s (%s) for queue %s on player %s"
@@ -2071,7 +2099,7 @@ class StreamsAudio:
         # armed as one fixed window, so a source delivering near playback pace keeps
         # feeding the player
         tail_hold = (
-            _TailHold(pcm_format, queue_item, carried_lead=carried_lead)
+            _TailHold(pcm_format, queue_item, carried_lead=carried_lead, carried_at=carried_at)
             if crossfade_buffer_size > 0
             else None
         )
@@ -2357,8 +2385,9 @@ class StreamsAudio:
         # and its fade are both handed over. Capped at the largest window a fade can ask
         # for: more lead buys nothing, and over-reading it is the direction that starves.
         if tail_hold is not None:
-            self._playback_lead[queue.queue_id] = min(
-                tail_hold.current_lead(), float(SMART_CROSSFADE_DURATION)
+            self._playback_lead[queue.queue_id] = (
+                min(tail_hold.banked_lead(bytes_written), float(SMART_CROSSFADE_DURATION)),
+                asyncio.get_event_loop().time(),
             )
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s "
@@ -2372,7 +2401,7 @@ class StreamsAudio:
                 if next_queue_item and queue_item.queue_id in self._crossfade_data
                 else "N/A"
             ),
-            self._playback_lead.get(queue.queue_id, 0.0),
+            self._playback_lead.get(queue.queue_id, (0.0, 0.0))[0],
         )
 
     async def get_queue_flow_stream(
@@ -2401,8 +2430,12 @@ class StreamsAudio:
         assert pcm_format.content_type.is_pcm()
         queue_track = None
         # seconds of audio the player still holds unplayed, earned by every track this
-        # stream already fed it; a flow stream never restarts, so neither does its lead
+        # stream already fed it, and when that was last measured; a flow stream never
+        # restarts, so neither does its lead. Boundary work hands over nothing while the
+        # player keeps playing, so the timestamp is what keeps the carry honest - which
+        # also covers the paths that leave a track without banking anything.
         flow_lead = 0.0
+        flow_lead_at = 0.0
         last_fadeout_part: bytes = b""
         last_streamdetails: StreamDetails | None = None
         last_queue_track: QueueItem | None = None
@@ -2658,7 +2691,9 @@ class StreamsAudio:
                 # of armed as one fixed window, so a source delivering near playback pace
                 # keeps feeding the player
                 tail_hold = (
-                    _TailHold(pcm_format, queue_track, carried_lead=flow_lead)
+                    _TailHold(
+                        pcm_format, queue_track, carried_lead=flow_lead, carried_at=flow_lead_at
+                    )
                     if item_crossfade_mode != CrossfadeMode.DISABLED
                     else None
                 )
@@ -2991,7 +3026,10 @@ class StreamsAudio:
                 # one flow stream feeds the whole queue, so the lead it earned belongs to
                 # the next track in it too; remeasuring per track throws it away
                 if tail_hold is not None:
-                    flow_lead = min(tail_hold.current_lead(), float(SMART_CROSSFADE_DURATION))
+                    flow_lead = min(
+                        tail_hold.banked_lead(bytes_written), float(SMART_CROSSFADE_DURATION)
+                    )
+                    flow_lead_at = asyncio.get_event_loop().time()
 
                 # update duration details based on the actual pcm data we sent
                 # this also accounts for crossfade and silence stripping
@@ -3180,6 +3218,9 @@ class StreamsAudio:
         # the player's buffer is no longer accounted for, so the next item must
         # re-earn its holdback rather than trust a lead measured before the break
         self._playback_lead.pop(queue_id, None)
+        # and release anything waiting on a fade this queue will never finish mixing
+        if pending := self._crossfade_pending.pop(queue_id, None):
+            pending[1].set()
 
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
