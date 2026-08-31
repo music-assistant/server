@@ -674,7 +674,13 @@ class BuiltinProvider(MusicProvider):
         force_radio: bool = False,
         requested_media_type: MediaType | None = None,
     ) -> Track | Radio | SoundEffect:
-        """Parse a plain URL to a Track, Radio, or SoundEffect item."""
+        """
+        Parse a plain URL to a Track, Radio, or SoundEffect item.
+
+        Without an explicitly requested media type, a URL carrying no music tags resolves to
+        a sound effect: a notification or TTS clip is a one-off, not music to build a queue
+        around.
+        """
         media_info = await self._get_media_info(url, force_refresh)
         is_radio = media_info.get("icyname") or not media_info.duration
         provider_mappings = {
@@ -691,7 +697,11 @@ class BuiltinProvider(MusicProvider):
             )
         }
         media_item: Track | Radio | SoundEffect
-        if requested_media_type == MediaType.SOUND_EFFECT:
+        if requested_media_type == MediaType.SOUND_EFFECT or (
+            requested_media_type == MediaType.UNKNOWN
+            and not is_radio
+            and not _has_music_tags(media_info)
+        ):
             media_item = SoundEffect(
                 item_id=url,
                 provider=self.domain,
@@ -1605,3 +1615,13 @@ def _is_orphaned_entry_path(path: str) -> bool:
     # a URI, URL or file path always carries one of these separators, so a path without
     # any of them cannot resolve to anything - not now and not on a later run either
     return not any(sep in path for sep in ("/", "\\", ":"))
+
+
+def _has_music_tags(media_info: AudioTags) -> bool:
+    """Return True if the stream carries the tags a music file is expected to have."""
+    # notification and TTS clips are untagged, which is what tells them apart from a music
+    # file someone plays by URL. The artists/album properties fall back to the filename, so
+    # the raw tags are what has to be checked here.
+    return any(
+        media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
+    )

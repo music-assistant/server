@@ -1127,3 +1127,63 @@ def test_a_failed_review_is_retried_on_the_next_load() -> None:
         prov._drop_unverified_password_markers()
 
     config.set_raw_provider_config_value.assert_not_called()
+
+
+def _compat_pin_provider(
+    reviewed: bool, modes: dict[str, str]
+) -> tuple[AirPlayProvider, MagicMock]:
+    """Build a provider whose stored configs hold the given streaming modes."""
+    prov = _make_provider()
+    config = cast("MagicMock", prov.mass.config)
+    config.get_raw_provider_config_value.return_value = reviewed
+    config.get.return_value = {
+        player_id: {"player_id": player_id, "provider": INSTANCE_ID, "player_type": "player"}
+        for player_id in modes
+    } | {"other": {"player_id": "other", "provider": "sonos", "player_type": "player"}}
+    config.get_raw_player_config_value.side_effect = lambda player_id, _key, _default=None: modes[
+        player_id
+    ]
+    return prov, config
+
+
+def test_stale_compat_pins_are_reset_once() -> None:
+    """
+    Machine-written compatibility pins go back to Automatic on the first load.
+
+    Only the compatibility mode was ever pinned by the removed control-channel
+    auto-downgrade; any other stored mode is the user's own choice and survives.
+    """
+    prov, config = _compat_pin_provider(
+        reviewed=False,
+        modes={"ap_pinned": "ap2_compat", "ap_auto": "auto", "ap_ntp": "ap2_ntp"},
+    )
+
+    prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_player_config_value.assert_called_once_with(
+        "ap_pinned", "streaming_mode", "auto"
+    )
+    config.set_raw_provider_config_value.assert_called_once_with(
+        INSTANCE_ID, "compat_pins_reviewed", True
+    )
+
+
+def test_compat_pins_are_reset_only_on_the_first_load() -> None:
+    """A compatibility mode pinned after the reset ran is the user's choice and survives."""
+    prov, config = _compat_pin_provider(reviewed=True, modes={"ap_pinned": "ap2_compat"})
+
+    prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_player_config_value.assert_not_called()
+    config.get.assert_not_called()
+
+
+def test_a_failed_compat_pin_reset_is_retried_on_the_next_load() -> None:
+    """A reset that dies part-way leaves nothing behind claiming it ran."""
+    prov, config = _compat_pin_provider(reviewed=False, modes={"ap_pinned": "ap2_compat"})
+    config.set_raw_player_config_value.side_effect = RuntimeError("config write failed")
+
+    with pytest.raises(RuntimeError):
+        prov._reset_auto_pinned_compat_modes()
+
+    config.set_raw_provider_config_value.assert_not_called()

@@ -157,6 +157,15 @@ SUPPORTED_FEATURES = {
 # ruff: noqa: PLW2901
 
 
+def _artist_is_resolvable(artist_obj: dict[str, Any]) -> bool:
+    """Check if a YTM artist object can be mapped to an artist item."""
+    return bool(
+        artist_obj.get("id")
+        or artist_obj.get("channelId")
+        or artist_obj.get("name") == "Various Artists"
+    )
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -216,8 +225,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    # the checksum invalidates entries cached before search was authenticated
-    @use_cache(3600 * 24 * 7, cache_checksum="authenticated_search_v1")  # Cache for 7 days
+    # the checksum invalidates entries cached before the search was pinned to English
+    @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -250,7 +259,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             headers=self._headers,
             ytm_filter=ytm_filter,
             limit=limit,
-            language=self.language,
             user=self._yt_user,
         )
         parsed_results = SearchResults()
@@ -372,8 +380,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if not album_obj.get("tracks"):
             return []
+        album_artists = [
+            artist for artist in album_obj.get("artists") or [] if _artist_is_resolvable(artist)
+        ]
         tracks = []
         for track_number, track_obj in enumerate(album_obj["tracks"], 1):
+            # YTM omits the artist id on some album tracks, which drops them below.
+            # Credit those to the album artist, like YTM's own UI does.
+            if album_artists and not any(
+                _artist_is_resolvable(artist) for artist in track_obj.get("artists") or []
+            ):
+                track_obj = {**track_obj, "artists": album_artists}
             try:
                 track = self._parse_track(track_obj=track_obj, track_number=track_number)
             except InvalidDataError:
@@ -907,9 +924,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 [
                     self._get_artist_item_mapping(artist)
                     for artist in album_obj["artists"]
-                    if artist.get("id")
-                    or artist.get("channelId")
-                    or artist.get("name") == "Various Artists"
+                    if _artist_is_resolvable(artist)
                 ]
             )
         if "type" in album_obj:
@@ -1041,9 +1056,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             track.artists = UniqueList(
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
+                if _artist_is_resolvable(artist)
             )
         # guard that track has valid artists
         if not track.artists:

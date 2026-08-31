@@ -81,6 +81,11 @@ class AudioSourceSession:
         """Return the server-wide unique uri of the AudioSource this session plays."""
         return self.source.uri
 
+    @property
+    def active_source(self) -> str:
+        """Return what the player publishes as its active source while this session runs."""
+        return self.source_uri or self.player_id
+
     def attach_streamdetails(self, streamdetails: StreamDetails) -> None:
         """
         Record the stream details resolved for this session's source.
@@ -133,6 +138,22 @@ class AudioSourceMixin:
         :param player_id: The player to inspect.
         """
         return self._source_sessions.get(player_id)
+
+    def is_live_audio_source(self, source: str) -> bool:
+        """
+        Return whether the given source string names a live AudioSource session.
+
+        MA pulls a live source's audio from its plugin and streams it out itself, so
+        such a source is MA-managed exactly like a queue is: it can be distributed to
+        a group, and a player playing one has not been taken over by anything.
+
+        Answered across every player, because a group member publishes the source
+        of the group it plays with rather than one of its own.
+
+        :param source: The source string to check.
+        :return: True if a live session publishes this source, False otherwise.
+        """
+        return any(session.active_source == source for session in self._source_sessions.values())
 
     def get_player_audio_source(self, player_id: str) -> tuple[AudioSource, PluginProvider] | None:
         """

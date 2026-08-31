@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
+from music_assistant.controllers.streams.constants import SEEK_WAIT_THRESHOLD
 
 DOMAIN = "airplay"
 
@@ -66,10 +67,18 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device streaming mode: pins the protocol/timing lane for
 # receivers whose automatic route misbehaves. Options are offered per device
-# capability; Automatic is the default and the only value MA itself writes away
-# from: a receiver that never answers PTP is switched to NTP, while one whose
-# native control channel conclusively fails is switched to compatibility mode.
+# capability; Automatic is the default and the setting is only ever written by
+# the user — a failing automatic route is reported, never switched away from.
 CONF_STREAMING_MODE: Final[str] = "streaming_mode"
+# Per-device 24-bit toggle, only offered for devices that advertise 24-bit
+# support. Defaults per device family (see default_hires_enabled).
+CONF_ENABLE_HIRES: Final[str] = "enable_hires"
+# Provider marker that the compatibility-mode pins were reset once. Earlier
+# releases switched a player here themselves when its native control channel
+# failed (usually a network dropout), pinning it to a lane many devices reject
+# outright, so those machine-written values are returned to Automatic a single
+# time; a deliberate choice can simply be made again.
+CONF_COMPAT_PINS_REVIEWED: Final[str] = "compat_pins_reviewed"
 STREAMING_MODE_AUTO: Final[str] = "auto"
 STREAMING_MODE_AP2_PTP: Final[str] = "ap2_ptp"
 STREAMING_MODE_AP2_NTP: Final[str] = "ap2_ntp"
@@ -170,6 +179,29 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+
+# How long a start waits for the source to hand over its first audio before it
+# judges the members on what they never received. A seek may land up to
+# SEEK_WAIT_THRESHOLD seconds ahead of what the source has produced, and the
+# wait has to outlast the producer covering that; the margin covers its own
+# spin-up. It is a backstop rather than a budget: this runs under the player
+# lock, so a producer that neither delivers nor gives up would otherwise hold
+# every command for the player behind it.
+AIRPLAY_FEED_START_TIMEOUT: Final[float] = SEEK_WAIT_THRESHOLD + 5
+# Hard cap on how long the stdin EOF withheld for a predicted replacement stream
+# is held. What normally releases that wait is the queue itself: it clears the
+# transition on any failure between rotating its stream session and the
+# play_media that carries the replacement (an item that fails to load, a
+# provider error), and that is the signal no replacement is coming. This only
+# covers a transition that neither completes nor clears. It sits past the load
+# that carries a replacement - the queue's buffer prepare (BUFFER_READY_TIMEOUT,
+# 15s) plus the provider source slot its producer may wait out first - so a slow
+# but real seek is never cut short into a cold restart.
+AIRPLAY_REPLACEMENT_EOF_TIMEOUT: Final[float] = 35.0
+# How often the queue is asked whether it is still loading that replacement.
+# It only bounds how quickly a cleared transition is noticed, so it trades no
+# accuracy for a poll this cheap (one dict lookup).
+AIRPLAY_REPLACEMENT_POLL_INTERVAL: Final[float] = 1.0
 # Margin added on top of a member's reported warm lead (the splice-timeline
 # queue depth; that timeline is the default for every native AirPlay 2 session)
 # when anchoring a warm re-start: covers the command round-trips between the
@@ -208,13 +240,14 @@ AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
 # footprint.
 AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 
-# Delay (seconds) before automatically re-joining a group member whose
+# Delays (seconds) between automatic re-join attempts for a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
-# network blackout longer than the binary's own keepalive tolerance). A single
-# attempt keeps the behaviour predictable: it waits long enough for a short
-# blackout to clear, and if the device is still gone the player is left idle.
-# Staged retries can be reintroduced by adding entries to the tuple.
-AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+# network blackout longer than the binary's own keepalive tolerance). A device
+# recovering from a network dropout typically needs tens of seconds to come
+# back, so the ladder stretches to a few minutes; every attempt re-validates
+# that the group still plays and the player was not repurposed meanwhile, and
+# the whole schedule is abandoned as soon as either no longer holds.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5, 15, 30, 60, 120)
 
 # Shared audible instant for a native announcement over a live stream: now +
 # the largest member span + this margin. A member can only mix the clip into

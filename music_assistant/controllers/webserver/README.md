@@ -463,6 +463,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
+
 @api_command("my_command")
 async def my_command():
     user = get_current_user()
@@ -475,6 +476,7 @@ async def my_command():
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_token
 
+
 @api_command("my_command")
 async def my_command():
     token = get_current_token()
@@ -484,6 +486,7 @@ async def my_command():
 **Requiring a scope:**
 ```python
 from music_assistant_models.auth import Scope
+
 
 @api_command("admin_only_command", required_scope=Scope.CONFIG_CORE_WRITE)
 async def admin_command():

@@ -14,7 +14,8 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.errors import InvalidDataError
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -28,12 +29,36 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import get_primary_ip_address
-from .player import SonosPlayer
+from .player import SonosPlayer, SonosQueueWindow
+
+# stands in for "the speaker named no ceiling", so our own window size decides
+_NO_CEILING = 1000
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
+
+
+def _requested_max(requested: str | None) -> int:
+    """
+    Return the ceiling a speaker put on one side of the window.
+
+    The sizes are maxima: we serve fewer by design, but never more. An absent or unreadable
+    size puts no ceiling on it.
+    """
+    try:
+        return max(0, int(requested)) if requested is not None else _NO_CEILING
+    except ValueError:
+        return _NO_CEILING
+
+
+def _refresh_task_id(player_id: str) -> str:
+    """Return the debounce id for a speaker's pending cloud-queue refresh."""
+    return f"sonos_refresh_cloud_queue_{player_id}"
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -41,7 +66,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     _ignored_disabled_players: set[str]
     _pending_setup_tasks: set[str]
+    _pending_refresh_tasks: set[str]
     _unloaded: bool
+    _unsub_queue_items_updated: Callable[[], None] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -51,10 +78,14 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._ignored_disabled_players = set()
         self._pending_setup_tasks = set()
+        self._pending_refresh_tasks = set()
         self._unloaded = False
         self._set_aiosonos_log_level()
         self.mass.streams.register_dynamic_route(
             "/sonos_queue/*", self._handle_sonos_cloud_queue_request
+        )
+        self._unsub_queue_items_updated = self.mass.subscribe(
+            self._handle_queue_items_updated, EventType.QUEUE_ITEMS_UPDATED
         )
 
     async def loaded_in_mass(self) -> None:
@@ -82,12 +113,16 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         self._unloaded = True
         self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
-        for task_id in self._pending_setup_tasks:
+        if self._unsub_queue_items_updated is not None:
+            self._unsub_queue_items_updated()
+            self._unsub_queue_items_updated = None
+        for task_id in self._pending_setup_tasks | self._pending_refresh_tasks:
             # a timer that already fired lives on as a task under the same id,
             # so both are needed to cover the pending and the running case
             self.mass.cancel_timer(task_id)
             self.mass.cancel_task(task_id)
         self._pending_setup_tasks.clear()
+        self._pending_refresh_tasks.clear()
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -163,6 +198,20 @@ class SonosPlayerProvider(PlayerProvider):
         task_id = f"setup_sonos_{player_id}"
         self._pending_setup_tasks.add(task_id)
         self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
+
+    def _handle_queue_items_updated(self, event: MassEvent) -> None:
+        """Tell the speakers playing a queue that its contents changed."""
+        for player in self.players:
+            if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
+                continue
+            # invalidate straight away, so a window served before the command goes out does
+            # not carry a version the speaker reads as current
+            player.bump_cloud_queue_version()
+            # one edit can fan out into several of these (insert, autoplay refill, a duration
+            # filled in), so coalesce the command itself into one per speaker
+            task_id = _refresh_task_id(player.player_id)
+            self._pending_refresh_tasks.add(task_id)
+            self.mass.call_later(1, player.refresh_cloud_queue, task_id=task_id)
 
     def _set_aiosonos_log_level(self) -> None:
         """Align aiosonos's log level with the provider's log level."""
@@ -255,22 +304,36 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/itemwindow
         """
         context_version = request.query.get("contextVersion", "1")
-        # because Sonos does not show our queue in the app anyways,
-        # we just return the previous, current and next item in the queue.
-        # the beginning/end flags must be honest though: signalling end-of-queue
-        # tells Sonos to drop any older items it may still have cached past our
-        # window, which is what prevents stale tracks from resurrecting after a
-        # queue rewrite (e.g. replace_next).
-        items = list(player.sonos_queue.items)
+        # read the version before building, so the items and the version we label them with
+        # always come from the same queue: a bump landing in between would tell the speaker
+        # its cache is current while it holds the older window
+        queue_version = player.cloud_queue_version
+        # built from the queue as it is right now: the speaker fetches on its own schedule and
+        # plays out of what it cached, so only a live answer keeps a track added mid-playback
+        # from being played over. The beginning/end flags must be honest - signalling
+        # end-of-queue is what makes Sonos drop items it cached past our window, so a queue
+        # rewrite (replace_next) does not resurrect stale tracks.
+        try:
+            window = await player.build_cloud_queue_window(
+                request.query.get("itemId") or None,
+                max_previous=_requested_max(request.query.get("previousWindowSize")),
+                max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
+            )
+        except InvalidDataError as err:
+            # the queue went away under us (a stop that never reached this speaker, so it keeps
+            # polling): end-of-queue is the right answer and beats a 500 per poll. Only this
+            # one - any other failure must not read to the speaker as "queue over".
+            self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
+            window = SonosQueueWindow(includes_beginning=True, includes_end=True)
         result = {
-            "includesBeginningOfQueue": player.sonos_queue.includes_beginning,
-            "includesEndOfQueue": player.sonos_queue.includes_end,
+            "includesBeginningOfQueue": window.includes_beginning,
+            "includesEndOfQueue": window.includes_end,
             "contextVersion": context_version,
-            # report the version of the items we actually serve (the current window) instead of
-            # echoing the player's requested version, otherwise a refreshed window keeps a stale
-            # version label and Sonos never realises it changed.
-            "queueVersion": str(player.sonos_queue.last_updated),
-            "items": [self._parse_sonos_queue_item(x) for x in items],
+            # report the version of the items we actually serve instead of echoing the
+            # player's requested version, otherwise a changed queue keeps a stale version
+            # label and Sonos never realises it changed.
+            "queueVersion": str(queue_version),
+            "items": [self._parse_sonos_queue_item(x) for x in window.items],
         }
         return web.json_response(result)
 
@@ -283,11 +346,11 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/version
         """
         context_version = request.query.get("contextVersion") or "1"
-        # keep sub-second resolution: the window can be rebuilt several times within the same
+        # keep sub-second resolution: the queue can change several times within the same
         # second and Sonos treats an unchanged queueVersion as "nothing changed" (stale window).
         result = {
             "contextVersion": context_version,
-            "queueVersion": str(player.sonos_queue.last_updated),
+            "queueVersion": str(player.cloud_queue_version),
         }
         return web.json_response(result)
 
@@ -301,7 +364,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         result = {
             "contextVersion": "1",
-            "queueVersion": str(player.sonos_queue.last_updated),
+            "queueVersion": str(player.cloud_queue_version),
             "container": {
                 "type": "trackList",
                 "name": "Music Assistant",
@@ -309,9 +372,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "id": {
                     "serviceId": "mass",
-                    "objectId": f"mass:{player.sonos_queue.items[-1].source_id}"
-                    if player.sonos_queue.items
-                    else "mass:unknown",
+                    "objectId": f"mass:{player.cloud_queue_id or 'unknown'}",
                     "accountId": "",
                 },
             },
