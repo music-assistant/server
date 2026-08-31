@@ -30,11 +30,6 @@ if TYPE_CHECKING:
 
 # ruff: noqa: PLR0915
 
-# ffmpeg's mono to stereo rematrix attenuates by this much so the same signal coming from
-# both speakers keeps the level it had on one; a filter widening a mono source itself has
-# to apply it too, or that source plays louder than the stereo material around it
-MONO_UPMIX_GAIN = math.sqrt(0.5)
-
 
 @dataclass(slots=True)
 class ComplexFilterInput:
@@ -205,13 +200,13 @@ def filter_to_ffmpeg_params(
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
         elif input_format.channels == 1:
-            # a mono source has no FL/FR to pan between, so widen it to the stereo the
-            # output stage would have produced anyway and balance the new channels here
-            quiet = attenuation * MONO_UPMIX_GAIN
+            # a mono source has no FL/FR to pan between, so widen it here by position.
+            # the output stage widens mono at unity, so the favoured channel stays there
+            # too, otherwise leaving the centre would drop the level by 3 dB
             if dsp_filter.balance > 0:
-                filter_params.append(f"pan=stereo|FL={quiet:.6g}*c0|FR={MONO_UPMIX_GAIN:.6g}*c0")
+                filter_params.append(f"pan=stereo|FL={attenuation}*c0|FR=c0")
             else:
-                filter_params.append(f"pan=stereo|FL={MONO_UPMIX_GAIN:.6g}*c0|FR={quiet:.6g}*c0")
+                filter_params.append(f"pan=stereo|FL=c0|FR={attenuation}*c0")
     if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
         # rubberband expects a frequency ratio rather than a number of semitones
         pitch = 2 ** (dsp_filter.semitones / 12)
