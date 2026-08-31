@@ -1474,8 +1474,10 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     assert reported.crossfade_mode == CrossfadeMode.DISABLED
 
 
+@pytest.mark.parametrize("mix_emits_audio", [False, True])
 async def test_flow_carries_its_lead_from_one_track_to_the_next(
     monkeypatch: pytest.MonkeyPatch,
+    mix_emits_audio: bool,
 ) -> None:
     """One flow stream feeds the whole queue, so the lead it earned is not remeasured."""
     pcm_format = AudioFormat(
@@ -1557,10 +1559,28 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
         pcm_format,
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", AsyncMock(return_value=standard))
-    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _empty_mix)
+
+    async def _concat_mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        yield fade_out_part
+        async for fade_in_chunk in fade_in_part:
+            yield fade_in_chunk
+
+    # both shapes matter: a mix that emits audio runs the split between this item and
+    # the outgoing share it also has to count, while one that emits none leaves the
+    # bound below tight enough to fail on an arrivals-based carry (45s claimed on 16s)
+    monkeypatch.setattr(
+        audio.smart_fades_mixer, "mix", _concat_mix if mix_emits_audio else _empty_mix
+    )
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        # delivered far faster than playback, so this track banks a real lead
+        # delivered far faster than playback, so this track banks a real lead, and
+        # enough of it that the holdback arms and every boundary really mixes
         for _ in range(60):
             yield bytes(pcm_format.pcm_sample_size)
 
@@ -1583,10 +1603,11 @@ async def test_flow_carries_its_lead_from_one_track_to_the_next(
     assert carried_seen[0] == 0.0
     assert carried_seen[1] > 0.0
 
-    # and no carry may ever exceed the audio the player was actually sent by then.
-    # Crediting what a source delivered instead double-counts every fade's overlap,
-    # which compounds across boundaries into a holdback larger than the real lead -
-    # the generator then withholds audio the player needs and it drops out mid-track.
+    # No carry may exceed the audio the player was actually sent by then. Crediting
+    # what a source delivered instead double-counts every fade's overlap, which
+    # compounds into a holdback larger than the real lead - the generator then
+    # withholds audio the player needs and it drops out mid-track. On the arrivals
+    # basis the first boundary here claims 45s of lead on 16s of emitted audio.
     for index, carried in enumerate(carried_seen):
         assert carried <= emitted_at_carry[index] + 0.001, (
             f"carry {index} claimed {carried}s of lead with only {emitted_at_carry[index]}s emitted"

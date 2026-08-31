@@ -2684,6 +2684,10 @@ class StreamsAudio:
                 flow_log.append(play_log_entry)
 
                 bytes_written = 0
+                # the outgoing share of a mix is this stream's output too, but it is
+                # credited to the previous item's media time rather than bytes_written,
+                # so the lead has to count it separately or every boundary loses it
+                outgoing_emitted = 0
                 crossfade_buffer = bytearray()
                 warmup_bytes = 0
                 first_chunk_received = False
@@ -2861,6 +2865,7 @@ class StreamsAudio:
                                             outgoing_part / pcm_sample_size
                                         )
                                         bytes_written += len(mix_chunk) - outgoing_part
+                                        outgoing_emitted += outgoing_part
                                         crossfade_bytes_written += len(mix_chunk)
                                 remaining_bytes = bytes(overlap_overshoot)
                             except Exception as mix_err:
@@ -3027,7 +3032,8 @@ class StreamsAudio:
                 # the next track in it too; remeasuring per track throws it away
                 if tail_hold is not None:
                     flow_lead = min(
-                        tail_hold.banked_lead(bytes_written), float(SMART_CROSSFADE_DURATION)
+                        tail_hold.banked_lead(bytes_written + outgoing_emitted),
+                        float(SMART_CROSSFADE_DURATION),
                     )
                     flow_lead_at = asyncio.get_event_loop().time()
 
