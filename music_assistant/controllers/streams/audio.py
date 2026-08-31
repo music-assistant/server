@@ -3040,6 +3040,12 @@ class StreamsAudio:
                         float(SMART_CROSSFADE_DURATION),
                     )
                     flow_lead_at = asyncio.get_event_loop().time()
+                    self.logger.debug(
+                        "Flow stream for queue %s banked a lead of %.1fs after %s",
+                        queue.display_name,
+                        flow_lead,
+                        queue_track.name,
+                    )
 
                 # update duration details based on the actual pcm data we sent
                 # this also accounts for crossfade and silence stripping
