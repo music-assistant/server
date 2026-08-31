@@ -580,13 +580,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if pos_shift == 0 and queue.state == PlaybackState.PLAYING:
             # land behind the track the player already holds rather than behind the playing one:
             # that track is handed over long before it starts (an item ahead with crossfade), so
-            # writing into its slot leaves the player playing what the queue no longer says is next
-            base_index = (
-                queue.index_in_buffer
-                if queue.index_in_buffer is not None
-                else (queue.current_index if queue.current_index is not None else 0)
-            )
-            new_index = base_index + 1
+            # writing into its slot leaves the player playing what the queue no longer says is
+            # next. repeat-all wraps the buffered index back to the start of the queue, so take
+            # whichever of the two is furthest along or the move lands before the playing track.
+            current_index = queue.current_index or 0
+            new_index = max(current_index, queue.index_in_buffer or 0) + 1
         elif pos_shift == 0:
             new_index = queue.current_index or 0
         else:

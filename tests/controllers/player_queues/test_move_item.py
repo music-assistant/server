@@ -121,8 +121,31 @@ async def test_play_next_on_an_idle_queue_puts_the_item_first() -> None:
     assert _order(ctrl) == ["t3", "t0", "t1", "t2", "t4"]
 
 
+async def test_play_next_clears_a_track_buffered_two_ahead() -> None:
+    """A buffered index further than one ahead still decides where the move lands."""
+    ctrl = _controller(current_index=0, index_in_buffer=2)
+
+    ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=0)
+
+    assert _order(ctrl) == ["t0", "t1", "t2", "t4", "t3"]
+
+
+async def test_play_next_still_moves_the_item_when_repeat_wrapped_the_buffer() -> None:
+    """
+    Repeat-all wraps the buffered index to the front, and the move must still happen.
+
+    The buffered index sits before the playing one there, so taking it as the insert point would
+    place the item behind the playhead and the queue guard would drop the request on the floor.
+    """
+    ctrl = _controller(current_index=4, index_in_buffer=0)
+
+    ctrl.move_item("q1", _item_id_at(ctrl, 2), pos_shift=0)
+
+    assert _order(ctrl) == ["t0", "t1", "t3", "t4", "t2"]
+
+
 async def test_moving_a_buffered_item_is_refused() -> None:
-    """An item at or before the buffered one can no longer be moved."""
+    """An item at or before the buffered one cannot be moved."""
     ctrl = _controller(current_index=0, index_in_buffer=1)
 
     with pytest.raises(IndexError):
