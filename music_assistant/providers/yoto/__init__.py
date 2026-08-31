@@ -266,7 +266,10 @@ class YotoProvider(MusicProvider):
         """Retrieve library podcasts from the provider."""
         await self._handle_yoto_api_call(self.client.update_library())
         for card in filter(lambda card: card.category == "podcast", self.client.library.values()):
-            yield self._parse_podcast(card)
+            # We still need to call _get_card to ensure the chapters are available.
+            # If the podcast hasn't had a card update called, it will exist in the library
+            # but it will be created with no episodes.
+            yield self._parse_podcast(await self._get_card(card.id))
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
