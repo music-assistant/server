@@ -48,6 +48,7 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
@@ -1324,7 +1325,9 @@ class SmartPlaylistProvider(PluginProvider):
         # generation accumulates up to the full pool cap so post-filters keep headroom
         per_seed_budget = target_size if is_dynamic else pool_cap
         per_seed_target = -(-per_seed_budget // len(seeds))  # ceil
-        max_rounds = -(-per_seed_target // 25) + 2
+        # a productive batch adds at least its freshly sampled base tracks, so bounding rounds
+        # by that minimum yield lets the no-new-tracks break do the real termination
+        max_rounds = -(-per_seed_target // DYNAMIC_RADIO_BASE_SAMPLE_SIZE) + 2
 
         per_seed_pools = await asyncio.gather(
             *(

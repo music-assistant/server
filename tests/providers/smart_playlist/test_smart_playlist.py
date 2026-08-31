@@ -1087,6 +1087,41 @@ async def test_tracks_from_seeds_static_gets_headroom_above_target() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tracks_from_seeds_low_yield_batches_keep_accumulating() -> None:
+    """Batches yielding few (but new) tracks keep accumulating until the budget is met."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    # every batch yields exactly 5 fresh tracks; a round cap sized for ~25-track batches
+    # would stop far short of the 150-track static budget (50 * 3)
+    counter = iter(range(10_000))
+    radio_prov = MagicMock()
+    radio_prov.get_dynamic_tracks = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: [
+            _radio_track(f"track_{next(counter)}") for _ in range(5)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=radio_prov)
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=50, is_dynamic=False
+    )
+
+    assert len(result) == 150
+    assert radio_prov.get_dynamic_tracks.await_count == 30
+
+
+@pytest.mark.asyncio
 async def test_exclusion_filters_out_excluded_artist() -> None:
     """Tracks from excluded artists are removed from the result."""
     mass = MagicMock()
