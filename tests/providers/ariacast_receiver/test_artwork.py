@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -15,15 +16,12 @@ from music_assistant.providers.ariacast_receiver import MAX_ARTWORK_BYTES, AriaC
 SENDER = "192.168.1.10"
 
 
-class _FakeContent:
-    """Response body that hands out at most the asked-for number of bytes, like aiohttp does."""
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-
-    async def read(self, n: int = -1) -> bytes:
-        """Return up to n bytes of the payload."""
-        return self._payload if n < 0 else self._payload[:n]
+async def _chunked(payload: bytes) -> AsyncGenerator[bytes]:
+    """Yield the payload in several chunks, the way a real socket delivers a body."""
+    # always more than one chunk, so reassembly is actually exercised
+    size = max(1, len(payload) // 3)
+    for offset in range(0, len(payload), size):
+        yield payload[offset : offset + size]
 
 
 class _FakeResponse:
@@ -31,7 +29,7 @@ class _FakeResponse:
 
     def __init__(self, status: int, payload: bytes) -> None:
         self.status = status
-        self.content = _FakeContent(payload)
+        self.content = _chunked(payload)
 
     async def __aenter__(self) -> Self:
         return self

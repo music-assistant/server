@@ -813,13 +813,17 @@ class AriaCastReceiver(PluginProvider):
             ) as resp:
                 if resp.status != 200:
                     return
-                # one byte past the cap is enough to know the body is oversized
-                data = await resp.content.read(MAX_ARTWORK_BYTES + 1)
-                if not data:
+                # a single read returns only what is buffered, so iterate to EOF,
+                # bailing as soon as the body exceeds the cap
+                buffer = bytearray()
+                async for chunk in resp.content:
+                    buffer += chunk
+                    if len(buffer) > MAX_ARTWORK_BYTES:
+                        self.logger.debug("Ignoring oversized artwork at %s", url)
+                        return
+                if not buffer:
                     return
-                if len(data) > MAX_ARTWORK_BYTES:
-                    self.logger.debug("Ignoring oversized artwork at %s", url)
-                    return
+                data = bytes(buffer)
                 self._artwork_bytes = data
                 img_hash = hashlib.md5(data).hexdigest()[:8]
                 image = MediaItemImage(
