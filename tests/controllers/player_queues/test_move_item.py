@@ -130,7 +130,7 @@ async def test_play_next_clears_a_track_buffered_two_ahead() -> None:
 
 
 async def test_moving_is_refused_while_repeat_wraps_the_queue() -> None:
-    """A queue whose buffered track wrapped back to the front refuses moves."""
+    """A queue whose buffered track wrapped back to the front refuses moves ahead of it."""
     ctrl = _controller(current_index=4, index_in_buffer=0)
 
     with pytest.raises(IndexError):
@@ -163,6 +163,15 @@ async def test_deleting_is_ignored_while_repeat_wraps_the_queue() -> None:
     ctrl = _controller(current_index=4, index_in_buffer=0)
 
     ctrl.delete_item("q1", 2)
+
+    assert _order(ctrl) == TRACKS
+
+
+async def test_a_relative_move_cannot_land_on_a_track_the_player_owns() -> None:
+    """A move towards the front stops at the boundary instead of landing inside it."""
+    ctrl = _controller(current_index=0, index_in_buffer=2)
+
+    ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=-3)
 
     assert _order(ctrl) == TRACKS
 

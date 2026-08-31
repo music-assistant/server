@@ -207,8 +207,8 @@ def committed_index(queue: PlayerQueue) -> int | None:
     Return the highest queue index the player owns, or None if it owns none.
 
     It holds both the playing track and the one handed to it for the transition. Nothing at or
-    below this index can be reordered: the player would keep playing what the queue no longer
-    lists, and the playing position is not re-anchored when items move around it.
+    below this index can be reordered: the player keeps playing what it was given whatever the
+    queue says, and the buffered position does not follow items that move around it.
 
     :param queue: The queue to resolve the index for.
     """
@@ -218,22 +218,6 @@ def committed_index(queue: PlayerQueue) -> int | None:
         return queue.current_index
     # repeat wraps the buffered index back to the front while the last track plays
     return max(queue.current_index, queue.index_in_buffer)
-
-
-def is_wrapping(queue: PlayerQueue) -> bool:
-    """
-    Return whether repeat has looped the queue back to its start.
-
-    The upcoming items are split across the end and the start of the list while this holds, so
-    reordering carries items past the playing one, whose index does not follow them.
-
-    :param queue: The queue to check.
-    """
-    return (
-        queue.index_in_buffer is not None
-        and queue.current_index is not None
-        and queue.index_in_buffer < queue.current_index
-    )
 
 
 def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:

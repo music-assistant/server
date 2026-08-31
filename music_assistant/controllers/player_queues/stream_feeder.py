@@ -114,9 +114,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         queue = queue_data.queue
         if queue.state != PlaybackState.PLAYING or queue.current_index is None:
             return
-        if queue.index_in_buffer is None:
-            # no track is committed to the player yet: a replace clears this while it swaps the
-            # items, and loading the new ones against the old position picks an arbitrary track
+        if queue.index_in_buffer is None or queue_data.transitioning:
+            # no settled position to follow: a replace clears the buffered index while it swaps
+            # the items, and a starting track moves the two indexes one after the other
             return
         next_item = self.get_next_item(queue_id, queue.current_index)
         if next_item is None:

@@ -92,7 +92,7 @@ async def test_a_changed_upcoming_track_reaches_the_player_while_a_track_is_buff
 
 async def test_an_unchanged_upcoming_track_is_not_handed_over_again() -> None:
     """A queue change that leaves the upcoming track alone sends nothing to the player."""
-    ctrl = _controller(current_index=0, index_in_buffer=1)
+    ctrl = _controller(current_index=0, index_in_buffer=0)
     items = ctrl._queue_data["q1"].items
     reordered = [items[0], items[1], items[4], items[2], items[3]]
 
