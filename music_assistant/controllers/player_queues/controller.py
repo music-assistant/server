@@ -563,7 +563,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         - pos_shift: move item x positions down if positive value
         - pos_shift: move item x positions up if negative value
-        - pos_shift:  move item to top of queue as next item if 0.
+        - pos_shift: move item to the front of the upcoming items if 0, which is behind the
+          track the player already holds while playing.
         """
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
@@ -577,7 +578,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = queue_items.copy()
 
         if pos_shift == 0 and queue.state == PlaybackState.PLAYING:
-            new_index = (queue.current_index or 0) + 1
+            # land behind the track the player already holds rather than behind the playing one:
+            # that track is handed over long before it starts (an item ahead with crossfade), so
+            # writing into its slot leaves the player playing what the queue no longer says is next
+            base_index = (
+                queue.index_in_buffer
+                if queue.index_in_buffer is not None
+                else (queue.current_index if queue.current_index is not None else 0)
+            )
+            new_index = base_index + 1
         elif pos_shift == 0:
             new_index = queue.current_index or 0
         else:
