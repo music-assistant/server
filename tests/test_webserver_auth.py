@@ -673,6 +673,26 @@ async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     assert deleted_user is None
 
 
+async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that deleting a user takes its tokens, join codes and provider links with it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="cascadeadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="cascadeuser", role=UserRole.GUEST)
+    await auth_manager.create_token(user, "Device", is_long_lived=False)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
+    set_current_user(user)
+    await auth_manager.generate_join_code(user)
+
+    set_current_user(admin)
+    await auth_manager.delete_user(user.user_id)
+
+    for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
 async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot delete their own account.

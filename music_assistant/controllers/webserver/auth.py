@@ -1200,15 +1200,18 @@ class AuthenticationManager:
         if not user_row:
             raise InvalidDataError("User not found")
 
-        # Delete user from database
+        # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
+        # key enforcement is off on our connections, so remove those rows here.
+        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            await self.database.delete(table, {"user_id": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
-        # Deletion cascades the user's tokens away, so it must announce the access
-        # withdrawal itself for credentials bound to this user.
+        # The token rows are removed directly rather than through revoke_tokens_for_user,
+        # so nothing else announces the withdrawal for credentials bound to this user.
         self._notify_user_access_revoked(
             User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
         )
