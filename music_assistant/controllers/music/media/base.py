@@ -1141,9 +1141,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         available: bool | Any = UNSET,
         in_library: bool | Any = UNSET,
-        is_unique: bool | None | Any = UNSET,
-        url: str | None | Any = UNSET,
-        details: str | None | Any = UNSET,
+        is_unique: bool | Any | None = UNSET,
+        url: str | Any | None = UNSET,
+        details: str | Any | None = UNSET,
         audio_format: AudioFormat | Any = UNSET,
     ) -> None:
         """Update an existing provider mapping for a library item."""

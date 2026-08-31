@@ -5,7 +5,7 @@ The renderer is the DJ's hands: it picks the tools from the filter toolset
 (``filters.py``) that realize a ``TransitionPlan``, and produces the
 ``CrossfadeTimingInfo`` breakdown.  This is the only place where bytes
 re-enter: the plan is sized in seconds, the renderer reconciles it with the
-actual buffer lengths and drives both the acrossfade overlap and the timing
+actual buffer lengths and drives both the blend overlap and the timing
 bookkeeping from that one reconciled value.
 """
 
@@ -15,7 +15,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.controllers.streams.smart_fades.filters import (
-    CrossfadeFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     Filter,
@@ -23,6 +22,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     PeakFilter,
     ShelfFilter,
     ShelfType,
+    StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
@@ -69,7 +69,10 @@ class TransitionRenderer:
             * pcm_format.sample_rate
         )
         crossfade_seconds = crossfade_samples / pcm_format.sample_rate
-        filters = self._build_filters(plan, crossfade_samples)
+        pre_crossfade_samples = int(
+            max(0.0, fade_out_seconds - crossfade_seconds) * pcm_format.sample_rate
+        )
+        filters = self._build_filters(plan, crossfade_samples, pre_crossfade_samples)
         timing = CrossfadeTimingInfo(
             pre_crossfade_duration=max(0.0, fade_out_seconds - crossfade_seconds),
             crossfade_duration=crossfade_seconds,
@@ -78,7 +81,9 @@ class TransitionRenderer:
         )
         return filters, timing
 
-    def _build_filters(self, plan: TransitionPlan, crossfade_samples: int) -> list[Filter]:
+    def _build_filters(
+        self, plan: TransitionPlan, crossfade_samples: int, pre_crossfade_samples: int
+    ) -> list[Filter]:
         """Assemble the ordered filter chain from the plan."""
         filters: list[Filter] = []
         # FadeOutTrim first: its cut point is on the untrimmed input timeline
@@ -103,10 +108,14 @@ class TransitionRenderer:
         self._append_shelf(filters, plan.eq_plan.low_in, "fadein")
         self._append_shelf(filters, plan.eq_plan.high_in, "fadein")
         self._append_shelf(filters, plan.eq_plan.mid_in, "fadein")
+        # the streaming blend is positioned at the planned pre-point, so it can
+        # emit while the incoming window is still arriving; the hard cut at the
+        # planned end keeps any time-stretch drift out of the incoming audio
         filters.append(
-            CrossfadeFilter(
+            StreamingCrossfadeFilter(
                 logger=self.logger,
                 crossfade_samples=crossfade_samples,
+                pre_crossfade_samples=pre_crossfade_samples,
                 fadeout_curve=plan.fadeout_curve,
             )
         )

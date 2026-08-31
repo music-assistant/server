@@ -1,21 +1,22 @@
 {
   "config_entries": {
-    "mass_player_id": {
-      "label": "[%key:common::config_entries::mass_player_id::label%]",
-      "description": "The Music Assistant player connected to this Spotify Connect plugin. When you start playback in the Spotify app to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",
-      "options": {
-        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
-      }
+    "connected_players": {
+      "label": "[%key:common::config_entries::connected_players::label%]",
+      "description": "The Music Assistant players to expose via Spotify Connect. Every selected player appears as its own device in the Spotify app; audio streamed to it plays on that player. Leave empty to keep the plugin idle."
     },
-    "publish_name": {
-      "label": "Name to display in the Spotify app",
-      "description": "How should this Spotify Connect device be named in the Spotify app?"
+    "publish_name_template": {
+      "label": "[%key:common::config_entries::publish_name_template::label%]",
+      "description": "How each device shown in the Spotify app is named, based on the connected player's name."
     },
     "backend": {
-      "label": "Playback engine",
+      "label": "Please pick the playback engine you'd like to use for Spotify Connect.",
       "options": {
         "soloist": "Spotify Soloist (official, recommended)",
         "go_librespot": "go-librespot (community)"
+      },
+      "option_descriptions": {
+        "soloist": "Spotify's official playback engine. Setup takes a few extra steps and requires a Premium account to create a personal API key.",
+        "go_librespot": "Needs no API key or download, but is intended for accounts created before December 2024 and may stop working when Spotify changes its service."
       }
     },
     "soloist_download_consent": {
@@ -37,17 +38,27 @@
     },
     "crossfade_duration": {
       "label": "Crossfade duration (seconds)",
-      "description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, so exactly which track transitions fade is up to Spotify (album tracks that run into each other typically keep playing gapless)."
+      "description": "Fade between tracks for the given number of seconds (0 disables crossfade). The crossfade is applied by the Spotify playback engine itself, so exactly which track transitions fade is up to Spotify."
     },
     "loudness_normalization": {
       "label": "Loudness normalization",
       "description": "Let Spotify play all tracks at a similar loudness level (Spotify's 'Normalize volume' feature). Disable to receive the audio without Spotify's loudness adjustment."
+    },
+    "audio_quality": {
+      "label": "Streaming quality",
+      "description": "The highest quality Spotify is asked to stream. This is a ceiling, not a promise: Spotify still picks something lower when the connection is slow, when a track has no file at this quality, or when your account does not include it. Lossless needs a Spotify plan that offers it, and is only available on the Spotify Soloist engine - go-librespot streams 320 kbps at most.",
+      "options": {
+        "normal": "Normal (about 96 kbps)",
+        "high": "High (about 160 kbps)",
+        "very_high": "Very high (about 320 kbps)",
+        "lossless": "Lossless (Spotify Soloist engine only)"
+      }
     }
   },
   "setup_flow": {
     "backend": {
       "title": "Choose a playback engine",
-      "description": "Spotify Connect can run on two different playback engines:\n\n**Spotify Soloist (official, recommended)** — Spotify's own playback engine. Setting it up requires a Spotify Premium account once, to create a personal API key. Anyone connecting afterwards can use a Free (with Spotify ads) or Premium account. Supported Premium accounts may receive lossless audio up to 24-bit/44.1kHz; note that Music Assistant cannot see the exact quality Spotify actually delivers.\n\n**go-librespot (community)** — a community-built, reverse-engineered playback engine. Intended for Spotify accounts created before December 2024, and it may stop working whenever Spotify changes things on their end. No API key or download is needed.\n\nAudio quality is determined by Spotify and the connecting account. Loudness normalization and crossfade can be adjusted in this provider's settings after setup."
+      "description": "Spotify Connect can run on two different playback engines:"
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
@@ -56,10 +67,6 @@
     "soloist_api_key": {
       "title": "Create your Soloist API key",
       "description": "Soloist needs a personal API key, created with a Spotify **Premium** account:\n\n1. Open the [Soloist API key page](https://developer.spotify.com/dashboard/soloist) and sign in with your Spotify account.\n2. Accept Spotify's terms if you are asked to.\n3. Choose **Generate API Key**.\n4. Copy the key and paste it below.\n\nMusic Assistant stores the key encrypted and only shares it with the Soloist app. Your Spotify username and password are never asked for."
-    },
-    "user": {
-      "title": "Configure Spotify Connect",
-      "description": "Choose the player that receives Spotify audio and the device name shown in the Spotify app."
     }
   },
   "errors": {
@@ -67,7 +74,6 @@
     "soloist_consent_required": "Spotify Soloist can only be used after you allow the download. Select Spotify Soloist again to review that step, or choose go-librespot (community) instead.",
     "soloist_api_key_invalid": "This does not look like a complete API key. Copy the entire key from the Spotify page and paste it again.",
     "soloist_unsupported_platform": "Spotify Soloist is not available for this system. Choose go-librespot (community) instead.",
-    "soloist_auth_required": "The Spotify sign-in for this Spotify Connect device was lost. Run the setup again to reconnect it.",
     "soloist_download_failed": "The Spotify Soloist app could not be downloaded from Spotify. Check the server's internet connection and try again.",
     "soloist_invalid_archive": "The Spotify Soloist app downloaded from Spotify could not be used. Try again later.",
     "soloist_build_expired": "Spotify's current Soloist app version has expired and no newer version is available yet. Try again later."

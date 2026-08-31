@@ -9,7 +9,7 @@ side-effecting ``play_index`` and ``signal_update`` are stubbed out.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
@@ -33,6 +33,7 @@ def _controller() -> PlayerQueuesController:
     """Create a bare controller instance with the noisy ``signal_update`` stubbed out."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.mass = MagicMock()
     return ctrl
 
 

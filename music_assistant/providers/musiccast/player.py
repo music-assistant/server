@@ -369,7 +369,7 @@ class MusicCastPlayer(Player):
             _server_player = cast(
                 "MusicCastPlayer | None", self.mass.players.get_player(_server_id)
             )
-            _server_update_helper: None | UpnpUpdateHelper = None
+            _server_update_helper: UpnpUpdateHelper | None = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
             if (

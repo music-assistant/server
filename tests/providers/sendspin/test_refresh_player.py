@@ -9,9 +9,12 @@ from unittest.mock import Mock
 import pytest
 from music_assistant_models.enums import PlayerType
 
+import music_assistant.providers.sendspin.player as player_module
 import music_assistant.providers.sendspin.provider as provider_module
+from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
+    SendspinPlayer,
     SendspinSourcePlayer,
     SendspinVisualizerPlayer,
 )
@@ -21,6 +24,7 @@ if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player_provider import PlayerProvider
 
 
 def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
@@ -138,13 +142,49 @@ def test_create_player_uses_the_capture_only_class_for_source_only_clients(
     assert not isinstance(cast("object", combo), _StubSourcePlayer)
 
 
-def test_player_classes_declare_their_privacy() -> None:
+def test_player_classes_declare_their_visibility() -> None:
     """
-    Only players owned by a single device or by the server itself are private.
+    Sendspin device players are shared devices, so none of them are private.
 
-    Visualizers and lights are hidden by default too, but clients keep offering
-    them as group members, so they must not be marked private.
+    Visualizers and lights stay hidden by default but keep offering themselves as
+    group members. Source clients are listed as audio inputs so the device stays
+    discoverable.
     """
     assert SendspinVisualizerPlayer._attr_hidden_by_default is True
     assert SendspinVisualizerPlayer._attr_private is False
-    assert SendspinSourcePlayer._attr_private is True
+    assert SendspinSourcePlayer._attr_private is False
+    assert SendspinSourcePlayer._attr_hidden_by_default is False
+    assert SendspinSourcePlayer._attr_type is PlayerType.SOURCE
+
+
+def test_player_classes_advertise_grouping_by_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only Sendspin clients with an output role advertise grouping capability."""
+
+    def _init_player(self: Player, provider: PlayerProvider, player_id: str) -> None:
+        self._provider = provider
+        self._player_id = player_id
+        self._attr_can_group_with = set()
+
+    client = SimpleNamespace(info=SimpleNamespace(player_support=None))
+    provider = cast(
+        "SendspinProvider",
+        SimpleNamespace(
+            instance_id="sendspin--test",
+            logger=Mock(),
+            server_api=SimpleNamespace(get_client=Mock(return_value=client)),
+        ),
+    )
+    monkeypatch.setattr(Player, "__init__", _init_player)
+    monkeypatch.setattr(SendspinBasePlayer, "_refresh_client_info", Mock())
+    monkeypatch.setattr(SendspinBasePlayer, "_subscribe_client_callbacks", Mock())
+    monkeypatch.setattr(SendspinPlayer, "_refresh_client_info", Mock())
+    monkeypatch.setattr(SendspinPlayer, "_subscribe_client_callbacks", Mock())
+    monkeypatch.setattr(player_module, "SendspinPlaybackSession", Mock())
+
+    audio_player = SendspinPlayer(provider, "audio")
+    visualizer_player = SendspinVisualizerPlayer(provider, "visualizer")
+    source_player = SendspinSourcePlayer(provider, "source")
+
+    assert audio_player.can_group_with == {provider.instance_id}
+    assert visualizer_player.can_group_with == {provider.instance_id}
+    assert source_player.can_group_with == set()

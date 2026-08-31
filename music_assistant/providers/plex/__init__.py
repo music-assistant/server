@@ -1810,6 +1810,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             )
             if images := get_thumbnail_images(plex_track, self.instance_id):
                 episode.metadata.images = images
+            if plex_track.summary:
+                episode.metadata.description = plex_track.summary
             episodes.append(episode)
         return episodes
 
@@ -1843,6 +1845,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if images := get_thumbnail_images(plex_track, self.instance_id):
             episode.metadata.images = images
+        if plex_track.summary:
+            episode.metadata.description = plex_track.summary
         return episode
 
     async def _calc_resume_position_ms(self, plex_album: PlexAlbum, fully_played: bool) -> int:

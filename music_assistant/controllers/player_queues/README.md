@@ -102,6 +102,15 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
 - **Media-time vs stream-time.** The queue's elapsed time is stored in media-time (usable directly
   as a resume position), whereas the player reports stream-time (post-atempo). The two are bridged
   by scaling with the current item's playback speed.
+- **A replace swaps the queue's contents; it never empties it first.** The queue keeps playing what
+  it has while the new media is resolved (one or more provider round-trips), and the items are
+  exchanged in a single `update_items`, so clients never observe an empty queue with nothing
+  playing in between. `load(keep_remaining=False, keep_played=False)` is that atomic swap; the
+  dynamic path rebuilds its pool from index 0 for a replace rather than behind the playing track
+  (which is what *play* wants), and holds player reconciliation off while it does, since the pool
+  is fetched with the queue already truncated. The outgoing audio is released by
+  `_cleanup_queue_audio_data` *before* the swap, while those items are still on the queue —
+  afterwards nothing reaches them, and the track being started needs the source slot they hold.
 - **Shuffle is a queue setting; only the media's own order overrides it.** Shuffle stays as the
   user left it across everything they play, except when the media carries an order of its own:
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
@@ -177,7 +186,12 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
 via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances.
+queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
+leaves alone only what the session playing *now* claimed, so playback that restarted before the
+stop got that far keeps its audio. Everything else goes, including what sessions that ended
+earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
+audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
+audio goes with them.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)

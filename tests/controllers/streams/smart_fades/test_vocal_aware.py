@@ -16,7 +16,7 @@ import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter
+from music_assistant.controllers.streams.smart_fades.filters import StreamingCrossfadeFilter
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
@@ -208,7 +208,7 @@ class TestShortVocalHandoff:
         assert eq.mid_in is None
 
     def test_handoff_still_uses_the_qsin_crossfade_filter(self) -> None:
-        """The handoff plan renders through the same equal-power CrossfadeFilter as any other."""
+        """The handoff plan renders through the same equal-power StreamingCrossfadeFilter as any other."""
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
         plan = _plan(out, inc)
@@ -220,7 +220,7 @@ class TestShortVocalHandoff:
         filters, _timing = TransitionRenderer(LOGGER).render(
             plan, pcm_format, fade_in_bytes_len=int(45.0 * pcm_format.pcm_sample_size)
         )
-        crossfade_filters = [f for f in filters if isinstance(f, CrossfadeFilter)]
+        crossfade_filters = [f for f in filters if isinstance(f, StreamingCrossfadeFilter)]
         assert len(crossfade_filters) == 1
 
 

@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -131,6 +132,16 @@ async def test_get_mix_details_no_rows(
     provider_mock.api.get.return_value = {"rows": []}
 
     with pytest.raises(MediaNotFoundError, match="Mix 123 has no tracks"):
+        await media_manager.get_playlist_tracks("mix_123")
+
+
+async def test_get_mix_tracks_fetch_failure_propagates(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a mix fetch failure is raised instead of reported as missing."""
+    provider_mock.api.get.side_effect = ClientError("connection lost")
+
+    with pytest.raises(ClientError):
         await media_manager.get_playlist_tracks("mix_123")
 
 

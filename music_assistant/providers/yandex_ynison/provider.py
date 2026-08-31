@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     MediaType,
-    PlaybackState,
     ProviderFeature,
     ProviderType,
     SourceControl,
@@ -28,6 +27,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     PlayerCommandFailed,
+    SetupFailedError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioSource, ProviderMapping
@@ -38,7 +38,7 @@ from ya_passport_auth.ma import BorrowedCredentialSource
 from music_assistant.controllers.streams.constants import STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .auth import refresh_music_token
 from .constants import (
@@ -47,13 +47,11 @@ from .constants import (
     CONF_MASS_PLAYER_ID,
     CONF_OUTPUT_BIT_DEPTH,
     CONF_OUTPUT_SAMPLE_RATE,
-    CONF_PUBLISH_NAME,
     CONF_TOKEN,
     CONF_X_TOKEN,
     CONF_YM_INSTANCE,
     DEFAULT_DISPLAY_NAME,
     OUTPUT_AUTO,
-    PLAYER_ID_AUTO,
     YANDEX_MUSIC_CONF_QUALITY,
     YANDEX_MUSIC_LOSSLESS_QUALITIES,
     YM_INSTANCE_OWN,
@@ -161,12 +159,6 @@ class YandexYnisonProvider(PluginProvider):
     # buys nothing.
     is_streaming_provider: bool = False
 
-    @property
-    def instance_name_postfix(self) -> str | None:
-        """Return display name as instance postfix for multi-instance setups."""
-        name = self._display_name
-        return name if name != DEFAULT_DISPLAY_NAME else None
-
     def __init__(
         self,
         mass: MusicAssistant,
@@ -178,9 +170,9 @@ class YandexYnisonProvider(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
 
         # Setup identity and playback options
-        self._default_player_id: str = (
-            cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
-        )
+        self._default_player_id: str = cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or ""
+        # the display name snapshot the Ynison device connected with (set at init)
+        self._advertised_name: str | None = None
         allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
         self._allow_player_switch: bool = (
             cast("bool", allow_switch_value) if allow_switch_value is not None else True
@@ -190,9 +182,6 @@ class YandexYnisonProvider(PluginProvider):
         )
         self._cfg_bit_depth: str = (
             cast("str", self.config.get_value(CONF_OUTPUT_BIT_DEPTH)) or OUTPUT_AUTO
-        )
-        self._display_name: str = (
-            cast("str", self.get_setup_value(CONF_PUBLISH_NAME)) or DEFAULT_DISPLAY_NAME
         )
 
         # Token source — None = own (manually entered CONF_TOKEN);
@@ -274,8 +263,8 @@ class YandexYnisonProvider(PluginProvider):
             exclusive=True,
             allow_external_trigger=True,
         )
-        # _in_use_by_queue tracks the queue currently consuming our stream
-        self._in_use_by_queue: str | None = None
+        # _in_use_by_player tracks the queue currently consuming our stream
+        self._in_use_by_player: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
@@ -351,6 +340,12 @@ class YandexYnisonProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        if not self.get_setup_value(CONF_MASS_PLAYER_ID):
+            raise SetupFailedError(
+                "No connected Music Assistant player is configured",
+                translation_key="no_connected_player",
+                translation_owner=self.translation_owner,
+            )
         if self._ym_instance_id is not None:
             self.logger.info(
                 "Borrowing credentials from yandex_music instance '%s'",
@@ -360,9 +355,10 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Using manually configured Yandex Music token (no auto-refresh)")
         token = await self._resolve_token()
 
+        self._advertised_name = self._display_name
         device_info = YnisonDeviceInfo(
             device_id=self._device_id,
-            title=self._display_name,
+            title=self._advertised_name,
         )
 
         self._ynison = YnisonClient(
@@ -380,6 +376,17 @@ class YandexYnisonProvider(PluginProvider):
             self.mass.subscribe(
                 self._on_provider_event,
                 EventType.PROVIDERS_UPDATED,
+            )
+        )
+        # the advertised device name is snapshotted into the Ynison connection, so a
+        # rename of the connected player needs a reload to re-advertise correctly
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_connected_player_event,
+                # PLAYER_UPDATED covers provider-originated renames; the handler
+                # no-ops unless the display name actually changed
+                (EventType.PLAYER_ADDED, EventType.PLAYER_CONFIG_UPDATED, EventType.PLAYER_UPDATED),
+                id_filter=self._default_player_id,
             )
         )
         # Initial check for matching provider
@@ -436,7 +443,7 @@ class YandexYnisonProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Proxy playback control commands to Yandex via the linked Yandex Music provider."""
         if source_id != AUDIO_SOURCE_ID:
@@ -449,8 +456,14 @@ class YandexYnisonProvider(PluginProvider):
             await self._on_next()
         elif action == SourceControl.PREVIOUS:
             await self._on_previous()
-        elif action == SourceControl.SEEK and value is not None:
-            await self._on_seek(value)
+        elif (
+            action == SourceControl.SEEK
+            # tolerate float positions from internal callers; bool is an int
+            # subclass, so a misrouted toggle must not become a 1-second seek
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            await self._on_seek(int(value))
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -472,14 +485,14 @@ class YandexYnisonProvider(PluginProvider):
         # treats the queue_id as the player_id (they are the same by convention).
         # The lock may legitimately be empty here — MA's `_load_item` preload
         # path drives the generator to fill an initial audio buffer BEFORE
-        # `on_source_selected` has been dispatched, so `_in_use_by_queue` is
+        # `on_source_selected` has been dispatched, so `_in_use_by_player` is
         # still None on that call. `had_claim` records whether a lock was
         # already in force at entry; only in that case do we enforce
         # cross-session invariants on the loop and the `finally` cleanup.
-        player_id = self._in_use_by_queue or ""
-        had_claim = self._in_use_by_queue is not None
+        player_id = self._in_use_by_player or ""
+        had_claim = self._in_use_by_player is not None
         # Snapshot the active session id too so a same-queue reconnect (which
-        # updates _active_session_id but not _in_use_by_queue) is treated as a
+        # updates _active_session_id but not _in_use_by_player) is treated as a
         # superseding session: the loop exits early, and the finally clear
         # below skips the release so it doesn't clobber the new claim.
         captured_session_id = self._active_session_id
@@ -528,7 +541,7 @@ class YandexYnisonProvider(PluginProvider):
                         "No linked Yandex Music provider — cannot stream track %s", track_id
                     )
                     self._stream_stop_event.set()
-                    if self._in_use_by_queue == player_id:
+                    if self._in_use_by_player == player_id:
                         await self.mass.players.cmd_stop(player_id)
                     return
 
@@ -611,14 +624,14 @@ class YandexYnisonProvider(PluginProvider):
             # claim. `had_claim` keeps the preload path from touching the lock
             # at all (no claim ever existed to release).
             if had_claim and not self._session_lost(player_id, captured_session_id):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
             self._current_streaming_track_id = None
 
     async def on_source_selected(
         self,
         source_id: str,
         player_id: str,
-        queue_id: str,
+        owner_player_id: str,
         stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource has been selected/started on a player."""
@@ -671,7 +684,7 @@ class YandexYnisonProvider(PluginProvider):
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
         # stream request.
-        self._in_use_by_queue = queue_id
+        self._in_use_by_player = owner_player_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
@@ -680,21 +693,21 @@ class YandexYnisonProvider(PluginProvider):
         self.logger.debug("Active player set to: %s", player_id)
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
         # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
+        # session. A owner_player_id check alone is not sufficient — same-queue
         # reconnects (player drops + reopens the same stream URL before the
         # original request's finally fires) would otherwise let the old
         # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
+        if self._in_use_by_player == owner_player_id:
+            self._in_use_by_player = None
 
     async def _wait_for_track_change(self, old_track_id: str, timeout: float = 30.0) -> bool:
         """
@@ -1134,7 +1147,7 @@ class YandexYnisonProvider(PluginProvider):
                 "Ynison → paused (track=%s progress=%dms)", track_id, state.progress_ms
             )
             await self._pause_playback()
-        elif self._in_use_by_queue:
+        elif self._in_use_by_player:
             self.logger.info(
                 "Ynison → other device active (was=%s), clearing",
                 state.active_device_id,
@@ -1257,7 +1270,7 @@ class YandexYnisonProvider(PluginProvider):
             meta.duration = best_duration // 1000
         # Only update elapsed from Ynison when NOT actively streaming —
         # during streaming, _sync_progress provides byte-accurate progress.
-        if state.progress_ms is not None and not self._in_use_by_queue:
+        if state.progress_ms is not None and not self._in_use_by_player:
             meta.elapsed_time = state.progress_ms // 1000
             meta.elapsed_time_last_updated = time.time()
 
@@ -1297,7 +1310,7 @@ class YandexYnisonProvider(PluginProvider):
                 )
         meta.elapsed_time = seek_ms // 1000 if seek_ms else 0
         meta.elapsed_time_last_updated = time.time()
-        # `trigger_player_update` expects a player_id; `_in_use_by_queue` is
+        # `trigger_player_update` expects a player_id; `_in_use_by_player` is
         # a queue identifier which only happens to coincide with player_id
         # when there is no protocol bridge. Use `_active_player_id` — the
         # real player wrapping our stream (bridge if any).
@@ -1388,9 +1401,9 @@ class YandexYnisonProvider(PluginProvider):
         a few seconds — the alternative kept resume instant but left
         MA's UI stuck on PLAYING.
         """
-        target = self._in_use_by_queue
+        target = self._in_use_by_player
         if not target:
-            self.logger.info("Pause requested but no active queue (_in_use_by_queue is None)")
+            self.logger.info("Pause requested but no active queue (_in_use_by_player is None)")
             return
         self.logger.info("Pause: cmd_stop(%s)", target)
         # stop event ends the audio generator; finally clears the lock.
@@ -1420,6 +1433,30 @@ class YandexYnisonProvider(PluginProvider):
     # Player selection
     # ------------------------------------------------------------------
 
+    async def _on_connected_player_event(self, event: MassEvent) -> None:
+        """Reload the provider when the connected player's display name changed."""
+        del event
+        if self._advertised_name is None or self._display_name == self._advertised_name:
+            return
+        self.logger.info(
+            "Connected player was renamed; reloading to re-advertise as '%s'",
+            self._display_name,
+        )
+        task_id = f"load_provider_{self.instance_id}"
+        self.mass.call_later(1, self.mass.load_provider_config, self.config, task_id=task_id)
+
+    @property
+    def _display_name(self) -> str:
+        """Return the advertised device name: the connected player's display name."""
+        if player := self.mass.players.get_player(self._default_player_id):
+            return player.display_name
+        # on a cold boot the player registers after this provider connects, so fall
+        # back to its stored config name (the name sticks for the whole connection)
+        stored_name = self.mass.config.get_raw_player_config_value(
+            self._default_player_id, "name"
+        ) or self.mass.config.get_raw_player_config_value(self._default_player_id, "default_name")
+        return str(stored_name) if stored_name else DEFAULT_DISPLAY_NAME
+
     def _get_target_player_id(self) -> str | None:
         """Determine the target player ID for playback."""
         # If there's an active player, validate it still exists
@@ -1428,20 +1465,7 @@ class YandexYnisonProvider(PluginProvider):
                 return self._active_player_id
             self._active_player_id = None
 
-        # Auto selection
-        if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all_players(False, False))
-            # Prefer currently playing player
-            for player in all_players:
-                if player.state.playback_state == PlaybackState.PLAYING:
-                    self.logger.debug("Auto-selecting playing player: %s", player.display_name)
-                    return str(player.player_id)
-            # Fallback to first available
-            if all_players:
-                return str(all_players[0].player_id)
-            return None
-
-        # Specific configured player
+        # Configured player (mandatory; enforced at load)
         if self.mass.players.get_player(self._default_player_id):
             return self._default_player_id
 
@@ -1458,7 +1482,7 @@ class YandexYnisonProvider(PluginProvider):
         :param player_id: Queue id captured at generator entry.
         :param session_id: ``_active_session_id`` captured at generator entry.
         """
-        return self._in_use_by_queue != player_id or self._active_session_id != session_id
+        return self._in_use_by_player != player_id or self._active_session_id != session_id
 
     def _idempotent(self, action: str, key: str | None) -> bool:
         """
@@ -1560,9 +1584,14 @@ class YandexYnisonProvider(PluginProvider):
     def _clear_active_player(self) -> None:
         """Clear the active player and reset plugin state."""
         prev_player_id = self._active_player_id
-        was_in_use = self._in_use_by_queue == prev_player_id
+        # the owner is the user-facing MA player; _active_player_id can be the protocol
+        # player that consumed the stream, which is not what holds the source session
+        owner_player_id = self._in_use_by_player
+        source_session = (
+            self.mass.players.get_audio_source_session(owner_player_id) if owner_player_id else None
+        )
         self._active_player_id = None
-        self._in_use_by_queue = None
+        self._in_use_by_player = None
         self._active_session_id = None
         self._stream_stop_event.set()
         self._streaming_progress_ms = 0
@@ -1577,8 +1606,19 @@ class YandexYnisonProvider(PluginProvider):
                 "Playback ended on player %s, clearing active player",
                 prev_player_id,
             )
-            if was_in_use:
-                self.mass.create_task(self.mass.players.cmd_stop(prev_player_id))
+            if owner_player_id:
+                # give the source back as well as stopping: a session left on the player
+                # keeps it publishing this source, so its own queue stays unreachable
+                self.mass.create_task(
+                    self.mass.players.deselect_source(
+                        owner_player_id,
+                        provider_instance_id=self.instance_id,
+                        source_id=AUDIO_SOURCE_ID,
+                        playback_session_id=(
+                            source_session.playback_session_id if source_session else None
+                        ),
+                    )
+                )
             self.mass.players.trigger_player_update(prev_player_id)
 
     # ------------------------------------------------------------------
@@ -1739,7 +1779,7 @@ class YandexYnisonProvider(PluginProvider):
         # active session keeps using its frozen snapshot; the new format takes
         # effect on the next session.
         old = self._normalized_params
-        if self._in_use_by_queue and (
+        if self._in_use_by_player and (
             old.get("content_type") != content_type
             or old.get("sample_rate") != sample_rate
             or old.get("bit_depth") != bit_depth
@@ -1767,31 +1807,12 @@ class YandexYnisonProvider(PluginProvider):
     def _update_source_capabilities(self) -> None:
         """Rebuild AudioSource so capability flags reflect linked provider availability."""
         self._audio_source = self._build_audio_source()
-        # The currently playing queue item carries a SNAPSHOT of the old
-        # AudioSource — overwrite it so the new capability flags reach the UI
-        # without waiting for the next play_media. Snapshot current_item and
-        # re-check identity before the write so a queue advance racing this
-        # callback can't stamp the new AudioSource onto an item that has
-        # already moved on. Signal the queue update so the frontend re-renders
-        # the controls (play/pause, next/prev) live.
-        if not self._in_use_by_queue:
+        # The session publishes the controls from the object it holds, so hand it the
+        # rebuilt one: the new capability flags reach the UI without waiting for the
+        # source to be selected again.
+        if not self._in_use_by_player:
             return
-        queue_id = self._in_use_by_queue
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None:
-            return
-        current_item = queue.current_item
-        if (
-            current_item is not None
-            and current_item.media_item is not None
-            and current_item.media_item.media_type == MediaType.AUDIO_SOURCE
-            and current_item.media_item.item_id == AUDIO_SOURCE_ID
-            and current_item.media_item.provider == self.instance_id
-            and queue.current_item is current_item
-        ):
-            current_item.media_item = self._audio_source
-            self.mass.player_queues.signal_update(queue_id, items_changed=True)
-        self.mass.players.trigger_player_update(queue_id)
+        self.mass.players.refresh_source(self._in_use_by_player, self._audio_source)
 
     def _build_audio_source(self) -> AudioSource:
         """Construct the AudioSource MediaItem with current capability flags."""

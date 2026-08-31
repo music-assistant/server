@@ -8,7 +8,7 @@ import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterable, Iterator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from io import BytesIO
 from math import isfinite
 from typing import TYPE_CHECKING, Final
@@ -451,41 +451,41 @@ async def audio_source_silence_keepalive(
     raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
     silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
     silence_chunk = b"\x00" * silence_bytes
-    # empty bytes is the end-of-stream sentinel; real PCM frames are never empty
-    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
-        # aclosing ensures inner.aclose() runs on cancellation so the underlying
-        # generator's own finally (e.g. plugin lock release, fd cleanup) fires
-        # instead of leaking until GC.
         try:
             async with aclosing(inner) as managed_inner:
                 async for chunk in managed_inner:
                     await queue.put(chunk)
-        finally:
-            await queue.put(b"")
+        except (Exception, asyncio.CancelledError) as err:
+            task = asyncio.current_task()
+            assert task is not None
+            # Cancellation must not wait for a queue the closing consumer no longer drains.
+            if task.cancelling():
+                raise
+            # A source-raised cancellation is a clean end, matching FFmpeg feeder semantics.
+            await queue.put(None if isinstance(err, asyncio.CancelledError) else err)
+        else:
+            await queue.put(None)
 
     producer_task = asyncio.create_task(_producer())
     try:
         while True:
             try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
+                item = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
             except TimeoutError:
                 yield silence_chunk
                 continue
-            if not chunk:
+            if item is None:
                 break
-            yield chunk
+            if isinstance(item, Exception):
+                raise item
+            yield item
     finally:
         producer_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await producer_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            # log but don't re-raise: we're already in a finally and the
-            # downstream consumer has its own error handling for the outer stream.
-            LOGGER.exception("AudioSource producer task raised")
 
 
 async def get_silence(
@@ -740,6 +740,21 @@ async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -
     )
 
 
+def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the format the audio actually arrives in.
+
+    ``audio_format`` is what the source claims, which is meant for display and
+    may describe something the provider decoded on our behalf. Every decision
+    about the bytes themselves - what to hand ffmpeg, what a buffer holds, what
+    depth to carry - has to follow this instead, or real audio gets truncated or
+    reinterpreted.
+
+    :param streamdetails: The stream the audio belongs to.
+    """
+    return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
@@ -819,6 +834,7 @@ def get_normalization_mode(
     preference: VolumeNormalizationMode,
     volume_normalization_enabled: bool,
     streamdetails: StreamDetails,
+    source_normalized: bool = False,
 ) -> VolumeNormalizationMode:
     """
     Get the volume normalization mode for a given queue and stream.
@@ -828,6 +844,8 @@ def get_normalization_mode(
     :param volume_normalization_enabled: Whether normalization is enabled for the queue, already
         resolved from the per-queue setting and its global (queue controller) fallback.
     :param streamdetails: The stream to evaluate.
+    :param source_normalized: Whether the provider already delivers this audio at a
+        loudness target of its own.
     """
     if not volume_normalization_enabled:
         # disabled for this queue
@@ -835,6 +853,11 @@ def get_normalization_mode(
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on
         return VolumeNormalizationMode.DISABLED
+    if source_normalized:
+        # the source owns loudness here too: correcting a level it already set would
+        # mean normalizing twice, against a measurement of its own output. SOURCE says
+        # that out loud - the audio is levelled, just not by us
+        return VolumeNormalizationMode.SOURCE
     if streamdetails.media_type == MediaType.SOUND_EFFECT:
         # never measured, and the dynamic fallback compresses short clips
         return VolumeNormalizationMode.DISABLED

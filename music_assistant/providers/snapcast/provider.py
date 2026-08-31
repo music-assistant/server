@@ -97,6 +97,7 @@ class SnapCastProvider(PlayerProvider):
     _snapcast_ma_streams_lock: asyncio.Lock
     _last_status_refresh: float
     _snapcast_stream_format: AudioFormat
+    _zc_services: dict[str, AsyncServiceInfo]
 
     @property
     def stream_audio_format(self) -> AudioFormat:
@@ -255,6 +256,7 @@ class SnapCastProvider(PlayerProvider):
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
         self._controlscript_available = False
+        self._zc_services = {}
         if self._use_builtin_server:
             if Path(DEFAULT_SNAPSERVER_CONFIG_FILE).exists():
                 self._snapcast_server_config_file = DEFAULT_SNAPSERVER_CONFIG_FILE
@@ -354,6 +356,11 @@ class SnapCastProvider(PlayerProvider):
         self._snapserver.stop()
         await self._stop_builtin_server()
 
+        # unregister the snapcast mdns services
+        for info in self._zc_services.values():
+            await self.mass.discovery.aiozc.async_unregister_service(info)
+        self._zc_services.clear()
+
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         return {
@@ -452,6 +459,8 @@ class SnapCastProvider(PlayerProvider):
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
         addresses = [await get_ip_pton(self.mass.streams.publish_ip)]
+        # a DNS-SD instance name is a single DNS label, so bound the name to 63 utf-8 bytes
+        instance_name = self.mass.webserver.server_name.encode()[:63].decode("utf-8", "ignore")
         # register the snapcast mdns services
         for name, port in (
             ("-http", 1780),
@@ -464,18 +473,17 @@ class SnapCastProvider(PlayerProvider):
             try:
                 info = AsyncServiceInfo(
                     zeroconf_type,
-                    name=f"Snapcast.{zeroconf_type}",
+                    name=f"{instance_name}.{zeroconf_type}",
                     properties={"is_mass": "true"},
                     addresses=addresses,
                     port=port,
                     server=f"{socket.gethostname()}.local",
                 )
-                attr_name = f"zc_service_set{name}"
-                if getattr(self, attr_name, None):
+                if name in self._zc_services:
                     await self.mass.discovery.aiozc.async_update_service(info)
                 else:
                     await self.mass.discovery.aiozc.async_register_service(info, strict=False)
-                setattr(self, attr_name, True)
+                self._zc_services[name] = info
             except NonUniqueNameException:
                 self.logger.debug(
                     "Could not register mdns record for %s as its already in use",

@@ -19,8 +19,10 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
+from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 
@@ -33,6 +35,11 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_power = AsyncMock()
     mass.players.iter_group_members = MagicMock(return_value=[])
+
+    lock_ctx = AsyncMock()
+    lock_ctx.__aenter__.return_value = None
+    lock_ctx.__aexit__.return_value = False
+    mass.players.get_player_lock = MagicMock(return_value=lock_ctx)
 
     wait_ctx = AsyncMock()
     wait_ctx.__aenter__.return_value = None
@@ -98,11 +105,13 @@ def _make_mock_player(
     active_group: str | None = None,
     synced_to: str | None = None,
     playback_state: PlaybackState = PlaybackState.IDLE,
+    player_type: PlayerType = PlayerType.PLAYER,
 ) -> MagicMock:
     """Create a mock child player."""
     player = MagicMock()
     player.player_id = player_id
     player.display_name = player_id
+    player.type = player_type
     player.available = available
     player.enabled = enabled
     player.powered = powered
@@ -123,6 +132,34 @@ def _make_mock_player(
     player.state.elapsed_time_last_updated = None
     player.ungroup = AsyncMock()
     return player
+
+
+async def test_config_members_exclude_groups_and_unknown_players() -> None:
+    """Only known non-group player types should be offered as universal group members."""
+    mass = _make_mock_mass()
+    players = [
+        _make_mock_player("speaker"),
+        _make_mock_player("light", player_type=PlayerType.LIGHT),
+        _make_mock_player("visualizer", player_type=PlayerType.VISUALIZER),
+        _make_mock_player("display", player_type=PlayerType.DISPLAY),
+        _make_mock_player("group", player_type=PlayerType.GROUP),
+        _make_mock_player("capture-only", player_type=PlayerType.UNKNOWN),
+    ]
+    players[1].state.supported_features = set()
+    players[2].state.supported_features = set()
+    players[2].hide_in_ui = True
+    players[3].state.supported_features = set()
+    mass.players.all_players.return_value = players
+
+    entries = await _make_ugp(mass).get_config_entries()
+    members_entry = next(entry for entry in entries if entry.key == CONF_GROUP_MEMBERS)
+
+    assert {option.value for option in members_entry.options} == {
+        "speaker",
+        "light",
+        "visualizer",
+        "display",
+    }
 
 
 class TestIsActiveSession:
@@ -191,6 +228,8 @@ class TestPowerlessLifecycle:
         assert mass.players._handle_play_media.await_count == 2
         for call in mass.players._handle_play_media.await_args_list:
             assert call.args[1].queue_session_id == "session-1"
+        mass.players.get_player_lock.assert_any_call("m1", PlayerLockPurpose.PLAYBACK)
+        mass.players.get_player_lock.assert_any_call("m2", PlayerLockPurpose.PLAYBACK)
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
 

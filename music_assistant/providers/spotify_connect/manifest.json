@@ -11,5 +11,5 @@
   ],
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/spotify-connect/",
-  "multi_instance": true
+  "multi_instance": false
 }

@@ -14,7 +14,6 @@ import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -102,13 +101,6 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
             release_cb()
 
 
-# builtin providers that must not be auto-set-up during a fixture boot: local_audio
-# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
-# sendspin players, which would leak real hardware into the player registry
-SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
-
-_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
-
 # the address a fixture's web and stream servers bind to, so a test run never listens
 # on the host's real interfaces
 LOOPBACK_IP = "127.0.0.1"
@@ -158,18 +150,9 @@ def suppress_auto_loaded_providers() -> Iterator[None]:
     Stop a fixture boot from auto-setting-up providers that reach into the host.
 
     Keeps a booted test instance isolated from the developer's machine: the default
-    device providers (airplay/chromecast/dlna/...) are not auto-configured, and neither
-    is the builtin local_audio provider, which would otherwise bridge the host's sound
-    devices (built-in speakers, bluetooth, ...) into the player registry.
+    device providers (airplay/chromecast/dlna/...) are not auto-configured.
     """
-    with (
-        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
-        patch.object(
-            ProviderConfigMixin,
-            "create_builtin_provider_config",
-            _create_builtin_provider_config_hermetic,
-        ),
-    ):
+    with patch("music_assistant.mass.DEFAULT_PROVIDERS", ()):
         yield
 
 
@@ -201,15 +184,6 @@ def suppress_initial_library_sync() -> Iterator[None]:
     """
     with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
         yield
-
-
-async def _create_builtin_provider_config_hermetic(
-    self: ProviderConfigMixin, provider_domain: str
-) -> None:
-    """Create builtin provider configs, skipping providers that discover host hardware."""
-    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
-        return
-    await _orig_create_builtin_provider_config(self, provider_domain)
 
 
 # Mock classes for testing

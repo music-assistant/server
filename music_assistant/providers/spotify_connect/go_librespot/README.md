@@ -9,7 +9,7 @@ December 2024 and may break whenever Spotify changes the protocol.
    Spotify app  (mobile / desktop / web)
         │   Connect protocol: mDNS discovery + audio
         ▼
-   go-librespot daemon  (one per instance)
+   go-librespot daemon  (one per connected player)
         │   decodes Ogg Vorbis → s16le PCM on stdout, driven by
         │   GoLibrespotClient over its local HTTP + WS API
         ▼
@@ -33,8 +33,8 @@ December 2024 and may break whenever Spotify changes the protocol.
 ## Daemon & configuration
 
 The binary is resolved from `PATH` (installed into the Docker image / HA add-on at build
-time; `brew install go-librespot` for manual macOS installs). Each instance writes a
-`config.yml` into its cache dir — emitted as JSON (valid YAML) to avoid a YAML dependency
+time; `brew install go-librespot` for manual macOS installs). Each daemon writes a
+`config.yml` into its own cache dir (keyed by its identity key) — emitted as JSON (valid YAML) to avoid a YAML dependency
 and quoting pitfalls:
 
 - `audio_backend: pipe` with `audio_output_pipe: /dev/stdout` (`s16le`): the daemon writes
@@ -42,14 +42,15 @@ and quoting pitfalls:
   reader, so the daemon's non-blocking pipe open never fails.
 - `external_volume: true`: the daemon never attenuates the PCM — MA/the player owns the
   audible volume. Volume events still flow both ways so the app slider stays in sync.
-- A stable `device_id` derived from the instance id (the Spotify app keeps recognising the
-  same device), zeroconf advertised on the streams bind interface, credentials persisted
-  per instance.
-- The local HTTP/WS API binds to `127.0.0.1` on a free port per instance.
+- A stable `device_id` derived from the daemon's identity key (the Spotify app keeps
+  recognising the same device), zeroconf advertised on the streams bind interface,
+  credentials persisted per daemon.
+- The local HTTP/WS API binds to `127.0.0.1` on a free port per daemon.
 
-The daemon is supervised: restarts on exit, a fatal event (→ `unload_with_error`) after
-repeated failures. A self-healing WebSocket listener reconnects across daemon restarts and
-translates `/events` messages into normalized `BackendEvent`s.
+The daemon is supervised: restarts on exit, a fatal event after repeated failures — on which
+the provider gives up this one daemon (stopping it and keeping the other players' daemons
+running). A self-healing WebSocket listener reconnects across daemon restarts and translates
+`/events` messages into normalized `BackendEvent`s.
 
 ## Audio transport
 
@@ -70,7 +71,9 @@ playing state and the next `playing` event re-streams (`stream_ends_on_pause` is
 With `external_volume` set the daemon starts its Connect device state at 100% and ignores
 `initial_volume`; the provider pushes the target player's live volume when a session
 becomes active and when the source is claimed, so the Spotify app's slider adopts the
-player's actual volume instead of snapping it to a value computed from 100%.
+player's actual volume instead of snapping it to a value computed from 100%. A group holds
+no level of its own, so its group volume is pushed instead. That is the level its own volume
+commands interpolate the members from.
 
 ## Taking playback back
 
@@ -84,6 +87,10 @@ The provider's loudness normalization and crossfade settings are written into th
 generated config: `normalisation_disabled` (normalization targets -14 LUFS when on) and
 `crossfade_duration` (milliseconds, 0 = off). The crossfade key needs go-librespot
 >= 0.8.0 — older daemons ignore unknown config keys, so it is written unconditionally.
+
+The streaming quality setting maps onto `bitrate`, which only accepts 96, 160 and 320.
+go-librespot has no lossless support, so the lossless tier is capped at 320 rather than
+dropped — the setting is a ceiling, and this engine's ceiling is lower.
 
 ## Known limitations
 

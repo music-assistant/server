@@ -191,16 +191,22 @@ def filter_to_ffmpeg_params(
     if isinstance(dsp_filter, GainFilter) and dsp_filter.gain != 0:
         filter_params.append(f"volume={dsp_filter.gain}dB")
     if isinstance(dsp_filter, BalanceFilter) and dsp_filter.balance != 0:
-        # balance is a stereo operation; on a non-stereo source the FL/FR pan
-        # expression would output silence, so only apply it to stereo streams
+        # attenuate only the channel opposite the slider direction, so there is
+        # no positive gain and thus no clipping risk
+        attenuation = (100 - abs(dsp_filter.balance)) / 100
         if input_format.channels == 2:
-            # attenuate only the channel opposite the slider direction, so there is
-            # no positive gain and thus no clipping risk
-            attenuation = (100 - abs(dsp_filter.balance)) / 100
             if dsp_filter.balance > 0:
                 filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+        elif input_format.channels == 1:
+            # a mono source has no FL/FR to pan between, so widen it here by position.
+            # the output stage widens mono at unity, so the favoured channel stays there
+            # too, otherwise leaving the centre would drop the level by 3 dB
+            if dsp_filter.balance > 0:
+                filter_params.append(f"pan=stereo|FL={attenuation}*c0|FR=c0")
+            else:
+                filter_params.append(f"pan=stereo|FL=c0|FR={attenuation}*c0")
     if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
         # rubberband expects a frequency ratio rather than a number of semitones
         pitch = 2 ** (dsp_filter.semitones / 12)

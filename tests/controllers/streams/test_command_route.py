@@ -19,6 +19,21 @@ def _queue_data(session_id: str | None) -> MagicMock:
     return queue_data
 
 
+def _mock_player_queues(
+    streams_controller: StreamsController,
+    queue_data: MagicMock | None,
+    active_queue_id: str | None = "queue-1",
+) -> MagicMock:
+    """Install a player_queues mock resolving to the given active queue and record."""
+    player_queues = MagicMock()
+    player_queues.get_active_queue.return_value = (
+        MagicMock(queue_id=active_queue_id) if active_queue_id else None
+    )
+    player_queues.queue_data_or_none.return_value = queue_data
+    streams_controller.mass.player_queues = player_queues
+    return player_queues
+
+
 def _request(session_id: str, queue_id: str = "queue-1", command: str = "next") -> MagicMock:
     """Return a request for the command route."""
     request = MagicMock()
@@ -36,8 +51,29 @@ def test_command_url_is_bound_to_the_playback_session(
     streams_controller: StreamsController,
 ) -> None:
     """The url carries the session, so it stops working once playback moves on."""
-    streams_controller.mass.player_queues = MagicMock()
-    streams_controller.mass.player_queues.queue_data_or_none.return_value = _queue_data("session-1")
+    _mock_player_queues(streams_controller, _queue_data("session-1"))
+    url = streams_controller.get_command_url("queue-1", "next")
+    assert url is not None
+    assert url.endswith("/command/session-1/queue-1/next.mp3")
+
+
+def test_command_url_targets_the_active_queue_of_a_protocol_player(
+    streams_controller: StreamsController,
+) -> None:
+    """A protocol (child) player id resolves to the queue that actually drives it."""
+    player_queues = _mock_player_queues(streams_controller, _queue_data("session-1"))
+    url = streams_controller.get_command_url("cast-child-1", "next")
+    assert url is not None
+    assert url.endswith("/command/session-1/queue-1/next.mp3")
+    player_queues.get_active_queue.assert_called_once_with("cast-child-1")
+    player_queues.queue_data_or_none.assert_called_once_with("queue-1")
+
+
+def test_command_url_falls_back_to_the_given_id_without_an_active_queue(
+    streams_controller: StreamsController,
+) -> None:
+    """Without a resolvable active queue the given id is used as the queue id."""
+    _mock_player_queues(streams_controller, _queue_data("session-1"), active_queue_id=None)
     url = streams_controller.get_command_url("queue-1", "next")
     assert url is not None
     assert url.endswith("/command/session-1/queue-1/next.mp3")
@@ -51,8 +87,7 @@ def test_command_url_is_absent_without_a_session(
     streams_controller: StreamsController, queue_data: MagicMock | None, reason: str
 ) -> None:
     """Without an active session there is no url to hand to a player."""
-    streams_controller.mass.player_queues = MagicMock()
-    streams_controller.mass.player_queues.queue_data_or_none.return_value = queue_data
+    _mock_player_queues(streams_controller, queue_data)
     assert streams_controller.get_command_url("queue-1", "next") is None, reason
 
 
@@ -60,8 +95,7 @@ async def test_command_request_advances_the_queue(
     streams_controller: StreamsController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A request carrying the current session skips to the next item."""
-    streams_controller.mass.player_queues = MagicMock()
-    streams_controller.mass.player_queues.queue_data_or_none.return_value = _queue_data("session-1")
+    _mock_player_queues(streams_controller, _queue_data("session-1"))
     create_task = MagicMock()
     monkeypatch.setattr(streams_controller.mass, "create_task", create_task)
     resp = await streams_controller.serve_command_request(_request("session-1"))
@@ -74,8 +108,7 @@ async def test_command_request_refuses_a_foreign_session(
     streams_controller: StreamsController, session_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A caller that does not hold the current session cannot drive the queue."""
-    streams_controller.mass.player_queues = MagicMock()
-    streams_controller.mass.player_queues.queue_data_or_none.return_value = _queue_data("session-1")
+    _mock_player_queues(streams_controller, _queue_data("session-1"))
     create_task = MagicMock()
     monkeypatch.setattr(streams_controller.mass, "create_task", create_task)
     with pytest.raises(web.HTTPNotFound):
@@ -87,8 +120,7 @@ async def test_command_request_refuses_an_unknown_queue(
     streams_controller: StreamsController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unregistered queue is refused rather than raising out of the handler."""
-    streams_controller.mass.player_queues = MagicMock()
-    streams_controller.mass.player_queues.queue_data_or_none.return_value = None
+    _mock_player_queues(streams_controller, None)
     create_task = MagicMock()
     monkeypatch.setattr(streams_controller.mass, "create_task", create_task)
     with pytest.raises(web.HTTPNotFound):
