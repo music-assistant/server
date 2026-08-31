@@ -1263,7 +1263,7 @@ async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
     auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Test that every revoked token is disconnected, also beyond the default row limit.
+    Test that revoking counts and disconnects correctly beyond the default row limit.
 
     :param auth_manager: AuthenticationManager instance.
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -1286,11 +1286,11 @@ async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
 
     disconnected: list[str] = []
     monkeypatch.setattr(
-        auth_manager.webserver, "disconnect_websockets_for_token", disconnected.append
+        auth_manager.webserver, "disconnect_websockets_for_user", disconnected.append
     )
 
     assert await auth_manager.revoke_tokens_for_user(user) == token_count
-    assert sorted(disconnected) == sorted(f"token-{index}" for index in range(token_count))
+    assert disconnected == [user.user_id]
     assert await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id}) == []
 
 
