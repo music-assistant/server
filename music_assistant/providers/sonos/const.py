@@ -82,3 +82,9 @@ NON_HIRES_MODELS = (
     "Connect:Amp",
     "Table lamp",
 )
+
+# Fallback cloud-queue window sizes, used when the speaker asks for none.
+PREVIOUS_WINDOW = 4
+UPCOMING_WINDOW = 5
+# Upper bound on the items a single itemWindow response serves.
+MAX_WINDOW = 25
