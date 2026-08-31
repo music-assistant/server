@@ -198,9 +198,12 @@ class SonosPlayerProvider(PlayerProvider):
         for player in self.players:
             if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
                 continue
+            # invalidate straight away: a window served before the command goes out must not
+            # carry a version the speaker reads as "nothing changed"
+            player.bump_cloud_queue_version()
             # anything that touches the items fires this - an insert, an autoplay refill, a
             # duration that was filled in - and one edit can fan out into several, so coalesce
-            # them into a single command per speaker
+            # the command itself into one per speaker
             task_id = _refresh_task_id(player.player_id)
             self._pending_refresh_tasks.add(task_id)
             self.mass.call_later(1, player.refresh_cloud_queue, task_id=task_id)

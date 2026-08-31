@@ -359,7 +359,7 @@ class SonosPlayer(Player):
         # playback loads one at all, and a refresh on a session without one fails
         self.cloud_queue_id = None
         self._announcement_media = None
-        self._bump_cloud_queue_version()
+        self.bump_cloud_queue_version()
 
         if media.media_type == MediaType.ANNOUNCEMENT:
             # We cannot use play_stream_url for announcements because Sonos treats those
@@ -452,9 +452,20 @@ class SonosPlayer(Player):
             self.cloud_queue_id = media.source_id
         await self.refresh_cloud_queue()
 
+    def bump_cloud_queue_version(self) -> None:
+        """
+        Advance the version the speaker compares its cached queue against.
+
+        Sonos reads an unchanged queueVersion as "nothing changed" and keeps replaying its
+        cached copy, so the sub-second timestamp is what makes it pick up an edit. Advance it
+        the moment the queue changes: a window served in between must not carry a version the
+        speaker will read as current.
+        """
+        self.cloud_queue_version = time.time()
+
     async def refresh_cloud_queue(self) -> None:
         """Signal the speaker that the queue it is playing changed."""
-        self._bump_cloud_queue_version()
+        self.bump_cloud_queue_version()
         if not self.connected:
             return
         group = self.client.player.group
@@ -493,11 +504,14 @@ class SonosPlayer(Player):
         if not queue_id or not (queue := self.mass.player_queues.get(queue_id)):
             return SonosQueueWindow()
 
-        center_index = self.mass.player_queues.index_by_id(queue_id, item_id) if item_id else None
-        if center_index is None:
-            # the playing item, not index_in_buffer: with crossfade the latter runs an item
-            # ahead, which would answer a request about the playing track with a window that
-            # starts after it
+        if not item_id:
+            # an omitted or empty itemId asks for the start of the queue
+            center_index = 0
+        elif (found := self.mass.player_queues.index_by_id(queue_id, item_id)) is not None:
+            center_index = found
+        else:
+            # the speaker named an item the queue no longer holds; the playing one is the
+            # most useful answer (not index_in_buffer, which runs an item ahead with crossfade)
             center_index = (
                 queue.current_index
                 if queue.current_index is not None
@@ -936,13 +950,3 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
-
-    def _bump_cloud_queue_version(self) -> None:
-        """
-        Advance the cloud-queue version to the current time.
-
-        The version is exposed as the queueVersion in the cloud-queue endpoints. Sonos reads an
-        unchanged version as "nothing changed" and keeps replaying its cached copy, so the
-        sub-second timestamp is what makes it pick up an edit to the queue.
-        """
-        self.cloud_queue_version = time.time()

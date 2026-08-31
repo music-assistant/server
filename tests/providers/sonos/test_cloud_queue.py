@@ -112,15 +112,28 @@ async def test_window_is_centered_on_the_requested_item() -> None:
     assert window.includes_end is False
 
 
-async def test_window_falls_back_to_the_playing_item() -> None:
-    """Test a request without an item id is centered on what the queue is playing."""
+@pytest.mark.parametrize("item_id", [None, ""], ids=["omitted", "empty"])
+async def test_window_without_an_item_id_starts_at_the_queue_head(item_id: str | None) -> None:
+    """Test an omitted or empty item id asks for the start of the queue, as Sonos specifies."""
     items = [_make_queue_item(f"track{i}") for i in range(5)]
-    player, _ = _make_player(items, current_index=1)
+    player, _ = _make_player(items, current_index=3)
 
-    window = await player.build_cloud_queue_window(None, previous_size=4, upcoming_size=1)
+    window = await player.build_cloud_queue_window(item_id, previous_size=4, upcoming_size=1)
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track2"]
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1"]
     assert window.includes_beginning is True
+
+
+async def test_window_for_an_unknown_item_falls_back_to_the_playing_one() -> None:
+    """Test an item id the queue no longer holds is answered around the playing item."""
+    items = [_make_queue_item(f"track{i}") for i in range(5)]
+    player, queues = _make_player(items, current_index=1)
+    # with crossfade the buffered index runs an item ahead of what is playing
+    queues.queue.index_in_buffer = 2
+
+    window = await player.build_cloud_queue_window("gone", previous_size=0, upcoming_size=1)
+
+    assert [x.queue_item_id for x in window.items] == ["track1", "track2"]
 
 
 async def test_window_flags_the_end_of_the_queue() -> None:
@@ -222,18 +235,6 @@ async def test_refresh_without_a_session_only_bumps_the_version() -> None:
 
     assert player.cloud_queue_version > version_before
     client.api.playback_session.refresh_cloud_queue.assert_not_awaited()
-
-
-async def test_window_without_an_item_id_centers_on_the_playing_item() -> None:
-    """Test the fallback centre is the playing item, not the one the buffer ran ahead to."""
-    items = [_make_queue_item(f"track{i}") for i in range(5)]
-    player, queues = _make_player(items, current_index=1)
-    # with crossfade the buffered index runs an item ahead of what is playing
-    queues.queue.index_in_buffer = 2
-
-    window = await player.build_cloud_queue_window(None, previous_size=0, upcoming_size=1)
-
-    assert [x.queue_item_id for x in window.items] == ["track1", "track2"]
 
 
 async def test_stop_forgets_the_cloud_queue() -> None:
@@ -338,6 +339,10 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
         patch.setattr(type(provider), "players", property(lambda _self: [playing, other]))
         provider._handle_queue_items_updated(MagicMock(object_id=QUEUE_ID))
 
+    # the version must be invalidated before the (debounced) command goes out, or a window
+    # served in between carries a version the speaker reads as current
+    playing.bump_cloud_queue_version.assert_called_once_with()
+    other.bump_cloud_queue_version.assert_not_called()
     assert provider.mass.call_later.call_count == 1
     assert provider.mass.call_later.call_args.args[1] == playing.refresh_cloud_queue
     # the id must be per speaker, or one speaker's refresh cancels another's
