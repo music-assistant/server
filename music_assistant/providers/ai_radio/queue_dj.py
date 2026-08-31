@@ -396,8 +396,8 @@ class AIRadioQueueDJMixin:
     def _dj_guard_index(self, queue: PlayerQueue) -> int:
         """Return the highest queue index the player already owns."""
         # the player owns the current and the already buffered item, and the slot right
-        # after the buffered one may be handed to the player at any moment
-        # list order, not the playback order committed_index follows
+        # after the buffered one may be handed to the player at any moment.
+        # deliberately not committed_index: that one follows playback order and wraps on repeat
         current_index = queue.current_index if queue.current_index is not None else -1
         index_in_buffer = queue.index_in_buffer if queue.index_in_buffer is not None else -1
         return max(current_index, index_in_buffer)
