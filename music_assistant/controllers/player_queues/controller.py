@@ -574,6 +574,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
+        if (
+            queue.index_in_buffer is not None
+            and queue.current_index is not None
+            and queue.index_in_buffer < queue.current_index
+        ):
+            # repeat looped the buffered track back to the front, so the upcoming items are split
+            # across the end and the start of the list. A move would carry an item across the
+            # playing one, whose index is not re-anchored here and would then name a different
+            # track. Refuse until the queue has wrapped and the two indexes line up again.
+            msg = "queue is wrapping around to its start"
+            raise IndexError(msg)
 
         queue_items = self._queue_data[queue_id].items
         queue_items = queue_items.copy()

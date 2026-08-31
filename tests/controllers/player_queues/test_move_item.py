@@ -144,18 +144,20 @@ async def test_play_next_clears_a_track_buffered_two_ahead() -> None:
     assert _order(ctrl) == ["t0", "t1", "t2", "t4", "t3"]
 
 
-async def test_play_next_still_moves_the_item_when_repeat_wrapped_the_buffer() -> None:
+async def test_moving_is_refused_while_repeat_wraps_the_queue() -> None:
     """
-    Repeat-all wraps the buffered index to the front, and the move must still happen.
+    A queue whose buffered track wrapped back to the front refuses moves instead of reordering.
 
-    The buffered index sits before the playing one there, so taking it as the insert point would
-    place the item behind the playhead and the queue guard would drop the request on the floor.
+    The upcoming items are split across the end and the start of the list there, so any move
+    carries an item past the playing one, which is left naming a different track.
     """
     ctrl = _controller(current_index=4, index_in_buffer=0)
 
-    ctrl.move_item("q1", _item_id_at(ctrl, 2), pos_shift=0)
+    with pytest.raises(IndexError):
+        ctrl.move_item("q1", _item_id_at(ctrl, 2), pos_shift=0)
 
-    assert _order(ctrl) == ["t0", "t1", "t3", "t4", "t2"]
+    assert _order(ctrl) == TRACKS
+    assert _item_id_at(ctrl, 4) == ctrl._queue_data["q1"].queue.current_item.queue_item_id
 
 
 async def test_moving_a_buffered_item_is_refused() -> None:
