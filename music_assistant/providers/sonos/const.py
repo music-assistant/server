@@ -83,9 +83,14 @@ NON_HIRES_MODELS = (
     "Table lamp",
 )
 
-# Fallback cloud-queue window sizes, used when the speaker asks for none.
-PREVIOUS_WINDOW = 4
-UPCOMING_WINDOW = 5
-# Upper bound per side on what one itemWindow response serves. Speakers ask for 9 before
-# and 10 after, so this only bounds the work an unusual request can ask of us.
-MAX_WINDOW_PER_SIDE = 12
+# How much of the queue an itemWindow response describes. A speaker caches the window it
+# fetched and only comes back for a new one once it nears the end of it, so a deep window is
+# a deep stale cache - it would keep playing out of it for as many tracks as it holds, and
+# the /version poll that would otherwise catch a change runs only every 10 minutes. Serving
+# just the playing item and the one after it (the same current+next the other player
+# providers get through enqueue_next_media) makes the speaker ask again for every track, so
+# it can never be more than one track behind. The single previous item keeps skip-back
+# working from the speaker itself. The sizes a speaker asks for are maxima, so serving fewer
+# is within the contract.
+PREVIOUS_ITEMS = 1
+UPCOMING_ITEMS = 1

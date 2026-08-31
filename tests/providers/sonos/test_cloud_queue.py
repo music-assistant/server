@@ -12,11 +12,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
-from music_assistant.providers.sonos.provider import (
-    SonosPlayerProvider,
-    _refresh_task_id,
-    _window_size,
-)
+from music_assistant.providers.sonos.provider import SonosPlayerProvider, _refresh_task_id
 
 QUEUE_ID = "party_queue"
 
@@ -94,20 +90,16 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     return player, queues
 
 
-async def test_window_is_centered_on_the_requested_item() -> None:
-    """Test the speaker gets the window around the item it asked about."""
+async def test_window_is_the_requested_item_and_the_one_after_it() -> None:
+    """Test only the item asked about and its neighbours are served, however long the queue."""
     items = [_make_queue_item(f"track{i}") for i in range(10)]
     player, _ = _make_player(items)
 
-    window = await player.build_cloud_queue_window("track5", previous_size=2, upcoming_size=2)
+    window = await player.build_cloud_queue_window("track5")
 
-    assert [x.queue_item_id for x in window.items] == [
-        "track3",
-        "track4",
-        "track5",
-        "track6",
-        "track7",
-    ]
+    # a deeper window would let the speaker play several tracks out of a cache we cannot
+    # update; this way it has to ask again for every one
+    assert [x.queue_item_id for x in window.items] == ["track4", "track5", "track6"]
     assert window.includes_beginning is False
     assert window.includes_end is False
 
@@ -118,7 +110,7 @@ async def test_window_without_an_item_id_starts_at_the_queue_head(item_id: str |
     items = [_make_queue_item(f"track{i}") for i in range(5)]
     player, _ = _make_player(items, current_index=3)
 
-    window = await player.build_cloud_queue_window(item_id, previous_size=4, upcoming_size=1)
+    window = await player.build_cloud_queue_window(item_id)
 
     assert [x.queue_item_id for x in window.items] == ["track0", "track1"]
     assert window.includes_beginning is True
@@ -131,45 +123,43 @@ async def test_window_for_an_unknown_item_falls_back_to_the_playing_one() -> Non
     # with crossfade the buffered index runs an item ahead of what is playing
     queues.queue.index_in_buffer = 2
 
-    window = await player.build_cloud_queue_window("gone", previous_size=0, upcoming_size=1)
+    window = await player.build_cloud_queue_window("gone")
 
-    assert [x.queue_item_id for x in window.items] == ["track1", "track2"]
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track2"]
 
 
 async def test_window_flags_the_end_of_the_queue() -> None:
     """Test the end-of-queue flag is set once the window reaches the last item."""
-    items = [_make_queue_item(f"track{i}") for i in range(3)]
+    items = [_make_queue_item(f"track{i}") for i in range(2)]
     player, _ = _make_player(items)
 
-    window = await player.build_cloud_queue_window("track0", previous_size=4, upcoming_size=5)
+    window = await player.build_cloud_queue_window("track0")
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track2"]
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1"]
     assert window.includes_beginning is True
     assert window.includes_end is True
 
 
 async def test_window_serves_an_item_added_after_the_last_enqueue() -> None:
-    """Test a track added mid-playback is served without waiting for the next enqueue."""
+    """Test a track added mid-playback is served as the next one, with no enqueue in between."""
     items = [_make_queue_item(f"track{i}") for i in range(4)]
     player, queues = _make_player(items)
     # the speaker has already loaded the next track, which is what stops the queue
-    # controller from announcing further changes
+    # controller from announcing any further change
     queues.queue.index_in_buffer = 1
 
-    before = await player.build_cloud_queue_window("track0", previous_size=4, upcoming_size=5)
-    assert "guest" not in [x.queue_item_id for x in before.items]
+    assert [x.queue_item_id for x in (await player.build_cloud_queue_window("track0")).items] == [
+        "track0",
+        "track1",
+    ]
 
     # a party guest adds a track behind the one the speaker already buffered
     queues.items.insert(2, _make_queue_item("guest"))
 
-    after = await player.build_cloud_queue_window("track0", previous_size=4, upcoming_size=5)
-    assert [x.queue_item_id for x in after.items] == [
-        "track0",
-        "track1",
-        "guest",
-        "track2",
-        "track3",
-    ]
+    # the speaker comes back when that buffered track starts, and is handed the new one
+    window = await player.build_cloud_queue_window("track1")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "guest"]
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -178,7 +168,7 @@ async def test_unavailable_items_are_left_out() -> None:
     items[0].available = False
     player, _ = _make_player(items, current_index=1)
 
-    window = await player.build_cloud_queue_window("track1", previous_size=4, upcoming_size=1)
+    window = await player.build_cloud_queue_window("track1")
 
     assert [x.queue_item_id for x in window.items] == ["track1", "track2"]
 
@@ -190,7 +180,7 @@ async def test_announcement_is_served_as_a_single_item_queue() -> None:
         uri="http://announcement", media_type=MediaType.ANNOUNCEMENT, queue_item_id="announcement"
     )
 
-    window = await player.build_cloud_queue_window("track0", previous_size=4, upcoming_size=5)
+    window = await player.build_cloud_queue_window("track0")
 
     assert [x.queue_item_id for x in window.items] == ["announcement"]
     assert window.includes_beginning is True
@@ -202,7 +192,7 @@ async def test_window_is_empty_without_a_queue() -> None:
     player, _ = _make_player([_make_queue_item("track0")])
     player.cloud_queue_id = None
 
-    window = await player.build_cloud_queue_window(None, previous_size=4, upcoming_size=5)
+    window = await player.build_cloud_queue_window(None)
 
     assert window.items == []
 
@@ -298,9 +288,7 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
 
     response = await provider._handle_sonos_queue_itemwindow(player, request)
 
-    player.build_cloud_queue_window.assert_awaited_once_with(
-        item_id="track7", previous_size=9, upcoming_size=10
-    )
+    player.build_cloud_queue_window.assert_awaited_once_with("track7")
     body = json.loads(response.text or "{}")
     assert body["queueVersion"] == "12.5"
     assert body["contextVersion"] == "3"
@@ -348,20 +336,3 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     # the id must be per speaker, or one speaker's refresh cancels another's
     assert provider.mass.call_later.call_args.kwargs["task_id"] == _refresh_task_id("playing")
     assert provider._pending_refresh_tasks == {_refresh_task_id("playing")}
-
-
-@pytest.mark.parametrize(
-    ("requested", "expected"),
-    [
-        ("10", 10),
-        ("0", 0),
-        ("", 5),
-        (None, 5),
-        ("not a number", 5),
-        ("-3", 0),
-        ("1000", 12),
-    ],
-)
-def test_window_sizes_are_clamped(requested: str | None, expected: int) -> None:
-    """Test a size the speaker asks for is clamped to what we are willing to serve."""
-    assert _window_size(requested, 5) == expected

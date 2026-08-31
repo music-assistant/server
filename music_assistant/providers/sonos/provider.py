@@ -28,7 +28,6 @@ from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
-from .const import MAX_WINDOW_PER_SIDE, PREVIOUS_WINDOW, UPCOMING_WINDOW
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer, SonosQueueWindow
 
@@ -44,15 +43,6 @@ if TYPE_CHECKING:
 def _refresh_task_id(player_id: str) -> str:
     """Return the debounce id for a speaker's pending cloud-queue refresh."""
     return f"sonos_refresh_cloud_queue_{player_id}"
-
-
-def _window_size(requested: str | None, default: int) -> int:
-    """Return the window size to serve for a size the speaker asked for."""
-    try:
-        size = int(requested) if requested else default
-    except ValueError:
-        return default
-    return max(0, min(size, MAX_WINDOW_PER_SIDE))
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -303,22 +293,16 @@ class SonosPlayerProvider(PlayerProvider):
         # always come from the same queue: a bump landing in between would tell the speaker
         # its cache is current while it holds the older window
         queue_version = player.cloud_queue_version
-        # the window is built from the queue as it is right now: the speaker asks for it
-        # shortly before it needs the next track, so serving it live is what keeps a track
-        # added mid-playback (a party request, a reorder) from being played over.
+        # the window is built from the queue as it is right now. The speaker fetches on its
+        # own schedule and caches what it gets, so answering from the live queue is what keeps
+        # a track added mid-playback (a party request, a reorder) from being played over.
+        # the sizes the speaker asks for are maxima and we deliberately serve far fewer, so it
+        # comes back for every track - see PREVIOUS_ITEMS/UPCOMING_ITEMS.
         # the beginning/end flags must be honest: signalling end-of-queue tells Sonos to
         # drop any older items it may still have cached past our window, which is what
         # prevents stale tracks from resurrecting after a queue rewrite (e.g. replace_next).
         try:
-            window = await player.build_cloud_queue_window(
-                item_id=request.query.get("itemId") or None,
-                previous_size=_window_size(
-                    request.query.get("previousWindowSize"), PREVIOUS_WINDOW
-                ),
-                upcoming_size=_window_size(
-                    request.query.get("upcomingWindowSize"), UPCOMING_WINDOW
-                ),
-            )
+            window = await player.build_cloud_queue_window(request.query.get("itemId") or None)
         except MusicAssistantError as err:
             # the queue went away underneath us (a stop that never reached this speaker, so it
             # keeps polling). An empty end-of-queue window is what should happen next anyway,

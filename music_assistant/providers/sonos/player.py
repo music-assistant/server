@@ -42,12 +42,14 @@ from music_assistant.providers.sonos.const import (
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
+    PREVIOUS_ITEMS,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
+    UPCOMING_ITEMS,
 )
 
 if TYPE_CHECKING:
@@ -481,19 +483,12 @@ class SonosPlayer(Player):
             # next read.
             self.logger.debug("Could not refresh the cloud queue: %s", err)
 
-    async def build_cloud_queue_window(
-        self,
-        item_id: str | None,
-        previous_size: int,
-        upcoming_size: int,
-    ) -> SonosQueueWindow:
+    async def build_cloud_queue_window(self, item_id: str | None) -> SonosQueueWindow:
         """
-        Return the slice of the queue the speaker asked for, built from its current contents.
+        Return the playing item and the one that follows it, from the queue as it is now.
 
-        :param item_id: queue_item_id the window is centered on; None centers it on the
-            item the queue is playing.
-        :param previous_size: Maximum number of items to include before the center.
-        :param upcoming_size: Maximum number of items to include after the center.
+        :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
+            for the start of the queue.
         """
         if self._announcement_media is not None:
             # an announcement is a queue of exactly one item
@@ -519,16 +514,16 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
-        offset = max(0, center_index - previous_size)
+        offset = max(0, center_index - PREVIOUS_ITEMS)
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
                 items.append(await self._player_media_for_speaker(queue_item))
 
-        # get_next_item accounts for repeat mode, so the upcoming items are the ones
-        # that will really play rather than the raw list order
+        # get_next_item accounts for repeat mode, so this is the item that will really
+        # play next rather than whatever sits at the next index
         last_index: int | str = center_index
-        for _ in range(upcoming_size):
+        for _ in range(UPCOMING_ITEMS):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
