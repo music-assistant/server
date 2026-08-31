@@ -52,14 +52,22 @@ def _controller(*, global_autoplay: bool = True, global_crossfade: bool = False)
 
 
 def _queue_data(
-    queue_id: str = "q1", *, playing: bool = False, **overrides: Any
+    queue_id: str = "q1",
+    *,
+    playing: bool = False,
+    is_dynamic: bool = False,
+    current_index: int | None = None,
+    items: int = 2,
+    **overrides: Any,
 ) -> PlayerQueueData:
-    """Build a PlayerQueueData, optionally set up as actively playing with a loaded next item."""
-    extra: dict[str, Any] = {}
+    """Build a PlayerQueueData, optionally playing (with a loaded next item), near its end, or dynamic."""
+    extra: dict[str, Any] = {"is_dynamic": is_dynamic}
     if playing:
         extra.update(state=PlaybackState.PLAYING, current_index=0, index_in_buffer=0)
+    elif current_index is not None:
+        extra["current_index"] = current_index
     queue = PlayerQueue(
-        queue_id=queue_id, active=True, display_name="Q", available=True, items=2, **extra
+        queue_id=queue_id, active=True, display_name="Q", available=True, items=items, **extra
     )
     return PlayerQueueData(queue=queue, **overrides)
 
@@ -144,3 +152,32 @@ async def test_update_config_reenqueues_next_item_only_for_the_queue_following_g
     assert following.queue.crossfade_enabled is True
     assert pinned.queue.crossfade_enabled is True
     queues._enqueue_next_item.assert_called_once_with("q1", next_item)
+
+
+async def test_update_config_kicks_autoplay_refill_for_flipped_near_end_static_queue() -> None:
+    """A global autoplay flip kicks a refill only for a following, non-dynamic queue near its end."""
+    queues = _controller(global_autoplay=False)
+    following = _queue_data("q1", current_index=8, items=10)  # follows global, 2 items left
+    pinned_off = _queue_data("q2", current_index=8, items=10, autoplay_override=False)
+    dynamic = _queue_data("q3", current_index=8, items=10, is_dynamic=True)
+    for queue_data in (following, pinned_off, dynamic):
+        queues._queue_data[queue_data.queue.queue_id] = queue_data
+        # resolve against the initial global default (off) before the change under test
+        queues._resolve_default_toggles(queue_data)
+
+    # flip the global default on: the following and dynamic queues' effective values flip, the
+    # pinned-off one's doesn't
+    queues.mass.config.get_raw_core_config_value.side_effect = lambda _core_module, _key, _default: (
+        True
+    )
+    config = cast("CoreConfig", SimpleNamespace(values={}))
+
+    await PlayerQueuesController.update_config(queues, config, {"values/autoplay_enabled"})
+
+    assert following.queue.autoplay_enabled is True
+    assert pinned_off.queue.autoplay_enabled is False
+    assert dynamic.queue.autoplay_enabled is True
+    # only the following, non-dynamic, near-the-end queue gets the refill kick
+    queues.mass.call_later.assert_called_once_with(
+        5, queues._fill_autoplay_tracks, "q1", task_id="fill_autoplay_tracks_q1"
+    )

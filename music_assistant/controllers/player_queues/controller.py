@@ -53,7 +53,6 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CONF_PLAYER_QUEUES,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
@@ -1996,14 +1995,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.autoplay_override
             if queue_data.autoplay_override is not None
             else self.mass.config.get_raw_core_config_value(
-                CONF_PLAYER_QUEUES, CONF_AUTOPLAY_ENABLED, DEFAULT_AUTOPLAY_ENABLED
+                self.domain, CONF_AUTOPLAY_ENABLED, DEFAULT_AUTOPLAY_ENABLED
             )
         )
         queue.crossfade_enabled = (
             queue_data.crossfade_override
             if queue_data.crossfade_override is not None
             else self.mass.config.get_raw_core_config_value(
-                CONF_PLAYER_QUEUES, CONF_CROSSFADE_ENABLED, DEFAULT_CROSSFADE_ENABLED
+                self.domain, CONF_CROSSFADE_ENABLED, DEFAULT_CROSSFADE_ENABLED
             )
         )
 
