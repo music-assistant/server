@@ -148,6 +148,25 @@ async def test_moving_a_buffered_item_is_refused() -> None:
         ctrl.move_item("q1", _item_id_at(ctrl, 1), pos_shift=1)
 
 
+async def test_moving_to_the_end_is_refused_while_repeat_wraps_the_queue() -> None:
+    """Moving to the end shifts the playing track too, so it is refused on a wrapped queue."""
+    ctrl = _controller(current_index=4, index_in_buffer=0)
+
+    with pytest.raises(IndexError):
+        ctrl.move_item_end("q1", _item_id_at(ctrl, 2))
+
+    assert _order(ctrl) == TRACKS
+
+
+async def test_deleting_is_ignored_while_repeat_wraps_the_queue() -> None:
+    """Deleting ahead of the playing track shifts it, so it is ignored on a wrapped queue."""
+    ctrl = _controller(current_index=4, index_in_buffer=0)
+
+    ctrl.delete_item("q1", 2)
+
+    assert _order(ctrl) == TRACKS
+
+
 async def test_relative_move_is_unaffected_by_the_buffered_index() -> None:
     """A relative move still shifts the item by the requested number of positions."""
     ctrl = _controller(current_index=0, index_in_buffer=1)

@@ -76,6 +76,7 @@ from music_assistant.controllers.player_queues.helpers import (
     get_current_playback_speed,
     handle_play_action,
     is_dynamic_source,
+    is_wrapping,
 )
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
@@ -557,13 +558,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
-        if (
-            queue.index_in_buffer is not None
-            and queue.current_index is not None
-            and queue.index_in_buffer < queue.current_index
-        ):
-            # the upcoming items are split across the end and the start of the list, so a move
-            # would carry an item past the playing one, whose index is not re-anchored here
+        if is_wrapping(queue):
             msg = "queue is wrapping around to its start"
             raise IndexError(msg)
 
@@ -600,6 +595,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
+        if is_wrapping(queue):
+            msg = "queue is wrapping around to its start"
+            raise IndexError(msg)
 
         queue_items = self._queue_data[queue_id].items
         if item_index == (len(queue_items) - 1):
@@ -626,6 +624,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # ignore request if track already loaded in the buffer
             # the frontend should guard so this is just in case
             self.logger.warning("delete requested for item already loaded in buffer")
+            return
+        if is_wrapping(queue):
+            self.logger.warning("delete requested while the queue wraps around to its start")
             return
         queue_items = self._queue_data[queue_id].items.copy()
         queue_items.pop(item_index)
