@@ -244,8 +244,7 @@ class PodcastIndexProvider(MusicProvider):
                 podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.debug("Unexpected error getting podcast %s: %s", prov_podcast_id, err)
@@ -301,8 +300,7 @@ class PodcastIndexProvider(MusicProvider):
                 if episode:
                     yield episode
 
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning(
@@ -326,8 +324,7 @@ class PodcastIndexProvider(MusicProvider):
                 episode = parse_episode_from_data(
                     episode_data, podcast_id, self.instance_id, self.domain
                 )
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except ValueError as err:
             # Handle malformed episode ID
@@ -364,27 +361,28 @@ class PodcastIndexProvider(MusicProvider):
 
             # Use direct episode lookup for efficiency
             response = await self._api_request("episodes/byid", params={"id": episode_id})
-            episode_data = response.get("episode")
+            if not (episode_data := response.get("episode")):
+                self.logger.debug(
+                    "Podcast Index has no episode %s, it may have left the index", episode_id
+                )
+            elif not (stream_url := episode_data.get("enclosureUrl")):
+                self.logger.debug(
+                    "Episode %s carries no audio url, so there is nothing to play", episode_id
+                )
+            else:
+                content_type = episode_data.get("enclosureType") or "audio/mpeg"
+                self.logger.debug("Streaming episode %s as %s", episode_id, content_type)
+                return StreamDetails(
+                    provider=self.instance_id,
+                    item_id=item_id,
+                    audio_format=AudioFormat(content_type=ContentType.try_parse(content_type)),
+                    media_type=MediaType.PODCAST_EPISODE,
+                    stream_type=StreamType.HTTP,
+                    path=stream_url,
+                    allow_seek=True,
+                )
 
-            if episode_data:
-                stream_url = episode_data.get("enclosureUrl")
-                if stream_url:
-                    return StreamDetails(
-                        provider=self.instance_id,
-                        item_id=item_id,
-                        audio_format=AudioFormat(
-                            content_type=ContentType.try_parse(
-                                episode_data.get("enclosureType") or "audio/mpeg"
-                            ),
-                        ),
-                        media_type=MediaType.PODCAST_EPISODE,
-                        stream_type=StreamType.HTTP,
-                        path=stream_url,
-                        allow_seek=True,
-                    )
-
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except ValueError as err:
             # Handle malformed episode ID
@@ -413,7 +411,9 @@ class PodcastIndexProvider(MusicProvider):
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Making API request to %s with params: %s", endpoint, params
         )
-        return await make_api_request(self.mass, self.api_key, self.api_secret, endpoint, params)
+        return await make_api_request(
+            self.mass, self.api_key, self.api_secret, endpoint, params, logger=self.logger
+        )
 
     async def _get_feed_url_for_podcast(self, podcast_id: str) -> str | None:
         """Get RSS feed URL for a podcast ID."""
@@ -421,8 +421,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("podcasts/byfeedid", params={"id": podcast_id})
             feed_data: dict[str, Any] = response.get("feed", {})
             return feed_data.get("url")
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning(
@@ -470,8 +469,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return episodes
 
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning("Unexpected error getting recent episodes: %s", err, exc_info=True)
@@ -502,8 +500,7 @@ class PodcastIndexProvider(MusicProvider):
             # Sort by name
             return sorted(categories, key=lambda x: x.name)
 
-        except ProviderUnavailableError, InvalidDataError:
-            # Re-raise these specific errors
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning("Unexpected error getting categories: %s", err, exc_info=True)
