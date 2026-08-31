@@ -497,7 +497,9 @@ class SonosPlayer(Player):
             )
         queue_id = self.cloud_queue_id
         if not queue_id or not (queue := self.mass.player_queues.get(queue_id)):
-            return SonosQueueWindow()
+            # nothing to describe: flag both ends so the speaker drops what it cached
+            # instead of holding it and polling on
+            return SonosQueueWindow(includes_beginning=True, includes_end=True)
 
         if not item_id:
             # an omitted or empty itemId asks for the start of the queue

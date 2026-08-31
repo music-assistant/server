@@ -188,13 +188,16 @@ async def test_announcement_is_served_as_a_single_item_queue() -> None:
 
 
 async def test_window_is_empty_without_a_queue() -> None:
-    """Test a speaker that has no MA queue loaded serves nothing."""
+    """Test a speaker with no MA queue loaded is told the queue is over, not just empty."""
     player, _ = _make_player([_make_queue_item("track0")])
     player.cloud_queue_id = None
 
     window = await player.build_cloud_queue_window(None)
 
     assert window.items == []
+    # both ends flagged, or the speaker keeps what it cached and polls on
+    assert window.includes_beginning is True
+    assert window.includes_end is True
 
 
 async def test_refresh_bumps_the_version_and_signals_the_speaker() -> None:

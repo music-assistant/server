@@ -15,7 +15,7 @@ from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.enums import EventType, IdentifierType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InvalidDataError
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -303,10 +303,11 @@ class SonosPlayerProvider(PlayerProvider):
         # prevents stale tracks from resurrecting after a queue rewrite (e.g. replace_next).
         try:
             window = await player.build_cloud_queue_window(request.query.get("itemId") or None)
-        except MusicAssistantError as err:
+        except InvalidDataError as err:
             # the queue went away underneath us (a stop that never reached this speaker, so it
             # keeps polling). An empty end-of-queue window is what should happen next anyway,
-            # and it beats answering every poll with a 500.
+            # and it beats answering every poll with a 500. Deliberately only this one: any
+            # other failure is a real problem and must not read to the speaker as "queue over".
             self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
             window = SonosQueueWindow(includes_beginning=True, includes_end=True)
         result = {
