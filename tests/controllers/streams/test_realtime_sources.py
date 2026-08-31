@@ -877,6 +877,40 @@ async def test_a_lead_is_only_carried_across_a_fade_that_handed_over(
     assert carried == [0.0]
 
 
+async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The claim must beat the awaits that size the fade, not follow them.
+
+    Sizing a fade waits on the incoming source, up to REALTIME_FADE_SOURCE_WAIT. A
+    speaker can ask for that item's url inside that window, and it has nothing to
+    wait for unless the claim is already registered.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    audio = StreamsAudio(MagicMock())
+    audio.setup()
+    claimed_during_sizing = asyncio.Event()
+
+    async def _slow_sizing(_streamdetails: object) -> None:
+        # stands in for the wait on a realtime incoming source
+        if "queue-1" in audio._crossfade_pending:
+            claimed_during_sizing.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(audio, "_await_realtime_fade_source", _slow_sizing)
+    carried: list[float] = []
+    await _run_smartfade_for_lead(monkeypatch, audio, pcm_format, carried)
+
+    assert claimed_during_sizing.is_set(), (
+        "the incoming item had nothing to wait for while its fade was being sized"
+    )
+    # and the claim is gone once the boundary is done with it
+    assert "queue-1" not in audio._crossfade_pending
+
+
 async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
