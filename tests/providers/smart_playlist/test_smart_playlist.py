@@ -10,7 +10,13 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    AlbumType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Genre,
@@ -984,8 +990,11 @@ async def test_tracks_from_seeds_single_batch_meets_dynamic_target() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
+    # a playlist seed is the realistic multi-track case; a track seed resolves to just itself
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(return_value=_make_mock_track("seed", "library://track/seed"))
+    ctrl.get = AsyncMock(return_value=seed)
     mass.music.get_controller = MagicMock(return_value=ctrl)
 
     base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
@@ -997,7 +1006,7 @@ async def test_tracks_from_seeds_single_batch_meets_dynamic_target() -> None:
     )
     mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
 
-    result = await plugin._tracks_from_seeds(["library://track/seed"], target_size=25)
+    result = await plugin._tracks_from_seeds(["library://playlist/seed"], target_size=25)
 
     mass.player_queues.get_tracks_for_playback.assert_awaited_once()
     base_ids = {track.item_id for track in base_tracks}
@@ -1015,8 +1024,11 @@ async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
+    # a playlist seed is the realistic multi-track case; a track seed resolves to just itself
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
     ctrl = MagicMock()
-    ctrl.get = AsyncMock(return_value=_make_mock_track("seed", "library://track/seed"))
+    ctrl.get = AsyncMock(return_value=seed)
     mass.music.get_controller = MagicMock(return_value=ctrl)
 
     base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
@@ -1028,7 +1040,7 @@ async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
     )
     mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
 
-    result = await plugin._tracks_from_seeds(["library://track/seed"], target_size=100)
+    result = await plugin._tracks_from_seeds(["library://playlist/seed"], target_size=100)
 
     assert mass.player_queues.get_tracks_for_playback.await_count > 1
     assert len(result) >= 100
