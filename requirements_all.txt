@@ -51,7 +51,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.298
+music-assistant-frontend==2.17.299
 music-assistant-models==1.1.206
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
@@ -106,7 +106,7 @@ websocket-client==1.9.0
 wiim==0.1.7
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-ya-passport-auth[ma]==1.8.0
+ya-passport-auth[ma]==2.0.1
 yandex-music==3.0.0
 yappi==1.7.6
 ytmusicapi==1.12.2
