@@ -159,18 +159,20 @@ async def test_a_refused_url_leaves_the_current_artwork_alone() -> None:
     assert receiver._last_artwork_url is None
 
 
-async def test_artwork_url_with_smuggled_userinfo_is_fetched_from_the_sender_only() -> None:
+async def test_artwork_url_with_smuggled_userinfo_never_reaches_a_foreign_host() -> None:
     """
     Userinfo tricks cannot smuggle a foreign host past the check.
 
-    The URL is validated by yarl, the same parser aiohttp fetches with, and the
-    userinfo is stripped, so what is requested is the sender host and nothing else.
+    yarl versions disagree on this URL: newer ones refuse the backslash outright,
+    older ones read the host as the sender. Either way the foreign host stays out,
+    and that is the property pinned here.
     """
     receiver = _receiver()
 
     await _apply(receiver, f"http://evil.example.com\\@{SENDER}/artwork.jpg")
 
-    assert receiver._fetch_artwork.call_args.args == (URL(f"http://{SENDER}/artwork.jpg"),)
+    calls = receiver._fetch_artwork.call_args_list
+    assert all(call.args[0].host == SENDER for call in calls)
 
 
 async def test_artwork_path_parameters_survive_validation() -> None:
