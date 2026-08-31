@@ -1034,26 +1034,33 @@ class MusicAssistant:
                     (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
                 )
             )
-            retry_delay = (
+            error_msg = str(exc) or exc.__class__.__name__
+            prov_name = prov_conf.name or prov_conf.instance_id
+            if not will_retry:
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s",
+                    prov_name,
+                    error_msg,
+                    exc_info=_provider_error_traceback(exc),
+                )
+                return
+            retry_delay = round(
                 PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
                 + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
-                if will_retry
-                else None
             )
-            if retry_delay is not None:
-                self.call_later(
-                    retry_delay,
-                    self.load_provider,
-                    instance_id,
-                    allow_retry,
-                    retry_attempt=retry_attempt + 1,
-                    task_id=task_id,
-                )
+            self.call_later(
+                retry_delay,
+                self.load_provider,
+                instance_id,
+                allow_retry,
+                retry_attempt=retry_attempt + 1,
+                task_id=task_id,
+            )
             LOGGER.warning(
-                "Error loading provider(instance) %s: %s%s",
-                prov_conf.name or prov_conf.instance_id,
-                str(exc) or exc.__class__.__name__,
-                f" (will be retried in {retry_delay:.0f} seconds)" if retry_delay else "",
+                "Error loading provider(instance) %s: %s (will be retried in %s seconds)",
+                prov_name,
+                error_msg,
+                retry_delay,
                 exc_info=_provider_error_traceback(exc),
             )
             return
