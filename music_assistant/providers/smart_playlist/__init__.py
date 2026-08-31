@@ -706,7 +706,7 @@ class SmartPlaylistProvider(PluginProvider):
         self,
         playlist_id: str,
         rules: SmartPlaylistRules,
-        library_item: Playlist | None | EllipsisType = ...,
+        library_item: Playlist | EllipsisType | None = ...,
     ) -> Playlist:
         """Build a Playlist object from stored rules."""
         name = self._names_store.get(playlist_id, playlist_id)
@@ -734,7 +734,7 @@ class SmartPlaylistProvider(PluginProvider):
         return playlist
 
     async def _images_for(
-        self, playlist_id: str, library_item: Playlist | None | EllipsisType = ...
+        self, playlist_id: str, library_item: Playlist | EllipsisType | None = ...
     ) -> UniqueList[MediaItemImage]:
         """Return images for the playlist from the library, or empty list if none available."""
         if library_item is ...:

@@ -610,7 +610,7 @@ class ARDAudiothek(MusicProvider):
 
 
 def _parse_social_media(
-    homepage_url: str | None, social_media_accounts: list[dict[str, None | str]]
+    homepage_url: str | None, social_media_accounts: list[dict[str, str | None]]
 ) -> set[MediaItemLink]:
     return_set = set()
     if homepage_url:
