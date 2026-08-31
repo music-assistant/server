@@ -1331,28 +1331,22 @@ class MusicProvider(Provider):
             # so failing to import its tracks does not make the album result set incomplete
             if sync_album_tracks:
                 try:
-                    await self.import_album_tracks(prov_item.item_id, prov_item.name, prov_item)
+                    await self.import_album_tracks(prov_item.item_id, prov_item)
                 except Exception as err:
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
-    async def import_album_tracks(
-        self,
-        prov_album_id: str,
-        album_name: str | None = None,
-        album: Album | None = None,
-    ) -> None:
+    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
         """
         Import all tracks of the given (provider) album into the Music Assistant library.
 
         :param prov_album_id: The provider item id of the album.
-        :param album_name: Optional album name, used for logging/progress only.
         :param album: The album the tracks belong to.
             Fetched from the provider when not given.
         """
         self.logger.debug(
             "Importing Album Tracks into the Music Assistant library for album %s.",
-            album_name or prov_album_id,
+            album.name if album else prov_album_id,
         )
         prov_tracks = await self.get_album_tracks(prov_album_id)
         # some providers leave the (redundant) album off the tracks in an album listing.

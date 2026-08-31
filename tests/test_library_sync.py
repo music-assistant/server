@@ -223,7 +223,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
     ):
         await music_ctrl.add_item_to_library(album)
 
-    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", album.name, album)
+    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", album)
     mass.create_task.assert_called_once_with(sentinel)
 
 
@@ -303,9 +303,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
     ):
         await music_ctrl.add_item_to_library(input_album)
 
-    provider_mock.import_album_tracks.assert_called_once_with(
-        "album_xyz", library_album.name, library_album
-    )
+    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", library_album)
     mass.create_task.assert_called_once_with(sentinel)
 
 

@@ -118,7 +118,7 @@ async def test_import_attaches_the_parent_album() -> None:
     mass = _build_mass()
     provider = _build_provider(mass)
 
-    await provider.import_album_tracks(ALBUM_ID, "Album One", provider.album)
+    await provider.import_album_tracks(ALBUM_ID, provider.album)
 
     added = _added_tracks(mass)
     assert len(added) == 3
@@ -176,7 +176,7 @@ async def test_missing_album_link_is_backfilled() -> None:
 
     # the provider mappings already match, so the missing album link is the only trigger
     with patch.object(provider, "_check_provider_mappings", return_value=True):
-        await provider.import_album_tracks(ALBUM_ID, "Album One", provider.album)
+        await provider.import_album_tracks(ALBUM_ID, provider.album)
 
     assert mass.music.tracks.update_item_in_library.await_count == 3
     for call in mass.music.tracks.update_item_in_library.await_args_list:
