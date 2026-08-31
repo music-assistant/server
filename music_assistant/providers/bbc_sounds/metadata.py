@@ -1,7 +1,7 @@
 """Metadata-related functions for BBC Sounds provider."""
 
 from music_assistant_models.streamdetails import StreamMetadata
-from sounds import LiveStation, Segment
+from sounds.models import LiveStation, Segment
 
 from .constants import _Constants
 
