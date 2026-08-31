@@ -187,6 +187,34 @@ MIN_CROSSFADE_DURATION = 3
 # and then the flow stream is better off opening the track itself.
 PREFETCH_HANDOVER_TIMEOUT = 5.0
 
+# Digital silence a holdback may keep on top of its window, so the window itself
+# fills with audio instead of padding. An item can end in silence for reasons that
+# have nothing to do with the music: a live engine read above playback pace runs off
+# the end of its content and its sink pads the rest with zeroes. Withholding a fixed
+# span of stream would then hand the fade nothing to blend. Generous enough for that
+# padding (measured at a tenth of the track's length), and bounded because every held
+# byte is resident PCM.
+MAX_SILENT_TAIL_HOLDBACK_SECONDS = 20
+
+
+def trailing_silence_bytes(chunk: bytes, carried: int) -> int:
+    """
+    Return the run of digital silence a chunk leaves at the end of a buffer.
+
+    Exact zeroes only, which is what a sink pads an underrun with (the soloist
+    capture shaper trims its lead-in the same way). Near-silence is left to the
+    measurement the mixer runs when it builds the fade.
+
+    :param chunk: The chunk just appended to the buffer.
+    :param carried: The silent run the buffer already ended with.
+    """
+    stripped = chunk.rstrip(b"\x00")
+    if not stripped:
+        # nothing but silence: it continues whatever the buffer already ended with
+        return carried + len(chunk)
+    return len(chunk) - len(stripped)
+
+
 # Bounded wait for a fade the outgoing stream is still mixing, when the incoming
 # item's own request arrives first. A speaker asks for the next url several seconds
 # before the current track ends, so without this wait a fade that is nearly ready is
@@ -2093,6 +2121,8 @@ class StreamsAudio:
         # right away. After that, start accumulating the crossfade holdback buffer.
         warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
         warmup_bytes = 0
+        silent_tail = 0
+        max_silent_holdback = int(pcm_format.pcm_sample_size * MAX_SILENT_TAIL_HOLDBACK_SECONDS)
         total_chunks_received = 0
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         # the holdback is grown out of the audio banked ahead of playback instead of
@@ -2124,6 +2154,7 @@ class StreamsAudio:
                 del chunk
                 continue
 
+            silent_tail = trailing_silence_bytes(chunk, silent_tail)
             buffer.extend(chunk)
             del chunk
             hold_target = (
@@ -2131,14 +2162,18 @@ class StreamsAudio:
                 if tail_hold is not None
                 else 0
             )
-            if len(buffer) <= hold_target:
+            # the window is a span of audible audio, so silence the item ends with
+            # is held on top of it rather than counted as part of it - otherwise a
+            # source that pads its tail hands the fade nothing but zeroes
+            keep = hold_target + min(silent_tail, max_silent_holdback)
+            if len(buffer) <= keep:
                 await asyncio.sleep(0)
                 continue
             # yield everything above the current holdback window; the slice can
             # run short of a whole second when the window is small, so credit
             # what is actually yielded - a nominal full-second credit inflates
             # the play log and the reported duration
-            while len(buffer) > hold_target:
+            while len(buffer) > keep:
                 pcm_slice = bytes(buffer[: pcm_format.pcm_sample_size])
                 yield pcm_slice
                 bytes_written += len(pcm_slice)
@@ -2461,6 +2496,7 @@ class StreamsAudio:
         # also covers the paths that leave a track without banking anything.
         flow_lead = 0.0
         flow_lead_at = 0.0
+        max_silent_holdback = int(pcm_format.pcm_sample_size * MAX_SILENT_TAIL_HOLDBACK_SECONDS)
         last_fadeout_part: bytes = b""
         last_streamdetails: StreamDetails | None = None
         last_queue_track: QueueItem | None = None
@@ -2716,6 +2752,7 @@ class StreamsAudio:
 
                 bytes_written = 0
                 crossfade_buffer = bytearray()
+                silent_tail = 0
                 warmup_bytes = 0
                 first_chunk_received = False
                 # the holdback is grown out of the audio banked ahead of playback instead
@@ -2800,6 +2837,7 @@ class StreamsAudio:
                         # window, or (at a boundary) whatever of the incoming overlap
                         # arrived before the mix starts. The window is whatever the
                         # source has banked ahead of playback right now.
+                        silent_tail = trailing_silence_bytes(chunk, silent_tail)
                         crossfade_buffer.extend(chunk)
                         del chunk
                         hold_target = (
@@ -2807,7 +2845,10 @@ class StreamsAudio:
                             if tail_hold is not None
                             else 0
                         )
-                        if not last_fadeout_part and len(crossfade_buffer) <= hold_target:
+                        # the window is a span of audible audio: silence the item ends
+                        # with is held on top of it, never counted as part of it
+                        keep = hold_target + min(silent_tail, max_silent_holdback)
+                        if not last_fadeout_part and len(crossfade_buffer) <= keep:
                             await asyncio.sleep(0)
                             continue
                         # handle crossfade of previous track and new track
@@ -2980,7 +3021,7 @@ class StreamsAudio:
                         # small, so credit what is actually yielded - a nominal
                         # full-second credit inflates the play log and pins the
                         # queue's position mapping to the wrong track
-                        while len(crossfade_buffer) > hold_target:
+                        while len(crossfade_buffer) > keep:
                             pcm_slice = bytes(crossfade_buffer[:pcm_sample_size])
                             yield pcm_slice
                             bytes_written += len(pcm_slice)

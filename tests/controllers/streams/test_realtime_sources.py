@@ -29,10 +29,13 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import (
+    MAX_SILENT_TAIL_HOLDBACK_SECONDS,
     MIN_CROSSFADE_DURATION,
+    WARMUP_DURATION,
     CrossfadeData,
     StreamsAudio,
     _TailHold,
+    trailing_silence_bytes,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
@@ -525,6 +528,119 @@ async def test_a_carried_lead_is_aged_by_the_gap_before_the_stream_starts() -> N
     ancient.note_bytes(pcm_format.pcm_sample_size)
     assert ancient.banked_lead(0) <= 1.0
     assert ancient.hold_target(max_bytes, frame_size) == 0
+
+
+def test_trailing_silence_is_measured_across_chunks() -> None:
+    """A silent run has to survive the chunk boundaries it arrives in."""
+    assert trailing_silence_bytes(b"\x01\x02", 0) == 0
+    # music then silence: only the silent end counts
+    assert trailing_silence_bytes(b"\x01\x00\x00\x00", 0) == 3
+    # a wholly silent chunk continues the run the buffer already had
+    assert trailing_silence_bytes(b"\x00" * 5, 3) == 8
+    # audio again ends the run, whatever was carried
+    assert trailing_silence_bytes(b"\x00\x09", 100) == 0
+
+
+async def test_the_holdback_fills_with_audio_not_an_items_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A tail of digital silence must not be what the fade gets to blend.
+
+    A live engine read above playback pace runs off the end of its content and its
+    sink pads the rest with zeroes. Counting that padding as the window hands the
+    mixer a silent tail and the fade collapses to nothing.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    pss = pcm_format.pcm_sample_size
+    music = bytes([1, 2]) * (pss // 2)
+    padding = bytes(pss)
+
+    current_details = SimpleNamespace(
+        duration=24,
+        seek_position=0,
+        seconds_streamed=0,
+        uri="test://current",
+        buffer=SimpleNamespace(
+            eof=True,
+            cancelled=False,
+            has_error=False,
+            max_size_seconds=300,
+            duration_available=0.0,
+        ),
+        is_realtime=True,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=current_details,
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=SimpleNamespace(
+            audio_format=pcm_format,
+            buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+            duration=24,
+            seek_position=0,
+            uri="test://next",
+            is_realtime=False,
+            volume_normalization_mode=None,
+        ),
+        extra_attributes={},
+        available=True,
+    )
+    mass = MagicMock()
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+
+    captured: dict[str, bytes] = {}
+
+    async def _capture_build(**kwargs: Any) -> object:
+        captured["fade_out"] = kwargs["fade_out_data"]
+        raise RuntimeError("the tail is all this test needs")
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", _capture_build)
+
+    async def _item_stream(
+        _queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        # warmup, then real audio, then the engine running off the end of it
+        for _ in range(WARMUP_DURATION + 12):
+            yield music
+        for _ in range(10):
+            yield padding
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    async for _chunk in stream:
+        pass
+
+    tail = captured["fade_out"]
+    silent = len(tail) - len(tail.rstrip(b"\x00"))
+    audible = (len(tail) - silent) / pss
+    # duration 24 caps the window at 12s, and all 12 must be audio: counting the
+    # padding as the window would leave only the 2s of music that precedes it
+    assert audible >= 11.0, f"only {audible:.2f}s of audible tail for the fade"
+    assert silent / pss <= MAX_SILENT_TAIL_HOLDBACK_SECONDS
 
 
 # -- StreamsAudio._select_buffered_crossfade --
