@@ -157,6 +157,15 @@ SUPPORTED_FEATURES = {
 # ruff: noqa: PLW2901
 
 
+def _artist_is_resolvable(artist_obj: dict[str, Any]) -> bool:
+    """Check if a YTM artist object can be mapped to an artist item."""
+    return bool(
+        artist_obj.get("id")
+        or artist_obj.get("channelId")
+        or artist_obj.get("name") == "Various Artists"
+    )
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -371,8 +380,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         )
         if not album_obj.get("tracks"):
             return []
+        album_artists = [
+            artist for artist in album_obj.get("artists") or [] if _artist_is_resolvable(artist)
+        ]
         tracks = []
         for track_number, track_obj in enumerate(album_obj["tracks"], 1):
+            # YTM omits the artist id on some album tracks, which drops them below.
+            # Credit those to the album artist, like YTM's own UI does.
+            if album_artists and not any(
+                _artist_is_resolvable(artist) for artist in track_obj.get("artists") or []
+            ):
+                track_obj = {**track_obj, "artists": album_artists}
             try:
                 track = self._parse_track(track_obj=track_obj, track_number=track_number)
             except InvalidDataError:
@@ -906,9 +924,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 [
                     self._get_artist_item_mapping(artist)
                     for artist in album_obj["artists"]
-                    if artist.get("id")
-                    or artist.get("channelId")
-                    or artist.get("name") == "Various Artists"
+                    if _artist_is_resolvable(artist)
                 ]
             )
         if "type" in album_obj:
@@ -1040,9 +1056,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             track.artists = UniqueList(
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
+                if _artist_is_resolvable(artist)
             )
         # guard that track has valid artists
         if not track.artists:
