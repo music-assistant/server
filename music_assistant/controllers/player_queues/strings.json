@@ -5,7 +5,15 @@
   },
   "config_entries": {
     "autoplay_label": {
-      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
+      "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. The settings below set whether Autoplay starts out on and how the extra tracks are chosen; turning Autoplay on or off from the player controls takes over from there for that player.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
+    },
+    "autoplay_enabled": {
+      "label": "Autoplay",
+      "description": "Whether Autoplay starts out on. Turning Autoplay on or off from the player controls takes over from there for that player.",
+      "options": {
+        "enabled": "Enabled",
+        "disabled": "Disabled"
+      }
     },
     "autoplay_mode": {
       "label": "Autoplay source",
@@ -29,7 +37,15 @@
       "description": "The playlist Autoplay pulls tracks from to keep the music going."
     },
     "crossfade_label": {
-      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions)."
+      "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. The settings below set whether crossfade starts out on and which crossfade mode to use; turning crossfade on or off from the player controls takes over from there for that player. On more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions."
+    },
+    "crossfade_enabled": {
+      "label": "Crossfade",
+      "description": "Whether crossfade starts out on. Turning crossfade on or off from the player controls takes over from there for that player.",
+      "options": {
+        "enabled": "Enabled",
+        "disabled": "Disabled"
+      }
     },
     "crossfade_duration": {
       "label": "Standard crossfade duration",

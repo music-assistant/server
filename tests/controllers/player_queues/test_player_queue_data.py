@@ -154,27 +154,26 @@ def test_from_cache_legacy_rebuilds_source_items_from_sources() -> None:
 
 
 def test_cache_round_trip_restores_settings() -> None:
-    """The queue settings (shuffle/repeat/crossfade/autoplay) survive a cache round-trip."""
-    queue = _queue(
-        shuffle_enabled=True,
-        repeat_mode=RepeatMode.ALL,
-        crossfade_enabled=True,
-        autoplay_enabled=True,
-    )
-    data = PlayerQueueData(queue=queue)
+    """The shuffle/repeat settings and the crossfade/autoplay overrides survive a round-trip."""
+    queue = _queue(shuffle_enabled=True, repeat_mode=RepeatMode.ALL)
+    data = PlayerQueueData(queue=queue, crossfade_override=True, autoplay_override=True)
 
     restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
 
     assert restored.queue.shuffle_enabled is True
     assert restored.queue.repeat_mode == RepeatMode.ALL
-    assert restored.queue.crossfade_enabled is True
-    assert restored.queue.autoplay_enabled is True
+    assert restored.crossfade_override is True
+    assert restored.autoplay_override is True
 
 
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:
     """One unreadable queue item is skipped without losing the other items or the settings."""
-    queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
-    data = PlayerQueueData(queue=queue, items=[QueueItem.from_media_item("q1", _track("t1"))])
+    queue = _queue(shuffle_enabled=True)
+    data = PlayerQueueData(
+        queue=queue,
+        items=[QueueItem.from_media_item("q1", _track("t1"))],
+        crossfade_override=True,
+    )
     items_data = [*data.items_to_cache(), {"sort_index": 0}]  # 2nd entry misses required fields
 
     restored = PlayerQueueData.from_cache(data.to_cache(), items_data)
@@ -187,7 +186,7 @@ def test_from_cache_keeps_settings_when_item_unreadable() -> None:
     assert restored.queue.items == len(restored.items) == 1
     # and the settings are untouched by the item failure
     assert restored.queue.shuffle_enabled is True
-    assert restored.queue.crossfade_enabled is True
+    assert restored.crossfade_override is True
 
 
 def test_from_cache_keeps_settings_when_source_unreadable() -> None:
@@ -206,8 +205,10 @@ def test_from_cache_keeps_settings_when_source_unreadable() -> None:
 
 def test_from_cache_keeps_settings_when_enqueued_media_unreadable() -> None:
     """Unreadable enqueued media clears only the media payload, never the queue settings."""
-    queue = _queue(shuffle_enabled=True, crossfade_enabled=True)
-    data = PlayerQueueData(queue=queue, enqueued_media_items=[_track("seed")])
+    queue = _queue(shuffle_enabled=True)
+    data = PlayerQueueData(
+        queue=queue, enqueued_media_items=[_track("seed")], crossfade_override=True
+    )
     state = data.to_cache()
     # corrupt the persisted enqueued media so its deserialization raises
     state["enqueued_media_items"] = [{"not": "a media item"}]
@@ -216,7 +217,7 @@ def test_from_cache_keeps_settings_when_enqueued_media_unreadable() -> None:
 
     assert restored.enqueued_media_items == []
     assert restored.queue.shuffle_enabled is True
-    assert restored.queue.crossfade_enabled is True
+    assert restored.crossfade_override is True
 
 
 def test_from_cache_incompatible_version_raises() -> None:
@@ -268,3 +269,27 @@ def test_cache_significant_ignores_playback_progress() -> None:
         "queue": {**state["queue"], "shuffle_enabled": not state["queue"]["shuffle_enabled"]},
     }
     assert PlayerQueueData.cache_significant(shuffled) != PlayerQueueData.cache_significant(state)
+
+
+def test_legacy_toggle_state_empty_once_overrides_present() -> None:
+    """A snapshot that already carries the override fields has nothing left to import."""
+    data = PlayerQueueData(queue=_queue(), crossfade_override=True, autoplay_override=False)
+    assert PlayerQueueData.legacy_toggle_state(data.to_cache()) == {}
+
+
+def test_legacy_toggle_state_reads_the_pre_override_wire_fields() -> None:
+    """A pre-override snapshot's wire crossfade/autoplay values are read out by name."""
+    state = {"queue": {"crossfade_enabled": True, "autoplay_enabled": False}}
+    assert PlayerQueueData.legacy_toggle_state(state) == {"crossfade": True, "autoplay": False}
+
+
+def test_legacy_toggle_state_falls_back_to_dont_stop_the_music() -> None:
+    """A pre-rename snapshot's `dont_stop_the_music_enabled` is read as the autoplay toggle."""
+    state = {"queue": {"dont_stop_the_music_enabled": True}}
+    assert PlayerQueueData.legacy_toggle_state(state) == {"autoplay": True}
+
+
+def test_legacy_toggle_state_only_returns_keys_actually_present() -> None:
+    """A snapshot storing only one toggle does not invent a value for the other."""
+    state = {"queue": {"crossfade_enabled": True}}
+    assert PlayerQueueData.legacy_toggle_state(state) == {"crossfade": True}

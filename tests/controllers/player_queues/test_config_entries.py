@@ -26,7 +26,9 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CLICK_ACTION_BROWSE,
     CLICK_ACTION_PLAY,
+    CONF_AUTOPLAY_ENABLED,
     CONF_AUTOPLAY_MODE,
+    CONF_CROSSFADE_ENABLED,
     CONF_DEFAULT_CLICK_ACTION_ALBUM,
     CONF_DEFAULT_CLICK_ACTION_ARTIST,
     CONF_DEFAULT_CLICK_ACTION_GENRE,
@@ -120,6 +122,19 @@ def test_core_config_entries_global_feature_defaults() -> None:
     volume_normalization = by_key[CONF_VOLUME_NORMALIZATION]
     assert volume_normalization.default_value == CONF_VALUE_ENABLED
     assert CONF_VALUE_GLOBAL not in {opt.value for opt in volume_normalization.options}
+    # the crossfade/autoplay runtime-toggle starting values: global-only, no 'global' option
+    crossfade_enabled = by_key[CONF_CROSSFADE_ENABLED]
+    assert crossfade_enabled.default_value == CONF_VALUE_DISABLED
+    assert {opt.value for opt in crossfade_enabled.options} == {
+        CONF_VALUE_ENABLED,
+        CONF_VALUE_DISABLED,
+    }
+    autoplay_enabled = by_key[CONF_AUTOPLAY_ENABLED]
+    assert autoplay_enabled.default_value == CONF_VALUE_ENABLED
+    assert {opt.value for opt in autoplay_enabled.options} == {
+        CONF_VALUE_ENABLED,
+        CONF_VALUE_DISABLED,
+    }
     # the global-only settings live only on the core schema
     assert CONF_CROSSFADE_DURATION in by_key
     assert CONF_SMART_SHUFFLE_SONG_RECENCY in by_key
@@ -140,6 +155,9 @@ def test_queue_config_entries_offer_global_option() -> None:
     # crossfade duration and the recency windows are global-only (not overridable per queue)
     assert CONF_CROSSFADE_DURATION not in by_key
     assert CONF_SMART_SHUFFLE_SONG_RECENCY not in by_key
+    # the crossfade/autoplay runtime toggles are global-only too: there is no per-queue setting
+    assert CONF_CROSSFADE_ENABLED not in by_key
+    assert CONF_AUTOPLAY_ENABLED not in by_key
 
 
 def test_queue_config_smart_crossfade_unavailable() -> None:

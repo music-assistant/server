@@ -8,7 +8,9 @@ Two related schemas are built from shared builders:
 * the **per-queue** entries — the same feature settings, but each headline setting gains a "global"
   option (its default) that follows the matching global value, mirroring the ``log_level`` "GLOBAL"
   pattern. The smart-shuffle recency windows and the crossfade duration are global-only (they can't
-  sensibly follow-or-override per queue), so they appear only in the core schema.
+  sensibly follow-or-override per queue), so they appear only in the core schema. The crossfade/
+  autoplay on-off defaults are global-only too: the live on-off is a runtime queue toggle the user
+  flips from the player controls, not a per-queue setting, so there is no per-queue entry for it.
 
 Kept separate from the controller so the schema reads as one self-contained unit; the controller
 exposes these through thin delegators.
@@ -39,12 +41,15 @@ from music_assistant.controllers.player_queues.autoplay import (
     AutoplayMode,
 )
 from music_assistant.controllers.player_queues.constants import (
+    AUTOPLAY_ENABLED_DEFAULT_VALUE,
     CLICK_ACTION_BROWSE,
     CLICK_ACTION_DEFAULT_VALUE,
     CLICK_ACTION_PLAY,
+    CONF_AUTOPLAY_ENABLED,
     CONF_AUTOPLAY_LABEL,
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
+    CONF_CROSSFADE_ENABLED,
     CONF_CROSSFADE_LABEL,
     CONF_DEFAULT_CLICK_ACTION_ALBUM,
     CONF_DEFAULT_CLICK_ACTION_ARTIST,
@@ -73,6 +78,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_LABEL,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    CROSSFADE_ENABLED_DEFAULT_VALUE,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
     PLAY_ACTION_PLAY_FROM_HERE,
@@ -106,7 +112,8 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
     These are the queue-controller-wide defaults: the per-media-type enqueue behaviour, the click
     actions clients apply to a media item, plus the global smart-shuffle, autoplay, crossfade and
     volume-normalization settings that individual queues follow (via their "global" option) or
-    override.
+    override. The crossfade/autoplay on-off defaults are the starting value a queue's runtime
+    toggle follows until the user pins it from the player controls.
 
     Kept option-free (the global autoplay-playlist dropdown is populated by the config controller
     when serving the entries to the UI) so this stays cheap for the config parse/value path.
@@ -132,7 +139,8 @@ def queue_config_entries(
     Each headline setting (smart shuffle, autoplay mode, crossfade mode, volume normalization)
     offers a "global" option — the default — that follows the matching queue-controller value.
     The smart-shuffle recency windows and the crossfade duration are global-only and therefore not
-    part of this per-queue schema.
+    part of this per-queue schema, and so are the crossfade/autoplay on-off defaults: the live
+    on-off is a runtime queue toggle flipped from the player controls, not a per-queue setting.
 
     The autoplay_mode select disables the 'similar' option when no provider can supply similar
     tracks. The crossfade_mode select's smart option is disabled (shown but not selectable) when
@@ -347,7 +355,7 @@ def _recency_entry(
 def _autoplay_entries(
     mass: MusicAssistant, playlist_options: list[ConfigValueOption] | None, *, per_queue: bool
 ) -> list[ConfigEntry]:
-    """Autoplay entries: the mode select (per-queue overridable) + its playlist companion."""
+    """Autoplay entries: mode select (per-queue), playlist companion, global-only enabled toggle."""
     similar_available = any(
         ProviderFeature.SIMILAR_TRACKS in provider.supported_features
         for provider in mass.music.providers
@@ -360,12 +368,24 @@ def _autoplay_entries(
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
-    return [
+    entries = [
         ConfigEntry(
             key=CONF_AUTOPLAY_LABEL,
             type=ConfigEntryType.LABEL,
             category=CATEGORY_AUTOPLAY,
         ),
+    ]
+    if not per_queue:
+        # the starting value of the autoplay runtime toggle; global-only, see module docstring
+        entries.append(
+            _onoff_entry(
+                CONF_AUTOPLAY_ENABLED,
+                CATEGORY_AUTOPLAY,
+                per_queue=False,
+                global_default=AUTOPLAY_ENABLED_DEFAULT_VALUE,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_AUTOPLAY_MODE,
             type=ConfigEntryType.STRING,
@@ -384,10 +404,11 @@ def _autoplay_entries(
             category=CATEGORY_AUTOPLAY,
         ),
     ]
+    return entries
 
 
 def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigEntry]:
-    """Crossfade entries: the mode select (per-queue overridable) + global-only duration."""
+    """Crossfade entries: the mode select (per-queue overridable) + global-only enabled/duration."""
     smart_fades_available = mass.streams.smart_fades_available
     mode_options = [
         ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
@@ -406,6 +427,18 @@ def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigE
             type=ConfigEntryType.LABEL,
             category=CATEGORY_CROSSFADE,
         ),
+    ]
+    if not per_queue:
+        # the starting value of the crossfade runtime toggle; global-only, see module docstring
+        entries.append(
+            _onoff_entry(
+                CONF_CROSSFADE_ENABLED,
+                CATEGORY_CROSSFADE,
+                per_queue=False,
+                global_default=CROSSFADE_ENABLED_DEFAULT_VALUE,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_CROSSFADE_MODE,
             type=ConfigEntryType.STRING,

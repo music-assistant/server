@@ -59,6 +59,10 @@ class PlayerQueueData:
     credited_albums: set[Album] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
+    # the crossfade/autoplay toggles the user flips from the player controls. None means the queue
+    # still follows the global default; flipping a toggle pins it to an explicit value. Persisted.
+    crossfade_override: bool | None = None
+    autoplay_override: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
@@ -92,7 +96,9 @@ class PlayerQueueData:
         colliding with wire field names.
         """
         queue = self.queue.to_dict()
-        # drop the derived/runtime wire fields that must not be restored verbatim
+        # drop the derived/runtime wire fields that must not be restored verbatim; crossfade/
+        # autoplay are derived from their overrides now, and dont_stop_the_music_enabled is the
+        # deprecated autoplay mirror, which would otherwise resurrect it via __pre_deserialize__
         for key in (
             "flow_mode",
             "current_item",
@@ -100,6 +106,9 @@ class PlayerQueueData:
             "index_in_buffer",
             "smart_fades_active",
             "smart_shuffle_active",
+            "crossfade_enabled",
+            "autoplay_enabled",
+            "dont_stop_the_music_enabled",
         ):
             queue.pop(key, None)
         return {
@@ -111,6 +120,8 @@ class PlayerQueueData:
             ),
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
+            "crossfade_override": self.crossfade_override,
+            "autoplay_override": self.autoplay_override,
         }
 
     @staticmethod
@@ -200,7 +211,31 @@ class PlayerQueueData:
             enqueued_media_items=enqueued_media_items,
             credited_albums=credited_albums,
             userid=state_data.get("userid"),
+            crossfade_override=state_data.get("crossfade_override"),
+            autoplay_override=state_data.get("autoplay_override"),
         )
+
+    @staticmethod
+    def legacy_toggle_state(state_data: dict[str, Any]) -> dict[str, bool]:
+        """
+        Return the crossfade/autoplay toggles stored by a cache snapshot predating the overrides.
+
+        Keyed by `"crossfade"` / `"autoplay"`, and empty when the snapshot already carries the
+        override fields (nothing to import) or stored no value for a toggle.
+
+        :param state_data: The cached state dict (as written by `to_cache`).
+        """
+        if "crossfade_override" in state_data:
+            return {}
+        # caches written before this refactor stored the wire fields at the top level
+        queue_data = state_data.get("queue", state_data)
+        result: dict[str, bool] = {}
+        if (crossfade := queue_data.get("crossfade_enabled")) is not None:
+            result["crossfade"] = bool(crossfade)
+        autoplay = queue_data.get("autoplay_enabled", queue_data.get("dont_stop_the_music_enabled"))
+        if autoplay is not None:
+            result["autoplay"] = bool(autoplay)
+        return result
 
     @staticmethod
     def _deserialize_media(

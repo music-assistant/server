@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from music_assistant_models.enums import MediaType
 
+from music_assistant.constants import CONF_VALUE_DISABLED, CONF_VALUE_ENABLED
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -45,7 +47,13 @@ PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
 CONF_CROSSFADE_LABEL = "crossfade_label"
+CONF_CROSSFADE_ENABLED = "crossfade_enabled"
+
+# global defaults for the crossfade/autoplay runtime toggles a queue starts out with
+AUTOPLAY_ENABLED_DEFAULT_VALUE = CONF_VALUE_ENABLED
+CROSSFADE_ENABLED_DEFAULT_VALUE = CONF_VALUE_DISABLED
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
