@@ -260,15 +260,7 @@ class YotoProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
-        card: YotoCard | None = None
-        if prov_audiobook_id in self.client.library:
-            card = self.client.library[prov_audiobook_id]
-        else:
-            await self._handle_yoto_api_call(self.client.update_card_detail(prov_audiobook_id))
-            card = self.client.library.get(prov_audiobook_id)
-        if not card:
-            raise MediaNotFoundError(f"Card {prov_audiobook_id} not found")
-        return self._parse_audiobook(card)
+        return self._parse_audiobook(await self._get_card(prov_audiobook_id))
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library podcasts from the provider."""
