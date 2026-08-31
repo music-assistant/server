@@ -1009,3 +1009,133 @@ async def test_get_artwork_url_unknown_media_type() -> None:
     manager = AppleMusicMediaManager(provider)
 
     assert await manager.get_artwork_url("bogus", "1") is None
+
+
+def _availability(parsed: Any) -> bool:
+    """Return the availability flag off a parsed item's single provider mapping."""
+    return bool(next(iter(parsed.provider_mappings)).available)
+
+
+def _library_song_obj(play_params: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a library-songs object with no catalog twin and the given playParams."""
+    return {
+        "id": "i.librarysong",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Library Song",
+            "artistName": "Artist 1",
+            "albumName": "Album 1",
+            "durationInMillis": 180000,
+            **({"playParams": play_params} if play_params is not None else {}),
+        },
+        "relationships": {},
+    }
+
+
+def test_parse_track_purchase_only_is_unavailable() -> None:
+    """A purchase with no catalog twin has playParams but Apple refuses to stream it."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj(
+        {"id": "i.librarysong", "kind": "song", "isLibrary": True, "purchasedId": "397010985"}
+    )
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is False
+
+
+def test_parse_track_without_play_params_is_unavailable() -> None:
+    """Apple omits a usable playParams entirely for withdrawn catalog items."""
+    provider = _create_provider_mock()
+
+    result = parse_track(provider, _library_song_obj({}))
+
+    assert _availability(result) is False
+
+
+def test_parse_track_upload_stays_available() -> None:
+    """An upload carries neither purchasedId nor catalogId and must stay playable."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj({"id": "i.librarysong", "kind": "song", "isLibrary": True})
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_track_purchase_with_catalog_twin_is_available() -> None:
+    """A purchase that also exists in the catalog is playable from the catalog."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj(
+        {
+            "id": "i.librarysong",
+            "kind": "song",
+            "isLibrary": True,
+            "purchasedId": "397010985",
+            "catalogId": "1440774173",
+        }
+    )
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_track_catalog_song_is_available() -> None:
+    """A plain catalog song keeps the previous behaviour."""
+    provider = _create_provider_mock()
+    track_obj = {
+        "id": "1440774173",
+        "type": "songs",
+        "attributes": {
+            "name": "Catalog Song",
+            "artistName": "Artist 1",
+            "durationInMillis": 180000,
+            "playParams": {"id": "1440774173", "kind": "song"},
+        },
+        "relationships": {},
+    }
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_album_without_play_params_is_unavailable() -> None:
+    """An album Apple will not serve carries no usable playParams."""
+    provider = _create_provider_mock()
+    album_obj = {
+        "id": "l.libraryalbum",
+        "type": "library-albums",
+        "attributes": {"name": "Library Album", "artistName": "Artist 1", "playParams": {}},
+        "relationships": {},
+    }
+
+    result = parse_album(provider, album_obj)
+
+    assert _availability(result) is False
+
+
+def test_parse_album_library_album_is_available() -> None:
+    """
+    A library album with usable playParams stays available.
+
+    Apple exposes no purchase marker on a library album - its playParams carry only
+    id/kind/isLibrary - so the purchase-only rule cannot fire here even when every
+    track on the album is a purchase. See music-assistant/support#6032.
+    """
+    provider = _create_provider_mock()
+    album_obj = {
+        "id": "l.libraryalbum",
+        "type": "library-albums",
+        "attributes": {
+            "name": "Library Album",
+            "artistName": "Artist 1",
+            "playParams": {"id": "l.libraryalbum", "kind": "album", "isLibrary": True},
+        },
+        "relationships": {},
+    }
+
+    result = parse_album(provider, album_obj)
+
+    assert _availability(result) is True
