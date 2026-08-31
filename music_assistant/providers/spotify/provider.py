@@ -1542,6 +1542,9 @@ class SpotifyProvider(MusicProvider):
             if not result or key not in result or not result[key]:
                 break
             for item in result[key]:
+                # Spotify returns a null entry for items the account can no longer resolve
+                if item is None:
+                    continue
                 yield item
             if len(result[key]) < limit:
                 break
