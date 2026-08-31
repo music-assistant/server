@@ -2239,12 +2239,12 @@ class AuthenticationManager:
             self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
 
     async def _cleanup_expired_tokens(self) -> None:
-        """Delete expired short-lived auth tokens from the database."""
+        """Delete short-lived auth tokens that expired or outlived their absolute cap."""
         now = utc()
         # Both conditions mirror a deletion authenticate_with_token already performs when the
         # token is used: the sliding expiry, and the absolute cap, which a token renewed late
-        # in its life outlives. Long-lived tokens are kept so the user can still see and
-        # revoke them after expiry.
+        # in its life outlives. Long-lived tokens are left to the user to revoke: they are few
+        # and deliberately created, so they are not what grows this table.
         cursor = await self.database.execute(
             """
             DELETE FROM auth_tokens

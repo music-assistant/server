@@ -783,6 +783,40 @@ async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> No
     assert {row["name"] for row in remaining} == {"Valid", "Long Lived"}
 
 
+async def test_periodic_cleanup_schedules_token_sweep(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that the periodic cleanup scheduler runs the token sweep, not just the join codes.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="scheduledsweepuser", role=UserRole.USER)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    token_id = auth_manager.jwt_helper.get_token_id(expired_token)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {"expires_at": (utc() - timedelta(days=1)).isoformat()},
+    )
+
+    # capture what gets scheduled instead of racing the eagerly started tasks
+    scheduled: list[Any] = []
+
+    def _capture(target: Any, *_args: Any, **_kwargs: Any) -> None:
+        scheduled.append(target)
+
+    monkeypatch.setattr(auth_manager.mass, "create_task", _capture)
+    monkeypatch.setattr(auth_manager.mass, "call_later", lambda *_args, **_kwargs: None)
+
+    auth_manager._schedule_periodic_cleanup()
+    for coro in scheduled:
+        await coro
+
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
+
+
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     """
     Test getting available login providers.
