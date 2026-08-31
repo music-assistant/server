@@ -56,6 +56,18 @@ TEST_PCM_FORMAT = AudioFormat(
 ONE_SECOND_CHUNK = b"\x00" * TEST_PCM_FORMAT.pcm_sample_size
 
 
+def _audio(pcm_format: AudioFormat, seconds: float) -> bytes:
+    """
+    Return PCM that reads as audio rather than as an item's trailing silence.
+
+    The holdback measures the silent run a buffer ends with, so a fixture filled
+    with zeroes would stand in for a track that has already finished.
+    """
+    frame = struct.pack("<2h", 9000, -9000)
+    size = int(pcm_format.pcm_sample_size * seconds)
+    return (frame * (size // len(frame) + 1))[:size]
+
+
 def _make_stream_details(
     media_type: MediaType,
     *,
@@ -765,6 +777,103 @@ async def test_the_holdback_takes_more_of_the_lead_as_the_item_runs_out() -> Non
     assert 5.5 <= hold.hold_target(max_bytes, frame_size) / pss <= 6.0
 
 
+async def test_a_tail_with_nothing_audible_left_is_a_cut_not_a_token_fade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A boundary with no audible tail left ships gapless, not a fraction of a fade.
+
+    An item that ran out of headroom holds back mostly the silence it ended with.
+    Blending the sliver of audio underneath it is heard as a cut anyway, so the
+    honest outcome is no fade and the mixer is never asked for one.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=SimpleNamespace(
+            duration=60,
+            seek_position=0,
+            seconds_streamed=0,
+            uri="test://current",
+            buffer=SimpleNamespace(
+                eof=True,
+                cancelled=False,
+                has_error=False,
+                max_size_seconds=300,
+                duration_available=0.0,
+            ),
+            is_realtime=True,
+        ),
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=SimpleNamespace(
+            audio_format=pcm_format,
+            buffer=_buffer(SMART_CROSSFADE_DURATION, ready=True),
+            duration=60,
+            seek_position=0,
+            uri="test://next",
+            is_realtime=False,
+            volume_normalization_mode=None,
+        ),
+        extra_attributes={},
+        available=True,
+    )
+    mass = MagicMock()
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+
+    asked: list[int] = []
+
+    async def _build(**kwargs: Any) -> object:
+        # a raise here would be swallowed by the fallback and prove nothing, so
+        # record the ask and hand back a real fade
+        asked.append(len(kwargs["fade_out_data"]))
+        standard = StandardCrossFade(logger=MagicMock(), crossfade_duration=8)
+        standard.build(len(kwargs["fade_out_data"]), kwargs["fade_in_bytes_len"], pcm_format)
+        return standard
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", _build)
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _empty_mix)
+
+    async def _item_stream(
+        _queue_item: object, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        # the warmup goes straight out, then the item runs out and pads its tail
+        yield _audio(pcm_format, WARMUP_DURATION)
+        yield b"\x00" * int(pcm_format.pcm_sample_size * 30)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.SMART_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    async for _chunk in stream:
+        pass
+
+    # the mixer is never asked, and nothing is stashed: the next item starts on its
+    # own audio, gapless
+    assert asked == [], f"a fade was planned from {asked[0] if asked else 0} bytes of tail"
+    assert "queue-1" not in audio._crossfade_data
+
+
 # -- StreamsAudio._select_buffered_crossfade --
 
 
@@ -952,8 +1061,8 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
         *_args: object,
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1065,8 +1174,8 @@ async def _run_smartfade_for_lead(
     async def _item_stream(
         _queue_item: object, *_args: object, **_kwargs: object
     ) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1279,8 +1388,8 @@ async def test_smartfade_still_filling_source_fades_from_what_it_banked(
         *_args: object,
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1384,10 +1493,10 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
 
     realtime_chunks = [
-        bytes(pcm_format.pcm_sample_size * 8),
-        bytes(pcm_format.pcm_sample_size * 8),
+        _audio(pcm_format, 8),
+        _audio(pcm_format, 8),
     ]
-    next_chunks = [bytes(pcm_format.pcm_sample_size * 2)]
+    next_chunks = [_audio(pcm_format, 2)]
 
     async def _item_stream(
         queue_item: SimpleNamespace, *_args: object, **_kwargs: object
@@ -1482,9 +1591,9 @@ async def test_smartfade_unaligned_chunks_still_crossfade(
         if queue_item is not current_item:
             return
         # a whole second, then chunks that never line up with a second boundary
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
         for _ in range(30):
-            yield bytes(pcm_format.pcm_sample_size // 3)
+            yield _audio(pcm_format, 1 / 3)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1571,8 +1680,8 @@ async def test_smartfade_short_remainder_still_crossfades(
         if queue_item is not current_item:
             return
         # a seek near the end leaves 34s, less than the 45s smart overlap
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 26)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 26)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1652,8 +1761,8 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
     ) -> AsyncGenerator[bytes]:
         if queue_item is not current_item:
             return
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 2)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 2)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -1731,7 +1840,7 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     audio.setup()
 
     async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
-        yield bytes(pcm_format.pcm_sample_size * 4)
+        yield _audio(pcm_format, 4)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(

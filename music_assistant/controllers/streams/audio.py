@@ -2232,6 +2232,11 @@ class StreamsAudio:
         # a fade needs enough of the outgoing track to overlap with; a holdback that
         # armed late (or not at all) leaves less than that
         min_fade_out_size = int(pcm_format.pcm_sample_size * MIN_CROSSFADE_DURATION)
+        # what is held back is audible tail plus whatever silence the item ended with.
+        # Only the audible part can be blended, so it decides both whether this boundary
+        # can carry a fade at all and how long that fade may be. A tail with nothing
+        # audible left in it is a clean cut, not a fade of a fraction of a second.
+        audible_tail_bytes = max(0, len(buffer) - min(silent_tail, len(buffer)))
         # Claim the handoff the moment the next item is known, before the awaits that
         # size the fade: the speaker can ask for that item's url during them, and a
         # marker registered afterwards would arrive too late to be waited for.
@@ -2244,7 +2249,7 @@ class StreamsAudio:
             )
         try:
             if (
-                len(buffer) >= min_fade_out_size
+                audible_tail_bytes >= min_fade_out_size
                 and next_queue_item
                 and next_queue_item.streamdetails
             ):
@@ -2273,7 +2278,7 @@ class StreamsAudio:
                         next_queue_item.streamdetails,
                         crossfade_mode,
                         standard_crossfade_duration,
-                        fade_out_seconds=len(buffer) / pcm_format.pcm_sample_size,
+                        fade_out_seconds=audible_tail_bytes / pcm_format.pcm_sample_size,
                         playback_speed=fade_in_playback_speed,
                     )
                     crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
