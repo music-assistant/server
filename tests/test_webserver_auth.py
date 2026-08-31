@@ -1263,12 +1263,13 @@ async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
     auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Test that revoking counts and disconnects correctly beyond the default row limit.
+    Test that revoking all tokens counts and clears them beyond the default row limit.
 
     :param auth_manager: AuthenticationManager instance.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
     user = await auth_manager.create_user(username="manytokens", role=UserRole.USER)
+    # deliberately above the default row limit of the database read helpers
     token_count = 550
     created_at = utc().isoformat()
     async with auth_manager.database.deferred_commit():

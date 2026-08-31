@@ -744,7 +744,7 @@ class AuthenticationManager:
 
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
-        Revoke all auth tokens for a user.
+        Revoke all auth tokens for a user and disconnect their active connections.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -757,9 +757,6 @@ class AuthenticationManager:
             {"user_id": user.user_id},
         )
         await self.database.commit()
-
-        # Disconnect per user rather than per token: none of the user's tokens
-        # authenticate anymore, whichever one a connection happens to hold.
         self.webserver.disconnect_websockets_for_user(user.user_id)
 
         count = int(cursor.rowcount)
