@@ -132,6 +132,7 @@ from music_assistant.helpers.audio import (
     realtime_pcm_pacer,
     resample_pcm_audio,
     resolve_output_player_ids,
+    trailing_silence_bytes,
 )
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
@@ -195,24 +196,6 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # padding (measured at a tenth of the track's length), and bounded because every held
 # byte is resident PCM.
 MAX_SILENT_TAIL_HOLDBACK_SECONDS = 20
-
-
-def trailing_silence_bytes(chunk: bytes, carried: int) -> int:
-    """
-    Return the run of digital silence a chunk leaves at the end of a buffer.
-
-    Exact zeroes only, which is what a sink pads an underrun with (the soloist
-    capture shaper trims its lead-in the same way). Near-silence is left to the
-    measurement the mixer runs when it builds the fade.
-
-    :param chunk: The chunk just appended to the buffer.
-    :param carried: The silent run the buffer already ended with.
-    """
-    stripped = chunk.rstrip(b"\x00")
-    if not stripped:
-        # nothing but silence: it continues whatever the buffer already ended with
-        return carried + len(chunk)
-    return len(chunk) - len(stripped)
 
 
 # Bounded wait for a fade the outgoing stream is still mixing, when the incoming
@@ -2154,7 +2137,7 @@ class StreamsAudio:
                 del chunk
                 continue
 
-            silent_tail = trailing_silence_bytes(chunk, silent_tail)
+            silent_tail = trailing_silence_bytes(chunk, pcm_format, silent_tail)
             buffer.extend(chunk)
             del chunk
             hold_target = (
@@ -2840,7 +2823,7 @@ class StreamsAudio:
                         # window, or (at a boundary) whatever of the incoming overlap
                         # arrived before the mix starts. The window is whatever the
                         # source has banked ahead of playback right now.
-                        silent_tail = trailing_silence_bytes(chunk, silent_tail)
+                        silent_tail = trailing_silence_bytes(chunk, pcm_format, silent_tail)
                         crossfade_buffer.extend(chunk)
                         del chunk
                         hold_target = (

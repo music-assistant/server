@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -35,13 +36,13 @@ from music_assistant.controllers.streams.audio import (
     CrossfadeData,
     StreamsAudio,
     _TailHold,
-    trailing_silence_bytes,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.helpers.audio import trailing_silence_bytes
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -530,15 +531,33 @@ async def test_a_carried_lead_is_aged_by_the_gap_before_the_stream_starts() -> N
     assert ancient.hold_target(max_bytes, frame_size) == 0
 
 
-def test_trailing_silence_is_measured_across_chunks() -> None:
-    """A silent run has to survive the chunk boundaries it arrives in."""
-    assert trailing_silence_bytes(b"\x01\x02", 0) == 0
-    # music then silence: only the silent end counts
-    assert trailing_silence_bytes(b"\x01\x00\x00\x00", 0) == 3
-    # a wholly silent chunk continues the run the buffer already had
-    assert trailing_silence_bytes(b"\x00" * 5, 3) == 8
-    # audio again ends the run, whatever was carried
-    assert trailing_silence_bytes(b"\x00\x09", 100) == 0
+def test_trailing_silence_is_measured_at_the_threshold_that_strips_it() -> None:
+    """
+    Quiet counts as silence at the same threshold the mixer's strip uses.
+
+    Exact zeroes are not the interesting case: a track that ends by fading out is
+    below the threshold long before it reaches them, and that is the audio the fade
+    would otherwise be handed.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=1
+    )
+    # s16le full scale is 32768, so the threshold sits at 655
+    loud = struct.pack("<4h", 9000, -9000, 9000, -9000)
+    quiet = struct.pack("<4h", 100, -100, 40, 0)
+
+    assert trailing_silence_bytes(loud, pcm_format, 0) == 0
+    # audible then quiet: only the quiet end counts, two bytes per sample
+    assert trailing_silence_bytes(loud + quiet, pcm_format, 0) == 8
+    # a wholly quiet chunk continues the run the buffer already ended with
+    assert trailing_silence_bytes(quiet, pcm_format, 8) == 16
+    # audible again ends the run, whatever was carried
+    assert trailing_silence_bytes(quiet + loud, pcm_format, 100) == 0
+    # a flavour that cannot be read sample-wise is not guessed at
+    unreadable = AudioFormat(
+        content_type=ContentType.PCM_S24LE, sample_rate=8000, bit_depth=24, channels=1
+    )
+    assert trailing_silence_bytes(quiet, unreadable, 8) == 0
 
 
 async def test_the_holdback_fills_with_audio_not_an_items_padding(
@@ -555,8 +574,11 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
         content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
     )
     pss = pcm_format.pcm_sample_size
-    music = bytes([1, 2]) * (pss // 2)
-    padding = bytes(pss)
+    frames = pcm_format.sample_rate
+    # a fading ending is below the strip threshold long before it reaches zero, so
+    # the tail this has to reach past is quiet audio, not digital silence
+    music = struct.pack("<2h", 9000, -9000) * (frames // 1)
+    quiet = struct.pack("<2h", 90, -90) * (frames // 1)
 
     current_details = SimpleNamespace(
         duration=24,
@@ -621,7 +643,7 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
         for _ in range(WARMUP_DURATION + 12):
             yield music
         for _ in range(10):
-            yield padding
+            yield quiet
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -635,7 +657,7 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
         pass
 
     tail = captured["fade_out"]
-    silent = len(tail) - len(tail.rstrip(b"\x00"))
+    silent = trailing_silence_bytes(tail, pcm_format, 0)
     audible = (len(tail) - silent) / pss
     # duration 24 caps the window at 12s, and all 12 must be audio: counting the
     # padding as the window would leave only the 2s of music that precedes it
