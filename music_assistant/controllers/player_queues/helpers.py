@@ -204,16 +204,20 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
 
 def committed_index(queue: PlayerQueue) -> int | None:
     """
-    Return the index of the track the player was already handed, or None if there is none.
+    Return the highest queue index the player owns, or None if it owns none.
 
-    New items belong behind it. Repeat can put it before `current_index`, so callers that reorder
-    existing items have to handle the queue being split across its end and its start.
+    It holds both the playing track and the one handed to it for the transition. Nothing at or
+    below this index can be reordered: the player would keep playing what the queue no longer
+    lists, and the playing position is not re-anchored when items move around it.
 
     :param queue: The queue to resolve the index for.
     """
-    if queue.index_in_buffer is not None:
+    if queue.current_index is None:
         return queue.index_in_buffer
-    return queue.current_index
+    if queue.index_in_buffer is None:
+        return queue.current_index
+    # repeat wraps the buffered index back to the front while the last track plays
+    return max(queue.current_index, queue.index_in_buffer)
 
 
 def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:

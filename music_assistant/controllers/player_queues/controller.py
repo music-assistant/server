@@ -360,17 +360,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return  # no change
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+        self.update_next_item_on_player(queue_id)
 
     @api_command("player_queues/crossfade", required_scope=Scope.QUEUES_CONTROL)
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
@@ -384,15 +374,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.crossfade_enabled != effective_before:
             # refresh the derived smart-fades indicator so the update we signal reflects the new state
             queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
-            if (
-                queue.state == PlaybackState.PLAYING
-                and queue.index_in_buffer is not None
-                and queue.index_in_buffer == queue.current_index
-            ):
-                # re-enqueue the next track so the new crossfade behaviour applies to the
-                # upcoming transition (only when the player has already loaded the current track)
-                if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                    self._enqueue_next_item(queue_id, next_item)
+            # the upcoming track is unchanged but the way it is streamed is not, so hand it over
+            # again
+            self.update_next_item_on_player(queue_id, force=True)
         self.signal_update(queue_id)
 
     @api_command("player_queues/overlay", required_scope=Scope.QUEUES_CONTROL)
@@ -1593,17 +1577,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue.items = len(self._queue_data[queue_id].items)
         self.signal_update(queue_id, True)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+        self.update_next_item_on_player(queue_id)
 
     # Helper methods
 

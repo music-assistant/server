@@ -1,4 +1,4 @@
-"""Tests for the shared boundary index every queue insert path places new items behind."""
+"""Tests for the shared boundary index every queue mutation stays clear of."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ def _queue(current_index: int | None, index_in_buffer: int | None) -> PlayerQueu
         (2, 2, 2),
         (2, 3, 3),
         (0, 4, 4),
+        (4, 0, 4),
         (3, None, 3),
         (None, 1, 1),
         (None, None, None),
@@ -31,10 +32,15 @@ def _queue(current_index: int | None, index_in_buffer: int | None) -> PlayerQueu
 def test_committed_index(
     current_index: int | None, index_in_buffer: int | None, expected: int | None
 ) -> None:
-    """The buffered track is the boundary, falling back to the playing one."""
+    """The boundary is whichever of the two positions is furthest into the queue."""
     assert committed_index(_queue(current_index, index_in_buffer)) == expected
 
 
-def test_a_wrapped_buffer_reports_the_buffered_track_at_the_front() -> None:
-    """Repeat loops the buffered track to the front and the boundary follows it there."""
-    assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 0
+def test_a_wrapped_buffer_never_reports_a_boundary_before_the_playing_track() -> None:
+    """
+    Repeat loops the buffered index to the front, and the boundary does not follow it there.
+
+    Inserting or truncating before the playing track shifts it, and its index is not re-anchored,
+    so the queue would end up naming a different track than the one being played.
+    """
+    assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 4

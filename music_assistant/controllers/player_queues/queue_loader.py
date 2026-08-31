@@ -112,7 +112,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             boundary_index = committed_index(queue)
             cur_index = boundary_index if boundary_index is not None else 0
         else:
-            # a stale buffered index must not push the insert past the item that will play
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1
         shuffle = queue.shuffle_enabled and len(queue_items) > 1
