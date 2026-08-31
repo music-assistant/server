@@ -1983,15 +1983,19 @@ class AuthenticationManager:
 
     async def _prune_orphaned_user_rows(self) -> None:
         """Drop rows in the user-linked tables whose user no longer exists."""
-        total = 0
-        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
-            cursor = await self.database.execute(
-                f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
-            )
-            total += int(cursor.rowcount)
-        await self.database.commit()
-        if total > 0:
-            self.logger.debug("Cleaned up %d row(s) of deleted user(s)", total)
+        # this is optional hygiene, so a failure must never take the server down with it
+        try:
+            total = 0
+            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+                cursor = await self.database.execute(
+                    f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
+                )
+                total += int(cursor.rowcount)
+            await self.database.commit()
+            if total > 0:
+                self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
+        except Exception as err:
+            self.logger.warning("Failed to clean up rows of deleted users: %s", err)
 
     async def _prune_stale_user_filters(self) -> None:
         """Drop user access filter entries for providers or players that no longer exist."""

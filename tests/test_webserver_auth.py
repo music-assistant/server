@@ -697,12 +697,33 @@ async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationMa
 
 async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
     """
-    Test that rows left behind by an earlier user deletion are cleaned up on startup.
+    Test that rows left behind by an earlier user deletion are cleaned up.
 
     :param auth_manager: AuthenticationManager instance.
     """
     user = await auth_manager.create_user(username="survivinguser", role=UserRole.USER)
     await auth_manager.create_token(user, "Keep Me", is_long_lived=False)
+    # a live row in every table, so a sweep that is too broad cannot go unnoticed
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "live-link",
+            "user_id": user.user_id,
+            "provider_type": AuthProviderType.BUILTIN.value,
+            "provider_user_id": "live-provider-uid",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "live-code",
+            "code": "LIVECODE1234",
+            "user_id": user.user_id,
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
     # rows a pre-fix delete_user would have left behind
     await auth_manager.database.insert(
         "auth_tokens",
@@ -741,9 +762,8 @@ async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> 
 
     for table in ("auth_tokens", "join_codes", "user_auth_providers"):
         assert await auth_manager.database.get_rows(table, {"user_id": "deleted-user-id"}) == []
-    # the live user's token is untouched
-    rows = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
-    assert [row["name"] for row in rows] == ["Keep Me"]
+        # the live user's rows are untouched
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
 
 
 async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) -> None:
