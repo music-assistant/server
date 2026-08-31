@@ -59,6 +59,10 @@ class PlayerQueueData:
     credited_albums: set[Album] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
+    # None = follow the global default, resolved at runtime
+    autoplay_override: bool | None = None
+    # None = follow the global default, resolved at runtime
+    crossfade_override: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
@@ -111,6 +115,8 @@ class PlayerQueueData:
             ),
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
+            "autoplay_override": self.autoplay_override,
+            "crossfade_override": self.crossfade_override,
         }
 
     @staticmethod
@@ -200,6 +206,8 @@ class PlayerQueueData:
             enqueued_media_items=enqueued_media_items,
             credited_albums=credited_albums,
             userid=state_data.get("userid"),
+            autoplay_override=state_data.get("autoplay_override"),
+            crossfade_override=state_data.get("crossfade_override"),
         )
 
     @staticmethod

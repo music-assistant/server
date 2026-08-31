@@ -158,6 +158,10 @@ def _shuffle_controller(
     fake.update_items = MagicMock()
     fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
+    # bind the real settings-copy helper so the handover under test exercises actual logic
+    fake._copy_queue_settings = lambda source_queue_id, target_queue_id: (
+        PlayerQueuesController._copy_queue_settings(fake, source_queue_id, target_queue_id)
+    )
     target_player = MagicMock()
     target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None

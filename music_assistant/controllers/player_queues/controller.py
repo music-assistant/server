@@ -53,6 +53,7 @@ from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    CONF_PLAYER_QUEUES,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
@@ -64,6 +65,10 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    CONF_AUTOPLAY_ENABLED,
+    CONF_CROSSFADE_ENABLED,
+    DEFAULT_AUTOPLAY_ENABLED,
+    DEFAULT_CROSSFADE_ENABLED,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
 )
@@ -225,10 +230,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # queues that follow a changed global value may flip their derived indicators, so refresh
         # and signal them (mirrors what save_player_queue_config does for a single queue)
-        for queue in self.all():
+        for queue_data in self._queue_data.values():
+            queue = queue_data.queue
+            autoplay_before = queue.autoplay_enabled
+            crossfade_before = queue.crossfade_enabled
+            self._resolve_default_toggles(queue_data)
             queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
             queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
             self.signal_update(queue.queue_id)
+            if queue.crossfade_enabled != crossfade_before:
+                # the global crossfade default just flipped this queue's effective value: re-enqueue
+                # the next track so the new behaviour applies to the upcoming transition
+                self._reenqueue_next_item_if_loaded(queue.queue_id)
+            if (
+                queue.autoplay_enabled
+                and not autoplay_before
+                and not queue.is_dynamic
+                and queue.current_index is not None
+                and (queue.items - queue.current_index) < 5
+            ):
+                # the global autoplay default just switched this queue's effective value on and
+                # it's already at/near the end, so kick off a refill right away (mirrors set_autoplay)
+                task_id = f"fill_autoplay_tracks_{queue.queue_id}"
+                self.mass.call_later(5, self._fill_autoplay_tracks, queue.queue_id, task_id=task_id)
 
     def get_queue_config_entries(
         self, playlist_options: list[ConfigValueOption] | None = None
@@ -321,7 +345,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Configure Autoplay setting on the queue."""
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        queue.autoplay_enabled = autoplay_enabled
+        queue_data.autoplay_override = autoplay_enabled
+        self._resolve_default_toggles(queue_data)
         # if we're already at/near the end of the queue, kick off a refill right away
         # (an active dynamic source manages its own refills, so leave it be)
         if (
@@ -352,37 +377,28 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return  # no change
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+        # if the queue is playing, ensure to (re)queue the next track because it might have
+        # changed; note that we only do this if the player has loaded the current track
+        # if not, we wait until it has loaded to prevent conflicts
+        self._reenqueue_next_item_if_loaded(queue_id)
 
     @api_command("player_queues/crossfade", required_scope=Scope.QUEUES_CONTROL)
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
         """Enable or disable crossfade on the queue."""
-        queue = self._queue_data[queue_id].queue
-        if queue.crossfade_enabled == crossfade_enabled:
-            return  # no change
-        queue.crossfade_enabled = crossfade_enabled
-        # refresh the derived smart-fades indicator so the update we signal reflects the new state
-        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
-        self.signal_update(queue_id)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        effective_before = queue.crossfade_enabled
+        # the toggle always pins an explicit override, even when it matches the global default,
+        # so it must persist regardless of whether the effective value actually changes below
+        queue_data.crossfade_override = crossfade_enabled
+        self._resolve_default_toggles(queue_data)
+        if queue.crossfade_enabled != effective_before:
+            # refresh the derived smart-fades indicator so the update we signal reflects the new state
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
             # re-enqueue the next track so the new crossfade behaviour applies to the
-            # upcoming transition (only when the player has already loaded the current track)
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+            # upcoming transition
+            self._reenqueue_next_item_if_loaded(queue_id)
+        self.signal_update(queue_id)
 
     @api_command("player_queues/overlay", required_scope=Scope.QUEUES_CONTROL)
     async def set_overlay(
@@ -1166,12 +1182,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if source_queue.state != PlaybackState.IDLE:
             await self.stop(source_queue_id)
 
-        target_queue.repeat_mode = source_queue.repeat_mode
-        target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        target_queue.crossfade_enabled = source_queue.crossfade_enabled
-        # refresh the derived smart-fades indicator for the target's own config/availability
-        target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
-        target_queue.autoplay_enabled = source_queue.autoplay_enabled
+        self._copy_queue_settings(source_queue_id, target_queue_id)
         self._queue_data[target_queue_id].source_items = list(
             self._queue_data[source_queue_id].source_items
         )
@@ -1233,12 +1244,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     active=False,
                     display_name=player.state.name,
                     available=player.state.available,
-                    # Autoplay starts out on for a brand new queue; the player's own Autoplay
-                    # switch owns it from here on (and is restored above for a queue we know)
-                    autoplay_enabled=True,
                     items=0,
                 )
             )
+        # a brand new queue (or one restored without a pinned override) follows the global
+        # autoplay/crossfade defaults; a restored override is applied here too
+        self._resolve_default_toggles(queue_data)
 
         self._queue_data[queue_id] = queue_data
         # always call update to calculate state etc
@@ -1977,3 +1988,47 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
+
+    def _resolve_default_toggles(self, queue_data: PlayerQueueData) -> None:
+        """Set the queue's effective autoplay/crossfade from their override or the global default."""
+        queue = queue_data.queue
+        queue.autoplay_enabled = (
+            queue_data.autoplay_override
+            if queue_data.autoplay_override is not None
+            else self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_AUTOPLAY_ENABLED, DEFAULT_AUTOPLAY_ENABLED
+            )
+        )
+        queue.crossfade_enabled = (
+            queue_data.crossfade_override
+            if queue_data.crossfade_override is not None
+            else self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_ENABLED, DEFAULT_CROSSFADE_ENABLED
+            )
+        )
+
+    def _copy_queue_settings(self, source_queue_id: str, target_queue_id: str) -> None:
+        """Copy the queue settings (and their pinned overrides) from one queue to another."""
+        source_data = self._queue_data[source_queue_id]
+        target_data = self._queue_data[target_queue_id]
+        target_data.queue.repeat_mode = source_data.queue.repeat_mode
+        target_data.queue.shuffle_enabled = source_data.queue.shuffle_enabled
+        target_data.queue.crossfade_enabled = source_data.queue.crossfade_enabled
+        target_data.crossfade_override = source_data.crossfade_override
+        target_data.queue.autoplay_enabled = source_data.queue.autoplay_enabled
+        target_data.autoplay_override = source_data.autoplay_override
+        # refresh the derived smart-fades indicator for the target's own config/availability
+        target_data.queue.smart_fades_active = self.mass.streams.is_smart_fades_active(
+            target_data.queue
+        )
+
+    def _reenqueue_next_item_if_loaded(self, queue_id: str) -> None:
+        """Re-enqueue the next item so a setting change just made applies to it."""
+        queue = self._queue_data[queue_id].queue
+        if (
+            queue.state == PlaybackState.PLAYING
+            and queue.index_in_buffer is not None
+            and queue.index_in_buffer == queue.current_index
+        ):
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
