@@ -372,8 +372,7 @@ def _autoplay_entries(
         ),
     ]
     if not per_queue:
-        # the global on/off default a queue follows until its own Autoplay switch pins an
-        # override; no per-queue variant, that toggle is a runtime command, not a config entry
+        # global-only: the per-queue Autoplay toggle is a runtime command, not a config entry
         entries.append(
             ConfigEntry(
                 key=CONF_AUTOPLAY_ENABLED,
@@ -426,8 +425,7 @@ def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigE
         ),
     ]
     if not per_queue:
-        # the global on/off default a queue follows until its own Crossfade switch pins an
-        # override; no per-queue variant, that toggle is a runtime command, not a config entry
+        # global-only: the per-queue crossfade toggle is a runtime command, not a config entry
         entries.append(
             ConfigEntry(
                 key=CONF_CROSSFADE_ENABLED,

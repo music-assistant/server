@@ -228,8 +228,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not any(key.startswith("values/") for key in changed_keys):
             return
         # queues that follow a changed global value may flip their effective toggles or derived
-        # indicators, so refresh and signal them; like the other global queue settings the
-        # audible effect lands on the next track transition
+        # indicators, so refresh and signal them (the audible effect lands on the next transition)
         for queue_data in self._queue_data.values():
             queue = queue_data.queue
             self._resolve_default_toggles(queue_data)
@@ -378,8 +377,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
         effective_before = queue.crossfade_enabled
-        # the toggle always pins an explicit override, even when it matches the global default,
-        # so it must persist regardless of whether the effective value actually changes below
+        # the toggle always pins an explicit override, even when it matches the global default
         queue_data.crossfade_override = crossfade_enabled
         self._resolve_default_toggles(queue_data)
         if queue.crossfade_enabled != effective_before:
@@ -1180,8 +1178,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        # carry over the pinned autoplay/crossfade overrides (or the follow-global state) and
-        # re-resolve the target's effective values from them
+        # carry over the pinned overrides (or follow-global state) and re-resolve the target
         self._queue_data[target_queue_id].crossfade_override = self._queue_data[
             source_queue_id
         ].crossfade_override
@@ -1255,8 +1252,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     items=0,
                 )
             )
-        # a brand new queue (or one restored without a pinned override) follows the global
-        # autoplay/crossfade defaults; a restored override is applied here too
+        # new queues and queues restored without a pinned override follow the global defaults
         self._resolve_default_toggles(queue_data)
 
         self._queue_data[queue_id] = queue_data

@@ -59,9 +59,8 @@ class PlayerQueueData:
     credited_albums: set[Album] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
-    # None = follow the global default, resolved at runtime
+    # pinned autoplay/crossfade toggle overrides; None = follow the global default. Persisted.
     autoplay_override: bool | None = None
-    # None = follow the global default, resolved at runtime
     crossfade_override: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
