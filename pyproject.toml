@@ -69,7 +69,7 @@ test = [
   "pytest-xdist==3.8.0",
   "syrupy==5.5.3",
   "tomli==2.4.1",
-  "ruff==0.15.22",
+  "ruff==0.16.5",
   "yappi==1.7.6",
 ]
 
