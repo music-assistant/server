@@ -256,8 +256,6 @@ class YotoProvider(MusicProvider):
         """Retrieve library audiobooks from the provider."""
         await self._handle_yoto_api_call(self.client.update_library())
         for card in filter(lambda card: card.category == "stories", self.client.library.values()):
-            # we update audiobooks explicitly as we need chapters preloaded
-            await self._handle_yoto_api_call(self.client.update_card_detail(card.id))
             yield self._parse_audiobook(await self._get_card(card.id))
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
