@@ -369,10 +369,16 @@ class SonosPlayer(Player):
             media.queue_item_id = "announcement"
             self._announcement_media = media
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
-            await self.group_controller.play_cloud_queue(
-                cloud_queue_url,
-                item_id=media.queue_item_id,
-            )
+            try:
+                await self.group_controller.play_cloud_queue(
+                    cloud_queue_url,
+                    item_id=media.queue_item_id,
+                )
+            except Exception:
+                # the speaker never got the queue, so describing one is worse than
+                # admitting there is none - its session was reset above either way
+                self._announcement_media = None
+                raise
             return
 
         if not self.flow_mode and media.source_id and media.queue_item_id:
@@ -380,10 +386,16 @@ class SonosPlayer(Player):
             # create a sonos cloud queue and load it
             self.cloud_queue_id = media.source_id
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
-            await self.group_controller.play_cloud_queue(
-                cloud_queue_url,
-                item_id=media.queue_item_id,
-            )
+            try:
+                await self.group_controller.play_cloud_queue(
+                    cloud_queue_url,
+                    item_id=media.queue_item_id,
+                )
+            except Exception:
+                # the speaker never got the queue, so describing one is worse than
+                # admitting there is none - its session was reset above either way
+                self.cloud_queue_id = None
+                raise
             return
 
         # play duration-less (long running) radio streams

@@ -367,6 +367,30 @@ async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded
     assert player.cloud_queue_id == "new_queue"
 
 
+async def test_a_failed_load_leaves_no_cloud_queue_described() -> None:
+    """Test a load the speaker never accepted is not described as a queue afterwards."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock(side_effect=FailedCommand("no can do"))
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        with pytest.raises(FailedCommand):
+            await player.play_media(
+                PlayerMedia(
+                    uri="library://track/1",
+                    media_type=MediaType.TRACK,
+                    source_id="new_queue",
+                    queue_item_id="item1",
+                )
+            )
+
+    # the session was reset before the load, so claiming either queue would be a lie
+    assert player.cloud_queue_id is None
+
+
 def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     """Test a queue edit is signalled to the speakers serving that queue."""
     provider = SonosPlayerProvider.__new__(SonosPlayerProvider)
