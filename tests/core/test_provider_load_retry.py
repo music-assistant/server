@@ -55,9 +55,32 @@ async def test_transient_handled_load_error_is_retried() -> None:
     await mass.load_provider("test--instance", allow_retry=True)
 
     cast("MagicMock", mass.call_later).assert_called_once_with(
-        120,
+        10,
         mass.load_provider,
         "test--instance",
         True,
+        retry_attempt=1,
+        task_id="load_provider_test--instance",
+    )
+
+
+@pytest.mark.parametrize(
+    ("retry_attempt", "expected_delay"),
+    [(0, 10), (1, 30), (2, 60), (3, 120), (9, 120)],
+)
+async def test_retry_delay_grows_with_each_failed_attempt(
+    retry_attempt: int, expected_delay: int
+) -> None:
+    """Retries come quickly at first and then settle on the slowest interval."""
+    mass = _mass_with_load_error(ProviderUnavailableError("Temporarily unavailable"))
+
+    await mass.load_provider("test--instance", allow_retry=True, retry_attempt=retry_attempt)
+
+    cast("MagicMock", mass.call_later).assert_called_once_with(
+        expected_delay,
+        mass.load_provider,
+        "test--instance",
+        True,
+        retry_attempt=retry_attempt + 1,
         task_id="load_provider_test--instance",
     )

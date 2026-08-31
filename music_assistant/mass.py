@@ -121,6 +121,8 @@ PROVIDER_SETUP_TIMEOUT = 120
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
 PROVIDER_LOAD_CONCURRENCY = 8
+# Seconds before each retry of a failed provider load; the last delay repeats.
+PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -962,8 +964,17 @@ class MusicAssistant:
         instance_id: str,
         allow_retry: bool = False,
         remove_if_unsupported: bool = False,
+        retry_attempt: int = 0,
     ) -> None:
-        """Try to load a provider and catch errors."""
+        """
+        Try to load a provider and catch errors.
+
+        :param instance_id: Instance ID of the provider to load.
+        :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
+        :param remove_if_unsupported: Drop the config if the host can not run this provider.
+        :param retry_attempt: How many retries of this load already failed, which decides
+            how long the next one waits.
+        """
         try:
             prov_conf = await self.config.get_provider_config(instance_id)
         except KeyError:
@@ -1021,19 +1032,25 @@ class MusicAssistant:
                     (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
                 )
             )
-            if will_retry:
+            retry_delay = (
+                PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
+                if will_retry
+                else None
+            )
+            if retry_delay is not None:
                 self.call_later(
-                    120,
+                    retry_delay,
                     self.load_provider,
                     instance_id,
                     allow_retry,
+                    retry_attempt=retry_attempt + 1,
                     task_id=task_id,
                 )
             LOGGER.warning(
                 "Error loading provider(instance) %s: %s%s",
                 prov_conf.name or prov_conf.instance_id,
                 str(exc) or exc.__class__.__name__,
-                " (will be retried later)" if will_retry else "",
+                f" (will be retried in {retry_delay} seconds)" if retry_delay else "",
                 exc_info=_provider_error_traceback(exc),
             )
             return
