@@ -2502,6 +2502,11 @@ class StreamsAudio:
         incoming_prefetcher = _IncomingFadePrefetcher(self, pcm_format, flow_session_id)
         try:
             while True:
+                # every outgoing tail this iteration hands over, wherever it is flushed.
+                # Those bytes are the previous item's media time, so they are kept out
+                # of bytes_written, but the player receives them here and the lead is
+                # measured from what the player received.
+                outgoing_emitted = 0
                 # bail out early if a newer producer has taken over this queue,
                 # so we don't append another entry to a stream log we no longer own
                 if _superseded():
@@ -2619,6 +2624,7 @@ class StreamsAudio:
                         for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
                             yield pcm_slice
                             await asyncio.sleep(0)
+                        outgoing_emitted += len(last_fadeout_part)
                         last_fadeout_part = b""
                         last_streamdetails = None
                         last_play_log_entry = None
@@ -2684,10 +2690,6 @@ class StreamsAudio:
                 flow_log.append(play_log_entry)
 
                 bytes_written = 0
-                # the outgoing share of a mix is this stream's output too, but it is
-                # credited to the previous item's media time rather than bytes_written,
-                # so the lead has to count it separately or every boundary loses it
-                outgoing_emitted = 0
                 crossfade_buffer = bytearray()
                 warmup_bytes = 0
                 first_chunk_received = False
@@ -2887,6 +2889,7 @@ class StreamsAudio:
                                 ):
                                     yield pcm_slice
                                     await asyncio.sleep(0)
+                                outgoing_emitted += len(last_fadeout_part)
                                 crossfade_bytes_written = 0
                                 remaining_bytes = b""
                                 # mix failed — undo the eager seek_position
@@ -2998,6 +3001,7 @@ class StreamsAudio:
                     for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
                         yield pcm_slice
                         await asyncio.sleep(0)
+                    outgoing_emitted += len(last_fadeout_part)
                     # no crossfade happened — undo the eager seek_position
                     queue_track.streamdetails.seek_position = raw_seek_position
                     # full tail was pre-counted and is now yielded as-is
