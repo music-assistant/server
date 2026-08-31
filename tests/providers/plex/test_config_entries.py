@@ -5,7 +5,16 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from music_assistant.providers.plex.constants import CONF_LIBRARY_ID
+from music_assistant.providers.plex import PlexProvider
+from music_assistant.providers.plex.constants import (
+    CONF_LIBRARY_ID,
+    CONF_STREAM_QUALITY,
+    STREAM_QUALITY_96,
+    STREAM_QUALITY_128,
+    STREAM_QUALITY_192,
+    STREAM_QUALITY_320,
+    STREAM_QUALITY_ORIGINAL,
+)
 from music_assistant.providers.plex.helpers import (
     CONF_LIBRARY_TYPE,
     LIBRARY_TYPE_AUDIOBOOKS,
@@ -136,3 +145,20 @@ def test_default_selection_preserves_prefilled_choice() -> None:
     )
     assert library == "Server / Music"
     assert library_type == LIBRARY_TYPE_MUSIC
+
+
+async def test_get_config_entries_includes_stream_quality_for_all_library_types() -> None:
+    """All Plex library types expose Plex stream quality choices."""
+    entries = await PlexProvider.get_config_entries(MagicMock())
+
+    by_key = {entry.key: entry for entry in entries}
+    quality_entry = by_key[CONF_STREAM_QUALITY]
+
+    assert quality_entry.default_value == STREAM_QUALITY_ORIGINAL
+    assert [option.value for option in quality_entry.options or []] == [
+        STREAM_QUALITY_ORIGINAL,
+        STREAM_QUALITY_96,
+        STREAM_QUALITY_128,
+        STREAM_QUALITY_192,
+        STREAM_QUALITY_320,
+    ]
