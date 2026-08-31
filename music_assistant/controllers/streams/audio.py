@@ -287,6 +287,10 @@ class _TailHold:
     # the player's supply must stay at least this far ahead of the wall clock
     _LEAD_RESERVE_S = 3.0
 
+    # share of the spare lead the holdback takes while there is still track left to
+    # earn more over; it rises towards all of it as the item runs out
+    _EARLY_TAKE = 0.5
+
     def __init__(
         self,
         pcm_format: AudioFormat,
@@ -358,7 +362,9 @@ class _TailHold:
         elapsed = asyncio.get_event_loop().time() - self._started
         received_seconds = self._received_bytes / self._pcm_format.pcm_sample_size
         spare_seconds = self._carried_lead + received_seconds - elapsed - self._LEAD_RESERVE_S
-        surplus_bytes = int(max(0.0, spare_seconds) * self._pcm_format.pcm_sample_size) // 2
+        take = self._take_fraction(received_seconds, max_bytes)
+        surplus_seconds = max(0.0, spare_seconds) * take
+        surplus_bytes = int(surplus_seconds * self._pcm_format.pcm_sample_size)
         return min(max_bytes, surplus_bytes // frame_size * frame_size)
 
     def banked_lead(self, emitted_bytes: int) -> float:
@@ -383,6 +389,32 @@ class _TailHold:
         # every second since audio last arrived.
         idle = max(0.0, now - self._last_noted)
         return max(0.0, self._carried_lead + emitted_seconds - (now - self._started) - idle)
+
+    def _take_fraction(self, received_seconds: float, max_bytes: int) -> float:
+        """
+        Return how much of the spare lead may go into the holdback right now.
+
+        Half of it early on, so the player's lead keeps growing while there is still
+        track left to grow it over, rising to all of it as the item runs out, where
+        no further lead can be earned and the window is the only thing still worth
+        filling. Ramped rather than switched: a step change would stop the yields
+        dead until the buffer caught up to the new target.
+
+        :param received_seconds: Seconds of audio this stream has taken so far.
+        :param max_bytes: The full fade-out window, which sets the ramp's length.
+        """
+        streamdetails = self._queue_item.streamdetails
+        duration = streamdetails.duration if streamdetails else None
+        window_seconds = max_bytes / self._pcm_format.pcm_sample_size
+        if not duration or window_seconds <= 0:
+            return self._EARLY_TAKE
+        seek = streamdetails.seek_position if streamdetails else 0
+        remaining = max(0.0, duration - seek - received_seconds)
+        # the ramp spans the last two windows' worth of the item: long enough that
+        # the target creeps up rather than jumps, short enough to be over by the end
+        ramp = 2.0 * window_seconds
+        progress = min(1.0, max(0.0, (ramp - remaining) / ramp))
+        return self._EARLY_TAKE + (1.0 - self._EARLY_TAKE) * progress
 
 
 async def _incoming_overlap_stream(

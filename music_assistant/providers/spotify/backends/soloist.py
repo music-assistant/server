@@ -180,8 +180,14 @@ _UNCLAIMED_LIMIT_S: Final[float] = 60.0
 # memory held and how far the engine's item can run ahead of the queue's, which
 # the URI match in _signal_ready depends on. Resume well below the cap so the
 # sink is not flipped on every chunk.
-_MAX_RETAINED_S: Final[float] = 20.0
-_RESUME_RETAINED_S: Final[float] = 10.0
+# 35s is what a crossfade needs, not what playback needs: the holdback can only
+# ever offer half of what is retained, past a reserve, and a smart fade declines
+# below roughly 20s of window (measured over real analysis rows: 0 of 12 track
+# pairs plan a transition at 8.5s, 12 of 12 at 33s). At s32le/44.1k/2ch this holds
+# ~6MB per session, and stays far under one track length, which is what the
+# uri match in _signal_ready depends on.
+_MAX_RETAINED_S: Final[float] = 35.0
+_RESUME_RETAINED_S: Final[float] = 20.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
 # how often an unsettled boundary re-asks the queue for the follower to feed

@@ -301,7 +301,9 @@ async def test_tail_hold_grows_with_the_banked_surplus() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer))
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
+    )
     hold = _TailHold(pcm_format, cast("Any", queue_item))
 
     # nothing arrived yet: nothing may be held
@@ -336,7 +338,7 @@ async def test_tail_hold_sees_a_buffer_attached_after_it_was_created() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     # the tracker is built before the stream is opened, so there is no buffer yet
-    streamdetails = SimpleNamespace(buffer=None)
+    streamdetails = SimpleNamespace(buffer=None, duration=None, seek_position=0)
     hold = _TailHold(pcm_format, cast("Any", SimpleNamespace(streamdetails=streamdetails)))
     hold.note_bytes(pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time()
@@ -355,7 +357,9 @@ async def test_tail_hold_counts_a_long_mix_as_listening_time() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     queue_item = SimpleNamespace(
-        streamdetails=SimpleNamespace(buffer=SimpleNamespace(eof=False, has_error=False))
+        streamdetails=SimpleNamespace(
+            buffer=SimpleNamespace(eof=False, has_error=False), duration=None, seek_position=0
+        )
     )
     hold = _TailHold(pcm_format, cast("Any", queue_item))
 
@@ -374,13 +378,17 @@ async def test_tail_hold_follows_a_capacity_reselection() -> None:
     """A reselection hands the item different details; the tracker must follow them."""
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=None, duration=None, seek_position=0)
+    )
     hold = _TailHold(pcm_format, cast("Any", queue_item))
     hold.note_bytes(pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time()
 
     # the source was reselected: the item carries a different streamdetails now
-    queue_item.streamdetails = SimpleNamespace(buffer=SimpleNamespace(eof=True, has_error=False))
+    queue_item.streamdetails = SimpleNamespace(
+        buffer=SimpleNamespace(eof=True, has_error=False), duration=None, seek_position=0
+    )
 
     assert (
         hold.hold_target(45 * pcm_format.pcm_sample_size, frame_size)
@@ -394,7 +402,13 @@ async def test_tail_hold_releases_everything_for_a_failed_source() -> None:
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=True, has_error=True, duration_available=30.0)
     hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
+        pcm_format,
+        cast(
+            "Any",
+            SimpleNamespace(
+                streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
+            ),
+        ),
     )
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
     hold._started = asyncio.get_event_loop().time() - 4.0
@@ -408,7 +422,13 @@ async def test_tail_hold_forgives_a_suspended_source() -> None:
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
     hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer)))
+        pcm_format,
+        cast(
+            "Any",
+            SimpleNamespace(
+                streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
+            ),
+        ),
     )
 
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
@@ -425,7 +445,13 @@ async def test_tail_hold_works_without_a_source_buffer() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     hold = _TailHold(
-        pcm_format, cast("Any", SimpleNamespace(streamdetails=SimpleNamespace(buffer=None)))
+        pcm_format,
+        cast(
+            "Any",
+            SimpleNamespace(
+                streamdetails=SimpleNamespace(buffer=None, duration=None, seek_position=0)
+            ),
+        ),
     )
 
     hold.note_bytes(27 * pcm_format.pcm_sample_size)
@@ -439,7 +465,9 @@ async def test_tail_hold_counts_a_carried_lead_as_already_banked() -> None:
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
     audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=audio_buffer))
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
+    )
     max_bytes = 45 * pcm_format.pcm_sample_size
 
     # a source barely above playback pace: 4s delivered in 4s banks nothing on its own
@@ -471,7 +499,9 @@ async def test_the_banked_lead_counts_emitted_audio_not_what_arrived() -> None:
     """
     pcm_format = TEST_PCM_FORMAT
     pss = pcm_format.pcm_sample_size
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=None, duration=None, seek_position=0)
+    )
 
     # nothing streamed yet: nothing banked
     hold = _TailHold(pcm_format, cast("Any", queue_item), carried_lead=10.0)
@@ -506,7 +536,9 @@ async def test_a_carried_lead_is_aged_by_the_gap_before_the_stream_starts() -> N
     """The player drains while a boundary is worked out, so the carry must shrink too."""
     pcm_format = TEST_PCM_FORMAT
     frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-    queue_item = SimpleNamespace(streamdetails=SimpleNamespace(buffer=None))
+    queue_item = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=None, duration=None, seek_position=0)
+    )
     now = asyncio.get_event_loop().time()
     max_bytes = 45 * pcm_format.pcm_sample_size
 
@@ -663,6 +695,70 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
     # padding as the window would leave only the 2s of music that precedes it
     assert audible >= 11.0, f"only {audible:.2f}s of audible tail for the fade"
     assert silent / pss <= MAX_SILENT_TAIL_HOLDBACK_SECONDS
+
+
+async def test_the_holdback_takes_more_of_the_lead_as_the_item_runs_out() -> None:
+    """
+    Half the spare lead early, all of it by the end, and no step in between.
+
+    Early on there is still track left to earn more lead over, so taking half
+    lets it keep growing. By the end none can be earned and the window is all
+    that still matters. A step change would stall the yields until the buffer
+    caught up to the new target, so the rise has to be gradual.
+    """
+    pcm_format = TEST_PCM_FORMAT
+    pss = pcm_format.pcm_sample_size
+    frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+    max_bytes = 20 * pss
+    audio_buffer = SimpleNamespace(eof=False, has_error=False, duration_available=2.0)
+
+    def _target_at(received: float, duration: int) -> float:
+        item = SimpleNamespace(
+            streamdetails=SimpleNamespace(buffer=audio_buffer, duration=duration, seek_position=0)
+        )
+        hold = _TailHold(pcm_format, cast("Any", item))
+        hold.note_bytes(int(received * pss))
+        # 40s of spare lead, so the take fraction is the only thing under test
+        hold._started = asyncio.get_event_loop().time() - (received - 43.0)
+        hold._last_noted = asyncio.get_event_loop().time()
+        return hold.hold_target(max_bytes, frame_size) / pss
+
+    # 300s item, 20s window: the ramp spans its last 40s
+    early = _target_at(60.0, 300)
+    middle = _target_at(275.0, 300)
+    at_end = _target_at(299.0, 300)
+
+    # early on, half of the 40s spare
+    assert 19.0 <= early <= 20.0
+    # the rise is gradual and monotonic, never a jump
+    assert early <= middle <= at_end
+    # and by the end the whole spare is available, so the window fills
+    assert at_end == 20.0
+
+    # a smaller spare shows the fraction rather than the window cap: 12s spare,
+    # half early and all of it at the end
+    def _small(received: float) -> float:
+        item = SimpleNamespace(
+            streamdetails=SimpleNamespace(buffer=audio_buffer, duration=300, seek_position=0)
+        )
+        hold = _TailHold(pcm_format, cast("Any", item))
+        hold.note_bytes(int(received * pss))
+        hold._started = asyncio.get_event_loop().time() - (received - 15.0)
+        hold._last_noted = asyncio.get_event_loop().time()
+        return hold.hold_target(max_bytes, frame_size) / pss
+
+    assert 5.5 <= _small(60.0) <= 6.0
+    assert 11.5 <= _small(299.0) <= 12.0
+
+    # an item of unknown length keeps the early share: nothing says it is ending
+    unknown = SimpleNamespace(
+        streamdetails=SimpleNamespace(buffer=audio_buffer, duration=None, seek_position=0)
+    )
+    hold = _TailHold(pcm_format, cast("Any", unknown))
+    hold.note_bytes(int(60.0 * pss))
+    hold._started = asyncio.get_event_loop().time() - 45.0
+    hold._last_noted = asyncio.get_event_loop().time()
+    assert 5.5 <= hold.hold_target(max_bytes, frame_size) / pss <= 6.0
 
 
 # -- StreamsAudio._select_buffered_crossfade --
