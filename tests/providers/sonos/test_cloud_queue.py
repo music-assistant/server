@@ -1,15 +1,22 @@
 """Tests for the Sonos cloud queue window served to the speakers."""
 
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiosonos.exceptions import FailedCommand
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.providers.sonos.player import SonosPlayer
-from music_assistant.providers.sonos.provider import SonosPlayerProvider, _window_size
+from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
+from music_assistant.providers.sonos.provider import (
+    SonosPlayerProvider,
+    _refresh_task_id,
+    _window_size,
+)
 
 QUEUE_ID = "party_queue"
 
@@ -47,12 +54,17 @@ class _FakeQueues:
 
     def get_next_item(self, queue_id: str, index_or_id: int | str) -> QueueItem | None:
         """Return the item that plays after the given index or item id."""
-        index = (
-            index_or_id
-            if isinstance(index_or_id, int)
-            else self.index_by_id(queue_id, index_or_id) or 0
-        )
-        return self.get_item(queue_id, index + 1)
+        if isinstance(index_or_id, int):
+            index = index_or_id
+        elif (found := self.index_by_id(queue_id, index_or_id)) is None:
+            return None
+        else:
+            index = found
+        # the real controller walks past items it cannot play
+        for candidate in self.items[index + 1 :]:
+            if candidate.available:
+                return candidate
+        return None
 
     async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for the given queue item."""
@@ -212,11 +224,111 @@ async def test_refresh_without_a_session_only_bumps_the_version() -> None:
     client.api.playback_session.refresh_cloud_queue.assert_not_awaited()
 
 
+async def test_window_without_an_item_id_centers_on_the_playing_item() -> None:
+    """Test the fallback centre is the playing item, not the one the buffer ran ahead to."""
+    items = [_make_queue_item(f"track{i}") for i in range(5)]
+    player, queues = _make_player(items, current_index=1)
+    # with crossfade the buffered index runs an item ahead of what is playing
+    queues.queue.index_in_buffer = 2
+
+    window = await player.build_cloud_queue_window(None, previous_size=0, upcoming_size=1)
+
+    assert [x.queue_item_id for x in window.items] == ["track1", "track2"]
+
+
+async def test_stop_forgets_the_cloud_queue() -> None:
+    """Test a stopped speaker is no longer signalled about that queue."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.stop = AsyncMock()
+    player.client = client
+    player.mark_stop_called = MagicMock()  # type: ignore[misc, method-assign]
+    player.update_state = MagicMock()  # type: ignore[misc, method-assign]
+    player._announcement_media = PlayerMedia(
+        uri="http://announcement", media_type=MediaType.ANNOUNCEMENT
+    )
+
+    await player.stop()
+
+    assert player.cloud_queue_id is None
+    assert player._announcement_media is None
+
+
+async def test_refresh_survives_a_session_the_speaker_forgot() -> None:
+    """Test a rejected refresh is not an error: the next read carries the change anyway."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.group.active_session_id = "stale_session"
+    client.api.playback_session.refresh_cloud_queue = AsyncMock(
+        side_effect=FailedCommand("no cloud queue loaded")
+    )
+    player.client = client
+
+    await player.refresh_cloud_queue()
+
+    client.api.playback_session.refresh_cloud_queue.assert_awaited_once()
+
+
+def _make_provider() -> SonosPlayerProvider:
+    """Create a bare provider for the cloud-queue request handlers."""
+    provider = SonosPlayerProvider.__new__(SonosPlayerProvider)
+    provider.mass = MagicMock()
+    provider.logger = logging.getLogger("test.sonos.cloud_queue")
+    provider._pending_refresh_tasks = set()
+    return provider
+
+
+async def test_itemwindow_passes_the_speakers_request_through() -> None:
+    """Test the sizes and centre the speaker asks for reach the window builder."""
+    player = MagicMock(spec=SonosPlayer)
+    player.cloud_queue_version = 12.5
+    player.build_cloud_queue_window = AsyncMock(
+        return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
+    )
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {
+        "itemId": "track7",
+        "previousWindowSize": "9",
+        "upcomingWindowSize": "10",
+        "contextVersion": "3",
+    }
+
+    response = await provider._handle_sonos_queue_itemwindow(player, request)
+
+    player.build_cloud_queue_window.assert_awaited_once_with(
+        item_id="track7", previous_size=9, upcoming_size=10
+    )
+    body = json.loads(response.text or "{}")
+    assert body["queueVersion"] == "12.5"
+    assert body["contextVersion"] == "3"
+    assert body["includesBeginningOfQueue"] is True
+
+
+async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> None:
+    """Test a queue that went away answers with an empty window instead of an error."""
+    player = MagicMock(spec=SonosPlayer)
+    player.display_name = "Kantoor"
+    player.cloud_queue_version = 1.0
+    player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {}
+
+    response = await provider._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert body["items"] == []
+    assert body["includesEndOfQueue"] is True
+
+
 def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     """Test a queue edit is signalled to the speakers serving that queue."""
     provider = SonosPlayerProvider.__new__(SonosPlayerProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.sonos.cloud_queue")
+    provider._pending_refresh_tasks = set()
     playing, other = MagicMock(spec=SonosPlayer), MagicMock(spec=SonosPlayer)
     playing.player_id = "playing"
     playing.cloud_queue_id = QUEUE_ID
@@ -228,6 +340,9 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
 
     assert provider.mass.call_later.call_count == 1
     assert provider.mass.call_later.call_args.args[1] == playing.refresh_cloud_queue
+    # the id must be per speaker, or one speaker's refresh cancels another's
+    assert provider.mass.call_later.call_args.kwargs["task_id"] == _refresh_task_id("playing")
+    assert provider._pending_refresh_tasks == {_refresh_task_id("playing")}
 
 
 @pytest.mark.parametrize(
@@ -239,7 +354,7 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
         (None, 5),
         ("not a number", 5),
         ("-3", 0),
-        ("1000", 25),
+        ("1000", 12),
     ],
 )
 def test_window_sizes_are_clamped(requested: str | None, expected: int) -> None:

@@ -269,6 +269,8 @@ class SonosPlayer(Player):
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
         await self.group_controller.stop()
+        self.cloud_queue_id = None
+        self._announcement_media = None
         self.update_state()
 
     async def pause(self) -> None:
@@ -417,6 +419,9 @@ class SonosPlayer(Player):
 
         :param source: The source(id) to select, as defined in the source_list.
         """
+        # whatever the source turns out to be, it is not the cloud queue any more
+        self.cloud_queue_id = None
+        self._announcement_media = None
         if source == SOURCE_LINE_IN:
             await self.group_controller.load_line_in(play_on_completion=True)
         elif source == SOURCE_TV:
@@ -455,7 +460,15 @@ class SonosPlayer(Player):
         group = self.client.player.group
         if group is None or not group.active_session_id:
             return
-        await self.client.api.playback_session.refresh_cloud_queue(group.active_session_id)
+        try:
+            await self.client.api.playback_session.refresh_cloud_queue(group.active_session_id)
+        except FailedCommand as err:
+            # the session can have been taken over from outside MA (someone casting to the
+            # speaker from another app), which leaves us holding a session id the speaker no
+            # longer knows. The signal is an optimisation - the window we serve is built from
+            # the live queue - so a speaker that misses it just picks the change up on its
+            # next read.
+            self.logger.debug("Could not refresh the cloud queue: %s", err)
 
     async def build_cloud_queue_window(
         self,
@@ -482,10 +495,13 @@ class SonosPlayer(Player):
 
         center_index = self.mass.player_queues.index_by_id(queue_id, item_id) if item_id else None
         if center_index is None:
+            # the playing item, not index_in_buffer: with crossfade the latter runs an item
+            # ahead, which would answer a request about the playing track with a window that
+            # starts after it
             center_index = (
-                queue.index_in_buffer
-                if queue.index_in_buffer is not None
-                else (queue.current_index or 0)
+                queue.current_index
+                if queue.current_index is not None
+                else (queue.index_in_buffer or 0)
             )
 
         items: list[PlayerMedia] = []

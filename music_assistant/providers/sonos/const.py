@@ -86,5 +86,6 @@ NON_HIRES_MODELS = (
 # Fallback cloud-queue window sizes, used when the speaker asks for none.
 PREVIOUS_WINDOW = 4
 UPCOMING_WINDOW = 5
-# Upper bound on the items a single itemWindow response serves.
-MAX_WINDOW = 25
+# Upper bound per side on what one itemWindow response serves. Speakers ask for 9 before
+# and 10 after, so this only bounds the work an unusual request can ask of us.
+MAX_WINDOW_PER_SIDE = 12
