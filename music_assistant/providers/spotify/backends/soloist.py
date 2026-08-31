@@ -182,15 +182,20 @@ _UNCLAIMED_LIMIT_S: Final[float] = 90.0
 # memory held and how far the engine's item can run ahead of the queue's, which
 # the URI match in _signal_ready depends on. Resume well below the cap so the
 # sink is not flipped on every chunk.
-# Sized for a crossfade, not for playback: the holdback offers half of what is
-# retained past its reserve, so this cap is what decides the window a boundary can
-# ever plan a fade from. A smart fade needs the track's outro plus 8s of sustained
-# audio inside that window, which measured over real analysis rows admits 6 of 10
-# tracks at 12s of window and 8 of 10 at 20s. Half of (50 - 8) lands at 21s.
-# At s32le/44.1k/2ch this holds ~9MB per session, and stays well under one track
-# length, which is what the uri match in _signal_ready depends on.
-_MAX_RETAINED_S: Final[float] = 50.0
-_RESUME_RETAINED_S: Final[float] = 30.0
+# Sized for a crossfade, not for playback: this cap bounds the head start an item
+# can bank, and with it the fade window a boundary can offer (~11MB per session at
+# s32le/44.1k/2ch, still well under one track length for the _signal_ready uri
+# match). Interim: once the provider fills MA's own AudioBuffer instead of this
+# duplicate channel, the ceiling question moves there.
+_MAX_RETAINED_S: Final[float] = 60.0
+_RESUME_RETAINED_S: Final[float] = 40.0
+
+# The sink renders exact-zero padding when the engine idles between items, and the
+# item-change event arrives after those frames landed in the outgoing item's channel.
+# Near an item's own known end, zero frames beyond a short grace are that padding,
+# not content; a quiet passage mid-track is never touched.
+_TAIL_PAD_ZONE_S: Final[float] = 10.0
+_TAIL_PAD_GRACE_S: Final[float] = 1.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
 # how often an unsettled boundary re-asks the queue for the follower to feed
@@ -2275,6 +2280,7 @@ class _ItemAudio:
         self._last_write = 0.0
         self._chunks: deque[bytes] = deque()
         self._buffered = 0
+        self._zero_run = 0
         self._written = 0
         self._delivered = 0
         self._seek_anchored = False
@@ -2374,6 +2380,18 @@ class _ItemAudio:
             # nothing has opened this item's stream in all this time: hold the
             # session's clock steady but stop growing
             return
+        if chunk.count(0) == len(chunk):
+            # zero frames near the item's own end are sink padding, not content
+            target = self._duration_bytes()
+            if target is not None and self._written >= target - int(
+                _TAIL_PAD_ZONE_S * _BYTES_PER_SECOND
+            ):
+                self._zero_run += len(chunk)
+                if self._zero_run > int(_TAIL_PAD_GRACE_S * _BYTES_PER_SECOND):
+                    self._last_write = time.monotonic()
+                    return
+        else:
+            self._zero_run = 0
         self._chunks.append(chunk)
         self._buffered += len(chunk)
         self._written += len(chunk)

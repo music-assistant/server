@@ -297,6 +297,41 @@ async def test_a_stuck_item_fails_instead_of_streaming_forever(tmp_path: Path) -
             pass
 
 
+async def test_sink_padding_at_an_items_end_is_not_buffered_as_content(
+    tmp_path: Path,
+) -> None:
+    """
+    Zero frames near an item's own end are the sink idling, not audio.
+
+    The item-change event arrives after the padding landed in the outgoing item's
+    channel, so it must be refused on arrival - downstream it reads as a track
+    that ends in dead air, and a fade built on it has nothing to blend.
+    """
+    session = _make_session(tmp_path)
+    item = _ItemAudio(TRACK_A, session)
+    item.duration_ms = 10_000
+    second = _BYTES_PER_SECOND
+
+    # the item's own audio, up to its known end
+    item.write(b"\x01" * (10 * second))
+    buffered = item._buffered
+    # padding beyond the grace is refused; the first moment of it is kept
+    item.write(b"\x00" * (5 * second))
+    assert item._buffered - buffered <= int(1.5 * second)
+
+    # a quiet passage mid-track is content and is never touched
+    mid = _ItemAudio(TRACK_A, session)
+    mid.duration_ms = 200_000
+    mid.write(b"\x01" * (10 * second))
+    mid.write(b"\x00" * (8 * second))
+    assert mid._buffered == 18 * second
+
+    # unknown duration: nothing can be called the end, so nothing is refused
+    unknown = _ItemAudio(TRACK_A, session)
+    unknown.write(b"\x00" * (5 * second))
+    assert unknown._buffered == 5 * second
+
+
 async def test_the_first_logged_out_snapshot_is_not_a_lost_pairing(tmp_path: Path) -> None:
     """A daemon reports logged_in=False until it has restored its session."""
     session = _make_session(tmp_path)

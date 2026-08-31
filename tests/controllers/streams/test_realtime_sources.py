@@ -496,7 +496,7 @@ async def test_the_holdback_fills_with_audio_not_an_items_padding(
         # warmup, then real audio, then the engine running off the end of it
         for _ in range(WARMUP_DURATION + 12):
             yield music
-        for _ in range(10):
+        for _ in range(MAX_SILENT_TAIL_HOLDBACK_SECONDS - 1):
             yield quiet
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)

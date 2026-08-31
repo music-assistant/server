@@ -67,17 +67,14 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 SINGLE_ITEM_READRATE: Final[str] = "1.2"
 SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
 
-# Pacing for an item from a realtime source (streamdetails.is_realtime). Such a source
-# delivers barely above playback pace, and the head start it banks into the item's
-# buffer ahead of the stream is the only material a crossfade at the item's end can
-# ever be built from. The standard 60s burst hands that whole head start to the player
-# the moment the stream opens, and a drain above the source's own pace keeps the buffer
-# empty from then on - so the crossfade always finds nothing. Matching the source's
-# ceiling keeps the head start resident until EOF while the player still receives
-# playback speed, and a realtime source cannot be collected faster than it plays, so
-# the usage-policy purpose of the standard pacing is unaffected. Players that need a
-# big opening burst for gapless (MusicCast) keep it: this only applies to realtime
-# sources, which they receive at the same >= playback rate as before.
+# Pacing for an item from a realtime source (streamdetails.is_realtime). The head
+# start such a source banks into the item's buffer is the only material its
+# end-of-track crossfade can be built from; the standard burst would hand it all to
+# the player at stream open and the 1.2x drain would keep the buffer empty from then
+# on. Matching the source's ceiling keeps it resident until EOF, the player still
+# receives at least playback speed, and a realtime source cannot be collected faster
+# than it plays. Buffered sources keep the standard pacing (MusicCast needs the big
+# opening burst before it will do gapless at all).
 REALTIME_ITEM_READRATE: Final[str] = "1.1"
 REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "5"
 

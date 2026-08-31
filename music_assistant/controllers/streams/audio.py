@@ -188,14 +188,10 @@ MIN_CROSSFADE_DURATION = 3
 # and then the flow stream is better off opening the track itself.
 PREFETCH_HANDOVER_TIMEOUT = 5.0
 
-# Digital silence a holdback may keep on top of its window, so the window itself
-# fills with audio instead of padding. An item can end in silence for reasons that
-# have nothing to do with the music: a live engine read above playback pace runs off
-# the end of its content and its sink pads the rest with zeroes. Withholding a fixed
-# span of stream would then hand the fade nothing to blend. Generous enough for that
-# padding (measured at a tenth of the track's length), and bounded because every held
-# byte is resident PCM.
-MAX_SILENT_TAIL_HOLDBACK_SECONDS = 20
+# Silence a holdback may keep on top of its window, so the window fills with audio
+# instead of a track's quiet ending. Real tracks end with a few seconds at most;
+# source-side padding is the source's own problem to suppress.
+MAX_SILENT_TAIL_HOLDBACK_SECONDS = 5
 
 
 # Bounded wait for a fade the outgoing stream is still mixing, when the incoming
@@ -269,19 +265,10 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
     """
     Return how many bytes of tail may be held back for a fade right now.
 
-    Nothing at all until the source has delivered the whole item, and the full
-    window from then on. A holdback grown while the source is still delivering has
-    to come from somewhere, and the only place is audio the player was waiting for:
-    that is heard as a dropout at the boundary, and no estimate of how far ahead the
-    stream is fixes it, because what the stream reads ahead is not what the player
-    holds. Once the source is done, what is left in hand arrived after it finished
-    and the player is not waiting on any of it.
-
-    A fast source reaches this state early with the whole rest of the item resident,
-    so the caller yields everything above the window and keeps only the last part of
-    it. A source barely above playback pace reaches it at the end of the item with
-    only what it managed to bank, and the fade is however long that is - which is
-    the honest answer rather than a fade taken out of the player's supply.
+    Nothing until the source has delivered the whole item, the full window after:
+    audio held back earlier would come out of the player's own supply and is heard
+    as a dropout at the boundary, while audio still in hand at EOF is provably not
+    something the player is waiting for. The fade is however long that leftover is.
 
     :param queue_item: The item being streamed; its buffer is resolved here because
         opening the stream is what creates it.
@@ -2147,10 +2134,8 @@ class StreamsAudio:
                     )
                     crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
             if not crossfade_allowed:
-                # No fade lands on this boundary, so the trailing silence retained for
-                # one has no job left - playing it out is heard as dead air before the
-                # next track. Deliver the audible part and skip the silence, counting
-                # it as consumed media time so the item's duration stays honest.
+                # no fade lands here, so the silence retained for one is dead air:
+                # deliver the audible part, count the rest as consumed media time
                 audible_len = len(buffer) - min(silent_tail, len(buffer))
                 uncredited_tail_bytes = len(buffer) - audible_len
                 bytes_written += audible_len
