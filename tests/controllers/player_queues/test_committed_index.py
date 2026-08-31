@@ -1,8 +1,7 @@
 """
-Tests for the shared boundary index every queue mutation inserts behind.
+Tests for the shared boundary index every queue insert path places new items behind.
 
-The concept used to be spelled out inline at each call site in four different ways, only some of
-which survived a repeat-all wrap putting the buffered index in front of the playing one.
+The concept used to be spelled out inline at each call site in three slightly different ways.
 """
 
 from __future__ import annotations
@@ -27,7 +26,6 @@ def _queue(current_index: int | None, index_in_buffer: int | None) -> PlayerQueu
         (2, 2, 2),
         (2, 3, 3),
         (0, 4, 4),
-        (4, 0, 4),
         (3, None, 3),
         (None, 1, 1),
         (None, None, None),
@@ -37,15 +35,15 @@ def _queue(current_index: int | None, index_in_buffer: int | None) -> PlayerQueu
 def test_committed_index(
     current_index: int | None, index_in_buffer: int | None, expected: int | None
 ) -> None:
-    """The boundary is whichever of the two positions is furthest into the queue."""
+    """The buffered track is the boundary, falling back to the playing one."""
     assert committed_index(_queue(current_index, index_in_buffer)) == expected
 
 
-def test_a_wrapped_buffer_never_reports_a_boundary_behind_the_playing_track() -> None:
+def test_a_wrapped_buffer_reports_the_buffered_track_at_the_front() -> None:
     """
-    Repeat-all wraps the buffered index to the front, and the boundary must not follow it.
+    Repeat loops the buffered track to the front and the boundary follows it there.
 
-    Reporting index 0 while the player is on the last track sends every insert behind the
-    playhead, where the queue's own bounds check drops it.
+    That is where the player will actually continue, so new items belong right behind index 0
+    rather than behind the last track that happens to be playing.
     """
-    assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 4
+    assert committed_index(_queue(current_index=4, index_in_buffer=0)) == 0
