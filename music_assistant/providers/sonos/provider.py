@@ -31,6 +31,9 @@ from music_assistant.models.player_provider import PlayerProvider
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer, SonosQueueWindow
 
+# stands in for "the speaker named no ceiling", so our own window size decides
+_NO_CEILING = 1000
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -38,6 +41,19 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
+
+
+def _requested_max(requested: str | None) -> int:
+    """
+    Return the ceiling a speaker put on one side of the window.
+
+    The sizes are maxima, so we may serve fewer - and deliberately do - but never more than
+    the speaker asked for. An absent or unreadable size puts no ceiling on it.
+    """
+    try:
+        return max(0, int(requested)) if requested is not None else _NO_CEILING
+    except ValueError:
+        return _NO_CEILING
 
 
 def _refresh_task_id(player_id: str) -> str:
@@ -302,7 +318,11 @@ class SonosPlayerProvider(PlayerProvider):
         # drop any older items it may still have cached past our window, which is what
         # prevents stale tracks from resurrecting after a queue rewrite (e.g. replace_next).
         try:
-            window = await player.build_cloud_queue_window(request.query.get("itemId") or None)
+            window = await player.build_cloud_queue_window(
+                request.query.get("itemId") or None,
+                max_previous=_requested_max(request.query.get("previousWindowSize")),
+                max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
+            )
         except InvalidDataError as err:
             # the queue went away underneath us (a stop that never reached this speaker, so it
             # keeps polling). An empty end-of-queue window is what should happen next anyway,

@@ -12,7 +12,11 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
-from music_assistant.providers.sonos.provider import SonosPlayerProvider, _refresh_task_id
+from music_assistant.providers.sonos.provider import (
+    SonosPlayerProvider,
+    _refresh_task_id,
+    _requested_max,
+)
 
 QUEUE_ID = "party_queue"
 
@@ -291,7 +295,9 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
 
     response = await provider._handle_sonos_queue_itemwindow(player, request)
 
-    player.build_cloud_queue_window.assert_awaited_once_with("track7")
+    player.build_cloud_queue_window.assert_awaited_once_with(
+        "track7", max_previous=9, max_upcoming=10
+    )
     body = json.loads(response.text or "{}")
     assert body["queueVersion"] == "12.5"
     assert body["contextVersion"] == "3"
@@ -313,6 +319,52 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
     body = json.loads(response.text or "{}")
     assert body["items"] == []
     assert body["includesEndOfQueue"] is True
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected_upcoming"),
+    [("10", ["track1"]), ("1", ["track1"]), ("0", []), ("", ["track1"]), (None, ["track1"])],
+    ids=["ten", "one", "zero", "unreadable", "absent"],
+)
+async def test_upcoming_is_capped_by_what_the_speaker_allows(
+    requested: str | None, expected_upcoming: list[str]
+) -> None:
+    """Test we never serve more than the speaker's maximum, though we usually serve fewer."""
+    items = [_make_queue_item(f"track{i}") for i in range(4)]
+    player, _ = _make_player(items)
+
+    window = await player.build_cloud_queue_window("track0", max_upcoming=_requested_max(requested))
+
+    assert [x.queue_item_id for x in window.items] == ["track0", *expected_upcoming]
+
+
+async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded() -> None:
+    """Test the still-playing queue is not blanked while its replacement is being loaded."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    loaded_with_queue_id: list[str | None] = []
+
+    async def _play_cloud_queue(*_args: object, **_kwargs: object) -> None:
+        # by the time the speaker is told to load, the id must already point at the new queue
+        loaded_with_queue_id.append(player.cloud_queue_id)
+
+    client.player.group.play_cloud_queue = _play_cloud_queue
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id="new_queue",
+                queue_item_id="item1",
+            )
+        )
+
+    assert loaded_with_queue_id == ["new_queue"]
+    assert player.cloud_queue_id == "new_queue"
 
 
 def test_queue_change_only_reaches_the_speakers_playing_it() -> None:

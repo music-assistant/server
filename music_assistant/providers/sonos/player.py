@@ -357,9 +357,9 @@ class SonosPlayer(Player):
             )
         # for now always reset the active session
         self.group_controller.active_session_id = None
-        # only a cloud queue is tracked here; the branches below decide whether this
-        # playback loads one at all, and a refresh on a session without one fails
-        self.cloud_queue_id = None
+        # what the speaker is playing right now stays described until its replacement is
+        # actually loaded below: there are awaits in between, and answering an itemWindow
+        # request in that gap with an empty window would stop the queue that is still playing
         self._announcement_media = None
         self.bump_cloud_queue_version()
 
@@ -388,6 +388,8 @@ class SonosPlayer(Player):
             return
 
         # play duration-less (long running) radio streams
+        # this path loads no cloud queue, so the speaker must not be signalled about one
+        self.cloud_queue_id = None
         # enforce AAC here because Sonos really does not support FLAC streams without duration
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         stream_url = stream_url.replace(".flac", ".aac").replace(".wav", ".aac")
@@ -483,13 +485,23 @@ class SonosPlayer(Player):
             # next read.
             self.logger.debug("Could not refresh the cloud queue: %s", err)
 
-    async def build_cloud_queue_window(self, item_id: str | None) -> SonosQueueWindow:
+    async def build_cloud_queue_window(
+        self,
+        item_id: str | None,
+        max_previous: int = PREVIOUS_ITEMS,
+        max_upcoming: int = UPCOMING_ITEMS,
+    ) -> SonosQueueWindow:
         """
         Return the playing item and the one that follows it, from the queue as it is now.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
+        :param max_previous: Ceiling on the items before the centre, if the speaker asked for
+            fewer than we would otherwise serve.
+        :param max_upcoming: Ceiling on the items after the centre, same.
         """
+        previous_items = min(PREVIOUS_ITEMS, max_previous)
+        upcoming_items = min(UPCOMING_ITEMS, max_upcoming)
         if self._announcement_media is not None:
             # an announcement is a queue of exactly one item
             return SonosQueueWindow(
@@ -516,7 +528,7 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
-        offset = max(0, center_index - PREVIOUS_ITEMS)
+        offset = max(0, center_index - previous_items)
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
@@ -525,7 +537,7 @@ class SonosPlayer(Player):
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
         last_index: int | str = center_index
-        for _ in range(UPCOMING_ITEMS):
+        for _ in range(upcoming_items):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
