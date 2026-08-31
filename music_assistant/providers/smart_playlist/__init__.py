@@ -768,7 +768,9 @@ class SmartPlaylistProvider(PluginProvider):
         if seed_uris:
             # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
             # artist_ids and album_ids are ignored per design.
-            tracks = await self._tracks_from_seeds(seed_uris, target_size=rules.limit)
+            tracks = await self._tracks_from_seeds(
+                seed_uris, target_size=rules.limit, is_dynamic=rules.is_dynamic
+            )
             tracks = await self._apply_seed_post_filters(tracks, rules)
         else:
             if rules.logic == LOGIC_AND:
@@ -1293,7 +1295,9 @@ class SmartPlaylistProvider(PluginProvider):
             summary=False,
         )
 
-    async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
+    async def _tracks_from_seeds(
+        self, seed_uris: list[str], target_size: int, is_dynamic: bool
+    ) -> list[Track]:
         """Build a pool of each seed's own tracks plus tracks similar to them."""
         seeds: list[MediaItemType] = []
         for uri in seed_uris:
@@ -1316,7 +1320,10 @@ class SmartPlaylistProvider(PluginProvider):
         radio_provider = cast("RadioPlaylistProvider", radio_prov)
 
         pool_cap = target_size * 3
-        per_seed_target = -(-target_size // len(seeds))  # ceil
+        # dynamic playlists deliberately keep a tight single-batch budget; static (one-shot)
+        # generation accumulates up to the full pool cap so post-filters keep headroom
+        per_seed_budget = target_size if is_dynamic else pool_cap
+        per_seed_target = -(-per_seed_budget // len(seeds))  # ceil
         max_rounds = -(-per_seed_target // 25) + 2
 
         per_seed_pools = await asyncio.gather(

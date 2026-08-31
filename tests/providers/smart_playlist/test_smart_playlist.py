@@ -875,6 +875,8 @@ async def test_seed_mode_uses_tracks_from_seeds() -> None:
     cast("Any", plugin)._tracks_from_seeds.assert_awaited_once()
     awaited_args = cast("Any", plugin)._tracks_from_seeds.await_args
     assert awaited_args.args[0] == ["library://artist/5", "library://album/9"]
+    assert awaited_args.kwargs["target_size"] == 10
+    assert awaited_args.kwargs["is_dynamic"] is True
     cast("Any", plugin)._get_library_tracks.assert_not_awaited()
     assert len(result) == 1
 
@@ -920,7 +922,9 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
     radio_prov.get_dynamic_tracks = AsyncMock(return_value=[base, sim1, sim2])
     mass.get_provider = MagicMock(return_value=radio_prov)
 
-    result = await plugin._tracks_from_seeds(["library://track/10"], target_size=10)
+    result = await plugin._tracks_from_seeds(
+        ["library://track/10"], target_size=10, is_dynamic=True
+    )
 
     first_call = radio_prov.get_dynamic_tracks.await_args_list[0]
     assert first_call.args[0] == [seed]
@@ -967,7 +971,7 @@ async def test_tracks_from_seeds_samples_evenly_across_seeds() -> None:
     mass.get_provider = MagicMock(return_value=radio_prov)
 
     result = await plugin._tracks_from_seeds(
-        ["library://track/seed_a", "library://track/seed_b"], target_size=4
+        ["library://track/seed_a", "library://track/seed_b"], target_size=4, is_dynamic=True
     )
 
     ids = {track.item_id for track in result}
@@ -1006,7 +1010,9 @@ async def test_tracks_from_seeds_single_batch_meets_dynamic_target() -> None:
     )
     mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
 
-    result = await plugin._tracks_from_seeds(["library://playlist/seed"], target_size=25)
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=25, is_dynamic=True
+    )
 
     mass.player_queues.get_tracks_for_playback.assert_awaited_once()
     base_ids = {track.item_id for track in base_tracks}
@@ -1016,7 +1022,7 @@ async def test_tracks_from_seeds_single_batch_meets_dynamic_target() -> None:
 
 @pytest.mark.asyncio
 async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
-    """A single ~55-track batch cannot fill a target of 100; several batches accumulate."""
+    """Static: a single ~55-track batch can't fill a target of 100, so batches accumulate."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -1040,10 +1046,44 @@ async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
     )
     mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
 
-    result = await plugin._tracks_from_seeds(["library://playlist/seed"], target_size=100)
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=100, is_dynamic=False
+    )
 
     assert mass.player_queues.get_tracks_for_playback.await_count > 1
     assert len(result) >= 100
+
+
+@pytest.mark.asyncio
+async def test_tracks_from_seeds_static_gets_headroom_above_target() -> None:
+    """Static generation accumulates well past target_size, giving post-filters headroom."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    seed = _make_mock_track("seed", "library://playlist/seed")
+    seed.media_type = MediaType.PLAYLIST
+    ctrl = MagicMock()
+    ctrl.get = AsyncMock(return_value=seed)
+    mass.music.get_controller = MagicMock(return_value=ctrl)
+
+    base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
+    mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
+    mass.music.tracks.similar_tracks = AsyncMock(
+        side_effect=lambda item_id, _provider, **_kwargs: [
+            _radio_track(f"{item_id}_sim_{i}") for i in range(25)
+        ]
+    )
+    mass.get_provider = MagicMock(return_value=_real_radio_provider(mass))
+
+    result = await plugin._tracks_from_seeds(
+        ["library://playlist/seed"], target_size=100, is_dynamic=False
+    )
+
+    assert len({track.item_id for track in result}) > 200
 
 
 @pytest.mark.asyncio
