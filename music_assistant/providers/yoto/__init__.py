@@ -284,6 +284,8 @@ class YotoProvider(MusicProvider):
         """Get all PodcastEpisodes for given podcast id."""
         card = await self._get_card(prov_podcast_id)
         podcast = self._parse_podcast(card)
+        # Yoto returns the chapters by recency (newest first) so the newest episode is at the top of the episode list,
+        # but we want to return them in chronological order (oldest should be index #1)
         for idx, episode in enumerate(reversed(card.chapters.values()), start=1):
             parsed_episode = self._parse_podcast_episode(prov_podcast_id, episode, idx, podcast)
             yield parsed_episode
