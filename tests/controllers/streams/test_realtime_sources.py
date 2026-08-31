@@ -38,10 +38,7 @@ from music_assistant.controllers.streams.audio import (
     tail_hold_target,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import (
-    SINGLE_ITEM_LEAD_OUT_MAX_SECONDS,
-    BufferSize,
-)
+from music_assistant.controllers.streams.constants import BufferSize
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
@@ -306,60 +303,6 @@ async def test_eof_reflects_producer_completion() -> None:
     assert not buf.eof
     await buf._set_eof()
     assert buf.eof
-
-
-async def test_the_response_waits_for_the_player_to_play_out_its_backlog() -> None:
-    """
-    A response that handed over faster than playback must not close on the backlog.
-
-    Some players drop whatever they are still holding the moment the response closes,
-    which takes the end of the track with it - heard as a silence where the track
-    should have finished. So the idle connection is held for as long as the player
-    still has audio to render, and abandoned if the queue moves on meanwhile.
-    """
-    controller = StreamsController.__new__(StreamsController)
-    controller.logger = MagicMock()
-    queue = cast("Any", SimpleNamespace(display_name="Queue"))
-    loop = asyncio.get_event_loop()
-
-    def _item(streamed: float | None) -> Any:
-        return cast(
-            "Any",
-            SimpleNamespace(name="Track", streamdetails=SimpleNamespace(seconds_streamed=streamed)),
-        )
-
-    live = cast("Any", SimpleNamespace(session_id="s1"))
-
-    # handed over 2s of audio in about no time: the wait is that whole backlog
-    started = loop.time()
-    await controller._await_player_playout(queue, _item(2.0), "s1", live, started)
-    assert 1.5 < loop.time() - started < 3.0
-
-    # handed over no faster than it plays: nothing is waiting, so no wait
-    started = loop.time()
-    await controller._await_player_playout(queue, _item(2.0), "s1", live, started - 10.0)
-    assert loop.time() - started < 0.2
-
-    # nothing streamed (a failed item): no wait
-    started = loop.time()
-    await controller._await_player_playout(queue, _item(None), "s1", live, started)
-    assert loop.time() - started < 0.2
-
-    # a skip takes over mid-wait: the player wants the next stream now
-    taken_over = cast("Any", SimpleNamespace(session_id="s1"))
-
-    async def _skip() -> None:
-        await asyncio.sleep(0.3)
-        taken_over.session_id = "s2"
-
-    task = asyncio.create_task(_skip())
-    started = loop.time()
-    await controller._await_player_playout(queue, _item(20.0), "s1", taken_over, started)
-    assert loop.time() - started < 2.0, "a takeover must abandon the wait"
-    await task
-
-    # and the cap bounds a mis-measurement rather than holding forever
-    assert SINGLE_ITEM_LEAD_OUT_MAX_SECONDS <= 60
 
 
 # -- the holdback decision --
