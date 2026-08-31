@@ -86,6 +86,7 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
+    SINGLE_ITEM_LEAD_OUT_MAX_SECONDS,
     SINGLE_ITEM_READRATE,
     SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
@@ -130,6 +131,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -915,6 +917,8 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            handed_over_cleanly = False
+            stream_started_at = asyncio.get_event_loop().time()
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
@@ -964,8 +968,14 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+                    else:
+                        handed_over_cleanly = True
             finally:
                 self._active_output_streams -= 1
+            if handed_over_cleanly:
+                await self._await_player_playout(
+                    queue, queue_item, session_id, pq_data, stream_started_at
+                )
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s",
@@ -2131,6 +2141,53 @@ class StreamsController(CoreController):
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
+
+    async def _await_player_playout(
+        self,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        session_id: str,
+        pq_data: PlayerQueueData,
+        stream_started_at: float,
+    ) -> None:
+        """
+        Hold an idle response open until the player has rendered what it was handed.
+
+        Audio leaves faster than playback, so at the last byte the player still holds
+        a backlog, and some of them drop whatever is unplayed the moment the response
+        closes - which takes the end of the track with it. The flow path does this once
+        at the end of a queue; a per-item stream closes a response at every boundary
+        and needs it at each one.
+
+        :param queue: The queue being served, for logging.
+        :param queue_item: The item just streamed; its streamed length is the backlog.
+        :param session_id: Playback session this response belongs to.
+        :param pq_data: Queue data whose session id is watched for a takeover.
+        :param stream_started_at: Loop time the first byte went out.
+        """
+        streamdetails = queue_item.streamdetails
+        delivered = (streamdetails.seconds_streamed or 0.0) if streamdetails else 0.0
+        if not delivered:
+            return
+        loop = asyncio.get_event_loop()
+        backlog = delivered - (loop.time() - stream_started_at)
+        if backlog <= 0:
+            # handed over no faster than it plays: nothing is waiting to be rendered
+            return
+        backlog = min(backlog, SINGLE_ITEM_LEAD_OUT_MAX_SECONDS)
+        self.logger.debug(
+            "Holding the stream for %s on queue %s open %.1fs so the player can play out its backlog",
+            queue_item.name,
+            queue.display_name,
+            backlog,
+        )
+        deadline = loop.time() + backlog
+        while loop.time() < deadline:
+            if pq_data.session_id != session_id:
+                # a skip or a stop took over: the player wants the next stream now,
+                # and whatever it still held is being discarded either way
+                return
+            await asyncio.sleep(min(0.25, deadline - loop.time()))
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

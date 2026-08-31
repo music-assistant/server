@@ -74,6 +74,14 @@ SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
 
+# Ceiling on how long a single-item response is held open after its last byte, so the
+# player can render what it is still holding. Audio goes out faster than playback, so
+# at the end of a track the player has a backlog, and some of them drop whatever is
+# unplayed the moment the response closes - the end of the track goes with it. The
+# wait is whatever that backlog actually is; this only bounds a mis-measurement, and
+# the wait is abandoned the moment the queue's session moves on.
+SINGLE_ITEM_LEAD_OUT_MAX_SECONDS: Final[float] = 30.0
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
