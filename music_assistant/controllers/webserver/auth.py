@@ -744,7 +744,7 @@ class AuthenticationManager:
 
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
-        Revoke all auth tokens for a user.
+        Revoke all auth tokens for a user and disconnect their active connections.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -752,26 +752,22 @@ class AuthenticationManager:
         :param user: The user whose tokens should be revoked.
         :return: Number of tokens revoked.
         """
-        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
+        cursor = await self.database.execute(
+            "DELETE FROM auth_tokens WHERE user_id = :user_id",
+            {"user_id": user.user_id},
+        )
+        await self.database.commit()
+        self.webserver.disconnect_websockets_for_user(user.user_id)
 
-        # Disconnect any WebSocket connections using these tokens
-        for token_row in token_rows:
-            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
-
-        if token_rows:
-            # Delete all tokens in one go
-            await self.database.execute(
-                "DELETE FROM auth_tokens WHERE user_id = :user_id",
-                {"user_id": user.user_id},
-            )
-            await self.database.commit()
-            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d token(s) for user '%s'", count, user.username)
 
         # Notify even with no tokens left: subscribers may hold credentials tied to
         # this user's access that must be withdrawn regardless.
         self._notify_user_access_revoked(user)
 
-        return len(token_rows)
+        return count
 
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:

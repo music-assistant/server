@@ -1259,6 +1259,42 @@ async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManag
     assert await auth_manager.authenticate_with_token(token) is None
 
 
+async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that revoking all tokens counts and clears them beyond the default row limit.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="manytokens", role=UserRole.USER)
+    # deliberately above the default row limit of the database read helpers
+    token_count = 550
+    created_at = utc().isoformat()
+    async with auth_manager.database.deferred_commit():
+        for index in range(token_count):
+            await auth_manager.database.insert(
+                "auth_tokens",
+                {
+                    "token_id": f"token-{index}",
+                    "user_id": user.user_id,
+                    "token_hash": f"hash-{index}",
+                    "name": "Test Token",
+                    "created_at": created_at,
+                },
+            )
+
+    disconnected: list[str] = []
+    monkeypatch.setattr(
+        auth_manager.webserver, "disconnect_websockets_for_user", disconnected.append
+    )
+
+    assert await auth_manager.revoke_tokens_for_user(user) == token_count
+    assert disconnected == [user.user_id]
+    assert await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id}) == []
+
+
 async def test_access_revoked_subscription_hears_a_tokenless_revocation(
     auth_manager: AuthenticationManager,
 ) -> None:
