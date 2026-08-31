@@ -673,6 +673,99 @@ async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     assert deleted_user is None
 
 
+async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that deleting a user takes its tokens, join codes and provider links with it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="cascadeadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="cascadeuser", role=UserRole.GUEST)
+    await auth_manager.create_token(user, "Device", is_long_lived=False)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
+    await auth_manager.generate_join_code(user)
+    tables = ("auth_tokens", "join_codes", "user_auth_providers")
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
+
+    set_current_user(admin)
+    await auth_manager.delete_user(user.user_id)
+
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
+async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that rows left behind by an earlier user deletion are cleaned up.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="survivinguser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Keep Me", is_long_lived=False)
+    # a live row in every table, so a sweep that is too broad cannot go unnoticed
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "live-link",
+            "user_id": user.user_id,
+            "provider_type": AuthProviderType.BUILTIN.value,
+            "provider_user_id": "live-provider-uid",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "live-code",
+            "code": "LIVECODE1234",
+            "user_id": user.user_id,
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+    # rows a pre-fix delete_user would have left behind
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": "orphan-token",
+            "user_id": "deleted-user-id",
+            "token_hash": "orphan-hash",
+            "name": "Orphan",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(days=1)).isoformat(),
+            "is_long_lived": 1,
+        },
+    )
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "orphan-link",
+            "user_id": "deleted-user-id",
+            "provider_type": AuthProviderType.HOME_ASSISTANT.value,
+            "provider_user_id": "ha-user-id",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "orphan-code",
+            "code": "ORPHANCODE12",
+            "user_id": "deleted-user-id",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    await auth_manager._prune_orphaned_user_rows()
+
+    for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        assert await auth_manager.database.get_rows(table, {"user_id": "deleted-user-id"}) == []
+        # the live user's rows are untouched
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
+
+
 async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot delete their own account.
@@ -1326,8 +1419,8 @@ async def test_access_revoked_subscription_hears_a_user_deletion(
     """
     Test that deleting a user announces the access withdrawal to subscribers.
 
-    Deletion cascades the tokens away without revoke_tokens_for_user ever running,
-    so it is a separate access-ending path that must reach subscribers itself.
+    Deletion removes the tokens without revoke_tokens_for_user ever running, so it is
+    a separate access-ending path that must reach subscribers itself.
 
     :param auth_manager: AuthenticationManager instance.
     """

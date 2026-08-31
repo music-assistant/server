@@ -153,6 +153,9 @@ class AuthenticationManager:
         # repair filters that were left pointing at removed providers/players
         await self._prune_stale_user_filters()
 
+        # clear rows left behind by user deletions from before those were cleaned up
+        await self._prune_orphaned_user_rows()
+
         self._schedule_periodic_cleanup()
 
         self.logger.info(
@@ -1200,15 +1203,18 @@ class AuthenticationManager:
         if not user_row:
             raise InvalidDataError("User not found")
 
-        # Delete user from database
+        # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
+        # key enforcement is off on our connections, so remove those rows here.
+        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            await self.database.delete(table, {"user_id": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
-        # Deletion cascades the user's tokens away, so it must announce the access
-        # withdrawal itself for credentials bound to this user.
+        # The token rows are removed directly rather than through revoke_tokens_for_user,
+        # so nothing else announces the withdrawal for credentials bound to this user.
         self._notify_user_access_revoked(
             User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
         )
@@ -1975,6 +1981,22 @@ class AuthenticationManager:
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
             )
 
+    async def _prune_orphaned_user_rows(self) -> None:
+        """Drop rows in the user-linked tables whose user no longer exists."""
+        # this is optional hygiene, so a failure must never take the server down with it
+        try:
+            total = 0
+            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+                cursor = await self.database.execute(
+                    f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
+                )
+                total += int(cursor.rowcount)
+            await self.database.commit()
+            if total > 0:
+                self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
+        except Exception as err:
+            self.logger.warning("Failed to clean up rows of deleted users: %s", err)
+
     async def _prune_stale_user_filters(self) -> None:
         """Drop user access filter entries for providers or players that no longer exist."""
         known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
@@ -2200,9 +2222,7 @@ class AuthenticationManager:
 
         user = await self.get_user(row["user_id"])
         if not user:
-            self.logger.error(
-                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
-            )
+            self.logger.error("User not found for join code (user_id=%s)", row["user_id"])
             return None
 
         device_name = row["device_name"] or "Short Code Login"
