@@ -47,8 +47,8 @@ def _requested_max(requested: str | None) -> int:
     """
     Return the ceiling a speaker put on one side of the window.
 
-    The sizes are maxima, so we may serve fewer - and deliberately do - but never more than
-    the speaker asked for. An absent or unreadable size puts no ceiling on it.
+    The sizes are maxima: we serve fewer by design, but never more. An absent or unreadable
+    size puts no ceiling on it.
     """
     try:
         return max(0, int(requested)) if requested is not None else _NO_CEILING
@@ -204,12 +204,11 @@ class SonosPlayerProvider(PlayerProvider):
         for player in self.players:
             if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
                 continue
-            # invalidate straight away: a window served before the command goes out must not
-            # carry a version the speaker reads as "nothing changed"
+            # invalidate straight away, so a window served before the command goes out does
+            # not carry a version the speaker reads as current
             player.bump_cloud_queue_version()
-            # anything that touches the items fires this - an insert, an autoplay refill, a
-            # duration that was filled in - and one edit can fan out into several, so coalesce
-            # the command itself into one per speaker
+            # one edit can fan out into several of these (insert, autoplay refill, a duration
+            # filled in), so coalesce the command itself into one per speaker
             task_id = _refresh_task_id(player.player_id)
             self._pending_refresh_tasks.add(task_id)
             self.mass.call_later(1, player.refresh_cloud_queue, task_id=task_id)
@@ -309,14 +308,11 @@ class SonosPlayerProvider(PlayerProvider):
         # always come from the same queue: a bump landing in between would tell the speaker
         # its cache is current while it holds the older window
         queue_version = player.cloud_queue_version
-        # the window is built from the queue as it is right now. The speaker fetches on its
-        # own schedule and caches what it gets, so answering from the live queue is what keeps
-        # a track added mid-playback (a party request, a reorder) from being played over.
-        # the sizes the speaker asks for are maxima and we deliberately serve far fewer, so it
-        # comes back for every track - see PREVIOUS_ITEMS/UPCOMING_ITEMS.
-        # the beginning/end flags must be honest: signalling end-of-queue tells Sonos to
-        # drop any older items it may still have cached past our window, which is what
-        # prevents stale tracks from resurrecting after a queue rewrite (e.g. replace_next).
+        # built from the queue as it is right now: the speaker fetches on its own schedule and
+        # plays out of what it cached, so only a live answer keeps a track added mid-playback
+        # from being played over. The beginning/end flags must be honest - signalling
+        # end-of-queue is what makes Sonos drop items it cached past our window, so a queue
+        # rewrite (replace_next) does not resurrect stale tracks.
         try:
             window = await player.build_cloud_queue_window(
                 request.query.get("itemId") or None,
@@ -324,10 +320,9 @@ class SonosPlayerProvider(PlayerProvider):
                 max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
             )
         except InvalidDataError as err:
-            # the queue went away underneath us (a stop that never reached this speaker, so it
-            # keeps polling). An empty end-of-queue window is what should happen next anyway,
-            # and it beats answering every poll with a 500. Deliberately only this one: any
-            # other failure is a real problem and must not read to the speaker as "queue over".
+            # the queue went away under us (a stop that never reached this speaker, so it keeps
+            # polling): end-of-queue is the right answer and beats a 500 per poll. Only this
+            # one - any other failure must not read to the speaker as "queue over".
             self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
             window = SonosQueueWindow(includes_beginning=True, includes_end=True)
         result = {

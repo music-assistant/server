@@ -357,9 +357,8 @@ class SonosPlayer(Player):
             )
         # for now always reset the active session
         self.group_controller.active_session_id = None
-        # what the speaker is playing right now stays described until its replacement is
-        # actually loaded below: there are awaits in between, and answering an itemWindow
-        # request in that gap with an empty window would stop the queue that is still playing
+        # what is playing stays described until its replacement is loaded below: there are
+        # awaits in between, and an empty window served in that gap stops the current queue
         self._announcement_media = None
         self.bump_cloud_queue_version()
 
@@ -460,10 +459,8 @@ class SonosPlayer(Player):
         """
         Advance the version the speaker compares its cached queue against.
 
-        Sonos reads an unchanged queueVersion as "nothing changed" and keeps replaying its
-        cached copy, so the sub-second timestamp is what makes it pick up an edit. Advance it
-        the moment the queue changes: a window served in between must not carry a version the
-        speaker will read as current.
+        An unchanged queueVersion reads as "nothing changed", so this must happen the moment
+        the queue does: a window served in between would carry a version read as current.
         """
         self.cloud_queue_version = time.time()
 
@@ -478,11 +475,8 @@ class SonosPlayer(Player):
         try:
             await self.client.api.playback_session.refresh_cloud_queue(group.active_session_id)
         except FailedCommand as err:
-            # the session can have been taken over from outside MA (someone casting to the
-            # speaker from another app), which leaves us holding a session id the speaker no
-            # longer knows. The signal is an optimisation - the window we serve is built from
-            # the live queue - so a speaker that misses it just picks the change up on its
-            # next read.
+            # an app outside MA can take the session over, leaving us with a session id the
+            # speaker no longer knows. Only a nudge is lost: it reads a live window regardless.
             self.logger.debug("Could not refresh the cloud queue: %s", err)
 
     async def build_cloud_queue_window(
@@ -492,7 +486,7 @@ class SonosPlayer(Player):
         max_upcoming: int = UPCOMING_ITEMS,
     ) -> SonosQueueWindow:
         """
-        Return the playing item and the one that follows it, from the queue as it is now.
+        Return the item the speaker asked about and the one that follows it, as the queue is now.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
@@ -500,8 +494,6 @@ class SonosPlayer(Player):
             fewer than we would otherwise serve.
         :param max_upcoming: Ceiling on the items after the centre, same.
         """
-        previous_items = min(PREVIOUS_ITEMS, max_previous)
-        upcoming_items = min(UPCOMING_ITEMS, max_upcoming)
         if self._announcement_media is not None:
             # an announcement is a queue of exactly one item
             return SonosQueueWindow(
@@ -509,8 +501,7 @@ class SonosPlayer(Player):
             )
         queue_id = self.cloud_queue_id
         if not queue_id or not (queue := self.mass.player_queues.get(queue_id)):
-            # nothing to describe: flag both ends so the speaker drops what it cached
-            # instead of holding it and polling on
+            # nothing to describe: both ends flagged, or the speaker holds what it cached
             return SonosQueueWindow(includes_beginning=True, includes_end=True)
 
         if not item_id:
@@ -519,8 +510,8 @@ class SonosPlayer(Player):
         elif (found := self.mass.player_queues.index_by_id(queue_id, item_id)) is not None:
             center_index = found
         else:
-            # the speaker named an item the queue no longer holds; the playing one is the
-            # most useful answer (not index_in_buffer, which runs an item ahead with crossfade)
+            # an item the queue no longer holds: answer around the playing one (not
+            # index_in_buffer, which runs an item ahead with crossfade)
             center_index = (
                 queue.current_index
                 if queue.current_index is not None
@@ -528,7 +519,7 @@ class SonosPlayer(Player):
             )
 
         items: list[PlayerMedia] = []
-        offset = max(0, center_index - previous_items)
+        offset = max(0, center_index - min(PREVIOUS_ITEMS, max_previous))
         for idx in range(offset, center_index + 1):
             queue_item = self.mass.player_queues.get_item(queue_id, idx)
             if queue_item and queue_item.available:
@@ -537,7 +528,7 @@ class SonosPlayer(Player):
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
         last_index: int | str = center_index
-        for _ in range(upcoming_items):
+        for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break

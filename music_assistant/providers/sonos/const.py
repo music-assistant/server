@@ -83,14 +83,9 @@ NON_HIRES_MODELS = (
     "Table lamp",
 )
 
-# How much of the queue an itemWindow response describes. A speaker caches the window it
-# fetched and only comes back for a new one once it nears the end of it, so a deep window is
-# a deep stale cache - it would keep playing out of it for as many tracks as it holds, and
-# the /version poll that would otherwise catch a change runs only every 10 minutes. Serving
-# just the playing item and the one after it (the same current+next the other player
-# providers get through enqueue_next_media) makes the speaker ask again for every track, so
-# it can never be more than one track behind. The single previous item keeps skip-back
-# working from the speaker itself. The sizes a speaker asks for are maxima, so serving fewer
-# is within the contract.
+# How much of the queue one itemWindow response describes. A speaker plays out of the window
+# it cached, so a deep one can carry it several tracks past an edit; current+next means it can
+# never be more than one track behind. The previous item keeps skip-back working on the
+# speaker. The sizes a speaker asks for are maxima, so serving fewer is within the contract.
 PREVIOUS_ITEMS = 1
 UPCOMING_ITEMS = 1
