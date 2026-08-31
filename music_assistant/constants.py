@@ -500,6 +500,9 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
 CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3 = ConfigEntry.from_dict(
     {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "mp3"}
 )
+CONF_ENTRY_OUTPUT_CODEC_DEFAULT_AAC = ConfigEntry.from_dict(
+    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "aac"}
+)
 CONF_ENTRY_OUTPUT_CODEC_ENFORCE_MP3 = ConfigEntry.from_dict(
     {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "mp3", "hidden": True}
 )
