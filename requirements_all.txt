@@ -51,7 +51,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.298
+music-assistant-frontend==2.17.299
 music-assistant-models==1.1.206
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
@@ -75,7 +75,7 @@ PyChromecast==14.0.10
 pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
-pylast==7.0.2
+pylast==7.1.0
 python-fullykiosk==0.0.15
 python-google-drive-api==0.1.0
 python-mpd2>=3.1.1
