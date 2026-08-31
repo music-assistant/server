@@ -752,19 +752,19 @@ class AuthenticationManager:
         :param user: The user whose tokens should be revoked.
         :return: Number of tokens revoked.
         """
-        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
+        # RETURNING ties the disconnect loop to exactly the rows that were deleted.
+        cursor = await self.database.execute(
+            "DELETE FROM auth_tokens WHERE user_id = :user_id RETURNING token_id",
+            {"user_id": user.user_id},
+        )
+        token_rows = await cursor.fetchall()
+        await self.database.commit()
 
         # Disconnect any WebSocket connections using these tokens
         for token_row in token_rows:
             self.webserver.disconnect_websockets_for_token(token_row["token_id"])
 
         if token_rows:
-            # Delete all tokens in one go
-            await self.database.execute(
-                "DELETE FROM auth_tokens WHERE user_id = :user_id",
-                {"user_id": user.user_id},
-            )
-            await self.database.commit()
             self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
 
         # Notify even with no tokens left: subscribers may hold credentials tied to
