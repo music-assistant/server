@@ -28,6 +28,7 @@ from music_assistant.controllers.webserver.auth import (
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_ACTIVITY_PERSIST_INTERVAL,
     TOKEN_GUEST_EXPIRATION,
+    TOKEN_LIST_LIMIT,
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
@@ -706,6 +707,80 @@ async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     token_names = [t.name for t in tokens]
     assert "Device 1" in token_names
     assert "Device 2" in token_names
+
+
+async def test_get_user_tokens_returns_newest_first(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the token listing is capped to the newest tokens instead of the oldest.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="tokenorderuser", role=UserRole.USER)
+    set_current_user(user)
+
+    # fill the table past the listing cap, all older than the token created below
+    now = utc()
+    for index in range(TOKEN_LIST_LIMIT):
+        await auth_manager.database.insert(
+            "auth_tokens",
+            {
+                "token_id": f"old-token-{index}",
+                "user_id": user.user_id,
+                "token_hash": f"old-hash-{index}",
+                "name": f"Old Device {index}",
+                "created_at": (now - timedelta(hours=index + 1)).isoformat(),
+                "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+                "is_long_lived": 0,
+            },
+        )
+    await auth_manager.create_token(user, "Newest Device", is_long_lived=True)
+
+    tokens = await auth_manager.get_user_tokens(user.user_id)
+
+    assert len(tokens) == TOKEN_LIST_LIMIT
+    assert tokens[0].name == "Newest Device"
+    # the oldest row is the one that fell off the page, not the newest
+    assert f"Old Device {TOKEN_LIST_LIMIT - 1}" not in [token.name for token in tokens]
+
+
+async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the periodic cleanup removes only expired short-lived tokens.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="prunetokensuser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Valid", is_long_lived=False)
+    long_lived_token = await auth_manager.create_token(user, "Long Lived", is_long_lived=True)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    capped_token = await auth_manager.create_token(user, "Past Cap", is_long_lived=False)
+
+    now = utc()
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(expired_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+    # renewed late in its life, so its sliding expiry outlives the absolute lifetime cap
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(capped_token)},
+        {
+            "created_at": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)).isoformat(),
+            "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+        },
+    )
+    # an expired long-lived token stays listed so the user can still see and revoke it
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(long_lived_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+
+    await auth_manager._cleanup_expired_tokens()
+
+    remaining = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
+    assert {row["name"] for row in remaining} == {"Valid", "Long Lived"}
 
 
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:

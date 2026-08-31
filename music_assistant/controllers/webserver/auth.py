@@ -76,6 +76,8 @@ TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
 HA_TOKEN_ROTATION_MARGIN = 7
 # Minimum age of a token's stored last_used_at before token activity is persisted again
 TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
+# Max number of (newest first) tokens returned by the auth/tokens command
+TOKEN_LIST_LIMIT = 100
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
 HA_TOKEN_NAME = "Home Assistant Integration"
@@ -151,7 +153,7 @@ class AuthenticationManager:
         # repair filters that were left pointing at removed providers/players
         await self._prune_stale_user_filters()
 
-        self._schedule_join_code_cleanup()
+        self._schedule_periodic_cleanup()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -780,7 +782,7 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: List of auth tokens.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
         """
         current_user = get_current_user()
         if not current_user:
@@ -798,7 +800,10 @@ class AuthenticationManager:
             target_user = current_user
 
         token_rows = await self.database.get_rows(
-            "auth_tokens", {"user_id": target_user.user_id}, limit=100
+            "auth_tokens",
+            {"user_id": target_user.user_id},
+            order_by="created_at DESC",
+            limit=TOKEN_LIST_LIMIT,
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
@@ -2233,10 +2238,34 @@ class AuthenticationManager:
         if count > 0:
             self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
 
-    def _schedule_join_code_cleanup(self) -> None:
-        """Schedule periodic cleanup of expired join codes."""
+    async def _cleanup_expired_tokens(self) -> None:
+        """Delete expired short-lived auth tokens from the database."""
+        now = utc()
+        # Both conditions mirror a deletion authenticate_with_token already performs when the
+        # token is used: the sliding expiry, and the absolute cap, which a token renewed late
+        # in its life outlives. Long-lived tokens are kept so the user can still see and
+        # revoke them after expiry.
+        cursor = await self.database.execute(
+            """
+            DELETE FROM auth_tokens
+            WHERE is_long_lived = 0
+              AND (expires_at < :now OR created_at < :max_lifetime)
+            """,
+            {
+                "now": now.isoformat(),
+                "max_lifetime": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)).isoformat(),
+            },
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired auth token(s)", count)
+
+    def _schedule_periodic_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes and auth tokens."""
         self.mass.create_task(self._cleanup_expired_join_codes())
-        self.mass.call_later(86400, self._schedule_join_code_cleanup)
+        self.mass.create_task(self._cleanup_expired_tokens())
+        self.mass.call_later(86400, self._schedule_periodic_cleanup)
 
     async def _refresh_token_expiration(
         self, token_row: Mapping[str, Any], user: User, is_long_lived: bool
