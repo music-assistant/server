@@ -812,9 +812,10 @@ class AriaCastReceiver(PluginProvider):
             ) as resp:
                 if resp.status != 200:
                     return
-                # a single read returns only what is buffered, so accumulate to EOF
+                # bounded chunks: a single read returns a partial buffer and plain
+                # iteration on the body is line-based, unbounded for binary data
                 buffer = bytearray()
-                async for chunk in resp.content:
+                async for chunk in resp.content.iter_chunked(64 * 1024):
                     buffer += chunk
                     if len(buffer) > MAX_ARTWORK_BYTES:
                         self.logger.debug("Ignoring oversized artwork at %s", url)

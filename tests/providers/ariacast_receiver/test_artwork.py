@@ -16,12 +16,18 @@ from music_assistant.providers.ariacast_receiver import MAX_ARTWORK_BYTES, AriaC
 SENDER = "192.168.1.10"
 
 
-async def _chunked(payload: bytes) -> AsyncGenerator[bytes]:
-    """Yield the payload in several chunks, the way a real socket delivers a body."""
-    # always more than one chunk, so reassembly is actually exercised
-    size = max(1, len(payload) // 3)
-    for offset in range(0, len(payload), size):
-        yield payload[offset : offset + size]
+class _FakeContent:
+    """Response body that yields bounded chunks, like aiohttp's iter_chunked."""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    async def iter_chunked(self, size: int) -> AsyncGenerator[bytes]:
+        """Yield the payload in chunks of at most the given size."""
+        # always several chunks, so reassembly is actually exercised
+        size = min(size, max(1, len(self._payload) // 3))
+        for offset in range(0, len(self._payload), size):
+            yield self._payload[offset : offset + size]
 
 
 class _FakeResponse:
@@ -29,7 +35,7 @@ class _FakeResponse:
 
     def __init__(self, status: int, payload: bytes) -> None:
         self.status = status
-        self.content = _chunked(payload)
+        self.content = _FakeContent(payload)
 
     async def __aenter__(self) -> Self:
         return self
