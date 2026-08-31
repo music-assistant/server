@@ -10,7 +10,6 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from ipaddress import AddressValueError, IPv4Address, ip_address
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import ClientTimeout, web
@@ -814,17 +813,13 @@ class AriaCastReceiver(PluginProvider):
             ) as resp:
                 if resp.status != 200:
                     return
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in resp.content.iter_chunked(64 * 1024):
-                    size += len(chunk)
-                    if size > MAX_ARTWORK_BYTES:
-                        self.logger.debug("Ignoring oversized artwork at %s", url)
-                        return
-                    chunks.append(chunk)
-                if not size:
+                # one byte past the cap is enough to know the body is oversized
+                data = await resp.content.read(MAX_ARTWORK_BYTES + 1)
+                if not data:
                     return
-                data = b"".join(chunks)
+                if len(data) > MAX_ARTWORK_BYTES:
+                    self.logger.debug("Ignoring oversized artwork at %s", url)
+                    return
                 self._artwork_bytes = data
                 img_hash = hashlib.md5(data).hexdigest()[:8]
                 image = MediaItemImage(
@@ -1019,30 +1014,17 @@ def _sender_artwork_url(url: str, sender: str | None) -> URL | None:
     if not sender:
         return None
     try:
-        # urlsplit, not urlparse: the latter strips a ;params suffix off the path
-        parsed = urlsplit(url)
-    except ValueError:
-        return None
-    if parsed.scheme not in ("http", "https"):
-        return None
-    try:
-        peer = ip_address(sender)
-        # a resolved hostname could still point elsewhere by the time the fetch runs
-        if ip_address(parsed.hostname or "") != peer:
+        # yarl is the parser aiohttp fetches with, so the URL that passes this
+        # check is exactly the URL that gets requested; no parser differential
+        parsed = URL(url)
+        if parsed.scheme not in ("http", "https"):
             return None
-        port = parsed.port
+        # a resolved hostname could still point elsewhere by the time the fetch runs
+        if ip_address(parsed.host or "") != ip_address(sender):
+            return None
     except ValueError:
         return None
-    # rebuilt around the peer, so a host the two URL parsers read differently cannot pass
-    return URL.build(
-        scheme=parsed.scheme,
-        # pre-encoded parts are passed through as-is, so bracket IPv6 ourselves
-        host=f"[{peer}]" if peer.version == 6 else str(peer),
-        port=port,
-        path=parsed.path or "/",
-        query_string=parsed.query,
-        encoded=True,
-    )
+    return parsed.with_user(None).with_fragment(None)
 
 
 def _is_advertisable_address(address: str) -> bool:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -17,15 +16,14 @@ SENDER = "192.168.1.10"
 
 
 class _FakeContent:
-    """Response body that hands out the payload in chunks, like aiohttp does."""
+    """Response body that hands out at most the asked-for number of bytes, like aiohttp does."""
 
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
 
-    async def iter_chunked(self, size: int) -> AsyncGenerator[bytes]:
-        """Yield the payload in chunks of at most the given size."""
-        for offset in range(0, len(self._payload), size):
-            yield self._payload[offset : offset + size]
+    async def read(self, n: int = -1) -> bytes:
+        """Return up to n bytes of the payload."""
+        return self._payload if n < 0 else self._payload[:n]
 
 
 class _FakeResponse:
@@ -161,12 +159,12 @@ async def test_a_refused_url_leaves_the_current_artwork_alone() -> None:
     assert receiver._last_artwork_url is None
 
 
-async def test_artwork_is_fetched_from_a_url_rebuilt_around_the_peer() -> None:
+async def test_artwork_url_with_smuggled_userinfo_is_fetched_from_the_sender_only() -> None:
     """
-    The request is built from the peer address, not from the caller's string.
+    Userinfo tricks cannot smuggle a foreign host past the check.
 
-    A host that urlparse and yarl read differently would otherwise pass the check
-    and still be sent to whatever the client's own parser makes of it.
+    The URL is validated by yarl, the same parser aiohttp fetches with, and the
+    userinfo is stripped, so what is requested is the sender host and nothing else.
     """
     receiver = _receiver()
 
@@ -175,8 +173,8 @@ async def test_artwork_is_fetched_from_a_url_rebuilt_around_the_peer() -> None:
     assert receiver._fetch_artwork.call_args.args == (URL(f"http://{SENDER}/artwork.jpg"),)
 
 
-async def test_artwork_path_parameters_survive_the_rebuild() -> None:
-    """A ;params suffix belongs to the path, so the rebuilt URL keeps it."""
+async def test_artwork_path_parameters_survive_validation() -> None:
+    """A ;params suffix belongs to the path, so the accepted URL keeps it."""
     receiver = _receiver()
 
     await _apply(receiver, f"http://{SENDER}/artwork;version=2.jpg?size=large")
@@ -187,7 +185,7 @@ async def test_artwork_path_parameters_survive_the_rebuild() -> None:
 
 
 async def test_artwork_on_an_ipv6_sender_is_fetched() -> None:
-    """An IPv6 peer is matched and bracketed back into the request URL."""
+    """An IPv6 peer is matched against the URL host, compression differences included."""
     receiver = _receiver()
 
     await _apply(receiver, "http://[fd00:0:0::1]:8080/artwork.jpg", sender="fd00::1")
