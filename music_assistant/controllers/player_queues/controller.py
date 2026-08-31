@@ -72,6 +72,7 @@ from music_assistant.controllers.player_queues.constants import (
     QUEUE_CACHE_SAVE_DELAY,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    committed_index,
     get_current_playback_speed,
     handle_play_action,
     is_dynamic_source,
@@ -577,14 +578,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = self._queue_data[queue_id].items
         queue_items = queue_items.copy()
 
-        if pos_shift == 0 and queue.state == PlaybackState.PLAYING:
+        if pos_shift == 0 and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # land behind the track the player already holds rather than behind the playing one:
             # that track is handed over long before it starts (an item ahead with crossfade), so
-            # writing into its slot leaves the player playing what the queue no longer says is
-            # next. repeat-all wraps the buffered index back to the start of the queue, so take
-            # whichever of the two is furthest along or the move lands before the playing track.
-            current_index = queue.current_index or 0
-            new_index = max(current_index, queue.index_in_buffer or 0) + 1
+            # writing into its slot leaves the player playing what the queue no longer says is next
+            boundary_index = committed_index(queue)
+            new_index = (boundary_index if boundary_index is not None else 0) + 1
         elif pos_shift == 0:
             new_index = queue.current_index or 0
         else:
@@ -1980,9 +1979,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.shuffle_enabled = shuffle_enabled
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue_items = self._queue_data[queue_id].items
-        cur_index = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
+        cur_index = committed_index(queue)
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]

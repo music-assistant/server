@@ -202,6 +202,25 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
 
 
+def committed_index(queue: PlayerQueue) -> int | None:
+    """
+    Return the last queue index the player has already committed to, or None if it has none.
+
+    Everything up to and including this index is settled: the next track is handed to the player
+    long before it starts, so changing the queue at or before this point leaves the player playing
+    something the queue no longer lists. Insert behind it instead.
+
+    :param queue: The queue to resolve the index for.
+    """
+    # repeat wraps the buffered index back to the front of the queue, which would otherwise put
+    # the boundary before the playing track, so take whichever of the two is furthest along
+    if queue.current_index is None:
+        return queue.index_in_buffer
+    if queue.index_in_buffer is None:
+        return queue.current_index
+    return max(queue.current_index, queue.index_in_buffer)
+
+
 def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
     """
     Randomly interleave groups while preserving the item order within each group.

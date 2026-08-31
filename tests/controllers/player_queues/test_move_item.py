@@ -112,6 +112,20 @@ async def test_play_next_on_the_item_already_next_keeps_the_order() -> None:
     assert _order(ctrl) == TRACKS
 
 
+async def test_play_next_on_a_paused_queue_respects_the_buffered_track() -> None:
+    """
+    A paused player still holds the track it was handed, so the move goes behind it.
+
+    Landing in front of it would put the picked track before the one the speaker resumes on,
+    which then plays past it and never reaches it.
+    """
+    ctrl = _controller(state=PlaybackState.PAUSED, current_index=1, index_in_buffer=2)
+
+    ctrl.move_item("q1", _item_id_at(ctrl, 4), pos_shift=0)
+
+    assert _order(ctrl) == ["t0", "t1", "t2", "t4", "t3"]
+
+
 async def test_play_next_on_an_idle_queue_puts_the_item_first() -> None:
     """On a queue that is not playing, the moved item takes the position that plays next."""
     ctrl = _controller(state=PlaybackState.IDLE, current_index=0, index_in_buffer=None)
