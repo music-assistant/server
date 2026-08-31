@@ -170,8 +170,10 @@ _FOLLOWER_SEARCH_DEPTH: Final[int] = 4
 # Audio held for an item whose stream has not been opened (or reopened) yet;
 # past this its channel stops growing and what the engine renders is dropped.
 # Deliberately above _MAX_RETAINED_S, which suspends the sink instead and so
-# loses nothing: that cap always applies first, leaving this a backstop.
-_UNCLAIMED_LIMIT_S: Final[float] = 60.0
+# loses nothing: that cap always applies first, leaving this a backstop. Keep the
+# gap wide when raising the retained cap - this one drops audio rather than
+# stalling, which is an audible jump nothing downstream can see.
+_UNCLAIMED_LIMIT_S: Final[float] = 90.0
 # How much captured-but-undelivered audio the session may hold. Reading at
 # _PACE_RATE deliberately makes the engine run ahead of the player, and that
 # surplus has nowhere to go: the engine renders in real time and the capture
@@ -180,14 +182,15 @@ _UNCLAIMED_LIMIT_S: Final[float] = 60.0
 # memory held and how far the engine's item can run ahead of the queue's, which
 # the URI match in _signal_ready depends on. Resume well below the cap so the
 # sink is not flipped on every chunk.
-# 35s is what a crossfade needs, not what playback needs: the holdback can only
-# ever offer half of what is retained, past a reserve, and a smart fade declines
-# below roughly 20s of window (measured over real analysis rows: 0 of 12 track
-# pairs plan a transition at 8.5s, 12 of 12 at 33s). At s32le/44.1k/2ch this holds
-# ~6MB per session, and stays far under one track length, which is what the
-# uri match in _signal_ready depends on.
-_MAX_RETAINED_S: Final[float] = 35.0
-_RESUME_RETAINED_S: Final[float] = 20.0
+# Sized for a crossfade, not for playback: the holdback offers half of what is
+# retained past its reserve, so this cap is what decides the window a boundary can
+# ever plan a fade from. A smart fade needs the track's outro plus 8s of sustained
+# audio inside that window, which measured over real analysis rows admits 6 of 10
+# tracks at 12s of window and 8 of 10 at 20s. Half of (50 - 8) lands at 21s.
+# At s32le/44.1k/2ch this holds ~9MB per session, and stays well under one track
+# length, which is what the uri match in _signal_ready depends on.
+_MAX_RETAINED_S: Final[float] = 50.0
+_RESUME_RETAINED_S: Final[float] = 30.0
 # how often the tail drain checks whether the item's own audio has all arrived
 _DRAIN_POLL_S: Final[float] = 0.1
 # how often an unsettled boundary re-asks the queue for the follower to feed
