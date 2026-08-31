@@ -8,8 +8,9 @@ import json
 import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
-from ipaddress import AddressValueError, IPv4Address
+from ipaddress import AddressValueError, IPv4Address, ip_address
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import ClientTimeout, web
@@ -29,6 +30,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from yarl import URL
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
@@ -52,6 +54,7 @@ AUDIO_SOURCE_ID = "main"
 ARIACAST_PORT = 12889
 DISCOVERY_PORT = 12888
 FRAME_SIZE = 3840  # 20 ms of PCM S16LE 48 kHz stereo
+MAX_ARTWORK_BYTES = 4 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +580,7 @@ class AriaCastReceiver(PluginProvider):
                         payload = json.loads(msg.data)
                         ptype = payload.get("type")
                         if ptype == "update":
-                            await self._apply_meta(payload.get("data", {}))
+                            await self._apply_meta(payload.get("data", {}), request.remote)
                             await ws.send_json({"type": "ack", "success": True})
                         elif ptype == "get":
                             await ws.send_json({"type": "metadata", "data": self._meta_dict()})
@@ -649,9 +652,10 @@ class AriaCastReceiver(PluginProvider):
             body = await request.json()
             # Spec: sender may wrap payload in {"data": {...}}
             data = body.get("data", body)
-            await self._apply_meta(data)
-        except Exception as exc:
-            return web.Response(status=400, text=str(exc))
+            await self._apply_meta(data, request.remote)
+        except Exception:
+            self.logger.debug("Rejected metadata request", exc_info=True)
+            return web.Response(status=400, text="Invalid request")
         return web.Response(status=200)
 
     async def _http_command(self, request: web.Request) -> web.Response:
@@ -668,8 +672,9 @@ class AriaCastReceiver(PluginProvider):
             else:
                 await self._forward_action(action)
             return web.Response(status=200)
-        except Exception as exc:
-            return web.Response(status=400, text=str(exc))
+        except Exception:
+            self.logger.debug("Rejected command request", exc_info=True)
+            return web.Response(status=400, text="Invalid request")
 
     async def _http_artwork(self, _request: web.Request) -> web.Response:
         """GET /image/artwork or /artwork — serve cached artwork."""
@@ -694,7 +699,7 @@ class AriaCastReceiver(PluginProvider):
             "is_playing": self._is_playing,
         }
 
-    async def _apply_meta(self, data: dict[str, Any]) -> None:
+    async def _apply_meta(self, data: dict[str, Any], sender: str | None = None) -> None:
         """Merge a partial metadata update from the sender into local state."""
         m = self._stream_meta
 
@@ -718,11 +723,22 @@ class AriaCastReceiver(PluginProvider):
             m.elapsed_time_last_updated = time.time()
 
         artwork = data.get("artworkUrl") or data.get("artwork_url")
-        if artwork and artwork != self._last_artwork_url:
-            self._last_artwork_url = artwork
-            self._artwork_bytes = None
-            m.image_url = None
-            self.mass.create_task(self._fetch_artwork(artwork))
+        if isinstance(artwork, str) and artwork != self._last_artwork_url:
+            # validate before touching state, so a refused URL cannot blank the
+            # current artwork or suppress the same URL from the real sender later
+            if (artwork_url := _sender_artwork_url(artwork, sender)) is None:
+                self.logger.debug("Ignoring artwork URL not served by %s: %s", sender, artwork)
+            else:
+                self._last_artwork_url = artwork
+                self._artwork_bytes = None
+                m.image_url = None
+                # one fetch at a time: the artwork is single-valued, and a peer
+                # feeding a fresh URL per update would otherwise stack them up
+                self.mass.create_task(
+                    self._fetch_artwork(artwork_url),
+                    task_id=f"ariacast_artwork_{self.instance_id}",
+                    abort_existing=True,
+                )
 
         # Handle is_playing in both casings
         if "isPlaying" in data:
@@ -788,24 +804,37 @@ class AriaCastReceiver(PluginProvider):
                 self._in_use_by_player, AUDIO_SOURCE_ID, self.instance_id, self._stream_meta
             )
 
-    async def _fetch_artwork(self, url: str) -> None:
-        """Download artwork from the sender's HTTP server and cache it."""
+    async def _fetch_artwork(self, url: URL) -> None:
+        """Download artwork from a sender-owned URL and cache it."""
         await asyncio.sleep(0.2)  # let the sender stabilise the image
         try:
-            async with self.mass.http_session.get(url, timeout=ClientTimeout(total=5)) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    if data:
-                        self._artwork_bytes = data
-                        img_hash = hashlib.md5(data).hexdigest()[:8]
-                        image = MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=f"artwork_{img_hash}",
-                            provider=self.instance_id,
-                            remotely_accessible=False,
-                        )
-                        self._stream_meta.image_url = self.mass.metadata.get_image_url(image)
-                        await self._broadcast_meta()
+            # a permitted host must not be able to bounce the fetch elsewhere
+            async with self.mass.http_session.get(
+                url, timeout=ClientTimeout(total=5), allow_redirects=False
+            ) as resp:
+                if resp.status != 200:
+                    return
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    size += len(chunk)
+                    if size > MAX_ARTWORK_BYTES:
+                        self.logger.debug("Ignoring oversized artwork at %s", url)
+                        return
+                    chunks.append(chunk)
+                if not size:
+                    return
+                data = b"".join(chunks)
+                self._artwork_bytes = data
+                img_hash = hashlib.md5(data).hexdigest()[:8]
+                image = MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=f"artwork_{img_hash}",
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+                self._stream_meta.image_url = self.mass.metadata.get_image_url(image)
+                await self._broadcast_meta()
         except Exception as exc:
             self.logger.debug("Artwork fetch failed: %s", exc)
 
@@ -973,6 +1002,47 @@ class AriaCastReceiver(PluginProvider):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _sender_artwork_url(url: str, sender: str | None) -> URL | None:
+    """
+    Return the URL to fetch artwork from, or None if the sender may not ask for it.
+
+    Artwork lives on the sender's own embedded HTTP server and both metadata entry points
+    are unauthenticated, so only an http(s) URL on the peer's own literal address is
+    accepted. Hostnames are refused rather than resolved. What comes back is safe to
+    request as-is.
+
+    :param url: The artwork URL as received over a metadata channel.
+    :param sender: Peer address of the connection that supplied the URL.
+    """
+    if not sender:
+        return None
+    try:
+        # urlsplit, not urlparse: the latter strips a ;params suffix off the path
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    try:
+        peer = ip_address(sender)
+        # a resolved hostname could still point elsewhere by the time the fetch runs
+        if ip_address(parsed.hostname or "") != peer:
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    # rebuilt around the peer, so a host the two URL parsers read differently cannot pass
+    return URL.build(
+        scheme=parsed.scheme,
+        # pre-encoded parts are passed through as-is, so bracket IPv6 ourselves
+        host=f"[{peer}]" if peer.version == 6 else str(peer),
+        port=port,
+        path=parsed.path or "/",
+        query_string=parsed.query,
+        encoded=True,
+    )
 
 
 def _is_advertisable_address(address: str) -> bool:
