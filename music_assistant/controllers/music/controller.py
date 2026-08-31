@@ -2279,9 +2279,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         *,
         available: bool | Any = UNSET,
         in_library: bool | Any = UNSET,
-        is_unique: bool | None | Any = UNSET,
-        url: str | None | Any = UNSET,
-        details: str | None | Any = UNSET,
+        is_unique: bool | Any | None = UNSET,
+        url: str | Any | None = UNSET,
+        details: str | Any | None = UNSET,
         audio_format: AudioFormat | Any = UNSET,
     ) -> None:
         """Update an existing provider mapping for a library item."""
@@ -2676,7 +2676,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             if not provider.library_sync_album_tracks_enabled():
                 continue
-            self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
+            self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album))
 
     async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
         """Return all sound effect items from a single provider."""
