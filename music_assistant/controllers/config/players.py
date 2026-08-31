@@ -63,6 +63,7 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
+    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
@@ -256,6 +257,9 @@ class PlayerConfigMixin:
                 protocol_player_id = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER, 1)[0]
                 if protocol_player := self.mass.players.get_player(protocol_player_id, False):
                     entry.translation_owner = protocol_player.translation_owner
+                elif owner := self._stored_protocol_translation_owner(protocol_player_id):
+                    # a protocol the user switched off has no player to ask
+                    entry.translation_owner = owner
             return conf
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
@@ -993,6 +997,14 @@ class PlayerConfigMixin:
         for protocol in output_protocols:
             domain = protocol.protocol_domain
             protocol_name = self._get_protocol_display_name(domain)
+            # An output its provider flagged as experimental is opt-in: it defaults to
+            # off and carries the provider's warning above the toggle.
+            experimental_note = cast(
+                "str | None",
+                self.get_raw_player_config_value(
+                    protocol.output_protocol_id, CONF_PROTOCOL_EXPERIMENTAL_NOTE
+                ),
+            )
             protocol_player_enabled = self.get_raw_player_config_value(
                 protocol.output_protocol_id, CONF_ENABLED, True
             )
@@ -1017,17 +1029,43 @@ class PlayerConfigMixin:
                 category_translation_key = "protocol_output_settings_via"
                 category_translation_params = [protocol_name, base_name]
             if not protocol.is_native:
+                if experimental_note:
+                    # the warning is added here, not by the protocol player, because an
+                    # output the user did not opt into has no registered player to speak
+                    # for it
+                    all_entries.append(
+                        ConfigEntry(
+                            # prefixed like the protocol player's own entries, so the
+                            # note resolves against its provider and not this player's
+                            key=f"{protocol_prefix}{experimental_note}",
+                            translation_key=experimental_note,
+                            translation_owner=f"provider.{domain}",
+                            type=ConfigEntryType.ALERT,
+                            category=protocol_category,
+                            category_translation_key=category_translation_key,
+                            category_translation_params=category_translation_params,
+                        )
+                    )
+                    enabled_translation_key = (
+                        "protocol_enable_experimental_via"
+                        if base_name
+                        else "protocol_enable_experimental"
+                    )
+                else:
+                    enabled_translation_key = (
+                        "protocol_enable_via" if base_name else "protocol_enable"
+                    )
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="protocol_enable_via" if base_name else "protocol_enable",
+                        translation_key=enabled_translation_key,
                         translation_params=[base_name] if base_name else None,
                         # a derived protocol cannot be active while its base is disabled
                         value=bool(protocol_player_enabled) and base_enabled,
                         read_only=not base_enabled,
-                        default_value=True,
+                        default_value=not experimental_note,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
                         category_translation_params=category_translation_params,
@@ -1146,6 +1184,17 @@ class PlayerConfigMixin:
         if provider_manifest := self.mass.get_provider_manifest(protocol_domain):
             return provider_manifest.name
         return protocol_domain.upper()
+
+    def _stored_protocol_translation_owner(self, protocol_player_id: str) -> str | None:
+        """
+        Return the translation namespace of a protocol player from its stored config.
+
+        :param protocol_player_id: The protocol player to resolve the namespace for.
+        """
+        raw_conf = self.get(f"{CONF_PLAYERS}/{protocol_player_id}")
+        if not raw_conf or not (provider := raw_conf.get("provider")):
+            return None
+        return f"provider.{str(provider).split('--', maxsplit=1)[0]}"
 
     def _create_plugin_provider_config_entries(self, player: Player) -> list[ConfigEntry]:
         """

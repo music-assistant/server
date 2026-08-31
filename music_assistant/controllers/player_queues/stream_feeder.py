@@ -59,6 +59,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and next_item.streamdetails.buffer
             and next_item.streamdetails.buffer.is_valid()
         ):
+            # reusing audio an earlier session left behind claims it for this one, so its
+            # stop releases it and the earlier session's stop no longer can
+            next_item.streamdetails.queue_session_id = self._queue_data[queue_id].session_id
             return
 
         async def _do_prepare() -> None:
@@ -238,7 +241,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         for idx, item in enumerate(queue_items):
             if idx > cleanup_threshold:
                 break  # No need to check further
-            if item.streamdetails and item.streamdetails.buffer:
+            if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
@@ -246,8 +249,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     idx,
                     queue_id,
                 )
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
+                # detached before releasing, as in _cleanup_queue_audio_data
+                streamdetails.buffer = None
+                await buffer.clear()
                 buffers_cleared += 1
 
         if buffers_cleared > 0:
@@ -258,7 +262,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 cleanup_threshold + 1,
             )
 
-    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+    async def _cleanup_queue_audio_data(self, queue_id: str, session_id: str | None = None) -> None:
         """
         Clean up all audio-related data for a queue when it is stopped or cleared.
 
@@ -267,17 +271,38 @@ class StreamFeederMixin(_PlayerQueuesBase):
         - Any pending crossfade data for the queue
 
         :param queue_id: The queue ID to clean up.
+        :param session_id: The playback session being stopped. Audio the queue's currently
+            playing session claimed is left alone; everything else is released, including
+            what sessions that ended earlier left behind. None clears every buffer.
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
+        queue_data = self._queue_data.get(queue_id)
+        queue_items = queue_data.items if queue_data else []
         buffers_cleared = 0
 
         for item in queue_items:
-            if item.streamdetails and item.streamdetails.buffer:
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
-                buffers_cleared += 1
+            if not (streamdetails := item.streamdetails) or not (buffer := streamdetails.buffer):
+                continue
+            # read the playing session per item rather than once: releasing a buffer suspends,
+            # and a session that starts during one of those waits owns what it attaches after.
+            # A session id only protects audio while that session is the one playing - sessions
+            # rotate without a stop, so a claim that is no longer current marks audio nobody
+            # will come back for.
+            playing_session = queue_data.session_id if queue_data else None
+            if (
+                session_id is not None
+                and playing_session not in (None, session_id)
+                and streamdetails.queue_session_id == playing_session
+            ):
+                # playback restarted here while this stop was still running; killing its
+                # producer would strand the session that is playing now
+                continue
+            # detach before releasing: clearing suspends on the producer's cancellation, and a
+            # session starting in that window attaches its own buffer here
+            streamdetails.buffer = None
+            await buffer.clear()
+            buffers_cleared += 1
 
         if buffers_cleared > 0:
             self.logger.debug(

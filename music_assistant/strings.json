@@ -302,6 +302,14 @@
       "label": "Enable this protocol on this player",
       "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled."
     },
+    "protocol_enable_experimental": {
+      "label": "Enable this protocol on this player (experimental)",
+      "description": "Enable or disable this output protocol for the player. This output is experimental, so it is switched off until you turn it on yourself."
+    },
+    "protocol_enable_experimental_via": {
+      "label": "Enable this protocol on this player (experimental)",
+      "description": "This output protocol runs on top of {0}. It follows the enabled state of {0} and cannot be active while {0} is disabled. This output is experimental, so it is switched off until you turn it on yourself."
+    },
     "pre_announcement_chime_url": {
       "label": "Custom (pre)announcement chime URL",
       "description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3"
