@@ -96,6 +96,24 @@ class WebsocketClientHandler:
         """Return the user this client authenticated as, if any."""
         return self._authenticated_user
 
+    @property
+    def current_token(self) -> str | None:
+        """Return the access token this client authenticated with, if any."""
+        return self._current_token
+
+    @property
+    def webrtc_session_id(self) -> str | None:
+        """Return the id of the WebRTC session this client connected through, if any."""
+        return self._webrtc_session_id
+
+    def bind_sendspin_player(self, player_id: str) -> None:
+        """
+        Bind a sendspin web player to this connection.
+
+        :param player_id: Id of the sendspin player this connection owns.
+        """
+        self._sendspin_player_id = player_id
+
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
         self.cancel()
