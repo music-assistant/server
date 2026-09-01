@@ -176,6 +176,8 @@ class YandexYnisonProvider(PluginProvider):
     _dynamic_session_ended_at: float | None
     _current_streaming_track_id: str | None
     _current_streaming_index: int
+    _last_shuffle_enabled: bool | None = None
+    _last_repeat_mode: RepeatMode | None = None
 
     def __init__(
         self,
@@ -791,6 +793,7 @@ class YandexYnisonProvider(PluginProvider):
         self._active_session_id = stream_session_id
         self._active_player_id = player_id
         self.logger.debug("Active player set to: %s", player_id)
+        self._publish_source_options(owner_player_id)
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str
@@ -1231,6 +1234,7 @@ class YandexYnisonProvider(PluginProvider):
             return
 
         if is_our_device and not state.is_paused:
+            self._remember_and_publish_source_options(queue)
             self.logger.info(
                 "Ynison → playing (track=%s progress=%dms)", track_id, state.progress_ms
             )
@@ -1244,6 +1248,7 @@ class YandexYnisonProvider(PluginProvider):
             if self._effective_stream_mode == STREAM_MODE_MAX_QUALITY:
                 self._schedule_dynamic_next_prefetch(current_index, playable_list, queue_view.order)
         elif is_our_device and state.is_paused:
+            self._remember_and_publish_source_options(queue)
             self.logger.info(
                 "Ynison → paused (track=%s progress=%dms)", track_id, state.progress_ms
             )
@@ -1959,10 +1964,10 @@ class YandexYnisonProvider(PluginProvider):
                 )
                 self._stream_mode_warning_emitted = True
         self.logger.info(
-            "Stream mode requested=%s effective=%s%s",
+            "Stream mode requested=%s effective=%s reason=%s",
             requested,
             self._effective_stream_mode,
-            f" reason={reason}" if reason else "",
+            reason or "none",
         )
 
     async def _handle_dynamic_track_transition(
@@ -1973,19 +1978,42 @@ class YandexYnisonProvider(PluginProvider):
         generation: int,
     ) -> None:
         """Continue or restart a dynamic session for a changed track."""
-        if generation != self._dynamic_generation:
+        completed = False
+        try:
+            await self._run_dynamic_track_transition(
+                track_id, progress_ms, owner_player_id, generation
+            )
+            completed = True
+        finally:
+            owner_changed = self._in_use_by_player != owner_player_id
+            if (not completed or owner_changed) and generation == self._dynamic_generation:
+                if self._dynamic_target_track_id == track_id:
+                    self._dynamic_target_track_id = None
+                if self._pending_restart_track_id == track_id:
+                    self._pending_restart_track_id = None
+                    self._format_restart_requested = False
+
+    async def _run_dynamic_track_transition(
+        self,
+        track_id: str,
+        progress_ms: int,
+        owner_player_id: str,
+        generation: int,
+    ) -> None:
+        """Execute one generation-scoped dynamic track transition."""
+        if not self._dynamic_transition_is_current(track_id, owner_player_id, generation):
             self.logger.debug(
-                "Discarding stale dynamic transition for %s (generation %d != %d)",
+                "Discarding stale dynamic transition for %s (generation=%d owner=%s)",
                 track_id,
                 generation,
-                self._dynamic_generation,
+                owner_player_id,
             )
             return
         if self._pending_restart_track_id == track_id:
             return
 
         details = await self._get_dynamic_stream_details(track_id, generation)
-        if generation != self._dynamic_generation:
+        if not self._dynamic_transition_is_current(track_id, owner_player_id, generation):
             self.logger.debug("Discarding stale prefetched format for %s", track_id)
             return
         signature = self._effective_signature_for_player(details, owner_player_id)
@@ -2016,7 +2044,10 @@ class YandexYnisonProvider(PluginProvider):
             await session_ended_event.wait()
             if session_ended_event is self._dynamic_session_ended_event:
                 break
-        if generation != self._dynamic_generation or self._pending_restart_track_id != track_id:
+        if (
+            not self._dynamic_transition_is_current(track_id, owner_player_id, generation)
+            or self._pending_restart_track_id != track_id
+        ):
             self.logger.debug("Cancelled stale dynamic restart for %s", track_id)
             return
 
@@ -2035,12 +2066,47 @@ class YandexYnisonProvider(PluginProvider):
             signature[2],
             signature[3],
         )
-        await self.mass.player_queues.play_media(owner_player_id, str(self._audio_source.uri))
+        try:
+            await self.mass.player_queues.play_media(owner_player_id, str(self._audio_source.uri))
+        except PlayerCommandFailed:
+            self.mass.call_later(
+                1,
+                self._retry_dynamic_launch,
+                track_id,
+                self._seek_position_ms,
+                owner_player_id,
+                generation,
+            )
+            raise
         if ended_at is not None:
             self.logger.info(
                 "Dynamic PCM restart gap before play_media: %.1fms",
                 (time.monotonic() - ended_at) * 1000,
             )
+
+    def _dynamic_transition_is_current(
+        self, track_id: str, owner_player_id: str, generation: int
+    ) -> bool:
+        """Return whether a dynamic transition still owns its track and source session."""
+        return (
+            generation == self._dynamic_generation
+            and self._dynamic_target_track_id in (None, track_id)
+            and self._in_use_by_player == owner_player_id
+        )
+
+    def _retry_dynamic_launch(
+        self, track_id: str, progress_ms: int, owner_player_id: str, generation: int
+    ) -> None:
+        """Retry one failed restart if its track and source session are still current."""
+        if (
+            generation != self._dynamic_generation
+            or self._in_use_by_player != owner_player_id
+            or not self._ynison
+            or self._ynison.state.current_track_id != track_id
+            or self._ynison.state.is_paused
+        ):
+            return
+        self._schedule_dynamic_launch(track_id, progress_ms, owner_player_id)
 
     async def _launch_dynamic_session(
         self,
@@ -2053,7 +2119,7 @@ class YandexYnisonProvider(PluginProvider):
         launched = False
         try:
             details = await self._get_dynamic_stream_details(track_id, generation)
-            if generation != self._dynamic_generation:
+            if generation != self._dynamic_generation or self._in_use_by_player != owner_player_id:
                 self.logger.debug("Discarding stale dynamic launch for %s", track_id)
                 return
             if self._ynison and (
@@ -2079,6 +2145,9 @@ class YandexYnisonProvider(PluginProvider):
                 signature[2],
                 signature[3],
             )
+            if generation != self._dynamic_generation or self._in_use_by_player != owner_player_id:
+                self.logger.debug("Cancelling owner-stale dynamic launch for %s", track_id)
+                return
             await self.mass.player_queues.play_media(owner_player_id, str(self._audio_source.uri))
             launched = True
         finally:
@@ -2302,6 +2371,28 @@ class YandexYnisonProvider(PluginProvider):
         if not self._in_use_by_player:
             return
         self.mass.players.refresh_source(self._in_use_by_player, self._audio_source)
+
+    def _remember_and_publish_source_options(self, queue: dict[str, Any]) -> None:
+        """Store Ynison queue options and mirror them to the active source session."""
+        self._last_shuffle_enabled = YnisonQueueView(queue).shuffle_enabled
+        repeat_value = queue.get("options", {}).get("repeat_mode")
+        self._last_repeat_mode = {
+            "NONE": RepeatMode.OFF,
+            "ONE": RepeatMode.ONE,
+            "ALL": RepeatMode.ALL,
+        }.get(repeat_value, RepeatMode.UNKNOWN)
+        if self._in_use_by_player:
+            self._publish_source_options(self._in_use_by_player)
+
+    def _publish_source_options(self, owner_player_id: str) -> None:
+        """Publish the last Ynison ordering options to one claimed source session."""
+        self.mass.players.update_source_options(
+            owner_player_id,
+            AUDIO_SOURCE_ID,
+            self.instance_id,
+            shuffle_enabled=self._last_shuffle_enabled,
+            repeat_mode=self._last_repeat_mode,
+        )
 
     def _build_audio_source(self) -> AudioSource:
         """Construct the AudioSource MediaItem with current capability flags."""

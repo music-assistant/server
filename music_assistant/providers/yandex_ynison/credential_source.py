@@ -36,7 +36,7 @@ class YandexMusicCredentialSource:
 
     def read_tokens(self) -> tuple[SecretStr | None, SecretStr | None]:
         """Return the linked provider's music token and x-token."""
-        owner = self._mass.get_provider(self._instance_id)
+        owner = self._mass.get_provider(self._instance_id, return_unavailable=True)
         if owner is None:
             raise ResourceTemporarilyUnavailable(
                 f"Linked Yandex Music provider '{self._instance_id}' is not loaded yet"

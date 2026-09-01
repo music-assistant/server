@@ -65,8 +65,10 @@ class YnisonQueueView:
             and set(raw_order) == set(sequential)
         ):
             self.order: tuple[int, ...] = tuple(raw_order)
+            self.shuffle_enabled = True
         else:
             self.order = sequential
+            self.shuffle_enabled = False
 
     def next_index(self, *, wrap: bool = False) -> int | None:
         """Return the next original-list index in logical playback order."""

@@ -61,6 +61,30 @@ def test_unloaded_owner_is_temporarily_unavailable() -> None:
         YandexMusicCredentialSource(mass, "ym-primary").read_tokens()
 
 
+def test_resolves_exact_configured_owner_including_unavailable() -> None:
+    """An available instance must not replace the exact configured owner."""
+    configured_owner = MagicMock(domain="yandex_music", type=ProviderType.MUSIC)
+    configured_owner.get_setup_value.side_effect = {
+        "token": "configured-token",
+        "x_token": None,
+    }.get
+    fallback_owner = MagicMock(domain="yandex_music", type=ProviderType.MUSIC)
+    fallback_owner.get_setup_value.side_effect = {
+        "token": "fallback-token",
+        "x_token": None,
+    }.get
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda _instance_id, return_unavailable=False: (
+        configured_owner if return_unavailable else fallback_owner
+    )
+
+    music_token, _ = YandexMusicCredentialSource(mass, "ym-configured").read_tokens()
+
+    assert music_token is not None
+    assert music_token.get_secret() == "configured-token"
+    mass.get_provider.assert_called_once_with("ym-configured", return_unavailable=True)
+
+
 def test_rejects_non_yandex_music_owner() -> None:
     """Dropping domain/type validation must not allow credentials from another provider."""
     for domain, provider_type in (

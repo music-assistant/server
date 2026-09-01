@@ -39,6 +39,18 @@ def test_invalid_shuffle_mapping_falls_back_to_original_order() -> None:
 
     assert view.order == (0, 1, 2)
     assert view.next_index() == 2
+    assert view.shuffle_enabled is False
+
+
+def test_valid_shuffle_mapping_reports_enabled() -> None:
+    """Option reporting uses the same validation as logical navigation."""
+    queue = {
+        "current_playable_index": 1,
+        "playable_list": [{"playable_id": "A"}, {"playable_id": "B"}],
+        "shuffle_optional": {"playable_indices": [1, 0]},
+    }
+
+    assert YnisonQueueView(queue).shuffle_enabled is True
 
 
 def test_wrap_is_explicit() -> None:

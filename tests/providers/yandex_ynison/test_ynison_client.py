@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
 
 from music_assistant.providers.yandex_ynison.constants import (
@@ -2060,6 +2060,71 @@ class TestTokenRefreshOnReconnect:
 
         assert on_auth_failure.await_count == 1
         # Token unchanged since callback always fails
+        assert client._token == SecretStr("old-token")
+
+    async def test_transient_refresh_failure_is_retried_after_backoff(self) -> None:
+        """A temporary refresh outage preserves the refresh budget for a later retry."""
+        on_auth_failure = AsyncMock(
+            side_effect=[
+                ResourceTemporarilyUnavailable("linked provider not loaded"),
+                SecretStr("new-token"),
+            ]
+        )
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        redirect = AsyncMock(
+            side_effect=[
+                LoginFailed("expired"),
+                LoginFailed("expired"),
+                ("host", "ticket", 1),
+            ]
+        )
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock) as sleep,
+            patch.object(client, "_get_redirect_ticket", redirect),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            await client._reconnect()
+
+        assert on_auth_failure.await_count == 2
+        assert sleep.await_count == 3
+        assert client._token == SecretStr("new-token")
+
+    async def test_permanent_refresh_failure_consumes_budget(self) -> None:
+        """A permanent refresh rejection is attempted only once per reconnect episode."""
+        on_auth_failure = AsyncMock(side_effect=LoginFailed("refresh rejected"))
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        attempts = 0
+
+        async def failing_redirect() -> tuple[str, str, int]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 4:
+                client._stop_event.set()
+            raise LoginFailed("expired")
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock),
+            patch.object(client, "_get_redirect_ticket", side_effect=failing_redirect),
+        ):
+            await client._reconnect()
+
+        assert attempts == 4
+        on_auth_failure.assert_awaited_once()
         assert client._token == SecretStr("old-token")
 
     async def test_empty_redirect_triggers_one_token_refresh(self) -> None:

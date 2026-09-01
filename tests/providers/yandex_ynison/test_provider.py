@@ -485,6 +485,22 @@ class TestSourceSelection:
         assert provider._active_player_id == "new-player"
         assert provider._active_session_id == "session_1"
 
+    async def test_on_source_selected_publishes_last_ynison_options(self) -> None:
+        """A newly claimed source session receives the latest remote queue options."""
+        provider = _make_provider()
+        provider._last_shuffle_enabled = True
+        provider._last_repeat_mode = RepeatMode.ALL
+
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "new-player",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=True,
+            repeat_mode=RepeatMode.ALL,
+        )
+
     async def test_bridge_selection_does_not_stop_its_own_queue_player(self) -> None:
         """Selecting a bridge consumer for the same owner must leave playback running."""
         provider = _make_provider()
@@ -762,6 +778,52 @@ class TestYnisonStateHandling:
         await provider._handle_ynison_state(state)
 
         assert provider._active_player_id == "player1"
+
+    async def test_active_state_publishes_repeat_and_shuffle_options(self) -> None:
+        """Remote queue options are mirrored into the active AudioSource session."""
+        provider = _make_provider()
+        provider._in_use_by_player = "player1"
+        state = YnisonState(
+            active_device_id=provider._device_id,
+            player_state={
+                "status": {"paused": False, "progress_ms": 0, "duration_ms": 200000},
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "shuffle_optional": {"playable_indices": [0]},
+                    "options": {"repeat_mode": "ONE"},
+                },
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_called_once_with(
+            "player1",
+            AUDIO_SOURCE_ID,
+            provider.instance_id,
+            shuffle_enabled=True,
+            repeat_mode=RepeatMode.ONE,
+        )
+
+    async def test_other_device_state_does_not_publish_source_options(self) -> None:
+        """A remote player cannot mutate options for Music Assistant's old session."""
+        provider = _make_provider()
+        state = YnisonState(
+            active_device_id="other-device",
+            player_state={
+                "player_queue": {
+                    "current_playable_index": 0,
+                    "playable_list": [{"playable_id": "track1"}],
+                    "shuffle_optional": {"playable_indices": [0]},
+                    "options": {"repeat_mode": "ALL"},
+                }
+            },
+        )
+
+        await provider._handle_ynison_state(state)
+
+        provider.mass.players.update_source_options.assert_not_called()
 
     async def test_clears_on_device_switch(self) -> None:
         """Clears active player when device switches away."""
@@ -3710,6 +3772,90 @@ class TestDynamicSessionCoordinator:
         provider.mass.player_queues.play_media.assert_not_awaited()
         assert provider._pending_restart_track_id is None
 
+    async def test_failed_dynamic_transition_restores_retryable_target(self) -> None:
+        """A failed details lookup cannot leave the track permanently scheduled."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._dynamic_target_track_id = "track2"
+        _stub_attr(
+            provider,
+            "_get_dynamic_stream_details",
+            AsyncMock(side_effect=MediaNotFoundError("missing")),
+        )
+
+        with pytest.raises(MediaNotFoundError, match="missing"):
+            await provider._handle_dynamic_track_transition("track2", 1000, "player1", 7)
+
+        assert provider._dynamic_target_track_id is None
+        assert provider._pending_restart_track_id is None
+        assert provider._format_restart_requested is False
+
+    async def test_failed_dynamic_restart_restores_retryable_state(self) -> None:
+        """A rejected restart clears only the current transition generation."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._dynamic_target_track_id = "track2"
+        provider._dynamic_session_signature = (ContentType.PCM_S16LE, 44_100, 16, 2)
+        provider._current_streaming_track_id = "track1"
+        provider._dynamic_session_ended_event.set()
+        _stub_attr(
+            provider,
+            "_get_dynamic_stream_details",
+            AsyncMock(return_value=self._details(96_000, 24)),
+        )
+        provider.mass.player_queues.play_media.side_effect = PlayerCommandFailed("unavailable")
+
+        with pytest.raises(PlayerCommandFailed, match="unavailable"):
+            await provider._handle_dynamic_track_transition("track2", 1000, "player1", 7)
+
+        assert provider._dynamic_target_track_id is None
+        assert provider._pending_restart_track_id is None
+        assert provider._format_restart_requested is False
+        provider.mass.call_later.assert_called_once_with(
+            1,
+            provider._retry_dynamic_launch,
+            "track2",
+            1000,
+            "player1",
+            7,
+        )
+
+    def test_dynamic_retry_ignores_changed_owner(self) -> None:
+        """A delayed retry cannot restart playback after ownership moves."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._in_use_by_player = "player2"
+        provider._ynison = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "track2"}])
+        )
+        schedule = MagicMock()
+        _stub_attr(provider, "_schedule_dynamic_launch", schedule)
+
+        provider._retry_dynamic_launch("track2", 1000, "player1", 7)
+
+        schedule.assert_not_called()
+
+    async def test_dynamic_transition_cannot_restart_previous_owner(self) -> None:
+        """An awaited transition cannot steal playback after source ownership moves."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._dynamic_target_track_id = "track2"
+        provider._dynamic_session_signature = (ContentType.PCM_S16LE, 44_100, 16, 2)
+        provider._current_streaming_track_id = "track1"
+        provider._dynamic_session_ended_event.set()
+
+        async def details_then_transfer(_track_id: str, _generation: int) -> MagicMock:
+            provider._in_use_by_player = "player2"
+            return self._details(96_000, 24)
+
+        _stub_attr(provider, "_get_dynamic_stream_details", details_then_transfer)
+
+        await provider._handle_dynamic_track_transition("track2", 1000, "player1", 7)
+
+        provider.mass.player_queues.play_media.assert_not_awaited()
+        assert provider._dynamic_target_track_id is None
+        assert provider._pending_restart_track_id is None
+
     async def test_invalid_real_format_is_retried_instead_of_guessed(self) -> None:
         """Out-of-range source metadata must not start dynamic PCM with a fallback guess."""
         provider = _make_provider()
@@ -3868,6 +4014,26 @@ class TestDynamicSessionCoordinator:
 
         assert provider._dynamic_target_track_id is None
         assert provider._active_player_id is None
+
+    async def test_dynamic_launch_cannot_restart_previous_owner(self) -> None:
+        """An awaited launch cannot target an owner that no longer holds the source."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._dynamic_target_track_id = "track2"
+        provider._ynison = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "track2"}])
+        )
+
+        async def details_then_transfer(_track_id: str, _generation: int) -> MagicMock:
+            provider._in_use_by_player = "player2"
+            return self._details(96_000, 24)
+
+        _stub_attr(provider, "_get_dynamic_stream_details", details_then_transfer)
+
+        await provider._launch_dynamic_session("track2", 1000, "player1", 7)
+
+        provider.mass.player_queues.play_media.assert_not_awaited()
+        assert provider._dynamic_target_track_id is None
 
     async def test_next_track_prefetch_uses_immediate_playable_successor(self) -> None:
         """Prefetch must use index + 1 and retain current plus next details only."""

@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
@@ -1006,12 +1006,21 @@ class YnisonClient:
             except LoginFailed, YnisonEmptyRedirectError:
                 self._logger.warning("Ynison reconnect attempt %d failed: auth error", attempt)
                 if self._on_auth_failure and not refresh_attempted:
-                    refresh_attempted = True
                     try:
                         new_token = await self._on_auth_failure()
                         self._token = new_token
+                        refresh_attempted = True
                         self._logger.info("Token refreshed, will retry with new token")
+                    except ResourceTemporarilyUnavailable:
+                        self._logger.warning(
+                            "Token refresh temporarily unavailable, will retry after backoff",
+                            exc_info=True,
+                        )
+                    except LoginFailed:
+                        refresh_attempted = True
+                        self._logger.warning("Token refresh permanently failed", exc_info=True)
                     except Exception:
+                        refresh_attempted = True
                         self._logger.warning("Token refresh failed", exc_info=True)
             except asyncio.CancelledError:
                 return
