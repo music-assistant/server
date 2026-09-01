@@ -115,6 +115,11 @@ def _shuffle_controller(
     source_shuffle_enabled: bool,
     target_shuffle_enabled: bool = False,
     source_is_dynamic: bool = False,
+    *,
+    source_crossfade_override: bool | None = None,
+    source_autoplay_override: bool | None = None,
+    target_crossfade_override: bool | None = None,
+    target_autoplay_override: bool | None = None,
 ) -> MagicMock:
     """
     Build a controller stand-in whose two queues carry real state records.
@@ -125,6 +130,10 @@ def _shuffle_controller(
     :param source_shuffle_enabled: Whether shuffle is on for the queue being handed over.
     :param target_shuffle_enabled: Whether shuffle is on for the queue being handed to.
     :param source_is_dynamic: Whether the source queue is managed by a dynamic source.
+    :param source_crossfade_override: Pinned crossfade override on the source queue, if any.
+    :param source_autoplay_override: Pinned autoplay override on the source queue, if any.
+    :param target_crossfade_override: Pinned crossfade override already on the target, if any.
+    :param target_autoplay_override: Pinned autoplay override already on the target, if any.
     """
     source_queue = PlayerQueue(
         queue_id="src",
@@ -135,6 +144,9 @@ def _shuffle_controller(
         shuffle_enabled=source_shuffle_enabled,
         smart_shuffle_active=source_is_dynamic,
         is_dynamic=source_is_dynamic,
+        # the wire fields carry the already-resolved effective value for these tests
+        crossfade_enabled=bool(source_crossfade_override),
+        autoplay_enabled=bool(source_autoplay_override),
     )
     target_queue = PlayerQueue(
         queue_id="tgt",
@@ -143,13 +155,23 @@ def _shuffle_controller(
         available=True,
         items=0,
         shuffle_enabled=target_shuffle_enabled,
+        crossfade_enabled=bool(target_crossfade_override),
+        autoplay_enabled=bool(target_autoplay_override),
     )
 
     fake = MagicMock()
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
     fake._queue_data = {
-        "src": PlayerQueueData(queue=source_queue),
-        "tgt": PlayerQueueData(queue=target_queue),
+        "src": PlayerQueueData(
+            queue=source_queue,
+            crossfade_override=source_crossfade_override,
+            autoplay_override=source_autoplay_override,
+        ),
+        "tgt": PlayerQueueData(
+            queue=target_queue,
+            crossfade_override=target_crossfade_override,
+            autoplay_override=target_autoplay_override,
+        ),
     }
     fake.stop = AsyncMock()
     fake.load = AsyncMock()
@@ -158,6 +180,15 @@ def _shuffle_controller(
     fake.update_items = MagicMock()
     fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
+    # bind the real toggle resolver (with stubbed globals) so the handover under test
+    # exercises actual logic
+    defaults = {"autoplay_enabled": True, "crossfade_enabled": False}
+    fake.mass.config.get_raw_core_config_value = MagicMock(
+        side_effect=lambda _core_module, key, _default: defaults[key]
+    )
+    fake._resolve_default_toggles = lambda queue_data: (
+        PlayerQueuesController._resolve_default_toggles(fake, queue_data)
+    )
     target_player = MagicMock()
     target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
@@ -237,3 +268,24 @@ async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     assert fake.get("src").is_dynamic is False
     assert fake.get("src").shuffle_enabled is False
     assert fake.get("src").smart_shuffle_active is False
+
+
+async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
+    """Pinned autoplay/crossfade overrides, and their already-resolved wire values, reach the target."""
+    fake = _shuffle_controller(
+        source_shuffle_enabled=False,
+        source_crossfade_override=True,
+        source_autoplay_override=False,
+        target_crossfade_override=False,
+        target_autoplay_override=True,
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_data = fake._queue_data["tgt"]
+    assert target_data.crossfade_override is True
+    assert target_data.autoplay_override is False
+    assert target_data.queue.crossfade_enabled is True
+    assert target_data.queue.autoplay_enabled is False
