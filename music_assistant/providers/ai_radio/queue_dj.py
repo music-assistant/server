@@ -221,7 +221,14 @@ class AIRadioQueueDJMixin:
             if self._repair_dj_clips(queue_id, state, items, guard_index):
                 items = self._dj_queue_items(queue_id)
             # tracks that left the queue keep no decision, so the set cannot grow unbounded
-            state.decided_gap_ids &= {item.queue_item_id for item in items}
+            decided_before = state.decided_gap_ids
+            state.decided_gap_ids = decided_before & {item.queue_item_id for item in items}
+            if decided_before and not state.decided_gap_ids:
+                # not one of the tracks this history was recorded against is left, so the
+                # queue it describes is gone whatever the axis positions say
+                self._rebase_dj_history(
+                    state, state.songs_before_window, state.minutes_before_window
+                )
 
             window = self._dj_window(items, guard_index)
             if len(window) < 2:
@@ -232,7 +239,9 @@ class AIRadioQueueDJMixin:
             # measured from the same point the planner counts from, or OPTIONAL guard
             # positions drift between passes. recomputed every pass so state self-corrects
             offsets = self._dj_window_offsets(items, window[0].queue_item_id)
-            self._rebase_dj_history(state, *offsets)
+            if offsets[0] < state.songs_before_window or offsets[1] < state.minutes_before_window:
+                # the queue rewound under the history, e.g. a clear or a jump back to the top
+                self._rebase_dj_history(state, *offsets)
             state.songs_before_window, state.minutes_before_window = offsets
             host = self._hosts.get(state.host_id)
             if host is None:
@@ -454,20 +463,17 @@ class AIRadioQueueDJMixin:
     def _rebase_dj_history(
         self, state: DJQueueState, songs_before_window: int, minutes_before_window: float
     ) -> None:
-        """Move the guard history along when the queue's planning axis rewound."""
-        song_delta = songs_before_window - state.songs_before_window
-        minute_delta = minutes_before_window - state.minutes_before_window
-        if song_delta >= 0 and minute_delta >= 0:
-            # the axis only moved forward, so every event still holds a real position on it
-            return
-        # a cleared or restarted queue rewinds the axis, so aired events move back with it to
-        # keep their distance. events that were still ahead of the old window belonged to clips
-        # the rewind discarded, and are capped so they no longer suppress the gaps ahead
+        """Re-anchor the guard history onto the given start of the planning window."""
+        # aired events move with the window so they keep their distance from it, while events
+        # that were still ahead of it belonged to clips the queue no longer holds: those are
+        # capped at the window start so they stop suppressing every gap behind them
+        song_delta = min(songs_before_window - state.songs_before_window, 0)
+        minute_delta = min(minutes_before_window - state.minutes_before_window, 0.0)
         state.history = {
             section_id: [
                 (
-                    min(song + min(song_delta, 0), songs_before_window),
-                    min(minute + min(minute_delta, 0.0), minutes_before_window),
+                    min(song + song_delta, songs_before_window),
+                    min(minute + minute_delta, minutes_before_window),
                 )
                 for song, minute in events
             ]
