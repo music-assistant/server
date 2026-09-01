@@ -373,6 +373,7 @@ def _autoplay_entries(
     ]
     if not per_queue:
         # global-only: the per-queue Autoplay toggle is a runtime command, not a config entry
+        # so we only define the default here
         entries.append(
             ConfigEntry(
                 key=CONF_AUTOPLAY_ENABLED,
