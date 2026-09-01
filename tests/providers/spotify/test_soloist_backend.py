@@ -309,15 +309,23 @@ async def test_sink_padding_at_an_items_end_is_not_buffered_as_content(
     """
     session = _make_session(tmp_path)
     item = _ItemAudio(TRACK_A, session)
-    item.duration_ms = 10_000
+    item.duration_ms = 60_000
     second = _BYTES_PER_SECOND
 
     # the item's own audio, up to its known end
-    item.write(b"\x01" * (10 * second))
+    item.write(b"\x01" * (60 * second))
     buffered = item._buffered
     # padding beyond the grace is refused; the first moment of it is kept
     item.write(b"\x00" * (5 * second))
     assert item._buffered - buffered <= int(1.5 * second)
+
+    # an item no longer than the tail zone has no distinguishable tail: its
+    # silence is content (a short interlude track) and is never refused
+    short = _ItemAudio(TRACK_A, session)
+    short.duration_ms = 10_000
+    short.write(b"\x01" * (5 * second))
+    short.write(b"\x00" * (4 * second))
+    assert short._buffered == 9 * second
 
     # a quiet passage mid-track is content and is never touched
     mid = _ItemAudio(TRACK_A, session)

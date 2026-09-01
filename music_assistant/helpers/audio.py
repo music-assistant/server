@@ -13,7 +13,6 @@ from io import BytesIO
 from math import isfinite
 from typing import TYPE_CHECKING, Final
 
-import numpy as np
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
@@ -174,6 +173,8 @@ def trailing_silence_bytes(chunk: bytes, pcm_format: AudioFormat, carried: int) 
     :param pcm_format: PCM format of the chunk.
     :param carried: The silent run the buffer already ended with.
     """
+    import numpy as np  # noqa: PLC0415  # deferred: the server import path must stay lazy
+
     if not (spec := _PCM_SAMPLE_SPECS.get(pcm_format.content_type)):
         return 0
     dtype, full_scale = spec

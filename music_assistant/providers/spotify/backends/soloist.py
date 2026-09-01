@@ -2381,11 +2381,12 @@ class _ItemAudio:
             # session's clock steady but stop growing
             return
         if chunk.count(0) == len(chunk):
-            # zero frames near the item's own end are sink padding, not content
+            # Zero frames near the item's own end are sink padding, not content. An
+            # item no longer than the zone has no distinguishable tail, so its
+            # silence is left alone rather than read as padding.
             target = self._duration_bytes()
-            if target is not None and self._written >= target - int(
-                _TAIL_PAD_ZONE_S * _BYTES_PER_SECOND
-            ):
+            zone = int(_TAIL_PAD_ZONE_S * _BYTES_PER_SECOND)
+            if target is not None and target > zone and self._written >= target - zone:
                 self._zero_run += len(chunk)
                 if self._zero_run > int(_TAIL_PAD_GRACE_S * _BYTES_PER_SECOND):
                     # still counted as written: the drain's tail target is met by the
