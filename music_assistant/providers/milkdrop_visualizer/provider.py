@@ -200,7 +200,8 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param kind: Which cooldown the report draws on, one of the REPORT_KIND_* values.
         """
         now = time.monotonic()
-        if now - self._last_report.get((display, kind), 0.0) < REPORT_COOLDOWN:
+        last = self._last_report.get((display, kind))
+        if last is not None and now - last < REPORT_COOLDOWN:
             return False
         self._last_report[display, kind] = now
         return True
