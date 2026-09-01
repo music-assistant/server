@@ -75,6 +75,7 @@ class ABCRadioProvider(MusicProvider):
         if item_id not in ABC_RADIO_STATIONS:
             raise MediaNotFoundError(f"Unknown radio station: {item_id}")
 
+        station = ABC_RADIO_STATIONS[item_id]
         stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -84,16 +85,17 @@ class ABCRadioProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             stream_type=StreamType.HLS,
-            path=ABC_RADIO_STATIONS[item_id]["stream_url"],
+            path=station["stream_url"],
             allow_seek=False,
             can_seek=False,
             duration=0,
-            stream_metadata_update_callback=self._update_stream_metadata,
-            stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
         )
-        # Set initial metadata so the first frame the listener sees
-        # is the live track rather than an empty banner.
-        stream_details.stream_metadata = await self._get_now_playing(item_id)
+        if station["has_track_data"]:
+            stream_details.stream_metadata_update_callback = self._update_stream_metadata
+            stream_details.stream_metadata_update_interval = STREAM_METADATA_UPDATE_INTERVAL
+            # Set initial metadata so the first frame the listener sees
+            # is the live track rather than an empty banner.
+            stream_details.stream_metadata = await self._get_now_playing(item_id)
         return stream_details
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
