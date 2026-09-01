@@ -2560,9 +2560,25 @@ class StreamsAudio:
                         queue.display_name,
                     )
                     continue
-                # a realtime source gets a fade decided from what its boundary can
+                # re-read the effective crossfade settings so a change applies at the
+                # next track transition instead of the next stream session; a realtime
+                # source still gets its fade decided from what its boundary can
                 # actually deliver (see _select_buffered_crossfade)
-                item_crossfade_mode = crossfade_mode
+                if queue_track.media_type != MediaType.TRACK:
+                    item_crossfade_mode = CrossfadeMode.DISABLED
+                else:
+                    item_crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
+                    standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                        CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
+                    )
+                if item_crossfade_mode != crossfade_mode:
+                    self.logger.debug(
+                        "Crossfade mode for queue %s changed mid-session: %s -> %s",
+                        queue.display_name,
+                        crossfade_mode,
+                        item_crossfade_mode,
+                    )
+                    crossfade_mode = item_crossfade_mode
                 self.logger.debug(
                     "Start Streaming queue track: %s (%s) for queue %s",
                     queue_track.streamdetails.uri,
