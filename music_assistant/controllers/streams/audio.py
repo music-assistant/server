@@ -2242,17 +2242,19 @@ class StreamsAudio:
                             session_id,
                             overlay_enabled=False,
                         )
+                        if stale := self._crossfade_handover.pop(queue_item.queue_id, None):
+                            # a boundary nothing consumed (a skip landed in between)
+                            await stale.close()
                         pending = self._crossfade_pending.get(queue.queue_id)
                         if pending is None or pending[1] is not handoff:
                             # the queue was cleared (or moved on) while the mix was
                             # being consumed: publishing now would resurrect a
-                            # continuation nothing owns
+                            # continuation nothing owns. Nothing below this check
+                            # may await, or a cleanup landing in that window is
+                            # overridden by the publish.
                             raise AudioError("the boundary was cleared during its mix")
                         next_handover.stream = _continue_mix(split_leftover, mix_stream)
                         next_handover.source = mix_stream
-                        if stale := self._crossfade_handover.pop(queue_item.queue_id, None):
-                            # a boundary nothing consumed (a skip landed in between)
-                            await stale.close()
                         self._crossfade_handover[queue_item.queue_id] = next_handover
                         published = True
                     finally:

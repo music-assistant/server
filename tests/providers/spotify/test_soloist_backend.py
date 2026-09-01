@@ -414,6 +414,16 @@ async def test_a_full_cushion_pauses_the_engine(tmp_path: Path) -> None:
     sink.resume.assert_awaited()
 
 
+async def test_a_full_cushion_still_ends_the_stream(tmp_path: Path) -> None:
+    """The end of delivery survives a cushion with no room left for the sentinel."""
+    run = _make_run(tmp_path, duration=1)
+    while not run._chunks.full():
+        run._chunks.put_nowait(b"\x01" * 64)
+    run._finish_delivery()
+    # nothing may re-signal the end once the consumer drains: the flag carries it
+    assert len(await _collect(run)) == run._chunks.maxsize * 64
+
+
 async def test_a_failed_run_surfaces_its_error_to_the_stream(tmp_path: Path) -> None:
     """The consumer sees the run's real failure, not a clean end."""
     run = _make_run(tmp_path)

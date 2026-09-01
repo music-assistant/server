@@ -654,6 +654,7 @@ class _SingleTrackRun:
         # cushion suspends the sink, which pauses the engine
         cushion_chunks = max(2, int(_RUN_CUSHION_S * _BYTES_PER_SECOND / _READ_CHUNK_SIZE))
         self._chunks: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=cushion_chunks)
+        self._delivery_done = False
         self._delivered = 0
         self._read_bytes = 0
         self._tail_zeros = 0
@@ -724,7 +725,14 @@ class _SingleTrackRun:
 
     async def stream(self) -> AsyncGenerator[bytes]:
         """Yield the run's PCM audio, ending where the engine ended the item."""
-        while (chunk := await self._chunks.get()) is not None:
+        while True:
+            # the flag ends a delivery whose sentinel found the cushion full:
+            # only an empty cushion can leave the consumer blocked below, and
+            # an empty cushion always has room for the sentinel
+            if self._delivery_done and self._chunks.empty():
+                break
+            if (chunk := await self._chunks.get()) is None:
+                break
             self._delivered += len(chunk)
             yield chunk
         if self._error is not None:
@@ -813,8 +821,8 @@ class _SingleTrackRun:
         self._started.set()
         self._seek_confirmed.set()
         if self._item_over and self._error is None:
-            # a cleanly ended run already queued its sentinel behind the item's
-            # remaining audio, which the consumer is still entitled to
+            # a cleanly ended run has marked its delivery done; the consumer is
+            # still entitled to the cushioned tail and ends once it drains
             return
         # a failed or aborted run's cushion holds audio nobody will take anymore;
         # the sentinel has to reach the consumer either way
@@ -1110,12 +1118,12 @@ class _SingleTrackRun:
 
     def _finish_delivery(self) -> None:
         """Mark the item's audio as fully handed over."""
-        try:
+        self._delivery_done = True
+        # the sentinel wakes a consumer already blocked on an empty cushion;
+        # when the cushion is full, the flag alone ends the stream once the
+        # consumer has drained it
+        with suppress(asyncio.QueueFull):
             self._chunks.put_nowait(None)
-        except asyncio.QueueFull:
-            # the cushion is full: the sentinel is the run's only end signal, so
-            # it queues behind the audio rather than being dropped
-            self._spawn_task(self._chunks.put(None))
 
     async def _set_sink(self, *, running: bool) -> None:
         """Run the capture sink only while its audio has somewhere to go."""
