@@ -682,6 +682,144 @@ async def _run_smartfade_boundary(
         pass
 
 
+async def test_the_live_post_handover_streams_into_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The published boundary mix plays out through the next item's own request.
+
+    The blended intro streams first, and the body continues exactly where the
+    mix stopped reading the item.
+    """
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16, channels=2
+    )
+
+    def _sec(value: int) -> bytes:
+        return bytes([value]) * pcm_format.pcm_sample_size
+
+    current_details = SimpleNamespace(
+        duration=16,
+        seek_position=0,
+        seconds_streamed=0,
+        uri="test://current",
+        buffer=SimpleNamespace(
+            eof=True, cancelled=False, has_error=False, max_size_seconds=300, duration_available=0.0
+        ),
+        is_realtime=True,
+    )
+    next_details = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=_buffer(16.0, ready=True),
+        duration=24,
+        seek_position=0,
+        seconds_streamed=0,
+        uri="test://next",
+        is_realtime=False,
+        volume_normalization_mode=None,
+    )
+    current_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="current",
+        name="Current",
+        streamdetails=current_details,
+        extra_attributes={},
+    )
+    next_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="next",
+        name="Next",
+        streamdetails=next_details,
+        extra_attributes={},
+        available=True,
+    )
+    queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
+    player = SimpleNamespace(player_id="player-1", name="Player")
+    mass = MagicMock()
+    mass.player_queues.get.return_value = queue
+    # the next item's own boundary has nothing to blend into
+    upcoming = iter([next_item])
+
+    def _load_next(*_args: object, **_kwargs: object) -> Any:
+        if (item := next(upcoming, None)) is None:
+            raise QueueEmpty("queue exhausted")
+        return item
+
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=_load_next)
+    mass.player_queues.index_by_id.return_value = 1
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+    audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
+    audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    build = AsyncMock(
+        return_value=SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=0.0,
+                crossfade_duration=8.0,
+                pre_crossfade_duration=0.0,
+                post_crossfade_duration=8.0,
+            )
+        )
+    )
+    monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+
+    async def _concat_mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        yield fade_out_part
+        async for fade_in_chunk in fade_in_part:
+            yield fade_in_chunk
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _concat_mix)
+
+    async def _item_stream(
+        queue_item: Any,
+        *_args: object,
+        seek_position: float = 0.0,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        if queue_item.queue_item_id == "current":
+            for _ in range(16):
+                yield _sec(0x01)
+        else:
+            # a ramp: a lost, repeated or misplaced second shows in the output
+            for second in range(int(seek_position), 24):
+                yield _sec(0x10 + second)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+
+    outgoing = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", current_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    outgoing_bytes = b"".join([chunk async for chunk in outgoing])
+
+    # the outgoing request plays only its own item's audio
+    assert outgoing_bytes == _sec(0x01) * 16
+    assert audio._crossfade_handover["queue-1"].queue_item_id == "next"
+
+    incoming = audio.get_queue_item_stream_with_smartfade(
+        cast("Any", player),
+        cast("Any", next_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+    )
+    incoming_bytes = b"".join([chunk async for chunk in incoming])
+
+    # blended intro first, then the body from exactly where the mix stopped
+    # reading: all 24 seconds of the next item, each exactly once
+    assert incoming_bytes == b"".join(_sec(0x10 + second) for second in range(24))
+    assert "queue-1" not in audio._crossfade_handover
+
+
 async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
