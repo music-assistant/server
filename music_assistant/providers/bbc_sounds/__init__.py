@@ -478,12 +478,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 )
         return radio_list
 
-    # @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=_Constants.DYNAMIC_EXPIRATION)
     async def _station_list(
         self,
         include_local: bool = False,
         show_current_programme: bool = False,
-        show_as_folders: bool = False,
     ) -> list[Radio]:
         """
         Get list of stations as Radios.
@@ -495,7 +494,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         for station in await self.client.stations.get_stations(include_local=include_local):
             if station and station.item_id:
                 station_info = _station_programme_display(station=station)
-                description = station_info.title if station_info else None
+                description = (
+                    station_info.title if station_info and show_current_programme else None
+                )
                 radio_list.append(
                     Radio(
                         item_id=station.item_id,
@@ -695,6 +696,10 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         # These are the exceptions, so get the extra content
         if sub_path == "":
             return await self._get_menu()
+        if sub_path == "listen_live":
+            return await self._station_list(
+                include_local=self.show_local_stations, show_current_programme=True
+            )
         # Categories and collections aren't in the API menus
         if sub_path == "categories" and sub_sub_path:
             return await self._get_category(sub_sub_path)
