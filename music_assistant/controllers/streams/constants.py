@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final
+from typing import Final, Literal
 
 from music_assistant_models.enums import VolumeNormalizationMode
 
@@ -64,36 +64,23 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 # about as long as listening to it would. A gentle feed also keeps a realtime source's
 # banked head start resident for its end-of-track crossfade, and spares players with a
 # small input buffer (Chromecast is the known case).
-# Do not remove this to "fix" slow buffering; raise the burst instead. See the usage policy.
-OUTPUT_READRATE: Final[str] = "1.02"
-OUTPUT_READRATE_INITIAL_BURST: Final[str] = "3"
+# Do not remove this pacing to "fix" slow buffering. See the usage policy.
+#
+# gapless_burst: players that must hold a whole opening chunk before they play gapless
+# (MusicCast is the known case). low_latency: live AudioSource streams, where whatever
+# the burst hands over sits in the player's buffer as listening delay.
+PacingProfile = Literal["default", "gapless_burst", "low_latency"]
+_PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
+    "default": ("1.02", "3"),
+    "gapless_burst": ("1.2", "60"),
+    "low_latency": ("1.02", "0.5"),
+}
 
-# The burst profile for players that must hold a whole track before they play gapless
-# (MusicCast is the known case). Same ceiling rationale and usage-policy note as above.
-BURST_OUTPUT_READRATE: Final[str] = "1.2"
-BURST_OUTPUT_READRATE_INITIAL_BURST: Final[str] = "60"
 
-
-def output_pacing_args(*, big_burst: bool = False) -> list[str]:
-    """
-    Return the ffmpeg pacing arguments for a stream handed to a player.
-
-    :param big_burst: Whether the player needs a large opening burst before it
-        will play gapless, at the cost of any banked crossfade material.
-    """
-    if big_burst:
-        return [
-            "-readrate",
-            BURST_OUTPUT_READRATE,
-            "-readrate_initial_burst",
-            BURST_OUTPUT_READRATE_INITIAL_BURST,
-        ]
-    return [
-        "-readrate",
-        OUTPUT_READRATE,
-        "-readrate_initial_burst",
-        OUTPUT_READRATE_INITIAL_BURST,
-    ]
+def output_pacing_args(profile: PacingProfile = "default") -> list[str]:
+    """Return the ffmpeg pacing arguments for a stream handed to a player."""
+    readrate, burst = _PACING[profile]
+    return ["-readrate", readrate, "-readrate_initial_burst", burst]
 
 
 # Time to keep the flow stream response open after the last audio byte of a queue.

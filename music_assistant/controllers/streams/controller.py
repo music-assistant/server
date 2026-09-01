@@ -87,6 +87,7 @@ from music_assistant.controllers.streams.constants import (
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
+    PacingProfile,
     get_available_buffer_sizes,
     output_pacing_args,
 )
@@ -900,16 +901,23 @@ class StreamsController(CoreController):
             ):
                 audio_bytes = _wav_passthrough_stream(audio_input, output_format)
             else:
-                # MusicCast is the one known player that needs a large opening burst
-                # before it plays gapless; further exceptions belong in a per-player
-                # table, not here
-                needs_burst = player.provider.domain == "musiccast"
+                pacing: PacingProfile
+                if queue_item.media_type == MediaType.AUDIO_SOURCE:
+                    # whatever the burst hands over sits in the player's buffer
+                    # as listening delay
+                    pacing = "low_latency"
+                elif player.provider.domain == "musiccast":
+                    # the one known player that needs a large opening burst before it
+                    # plays gapless; further exceptions belong in a per-player table
+                    pacing = "gapless_burst"
+                else:
+                    pacing = "default"
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=output_pacing_args(big_burst=needs_burst),
+                    extra_input_args=output_pacing_args(pacing),
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -1839,7 +1847,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args(),
+            extra_input_args=output_pacing_args("low_latency"),
         )
 
     async def _get_audio_source_session_stream(

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from music_assistant.controllers.streams.constants import (
-    BURST_OUTPUT_READRATE,
-    BURST_OUTPUT_READRATE_INITIAL_BURST,
-    OUTPUT_READRATE,
-    OUTPUT_READRATE_INITIAL_BURST,
-)
+from music_assistant.controllers.streams.constants import output_pacing_args
+
+
+def _value(args: list[str], key: str) -> float:
+    return float(args[args.index(key) + 1])
 
 
 def test_pacing_stays_ahead_of_playback() -> None:
@@ -16,8 +15,9 @@ def test_pacing_stays_ahead_of_playback() -> None:
 
     The ceiling may be lowered per player, but never to realtime or slower.
     """
-    assert float(OUTPUT_READRATE) > 1.0
-    assert float(BURST_OUTPUT_READRATE) > 1.0
+    assert _value(output_pacing_args(), "-readrate") > 1.0
+    assert _value(output_pacing_args("gapless_burst"), "-readrate") > 1.0
+    assert _value(output_pacing_args("low_latency"), "-readrate") > 1.0
 
 
 def test_the_default_burst_stays_small() -> None:
@@ -28,9 +28,14 @@ def test_the_default_burst_stays_small() -> None:
     leaving its end-of-track crossfade nothing to mix, and overruns players
     with a small input buffer (Chromecast is the known case).
     """
-    assert 1 <= float(OUTPUT_READRATE_INITIAL_BURST) <= 10
+    assert 1 <= _value(output_pacing_args(), "-readrate_initial_burst") <= 10
 
 
 def test_the_burst_profile_covers_gapless_prefetch() -> None:
     """A player on the burst profile holds a large opening chunk before it plays gapless."""
-    assert float(BURST_OUTPUT_READRATE_INITIAL_BURST) >= 10
+    assert _value(output_pacing_args("gapless_burst"), "-readrate_initial_burst") >= 10
+
+
+def test_the_low_latency_burst_stays_under_a_second() -> None:
+    """A live source's burst is listening delay: the player buffers it ahead of real time."""
+    assert _value(output_pacing_args("low_latency"), "-readrate_initial_burst") <= 1

@@ -26,8 +26,7 @@ from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.streams.constants import (
-    BURST_OUTPUT_READRATE,
-    BURST_OUTPUT_READRATE_INITIAL_BURST,
+    output_pacing_args,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -74,13 +73,8 @@ PARTY_CALL_TIMEOUT = 5.0
 
 # The local proxy modes encode audio themselves, so they carry the core streamserver's
 # pacing ceiling rather than handing a track over as fast as ffmpeg can produce it.
-# See the usage policy note on OUTPUT_READRATE.
-_READRATE_ARGS = [
-    "-readrate",
-    BURST_OUTPUT_READRATE,
-    "-readrate_initial_burst",
-    BURST_OUTPUT_READRATE_INITIAL_BURST,
-]
+# See the usage policy note in the streams constants.
+_READRATE_ARGS = output_pacing_args("gapless_burst")
 
 
 class PartyInfo(NamedTuple):

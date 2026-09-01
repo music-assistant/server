@@ -313,7 +313,7 @@ def test_default_pacing_keeps_a_banked_head_start_resident() -> None:
     so the buffer is empty by EOF and every boundary loses its fade.
     """
     default = output_pacing_args()
-    burst = output_pacing_args(big_burst=True)
+    burst = output_pacing_args("gapless_burst")
 
     def value(args: list[str], key: str) -> float:
         return float(args[args.index(key) + 1])
@@ -1573,12 +1573,12 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
 
 @pytest.mark.parametrize(
-    ("player_provider_domain", "big_burst"),
-    [("sonos", False), ("musiccast", True)],
+    ("player_provider_domain", "profile"),
+    [("sonos", "default"), ("musiccast", "gapless_burst")],
     ids=["default", "musiccast"],
 )
 async def test_single_item_handler_paces_by_player(
-    monkeypatch: pytest.MonkeyPatch, player_provider_domain: str, big_burst: bool
+    monkeypatch: pytest.MonkeyPatch, player_provider_domain: str, profile: str
 ) -> None:
     """Every player gets the gentle default; MusicCast gets its gapless opening burst."""
     controller, request, seen = _single_item_handler(
@@ -1590,7 +1590,7 @@ async def test_single_item_handler_paces_by_player(
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_item_stream(request)
 
-    assert seen["extra_input_args"] == output_pacing_args(big_burst=big_burst)
+    assert seen["extra_input_args"] == output_pacing_args(profile)  # type: ignore[arg-type]
 
 
 # -- StreamsAudio.get_stream_details --
