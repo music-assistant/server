@@ -90,6 +90,7 @@ class AIRadioProvider(
         self._dj_queues: dict[str, DJQueueState] = {}
         self._dj_lock = asyncio.Lock()
         self._show_runs: dict[str, _ShowRun] = {}
+        self._show_runs_lock = asyncio.Lock()
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"

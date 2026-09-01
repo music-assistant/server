@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -53,6 +54,7 @@ class AIRadioMediaMixin:
         logger: logging.Logger
         _stations: dict[str, dict[str, Any]]
         _show_runs: dict[str, _ShowRun]
+        _show_runs_lock: asyncio.Lock
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
@@ -82,16 +84,19 @@ class AIRadioMediaMixin:
         station = self._stations.get(prov_radio_id)
         if station is None:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
-        self._expire_unbound_runs()
-        run = self._show_runs.get(prov_radio_id)
-        if run is None:
-            run = _ShowRun(tracks=await self._snapshot_show_tracks(station))
-            self._show_runs[prov_radio_id] = run
-        if run.queue_id is None:
-            run.queue_id = self._find_show_queue(prov_radio_id)
-        page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
-        run.cursor += len(page)
-        return page
+        # snapshotting awaits, so two concurrent first-calls for the same station
+        # must not both pass the "no active run" check and each start their own run
+        async with self._show_runs_lock:
+            self._expire_unbound_runs()
+            run = self._show_runs.get(prov_radio_id)
+            if run is None:
+                run = _ShowRun(tracks=await self._snapshot_show_tracks(station))
+                self._show_runs[prov_radio_id] = run
+            if run.queue_id is None:
+                run.queue_id = self._find_show_queue(prov_radio_id)
+            page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
+            run.cursor += len(page)
+            return page
 
     def _station_to_radio(self, station: dict[str, Any]) -> Radio:
         """Build the Radio media item for a station."""

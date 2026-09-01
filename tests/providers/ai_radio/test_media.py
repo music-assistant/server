@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -31,6 +32,7 @@ class _Media(AIRadioMediaMixin):
         """Stamp the attrs AIRadioMediaMixin reads, skipping real provider init."""
         self._stations = stations
         self._show_runs: dict[str, Any] = {}
+        self._show_runs_lock = asyncio.Lock()
         self._hosts: dict[str, Any] = {}
         self.instance_id = "ai_radio"
         self.domain = "ai_radio"
@@ -124,6 +126,34 @@ async def test_first_call_starts_a_run_and_pages() -> None:
     page2 = await media.get_dynamic_radio_tracks("morning_show")
     assert len(page2) == 5
     assert await media.get_dynamic_radio_tracks("morning_show") == []
+
+
+async def test_concurrent_first_calls_start_only_one_run() -> None:
+    """Two concurrent first-calls for the same station snapshot only once and page in turn."""
+    media = _media_with_show(track_count=30)
+
+    async def _fetch_source_tracks(
+        _station: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str]:
+        # yields control so the second concurrent call can race the first
+        await asyncio.sleep(0)
+        return (
+            [
+                {"index": i, "item_id": f"t{i}", "duration": 210, "media_item": _track(f"t{i}")}
+                for i in range(30)
+            ],
+            "My Playlist",
+        )
+
+    media._fetch_source_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_fetch_source_tracks
+    )
+    page1, page2 = await asyncio.gather(
+        media.get_dynamic_radio_tracks("morning_show"),
+        media.get_dynamic_radio_tracks("morning_show"),
+    )
+    media._fetch_source_tracks.assert_awaited_once()
+    assert {len(page1), len(page2)} == {25, 5}
 
 
 async def test_run_end_allows_a_fresh_run() -> None:
