@@ -26,7 +26,11 @@ from music_assistant_models.errors import AudioError, LoginFailed
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.controllers.streams.audio_buffer import BUFFER_READY_TIMEOUT
+from music_assistant.controllers.streams.audio_buffer import (
+    BUFFER_READY_TIMEOUT,
+    AudioBuffer,
+    ProviderAudioFill,
+)
 from music_assistant.helpers.config_entries import (
     PUBLISH_NAME_TEMPLATES,
     resolve_publish_name,
@@ -48,7 +52,7 @@ from music_assistant.providers.spotify.backends.soloist import (
     SoloistAppControlError,
     SoloistBackend,
     _CaptureShaper,
-    _ItemAudio,
+    _ItemState,
     _SoloistSession,
     _trim_lead_silence,
 )
@@ -194,11 +198,12 @@ async def test_item_stream_ends_where_the_session_moves_on(tmp_path: Path) -> No
     session._current = item_a
     item_a.started.set()
     item_a.claim()
+    fill_a = _attach_fill(item_a)
     item_a.write(b"a" * 16)
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
     item_a.write(b"late" * 4)  # written after the cut: goes nowhere
-    chunks = [chunk async for chunk in item_a.read()]
-    assert b"".join(chunks) == b"a" * 16
+    item_a.end_fill()
+    assert await _handed_over(fill_a) == b"a" * 16
     # the next item exists, carries the duration and now receives the audio
     item_b = session.current
     assert item_b is not None
@@ -225,9 +230,11 @@ async def test_the_engines_restored_state_does_not_cut_a_pending_item(
     await session._observe_current(TRACK_A, 200_000, track_changed=True)
     assert session.current is requested
     assert requested.started.is_set() is True
+    fill = _attach_fill(requested)
     requested.write(b"\x01" * 32)
     requested.close()
-    assert b"".join([chunk async for chunk in requested.read()]) == b"\x01" * 32
+    requested.end_fill()
+    assert await _handed_over(fill) == b"\x01" * 32
 
 
 async def test_leaving_the_engines_restored_item_is_not_a_takeover(tmp_path: Path) -> None:
@@ -247,16 +254,62 @@ async def test_leaving_the_engines_restored_item_is_not_a_takeover(tmp_path: Pat
     assert session.current is requested
 
 
-async def test_audio_read_before_the_stream_opens_is_kept(tmp_path: Path) -> None:
-    """Audio captured before an item's stream opens is buffered, not dropped."""
+async def test_audio_is_held_back_until_the_item_has_somewhere_to_put_it(
+    tmp_path: Path,
+) -> None:
+    """Audio captured before the item's buffer is open is held back, not dropped."""
     session = _make_session(tmp_path)
     item = session._open_channel(TRACK_A)
     session._current = item
-    item.write(b"head" * 8)
+    # nowhere to write it yet: the reader is told to hold the chunk
+    assert item.write(b"head" * 8) is False
+    assert item.written == 0
     item.claim()
+    fill = _attach_fill(item)
+    assert item.write(b"head" * 8) is True
     item.close()
-    chunks = [chunk async for chunk in item.read()]
-    assert b"".join(chunks) == b"head" * 8
+    item.end_fill()
+    assert await _handed_over(fill) == b"head" * 8
+
+
+async def test_held_audio_never_opens_the_item_that_follows_it(tmp_path: Path) -> None:
+    """Audio held while a buffer was being opened belongs to the item it was read for."""
+    session = _make_session(tmp_path)
+    leaving = session._current = session._open_channel(TRACK_A)
+    leaving.started.set()
+    # nowhere to write it: the reader holds it back for this item
+    assert session._write_if_wanted(b"\x01" * 32) is False
+    held = session._held_chunk
+    assert held is not None
+    assert held[0] is leaving
+    # the engine moves on before the buffer arrived, so the held audio is dropped
+    await session._observe_current(TRACK_B, 200_000, track_changed=True)
+    arriving = session.current
+    assert arriving is not None
+    assert arriving is not leaving
+    arriving.claim()
+    fill = _attach_fill(arriving)
+    assert session._hand_over_held_chunk() is True
+    assert session._held_chunk is None
+    assert not fill._chunks
+    # only what is read for the new item reaches it
+    assert session._write_if_wanted(b"\x02" * 32) is True
+    assert b"".join(fill._chunks) == b"\x02" * 32
+
+
+async def test_held_audio_is_handed_over_once_the_buffer_arrives(tmp_path: Path) -> None:
+    """Nothing is lost while the item's buffer is being opened."""
+    session = _make_session(tmp_path)
+    item = session._current = session._open_channel(TRACK_A)
+    item.started.set()
+    assert session._write_if_wanted(b"\x01" * 32) is False
+    # still nowhere to put it, so the reader keeps holding
+    assert session._hand_over_held_chunk() is False
+    item.claim()
+    fill = _attach_fill(item)
+    assert session._hand_over_held_chunk() is True
+    assert session._held_chunk is None
+    assert b"".join(fill._chunks) == b"\x01" * 32
 
 
 async def test_a_channel_is_only_ever_served_once(tmp_path: Path) -> None:
@@ -286,15 +339,15 @@ async def test_an_abandoned_channel_cannot_be_continued(tmp_path: Path) -> None:
 async def test_a_stuck_item_fails_instead_of_streaming_forever(tmp_path: Path) -> None:
     """An item that runs far past its duration without a track change fails."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 1_000
     item.claim()
-    limit = item._overrun_limit()
+    _attach_fill(item)
+    limit = item.overrun_limit
     assert limit is not None
     item.write(b"\x01" * (limit + _FRAME_BYTES))
     with pytest.raises(AudioError, match="never moved on"):
-        async for _ in item.read():
-            pass
+        await session._await_item_end(item, boundary_settled=True)
 
 
 async def test_sink_padding_at_an_items_end_is_not_buffered_as_content(
@@ -308,36 +361,42 @@ async def test_sink_padding_at_an_items_end_is_not_buffered_as_content(
     that ends in dead air, and a fade built on it has nothing to blend.
     """
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 60_000
     second = _BYTES_PER_SECOND
+    fill = _attach_fill(item)
 
     # the item's own audio, up to its known end
     item.write(b"\x01" * (60 * second))
-    buffered = item._buffered
+    handed_over = fill._pending_bytes
     # padding beyond the grace is refused; the first moment of it is kept
     item.write(b"\x00" * (5 * second))
-    assert item._buffered - buffered <= int(1.5 * second)
+    assert fill._pending_bytes - handed_over <= int(1.5 * second)
+    # refused padding still counts as written, so the tail drain's target stays reachable
+    assert item.written == 65 * second
 
     # an item no longer than the tail zone has no distinguishable tail: its
     # silence is content (a short interlude track) and is never refused
-    short = _ItemAudio(TRACK_A, session)
+    short = _ItemState(TRACK_A, session)
     short.duration_ms = 10_000
+    short_fill = _attach_fill(short)
     short.write(b"\x01" * (5 * second))
     short.write(b"\x00" * (4 * second))
-    assert short._buffered == 9 * second
+    assert short_fill._pending_bytes == 9 * second
 
     # a quiet passage mid-track is content and is never touched
-    mid = _ItemAudio(TRACK_A, session)
+    mid = _ItemState(TRACK_A, session)
     mid.duration_ms = 200_000
+    mid_fill = _attach_fill(mid)
     mid.write(b"\x01" * (10 * second))
     mid.write(b"\x00" * (8 * second))
-    assert mid._buffered == 18 * second
+    assert mid_fill._pending_bytes == 18 * second
 
     # unknown duration: nothing can be called the end, so nothing is refused
-    unknown = _ItemAudio(TRACK_A, session)
+    unknown = _ItemState(TRACK_A, session)
+    unknown_fill = _attach_fill(unknown)
     unknown.write(b"\x00" * (5 * second))
-    assert unknown._buffered == 5 * second
+    assert unknown_fill._pending_bytes == 5 * second
 
 
 async def test_the_first_logged_out_snapshot_is_not_a_lost_pairing(tmp_path: Path) -> None:
@@ -366,6 +425,7 @@ async def test_buffering_gates_the_sink_once_demand_started(tmp_path: Path) -> N
     session = _make_session(tmp_path)
     session._demand_started = True
     session._current = session._open_channel(TRACK_A)
+    _attach_fill(session._current)
     _feed(session, TRACK_B)
     sink = _sink_of(session)
     # the sink is created suspended, so there is nothing to suspend yet
@@ -402,6 +462,7 @@ async def test_the_last_item_is_drained_rather_than_cut(tmp_path: Path, end_stat
     item = session._current = session._open_channel(TRACK_A)
     item.duration_ms = 1_000
     item.last_position_ms = 1_000
+    fill = _attach_fill(item)
     one_second = 1_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
     sink = _sink_of(session)
     await session._handle_event(_playback_event(end_status, position_ms=1_000))
@@ -413,7 +474,7 @@ async def test_the_last_item_is_drained_rather_than_cut(tmp_path: Path, end_stat
     # sink keeps rendering afterwards
     item.write(b"\x01" * one_second)
     item.write(b"\x00" * 4096)
-    assert item.buffered == one_second
+    assert fill._pending_bytes == one_second
     await _wait_for(lambda: item._closed)
     sink.suspend.assert_awaited_once()
 
@@ -461,6 +522,7 @@ async def test_the_cushion_is_capped_by_suspending_the_sink(tmp_path: Path) -> N
     session._engine_playing = True
     item = session._current = session._open_channel(TRACK_A)
     item.claim()
+    fill = _attach_fill(item)
     sink = _sink_of(session)
     await session._apply_sink_state()
     sink.suspend.assert_not_awaited()
@@ -470,7 +532,7 @@ async def test_the_cushion_is_capped_by_suspending_the_sink(tmp_path: Path) -> N
     sink.suspend.assert_awaited_once()
     assert session._backpressured is True
     # and it comes back once the player has drained enough of it
-    item._buffered = int(soloist_backend._RESUME_RETAINED_S * _BYTES_PER_SECOND) - 1
+    fill._pending_bytes = int(soloist_backend._RESUME_RETAINED_S * _BYTES_PER_SECOND) - 1
     await session._apply_sink_state()
     sink.resume.assert_awaited_once()
     assert session._backpressured is False
@@ -711,7 +773,7 @@ async def test_a_login_that_never_happened_is_not_confused_with_another_failure(
 def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     """A seeked item delivers the remainder, so its targets are based on that."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 200_000
     full = 200_000 * CAPTURE_SAMPLE_RATE // 1000 * _FRAME_BYTES
     assert item._duration_bytes() == full
@@ -720,11 +782,12 @@ def test_a_seeked_item_only_expects_what_is_left_of_it(tmp_path: Path) -> None:
     assert item._duration_bytes() == remainder
     # so the tail drain has a target it can actually reach
     item.start_tail_drain()
+    fill = _attach_fill(item)
     item.write(b"\x01" * remainder)
     assert item.tail_complete is True
     # and the padding silence after it is refused
     item.write(b"\x00" * 4096)
-    assert item.buffered == remainder
+    assert fill._pending_bytes == remainder
 
 
 @pytest.mark.parametrize(
@@ -741,7 +804,7 @@ async def test_the_seek_retries_until_the_engine_reports_the_target(
 ) -> None:
     """A seek dropped while the track loads is re-sent until a report confirms it."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     client = cast("Any", session._client)
     # the engine restored this item part-way in, before the seek goes out
     item.observe_position(117_000)
@@ -767,7 +830,7 @@ async def test_the_seek_retries_until_the_engine_reports_the_target(
 async def test_a_seek_that_only_ever_sees_the_restored_position_fails(tmp_path: Path) -> None:
     """A seek nothing confirms fails loudly rather than streaming from elsewhere."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     # the engine sits at the restored position and never reloads the track
     item.observe_position(117_000)
     with (
@@ -781,42 +844,39 @@ async def test_a_seek_that_only_ever_sees_the_restored_position_fails(tmp_path: 
 async def test_a_seek_the_engine_ignored_does_not_cut_the_item_short(tmp_path: Path) -> None:
     """An item the engine plays from its start is bounded by its full duration."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 176_000
     item.arm_seek(117_000)
     item.claim()
     # the engine never made the seek and is playing the item from its start, so
     # the audio it delivers runs well past what the seeked remainder would allow
     item.observe_position(80_000)
+    fill = _attach_fill(item)
     item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
     item.close()
-    delivered = 0
-    async for chunk in item.read():
-        delivered += len(chunk)
-    assert delivered == 89 * _BYTES_PER_SECOND
+    item.end_fill()
+    assert len(await _handed_over(fill)) == 89 * _BYTES_PER_SECOND
 
 
 async def test_a_seek_that_landed_still_bounds_the_item_at_its_remainder(tmp_path: Path) -> None:
     """An item the engine really seeked into stays bounded by what is left of it."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 176_000
     item.arm_seek(117_000)
     item.observe_position(0)
     item.observe_position(117_000)
     assert item.seek_confirmed.is_set()
-    assert item._overrun_limit() == 59 * _BYTES_PER_SECOND + int(
-        _ITEM_OVERRUN_S * _BYTES_PER_SECOND
-    )
+    assert item.overrun_limit == 59 * _BYTES_PER_SECOND + int(_ITEM_OVERRUN_S * _BYTES_PER_SECOND)
     # later reports do not move the latch, which would shrink the bound
     item.observe_position(150_000)
     assert item.started_at_ms == 117_000
     # so it still fails once it runs that far past the seek point
     item.claim()
+    _attach_fill(item)
     item.write(b"\x01" * (89 * _BYTES_PER_SECOND))
     with pytest.raises(AudioError, match="never moved on"):
-        async for _ in item.read():
-            pass
+        await session._await_item_end(item, boundary_settled=True)
 
 
 def test_the_lead_trim_never_exceeds_its_budget() -> None:
@@ -860,7 +920,7 @@ async def test_feeding_never_replaces_a_channel_already_in_use(tmp_path: Path) -
         await session._observe_current(TRACK_B, 200_000, track_changed=True)
 
     _client_of(session).add_to_queue.side_effect = _engine_gets_there_first
-    await session.feed_after(streamdetails, streamed)
+    await session._feed_follower(streamdetails, streamed)
     live = session.current
     assert live is not None
     assert live.uri == TRACK_B
@@ -1126,11 +1186,8 @@ async def test_a_stream_a_seek_cut_short_reports_itself_replaced(
     item.started.set()
     item.playing_seen = playing_seen
     item.claim()
-    item.write(b"a" * 16)
-    # the seek cuts the channel while its stream is still reading it
-    item.close(superseded=True)
 
-    async def _acquired(*_args: Any, **_kwargs: Any) -> tuple[_SoloistSession, _ItemAudio]:
+    async def _acquired(*_args: Any, **_kwargs: Any) -> tuple[_SoloistSession, _ItemState]:
         return session, item
 
     monkeypatch.setattr(backend, "_acquire", _acquired)
@@ -1140,8 +1197,13 @@ async def test_a_stream_a_seek_cut_short_reports_itself_replaced(
         async for chunk in backend.stream_spotify_uri(CHAPTER_A):
             chunks.append(chunk)
 
+    task = asyncio.create_task(_drain())
+    await _wait_for(lambda: item.fill is not None)
+    item.write(b"a" * 16)
+    # the seek cuts the channel while its stream is still reading it
+    item.close(superseded=True)
     with pytest.raises(StreamSupersededError):
-        await _drain()
+        await task
     # the audio it did capture is still handed over
     assert b"".join(chunks) == b"a" * 16
 
@@ -1335,6 +1397,7 @@ async def test_an_app_pause_is_only_undone_so_many_times(tmp_path: Path) -> None
     session = _make_session(tmp_path)
     session._demand_started = True
     session._current = session._open_channel(TRACK_A)
+    _attach_fill(session._current)
     _feed(session, TRACK_B)
     for _ in range(_MAX_APP_PAUSE_RESUMES):
         await session._handle_event(_playback_event("playing"))
@@ -1671,15 +1734,14 @@ async def test_app_volume_change_is_pinned_back_to_unity(tmp_path: Path) -> None
     _client_of(session).set_volume.assert_not_awaited()
 
 
-async def test_track_change_signals_the_queue_when_it_matches_the_next_item(
-    tmp_path: Path,
-) -> None:
-    """Reaching a fed item tells the queue to start filling that item's buffer."""
+async def test_reaching_an_item_asks_the_queue_to_open_its_buffer(tmp_path: Path) -> None:
+    """The audio of a fed item exists once the engine gets there, so its buffer is opened."""
     session = _make_session(tmp_path, queue_id="player1")
     session._current = session._open_channel(TRACK_A)
-    session._open_channel(TRACK_B)
+    item = session._open_channel(TRACK_B)
     queues = _queues_of(session)
-    queues.get.return_value = MagicMock(next_item=_queue_item(TRACK_B), current_index=0)
+    fill = ProviderAudioFill(session.backend.handoff_audio_format, _streamdetails_for(uri=TRACK_B))
+    queues.open_provider_audio_fill = AsyncMock(return_value=fill)
     await session._handle_event(
         SoloistEvent(
             type="track_changed",
@@ -1687,25 +1749,23 @@ async def test_track_change_signals_the_queue_when_it_matches_the_next_item(
             raw={},
         )
     )
-    queues.prepare_next_audio_buffer.assert_called_once_with("player1")
+    await _wait_for(lambda: item.fill is fill)
+    queues.open_provider_audio_fill.assert_awaited_once_with("player1", "spotify--test", "bbb")
+    # and the item now takes the engine's audio instead of holding the reader back
+    assert item.write(b"\x01" * 32) is True
 
 
-async def test_track_change_to_another_item_signals_nothing(tmp_path: Path) -> None:
-    """An item the queue is not asking for next must not trigger a prebuffer."""
+async def test_a_commanded_jump_does_not_open_a_second_buffer(tmp_path: Path) -> None:
+    """A jump Music Assistant asked for is claimed by the request, which owns the buffer."""
     session = _make_session(tmp_path, queue_id="player1")
     session._current = session._open_channel(TRACK_A)
+    session._current.started.set()
+    target = _feed(session, TRACK_B)
+    session._discard_until = target
     queues = _queues_of(session)
-    queues.get.return_value = MagicMock(next_item=_queue_item(TRACK_B), current_index=0)
-    await session._handle_event(
-        SoloistEvent(
-            type="track_changed",
-            data=SoloistTrackChanged(
-                item=SoloistEntity(uri="spotify:track:surprise", entity_type="track")
-            ),
-            raw={},
-        )
-    )
-    queues.prepare_next_audio_buffer.assert_not_called()
+    queues.open_provider_audio_fill = AsyncMock(return_value=None)
+    await session._observe_current(TRACK_B, 200_000, track_changed=True)
+    queues.open_provider_audio_fill.assert_not_awaited()
 
 
 async def test_the_follower_of_the_streamed_item_is_fed(tmp_path: Path) -> None:
@@ -1719,7 +1779,7 @@ async def test_the_follower_of_the_streamed_item_is_fed(tmp_path: Path) -> None:
     queues.get.return_value = MagicMock(current_index=3)
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 3 else None
     queues.get_next_item.return_value = follower
-    await session.feed_after(streamdetails, streamed)
+    await session._feed_follower(streamdetails, streamed)
     _client_of(session).add_to_queue.assert_awaited_once_with(TRACK_B)
     assert session.pending_item(TRACK_B) is not None
     assert session.has_pending is True
@@ -1736,7 +1796,7 @@ async def test_repeating_one_track_does_not_feed_the_engine(tmp_path: Path) -> N
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     # repeat-one names the item being streamed as its own follower
     queues.get_next_item.return_value = playing
-    assert await session.feed_after(streamdetails, streamed) is False
+    assert await session._feed_follower(streamdetails, streamed) is False
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
@@ -1752,7 +1812,7 @@ async def test_an_item_the_queue_resolved_elsewhere_is_not_fed(tmp_path: Path) -
     queues.get.return_value = MagicMock(current_index=0)
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     queues.get_next_item.return_value = follower
-    await session.feed_after(streamdetails, streamed)
+    await session._feed_follower(streamdetails, streamed)
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
@@ -1952,8 +2012,9 @@ async def test_a_skip_drops_what_arrives_while_the_command_is_in_flight(
         session._write_if_wanted(b"\x02" * 32)
 
     _client_of(session).skip_next.side_effect = _engine_gets_there
+    fill = _attach_fill(target)
     await session.skip_to(target)
-    captured.extend(target._chunks)
+    captured.extend(fill._chunks)
     assert b"".join(captured) == b"\x02" * 32
     assert session._discard_until is None
 
@@ -2018,6 +2079,7 @@ async def test_only_whole_sample_frames_are_handed_over(
     item = session._current = session._open_channel(TRACK_A)
     item.started.set()
     item.claim()
+    fill = _attach_fill(item)
     session._demand_started = True
     session._sink_running = True
     # two reads that are each mis-aligned but whole together
@@ -2032,8 +2094,8 @@ async def test_only_whole_sample_frames_are_handed_over(
     monkeypatch.setattr(soloist_backend, "_PACE_RATE", 1000.0)
     await session._read_capture()
     # every write was frame-aligned, and no byte was lost
-    assert item.buffered % _FRAME_BYTES == 0
-    assert item.buffered == _FRAME_BYTES * 2
+    assert fill._pending_bytes % _FRAME_BYTES == 0
+    assert fill._pending_bytes == _FRAME_BYTES * 2
 
 
 @pytest.mark.parametrize("state", ["fed", "reached", "being_read"])
@@ -2055,7 +2117,7 @@ async def test_an_already_known_item_is_not_fed_twice(tmp_path: Path, state: str
     queues.get.return_value = MagicMock(current_index=0)
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     queues.get_next_item.return_value = _queue_item(TRACK_B)
-    assert await session.feed_after(streamdetails, streamed) is True
+    assert await session._feed_follower(streamdetails, streamed) is True
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
@@ -2103,14 +2165,18 @@ async def test_a_channel_nothing_can_read_is_not_kept(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     passed_by = _feed(session, TRACK_B)
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
+    fill = _attach_fill(passed_by)
     session._write_if_wanted(b"\x01" * 4096)
-    assert session._retained_bytes() == 4096
+    assert session._retained_seconds() == pytest.approx(4096 / _BYTES_PER_SECOND)
     # the engine moves on again and no stream ever opened this one
     await session._observe_current(TRACK_C, 200_000, track_changed=True)
     assert passed_by.closed is True
+    passed_by.end_fill()
+    passed_by.release()
     session._open_channel(TRACK_A)
     assert passed_by not in session._channels
-    assert session._retained_bytes() == 0
+    assert session._retained_seconds() == 0
+    assert fill.active is False
 
 
 async def test_a_channel_a_stream_still_holds_is_never_dropped(tmp_path: Path) -> None:
@@ -2199,7 +2265,7 @@ async def test_a_repeated_track_is_fed_a_channel_of_its_own(tmp_path: Path) -> N
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     # the very same track once more, as a queue item of its own
     queues.get_next_item.return_value = _queue_item(TRACK_A, queue_item_id="qi-again")
-    assert await session.feed_after(streamdetails, streamed) is True
+    assert await session._feed_follower(streamdetails, streamed) is True
     _client_of(session).add_to_queue.assert_awaited_once_with(TRACK_A)
     second = session.pending_item(TRACK_A)
     assert second is not None
@@ -2333,7 +2399,7 @@ async def test_a_jump_to_a_repeat_is_followed_part_way_through(tmp_path: Path) -
 async def test_only_tracks_are_fed_ahead(tmp_path: Path) -> None:
     """A podcast episode or audiobook chapter is played on its own, never stitched."""
     session = _make_session(tmp_path, queue_id="player1")
-    await session.feed_after(MagicMock(), session._open_channel("spotify:episode:xyz"))
+    await session._feed_follower(MagicMock(), session._open_channel("spotify:episode:xyz"))
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
@@ -2351,7 +2417,7 @@ async def test_a_non_spotify_follower_is_not_fed(tmp_path: Path) -> None:
     queues.get.return_value = MagicMock(current_index=0)
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     queues.get_next_item.return_value = follower
-    await session.feed_after(streamdetails, streamed)
+    await session._feed_follower(streamdetails, streamed)
     _client_of(session).add_to_queue.assert_not_awaited()
 
 
@@ -2373,7 +2439,7 @@ async def test_a_library_item_is_fed_through_its_spotify_mapping(tmp_path: Path)
     queues.get.return_value = MagicMock(current_index=0)
     queues.get_item.side_effect = lambda _queue_id, index: playing if index == 0 else None
     queues.get_next_item.return_value = follower
-    await session.feed_after(streamdetails, streamed)
+    await session._feed_follower(streamdetails, streamed)
     _client_of(session).add_to_queue.assert_awaited_once_with(TRACK_B)
 
 
@@ -2439,7 +2505,7 @@ def test_a_running_session_answers_for_what_the_engine_is_doing(tmp_path: Path) 
 async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
     """PCM that stops well short of the item's duration is rejected."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.playing_seen = True
     item.duration_ms = 200_000
     item.last_position_ms = 100_000
@@ -2450,7 +2516,7 @@ async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
 async def test_missing_position_is_rejected_as_incomplete(tmp_path: Path) -> None:
     """Without any position report there is no evidence the item played out."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.playing_seen = True
     item.duration_ms = 200_000
     with pytest.raises(AudioError, match="incomplete"):
@@ -2460,7 +2526,7 @@ async def test_missing_position_is_rejected_as_incomplete(tmp_path: Path) -> Non
 async def test_short_item_cannot_pass_at_position_zero(tmp_path: Path) -> None:
     """The tolerance never spans a whole item, so a short item cannot pass unplayed."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.playing_seen = True
     item.duration_ms = 8_000
     item.last_position_ms = 0
@@ -2471,7 +2537,7 @@ async def test_short_item_cannot_pass_at_position_zero(tmp_path: Path) -> None:
 async def test_an_item_that_never_played_is_rejected(tmp_path: Path) -> None:
     """An item the engine never reported playing is a failure, whatever was delivered."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.duration_ms = 200_000
     item.last_position_ms = 200_000
     with pytest.raises(AudioError, match="never started playing"):
@@ -2481,7 +2547,7 @@ async def test_an_item_that_never_played_is_rejected(tmp_path: Path) -> None:
 async def test_a_duration_less_item_is_not_judged(tmp_path: Path) -> None:
     """Without a duration there is nothing to judge completeness against."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.playing_seen = True
     await session.validate_item(item)
 
@@ -2499,7 +2565,7 @@ async def test_a_duration_less_item_is_not_judged(tmp_path: Path) -> None:
 async def test_a_superseded_item_is_not_judged(tmp_path: Path, playing_seen: bool) -> None:
     """A channel cut part-way is short on purpose, so it is no evidence of starving."""
     session = _make_session(tmp_path)
-    item = _ItemAudio(TRACK_A, session)
+    item = _ItemState(TRACK_A, session)
     item.playing_seen = playing_seen
     item.duration_ms = 200_000
     item.last_position_ms = 30_000
@@ -2569,7 +2635,7 @@ async def test_a_refused_skip_does_not_leave_the_audio_discarded(tmp_path: Path)
     session = _make_session(tmp_path)
     client = cast("MagicMock", session._client)
     client.skip_next = AsyncMock(side_effect=TimeoutError)
-    item = _ItemAudio(TRACK_B, session)
+    item = _ItemState(TRACK_B, session)
 
     with pytest.raises(AudioError, match="would not skip"):
         await session.skip_to(item)
@@ -2668,13 +2734,14 @@ async def test_an_item_the_engine_skipped_past_fails_instead_of_hanging(
     monkeypatch.setattr(soloist_backend, "_READ_SLICE_S", 0.01)
     monkeypatch.setattr(soloist_backend, "_STALL_TIMEOUT_S", 0.05)
     session = _make_session(tmp_path)
+    session._sink_running = True
     item = session._open_channel(TRACK_A)
     item.claim()
+    _attach_fill(item)
     # the engine is playing something else, so nothing is ever written here
     session._current = session._open_channel("spotify:track:other")
     with pytest.raises(AudioError, match="no audio"):
-        async for _ in item.read():
-            pass
+        await session._await_item_end(item, boundary_settled=True)
 
 
 async def test_adopt_paired_session_copies_into_the_canonical_dir(
@@ -2790,11 +2857,13 @@ async def test_a_skip_drops_the_audio_still_in_flight(tmp_path: Path) -> None:
     with _capture_holding(session, fifo_bytes=2 * _FRAME_BYTES, reader_bytes=2 * _FRAME_BYTES):
         await session._observe_current(TRACK_B, 200_000, track_changed=True)
     assert session._stale_budget == 4 * _FRAME_BYTES
+    jumped_to.claim()
+    fill = _attach_fill(jumped_to)
     session._write_if_wanted(b"s" * (4 * _FRAME_BYTES))
     session._write_if_wanted(b"n" * (2 * _FRAME_BYTES))
-    jumped_to.claim()
     jumped_to.close()
-    assert b"".join([chunk async for chunk in jumped_to.read()]) == b"n" * (2 * _FRAME_BYTES)
+    jumped_to.end_fill()
+    assert await _handed_over(fill) == b"n" * (2 * _FRAME_BYTES)
 
 
 async def test_a_skip_drops_the_stale_audio_across_reads(tmp_path: Path) -> None:
@@ -2803,16 +2872,20 @@ async def test_a_skip_drops_the_stale_audio_across_reads(tmp_path: Path) -> None
     session._stale_budget = 3 * _FRAME_BYTES
     item = session._current = session._open_channel(TRACK_A)
     item.claim()
+    fill = _attach_fill(item)
     session._write_if_wanted(b"s" * (2 * _FRAME_BYTES))
     session._write_if_wanted(b"s" * _FRAME_BYTES + b"n" * _FRAME_BYTES)
     item.close()
-    assert b"".join([chunk async for chunk in item.read()]) == b"n" * _FRAME_BYTES
+    item.end_fill()
+    assert await _handed_over(fill) == b"n" * _FRAME_BYTES
 
 
 async def test_the_marker_spends_an_earlier_jumps_budget(tmp_path: Path) -> None:
     """What the marker drops still counts against a budget left from an earlier jump."""
     session = _make_session(tmp_path)
-    session._current = session._open_channel(TRACK_A)
+    item = session._current = session._open_channel(TRACK_A)
+    item.claim()
+    fill = _attach_fill(item)
     session._stale_budget = 4 * _FRAME_BYTES
     session._discard_until = _feed(session, TRACK_B)
     session._write_if_wanted(b"s" * (3 * _FRAME_BYTES))
@@ -2820,10 +2893,9 @@ async def test_the_marker_spends_an_earlier_jumps_budget(tmp_path: Path) -> None
     # a refused command leaves only what is genuinely still in flight to drop
     session._discard_until = None
     session._write_if_wanted(b"s" * _FRAME_BYTES + b"n" * _FRAME_BYTES)
-    item = session._current
-    item.claim()
     item.close()
-    assert b"".join([chunk async for chunk in item.read()]) == b"n" * _FRAME_BYTES
+    item.end_fill()
+    assert await _handed_over(fill) == b"n" * _FRAME_BYTES
 
 
 async def test_a_natural_cut_keeps_the_audio_in_flight(tmp_path: Path) -> None:
@@ -2860,12 +2932,13 @@ async def test_a_channel_abandoned_at_the_cut_stops_holding_the_cushion(
     item = session._current = session._open_channel(TRACK_A)
     item.started.set()
     item.claim()
+    _attach_fill(item)
     item.write(b"x" * 4096)
     # the cut lands while the abandoned stream is still unwinding
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
-    assert session._retained_bytes() == 4096
+    assert session._retained_seconds() == pytest.approx(4096 / _BYTES_PER_SECOND)
     item.release()
-    assert session._retained_bytes() == 0
+    assert session._retained_seconds() == 0
 
 
 def test_an_abandoned_channel_stops_holding_the_cushion(tmp_path: Path) -> None:
@@ -2873,27 +2946,24 @@ def test_an_abandoned_channel_stops_holding_the_cushion(tmp_path: Path) -> None:
     session = _make_session(tmp_path)
     item = session._open_channel(TRACK_A)
     item.claim()
+    _attach_fill(item)
     item.write(b"x" * 4096)
-    assert session._retained_bytes() == 4096
+    assert session._retained_seconds() == pytest.approx(4096 / _BYTES_PER_SECOND)
     # the stream is gone, then the cut closes the channel
     item.release()
     item.close()
-    assert session._retained_bytes() == 0
+    assert session._retained_seconds() == 0
 
 
-async def test_a_channel_no_stream_ever_took_stops_holding_the_cushion(
-    tmp_path: Path,
-) -> None:
-    """A channel the session cuts with nothing reading it frees its buffer right away."""
+async def test_a_channel_with_no_buffer_holds_nothing_at_all(tmp_path: Path) -> None:
+    """A channel nothing opened a buffer for never banks audio; the reader holds it."""
     session = _make_session(tmp_path)
     item = _feed(session, TRACK_B)
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
-    session._write_if_wanted(b"\x01" * 4096)
-    assert session._retained_bytes() == 4096
-    # still the current channel, so the prune cannot be what frees the cushion
-    item.close()
-    assert item in session._channels
-    assert session._retained_bytes() == 0
+    # the reader is told to hold the chunk back rather than the channel keeping it
+    assert session._write_if_wanted(b"\x01" * 4096) is False
+    assert session._retained_seconds() == 0
+    assert item.written == 0
 
 
 async def test_a_channel_still_being_read_keeps_its_tail(tmp_path: Path) -> None:
@@ -2901,10 +2971,11 @@ async def test_a_channel_still_being_read_keeps_its_tail(tmp_path: Path) -> None
     session = _make_session(tmp_path)
     item = session._open_channel(TRACK_A)
     item.claim()
+    fill = _attach_fill(item)
     item.write(b"tail" * 4)
     item.close()
-    assert item.buffered == 16
-    assert b"".join([chunk async for chunk in item.read()]) == b"tail" * 4
+    item.end_fill()
+    assert await _handed_over(fill) == b"tail" * 4
 
 
 @contextmanager
@@ -3006,7 +3077,7 @@ def _streamdetails_for(
     )
 
 
-def _feed(session: _SoloistSession, uri: str) -> _ItemAudio:
+def _feed(session: _SoloistSession, uri: str) -> _ItemState:
     """Return the channel of an item handed to the engine that it has not started."""
     item = session._open_channel(uri)
     session._pending.append(item)
@@ -3015,17 +3086,30 @@ def _feed(session: _SoloistSession, uri: str) -> _ItemAudio:
 
 def _streamed(
     session: _SoloistSession, uri: str = TRACK_A, media_key: str | None = None
-) -> _ItemAudio:
+) -> _ItemState:
     """Return the channel of the item the engine plays and a stream is reading."""
     item = session._current = session._open_channel(uri)
     item.started.set()
     item.claim(media_key)
+    _attach_fill(item)
     return item
 
 
-def _make_item(tmp_path: Path, uri: str) -> _ItemAudio:
+def _attach_fill(item: _ItemState, streamdetails: StreamDetails | None = None) -> ProviderAudioFill:
+    """Give an item channel somewhere to write its audio, as an opened stream does."""
+    fill = ProviderAudioFill(item.session.backend.handoff_audio_format, streamdetails)
+    item.attach(fill, streamdetails)
+    return fill
+
+
+async def _handed_over(fill: ProviderAudioFill) -> bytes:
+    """Return everything the handle hands over, up to where the item was ended."""
+    return b"".join([chunk async for chunk in fill.stream()])
+
+
+def _make_item(tmp_path: Path, uri: str) -> _ItemState:
     """Return a bare item channel on a mocked session."""
-    return _ItemAudio(uri, _make_session(tmp_path))
+    return _ItemState(uri, _make_session(tmp_path))
 
 
 def _queue_item(uri: str, streamdetails: Any = None, queue_item_id: str | None = None) -> MagicMock:
@@ -3056,7 +3140,7 @@ def _client_of(session: _SoloistSession) -> AsyncMock:
     return cast("AsyncMock", session._client)
 
 
-def _current_of(session: _SoloistSession) -> _ItemAudio:
+def _current_of(session: _SoloistSession) -> _ItemState:
     """Return the channel the session is playing, which the caller knows exists."""
     item = session._current
     assert item is not None
@@ -3261,13 +3345,14 @@ async def test_audio_in_flight_across_an_in_place_seek_is_dropped(tmp_path: Path
     _client_of(session).seek.side_effect = _engine_seeks
     with _capture_holding(session, fifo_bytes=2 * _FRAME_BYTES, reader_bytes=_FRAME_BYTES):
         item = await session.seek_current(TRACK_A, 120_000)
+    fill = _attach_fill(item)
     # nothing rendered while the engine was being moved reached the channel
-    assert not item._chunks
+    assert item.written == 0
     # and what the pipeline still held at the confirmation is dropped after it
     assert session._stale_budget == 3 * _FRAME_BYTES
     session._write_if_wanted(b"\x02" * (3 * _FRAME_BYTES))
     session._write_if_wanted(b"\x03" * 16)
-    assert b"".join(item._chunks) == b"\x03" * 16
+    assert b"".join(fill._chunks) == b"\x03" * 16
 
 
 async def test_the_sink_is_suspended_while_a_seek_is_in_flight(tmp_path: Path) -> None:
@@ -3290,6 +3375,74 @@ async def test_the_sink_is_suspended_while_a_seek_is_in_flight(tmp_path: Path) -
     await session.seek_current(TRACK_A, 120_000)
     assert suspended_during_seek
     _sink_of(session).suspend.assert_awaited()
+
+
+async def test_an_in_place_seek_ends_the_outgoing_items_audio(tmp_path: Path) -> None:
+    """The audio banked before a seek is pre-seek audio, so its buffer is not continued."""
+    session = _make_session(tmp_path)
+    playing = session._current = session._open_channel(TRACK_A)
+    playing.started.set()
+    playing.claim()
+    outgoing = _attach_fill(playing)
+    session._spawn_task(session._watch_item(playing, boundary_settled=True))
+
+    async def _engine_seeks(position_ms: int, **_kwargs: Any) -> None:
+        _current_of(session).observe_position(position_ms)
+
+    _client_of(session).seek.side_effect = _engine_seeks
+    seeked = await session.seek_current(TRACK_A, 120_000)
+    # a channel of its own, which the seek's own stream opens a fresh buffer for
+    assert seeked is not playing
+    assert seeked.fill is None
+    assert seeked.awaiting_fill is True
+    # and the audio from before the seek stops where the seek was asked for
+    await _wait_for(lambda: outgoing.active is False)
+    with pytest.raises(StreamSupersededError):
+        await _handed_over(outgoing)
+
+
+async def test_the_sink_is_held_down_until_the_item_has_a_buffer(tmp_path: Path) -> None:
+    """The engine waits rather than rendering an item's first samples into nowhere."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._engine_playing = True
+    session._sink_running = True
+    item = session._current = session._open_channel(TRACK_A)
+    item.started.set()
+    sink = _sink_of(session)
+    await session._apply_sink_state()
+    sink.suspend.assert_awaited_once()
+    # counted as our own backpressure, so it is not read as a stall or an app pause
+    assert session._backpressured is True
+    # and it comes back the moment the item has somewhere to write
+    item.claim()
+    _attach_fill(item)
+    await session._apply_sink_state()
+    sink.resume.assert_awaited_once()
+
+
+async def test_the_brake_counts_the_lead_the_item_buffers_hold(tmp_path: Path) -> None:
+    """The cushion is measured against what playback has not taken out of the buffers."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._sink_running = True
+    session._engine_playing = True
+    item = session._current = session._open_channel(TRACK_A)
+    item.claim()
+    fill = _attach_fill(item)
+    audio_buffer = MagicMock(spec=AudioBuffer)
+    # the player is well behind, but only the part it has not read is a lead
+    audio_buffer.undrained_seconds = soloist_backend._MAX_RETAINED_S + 1
+    fill._buffer = audio_buffer
+    sink = _sink_of(session)
+    await session._apply_sink_state()
+    sink.suspend.assert_awaited_once()
+    assert session._backpressured is True
+    # the seek window a buffer legitimately retains behind playback is not a lead
+    audio_buffer.undrained_seconds = 0.0
+    await session._apply_sink_state()
+    sink.resume.assert_awaited_once()
+    assert session._backpressured is False
 
 
 async def test_a_seek_the_engine_never_confirms_fails_the_item(tmp_path: Path) -> None:

@@ -122,7 +122,7 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
     itself claimed counts — a daemon is inactive until `_play` activates it.
   - **Start something else on this device**, which shows up as the engine moving
     somewhere it was never sent while the current item is still part-way through
-    (`_ItemAudio.mid_play`). Only the item fed behind the current one is exempt —
+    (`_ItemState.mid_play`). Only the item fed behind the current one is exempt —
     a skip in the app lands there, which is also where the queue goes next, so the
     two stay in step. The engine's own autoplay and the item it restores at startup
     both fail the `mid_play` test, which is what keeps them out of it. Note the
@@ -138,11 +138,20 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   user just moved to. It is a `ProviderStreamLimitError` so the queue treats it as
   capacity — the item stays playable, other providers get a chance at it, and an
   explicit play stops the queue with a message saying what happened.
-- **Readiness comes from the session**: the core's blind next-item pre-buffer is
-  suppressed for a realtime source (`controllers/streams/audio.py`), because the next
-  item's audio does not exist until the session gets there. The session calls
-  `prepare_next_audio_buffer()` when it does, identifying the item **by URI** (a queue
-  reorder may have moved it).
+- **The session asks for the buffer, and writes into it.** The core's blind next-item
+  pre-buffer is suppressed for a realtime source (`controllers/streams/audio.py`),
+  because the next item's audio does not exist until the session gets there. When the
+  engine reaches an item, the session calls `open_provider_audio_fill()` on the queue
+  controller, which finds the upcoming queue item that item's audio belongs to (by
+  provider mapping — a queue reorder may have moved it), creates its `AudioBuffer` and
+  hands back a `ProviderAudioFill` the captured PCM is written straight into. The
+  queue's later playback request finds that buffer and reuses it, so those items never
+  go through `get_audio_stream` or ffmpeg at all. The item Music Assistant *asks* for —
+  the first of a run, a seek, a skip — already owns its buffer, so it keeps the
+  ordinary generator path and is handed the same write handle unattached.
+  Nothing is banked provider-side either way: until an item's buffer is open, the
+  capture sink is held down and the reader holds its chunk, so the item's first samples
+  wait in the sink rather than being dropped.
 - **The engine never crossfades**: its own crossfade is written off in the prefs before
   every spawn, so each track's audio arrives clean from its first sample. Music Assistant
   mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
@@ -159,12 +168,15 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   any gap instead of making it up, since catching up would mean exactly that unpaced
   burst.
 - **Backpressure is ours to apply**: reading above realtime means the engine runs ahead
-  of the player, and nothing upstream stops it. `_MAX_RETAINED_S` caps the
-  captured-but-undelivered audio and suspends the capture sink past it, which stalls
-  the engine until the player catches up. Without that cap the cushion grows without
-  limit and the engine's own item eventually runs more than one queue item ahead —
-  which breaks the URI match the readiness signal depends on. The same gate keeps
-  rebuffering and pause silence out of the delivered PCM, so all sink control goes
+  of the player, and nothing upstream stops it. `_MAX_RETAINED_S` caps how far ahead of
+  playback the session's audio may pile up — everything its handles still hold plus
+  everything the item buffers hold past the furthest position playback has read, so the
+  seek window a buffer legitimately keeps *behind* playback does not count — and
+  suspends the capture sink past it, which stalls the engine until the player catches
+  up. Without that cap the cushion grows without limit and the engine's own item
+  eventually runs further ahead than the queue lookahead of the buffer request reaches.
+  The same gate keeps rebuffering and pause silence out of the delivered PCM, and holds
+  the sink down while an item has no buffer to write into yet, so all sink control goes
   through one place (`_apply_sink_state`).
 - **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
   WebSocket state delimits the items. An item stream is deliberately **not** capped at
@@ -173,8 +185,8 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   of a run gets no track change to cut it on, so a stop/idle/pause snapshot at its own
   end arms a bounded tail drain instead; a pause part-way through is treated as app
   interference, and the engine resuming cancels the drain. A channel is served **once**:
-  its audio is handed over as it is consumed, so a repeated track (or repeat wrapping
-  back to the top) starts a fresh session rather than replaying a drained channel.
+  its audio is written to one buffer as it arrives, so a repeated track (or repeat
+  wrapping back to the top) starts a fresh session rather than reusing a spent channel.
   Exit code 10 (expired build) triggers a forced binary refresh.
 - **Normalization**: exactly one of the two normalizes, and a provider option decides
   which. On (the default) the engine's own normalizer is enabled and the provider
