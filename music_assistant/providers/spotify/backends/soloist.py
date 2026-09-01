@@ -725,8 +725,9 @@ class _SingleTrackRun:
             return
         self._stopped = True
         self._release_waiters()
-        if self._engine_exited and (proc := self._proc) is not None:
-            # The engine exited on its own: reap it before anything else, so
+        if (self._engine_exited or self._item_over) and (proc := self._proc) is not None:
+            # The engine exits on its own at its item's end (a wander event can
+            # precede the exit by a moment): reap it before anything else, so
             # close() below finds a returncode and returns right away. Closing
             # an unreaped process instead silently waits out its stream-lock
             # and flush budgets - ten seconds on every natural track end.
