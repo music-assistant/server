@@ -25,7 +25,7 @@ audible==0.10.0
 auntie-sounds==2.0.5
 av==16.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.2.3
+bandcamp-async-api==0.2.4
 beat-this==1.1.0
 bidict==0.23.1
 certifi==2025.11.12
