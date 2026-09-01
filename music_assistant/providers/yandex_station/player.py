@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
@@ -60,6 +61,37 @@ def _external_command(name: str, payload: dict[str, Any] | str | None = None) ->
     }
 
 
+def _stream_command(url: str, media: PlayerMedia | None, *, audio_client: bool) -> dict[str, Any]:
+    """Build the firmware-compatible command for an external audio URL."""
+    if not audio_client:
+        return _external_command(
+            "radio_play",
+            {"streamUrl": url, "force_restart_player": True},
+        )
+
+    is_hls = urlsplit(url).path.lower().endswith(".m3u8")
+    payload: dict[str, Any] = {
+        "stream": {
+            "url": url,
+            "format": "HLS" if is_hls else "MP3",
+            "type": "FmRadio" if is_hls else "Track",
+            "offset_ms": 0,
+        },
+        "set_pause": False,
+    }
+    if media:
+        metadata: dict[str, str] = {}
+        if title := getattr(media, "title", None):
+            metadata["title"] = title
+        if artist := getattr(media, "artist", None):
+            metadata["subtitle"] = artist
+        if image_url := getattr(media, "image_url", None):
+            metadata["art_image_url"] = image_url.removeprefix("https://")
+        if metadata:
+            payload["metadata"] = metadata
+    return _external_command("audio_play", payload)
+
+
 def _parse_yandex_track_id(raw: str) -> str:
     """
     Extract numeric Yandex Music track ID from Glagol playerState.id.
@@ -68,6 +100,19 @@ def _parse_yandex_track_id(raw: str) -> str:
     album suffix so the value is consumable by the yandex_music music provider.
     """
     return raw.split(":", 1)[0].strip()
+
+
+def _external_media_title_matches(
+    media: PlayerMedia | None, player_state: dict[str, Any]
+) -> bool | None:
+    """Compare requested and reported titles, or return unknown if either is absent."""
+    if media is None:
+        return None
+    expected_title = (media.title or "").strip()
+    reported_title = (player_state.get("title") or "").strip()
+    if not expected_title or not reported_title:
+        return None
+    return expected_title == reported_title
 
 
 def _raise_if_failed(result: dict[str, Any] | None, command: str) -> None:
@@ -127,13 +172,19 @@ class YandexStationPlayer(Player):
         self._device_info = device_info
         self.glagol = glagol
 
-        # Track external (radio_play) playback since Glagol doesn't report it
+        # Feature advertised by current firmware for cloud-compatible URL playback.
+        self._audio_client = False
+        # Track external playback and the directive used by the current session.
         self._external_playing = False
+        self._external_audio_client = False
         self._external_media: PlayerMedia | None = None
         # Becomes True once Glagol reports playing=True during external playback.
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
         self._external_play_confirmed = False
+        # A playing=True update can belong to the native source that radio_play
+        # is replacing. Only accept it after a non-playing state boundary.
+        self._external_stop_observed = False
         # Set after pause of external playback — play() must re-trigger queue
         self._needs_replay = False
         # Track previous alice state to detect LISTENING→IDLE transitions
@@ -312,12 +363,11 @@ class YandexStationPlayer(Player):
         """
         Send PAUSE command.
 
-        Glagol 'stop' only affects the native player, not externalCommandBypass.
-        Send a radio_play with invalid URL to replace current bypass stream —
-        the station will fail to fetch it and stop. Fully local, no cloud needed.
+        Current audio_client sessions use native stop. Legacy bypass sessions
+        still need an invalid radio URL to replace the active stream.
         """
         was_external = self._external_playing
-        if was_external:
+        if was_external and not self._external_audio_client:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
             )
@@ -327,15 +377,17 @@ class YandexStationPlayer(Player):
         if was_external:
             self._needs_replay = True
         self._external_playing = False
+        self._external_audio_client = False
         self._external_media = None
         self._external_play_confirmed = False
+        self._external_stop_observed = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def stop(self) -> None:
         """Send STOP command."""
-        if self._external_playing:
+        if self._external_playing and not self._external_audio_client:
             result = await self.glagol.send(
                 _external_command("radio_play", {"streamUrl": "http://0.0.0.0/stop.flac"})
             )
@@ -343,8 +395,10 @@ class YandexStationPlayer(Player):
             result = await self.glagol.send({"command": "stop"})
         _raise_if_failed(result, "stop")
         self._external_playing = False
+        self._external_audio_client = False
         self._external_media = None
         self._external_play_confirmed = False
+        self._external_stop_observed = False
         self._needs_replay = False
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.IDLE
@@ -383,26 +437,35 @@ class YandexStationPlayer(Player):
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Play media on the Yandex Station via radio_play command."""
+        """Play media using the directive supported by the station firmware."""
         self._needs_replay = False
         _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
 
-        payload: dict[str, Any] = {
-            "streamUrl": stream_url,
-            "force_restart_player": True,
-        }
-
-        result = await self.glagol.send(_external_command("radio_play", payload))
-        _LOGGER.debug("[%s] radio_play result: %s", self.player_id, result)
-        _raise_if_failed(result, "radio_play")
-
-        # Glagol doesn't update playerState for externalCommandBypass playback,
-        # so we set state optimistically.
         self._external_playing = True
-        self._external_play_confirmed = False
+        self._external_audio_client = self._audio_client
         self._external_media = media
+        self._external_play_confirmed = False
+        # An already-idle Station has crossed the boundary before this command.
+        self._external_stop_observed = self._attr_playback_state != PlaybackState.PLAYING
+        directive = "audio_play" if self._external_audio_client else "radio_play"
+        try:
+            result = await self.glagol.send(
+                _stream_command(stream_url, media, audio_client=self._external_audio_client)
+            )
+            _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
+            _raise_if_failed(result, directive)
+        except Exception:
+            self._external_playing = False
+            self._external_audio_client = False
+            self._external_media = None
+            self._external_play_confirmed = False
+            self._external_stop_observed = False
+            raise
+
+        # Legacy bypass playback is optimistic; audio_play is later confirmed
+        # by the station's playerState updates.
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_powered = True
         self._attr_elapsed_time = 0
@@ -441,14 +504,20 @@ class YandexStationPlayer(Player):
         try:
             _LOGGER.debug("[%s] Audio announcement: %s", self.player_id, announcement.uri)
             result = await self.glagol.send(
-                _external_command(
-                    "radio_play",
-                    {"streamUrl": announcement.uri, "force_restart_player": True},
-                )
+                _stream_command(announcement.uri, announcement, audio_client=self._audio_client)
             )
             _raise_if_failed(result, "Audio announcement")
             # externalCommandBypass playback doesn't update state.playing,
             # so we can't observe completion — wait by known duration instead.
+            if not hasattr(self.mass.streams, "get_announcement_duration"):
+                duration = announcement.duration
+                wait_time = (
+                    min(duration + 1, announcement_timeout)
+                    if duration and duration > 0
+                    else announcement_timeout
+                )
+                await asyncio.sleep(wait_time)
+                return
             duration = await self.mass.streams.get_announcement_duration(announcement)
             wait_time = (
                 min(duration + 1, announcement_timeout)
@@ -527,8 +596,10 @@ class YandexStationPlayer(Player):
             alice_state,
         )
         self._external_playing = False
+        self._external_audio_client = False
         self._external_media = None
         self._external_play_confirmed = False
+        self._external_stop_observed = False
         self._needs_replay = True
         self._attr_playback_state = PlaybackState.PAUSED
         self._alice_spoke = False
@@ -994,29 +1065,62 @@ class YandexStationPlayer(Player):
             self.player_id,
         )
         self._external_playing = False
+        self._external_audio_client = False
         self._external_media = None
         self._external_play_confirmed = False
+        self._external_stop_observed = False
         self._needs_replay = True
         self._cancel_voice_resume()
         self._attr_playback_state = PlaybackState.PAUSED
 
-    def _update_playback_state(self, playing: bool, alice_state: str) -> None:
+    def _handle_external_completion(self) -> None:
+        """Handle a completed external stream so MA can advance its queue."""
+        self._external_playing = False
+        self._external_audio_client = False
+        self._external_media = None
+        self._external_play_confirmed = False
+        self._external_stop_observed = False
+        self._needs_replay = False
+        self._cancel_voice_resume()
+        self._attr_playback_state = PlaybackState.IDLE
+
+    def _update_playback_state(
+        self,
+        playing: bool,
+        alice_state: str,
+        external_media_matches: bool | None = None,
+        progress: float = 0,
+        duration: float = 0,
+    ) -> None:
         """Update playback state from Glagol data."""
         if self._external_playing:
             if self._voice_control_enabled and alice_state not in ("IDLE", ""):
                 self._handle_voice_interrupt(alice_state)
             elif playing:
-                # Station confirmed external stream is actually playing.
-                self._external_play_confirmed = True
+                if self._external_audio_client:
+                    if self._external_stop_observed and external_media_matches is not False:
+                        self._external_play_confirmed = True
+                elif self._external_stop_observed:
+                    self._external_play_confirmed = True
                 self._attr_playback_state = PlaybackState.PLAYING
                 self._attr_powered = True
-            elif self._external_play_confirmed and alice_state in ("IDLE", ""):
+            elif (
+                self._external_play_confirmed
+                and alice_state in ("IDLE", "")
+                and external_media_matches is not False
+            ):
                 # Stream was playing, now stopped without voice trigger →
                 # user pressed physical pause/stop on the speaker.
-                self._handle_physical_pause()
+                if self._external_audio_client and duration and progress >= duration:
+                    self._handle_external_completion()
+                else:
+                    self._handle_physical_pause()
             else:
                 # Startup window: radio_play sent but station not yet fetching.
-                # Stay optimistically PLAYING until we observe playing=True.
+                # Record the native stop and stay optimistic until a later
+                # playing=True can be attributed to the new external session.
+                if not self._external_audio_client or external_media_matches is not False:
+                    self._external_stop_observed = True
                 self._attr_playback_state = PlaybackState.PLAYING
                 self._attr_powered = True
         elif playing:
@@ -1050,6 +1154,17 @@ class YandexStationPlayer(Player):
 
         self._attr_available = True
 
+        features = data.get("supported_features")
+        if isinstance(features, (list, tuple, set, frozenset)):
+            audio_client = "audio_client" in features
+            if audio_client != self._audio_client:
+                _LOGGER.debug(
+                    "[%s] audio_client capability: %s",
+                    self.player_id,
+                    audio_client,
+                )
+            self._audio_client = audio_client
+
         state = data.get("state", {})
         if not state:
             _LOGGER.debug(
@@ -1061,6 +1176,12 @@ class YandexStationPlayer(Player):
         player_state = state.get("playerState", {})
         playing = state.get("playing", False)
         extra = player_state.get("extra", {})
+
+        external_media_matches = (
+            _external_media_title_matches(self._external_media, player_state)
+            if self._external_playing and self._external_audio_client
+            else None
+        )
 
         _LOGGER.debug(
             "[%s] playing=%s vol=%s prog=%s dur=%s title=%s extra=%s alice=%s",
@@ -1085,7 +1206,13 @@ class YandexStationPlayer(Player):
         # inside the task would always observe the post-assignment value.
         prev_alice_state_snapshot = self._prev_alice_state
 
-        self._update_playback_state(playing, alice_state)
+        self._update_playback_state(
+            playing,
+            alice_state,
+            external_media_matches,
+            player_state.get("progress", 0),
+            player_state.get("duration", 0),
+        )
 
         self._prev_alice_state = alice_state
 
@@ -1101,8 +1228,11 @@ class YandexStationPlayer(Player):
         duration = player_state.get("duration", 0)
 
         if self._external_playing and self._external_media:
-            # Glagol reports stale progress/media from native player.
-            # Keep our optimistic elapsed_time ticking and use external media info.
+            # Keep requested MA metadata. audio_play reports reliable progress,
+            # while legacy radio_play can still expose stale native state.
+            if self._external_audio_client and external_media_matches is not False:
+                self._attr_elapsed_time = progress
+                self._attr_elapsed_time_last_updated = time.time()
             self.set_current_media(
                 uri=self._external_media.uri or "",
                 title=self._external_media.title or "",
