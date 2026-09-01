@@ -184,7 +184,11 @@ def trailing_silence_bytes(chunk: bytes, pcm_format: AudioFormat, carried: int) 
     if audible.size == 0:
         # nothing audible: this chunk continues whatever the buffer already ended with
         return carried + len(chunk)
-    return int(samples.size - 1 - audible[-1]) * samples.itemsize
+    run = int(samples.size - 1 - audible[-1]) * samples.itemsize
+    # aligned down to a whole frame: a trim taken from this count must never split
+    # one, or every byte after it in a continuous stream swaps channels
+    frame_size = samples.itemsize * pcm_format.channels
+    return run - run % frame_size
 
 
 async def strip_silence(

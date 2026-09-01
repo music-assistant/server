@@ -145,7 +145,7 @@ class SmartFadesMixer:
         )
         smart_fade.build(len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format)
         self.logger.debug(
-            "DIAG standard fade: tail=%.2fs silence=%.2fs usable=%.2fs fade_in=%.2fs "
+            "Built standard fade: tail=%.2fs silence=%.2fs usable=%.2fs fade_in=%.2fs "
             "requested=%.2fs applied=%.2fs",
             len(fade_out_data) / pcm_format.pcm_sample_size,
             trailing_silence_bytes / pcm_format.pcm_sample_size,
@@ -181,7 +181,7 @@ class SmartFadesMixer:
             and fade_in_analysis.beats is not None
         ):
             self.logger.debug(
-                "DIAG smart declined: out_row=%s out_bpm=%s out_beats=%s | "
+                "Smart fade lacks analysis: out_row=%s out_bpm=%s out_beats=%s | "
                 "in_row=%s in_bpm=%s in_beats=%s",
                 fade_out_analysis is not None,
                 fade_out_analysis.bpm if fade_out_analysis else None,

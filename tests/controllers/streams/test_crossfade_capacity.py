@@ -281,6 +281,7 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     smart_fade = SimpleNamespace(
         timing_info=SimpleNamespace(
             pre_crossfade_duration=0,
+            post_crossfade_duration=0,
             crossfade_duration=crossfade_duration,
             fadein_trimmed_duration=0,
         )

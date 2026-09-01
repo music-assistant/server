@@ -907,7 +907,12 @@ class StreamsController(CoreController):
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=single_item_pacing_args(queue_item.streamdetails.is_realtime),
+                    # tracks only: radio is realtime too, but has no crossfade to
+                    # keep a head start resident for
+                    extra_input_args=single_item_pacing_args(
+                        queue_item.media_type == MediaType.TRACK
+                        and queue_item.streamdetails.is_realtime
+                    ),
                 )
             first_chunk_received = False
             bytes_sent = 0

@@ -183,7 +183,7 @@ _UNCLAIMED_LIMIT_S: Final[float] = 90.0
 # the URI match in _signal_ready depends on. Resume well below the cap so the
 # sink is not flipped on every chunk.
 # Sized for a crossfade, not for playback: this cap bounds the head start an item
-# can bank, and with it the fade window a boundary can offer (~11MB per session at
+# can bank, and with it the fade window a boundary can offer (~21MB per session at
 # s32le/44.1k/2ch, still well under one track length for the _signal_ready uri
 # match). Interim: once the provider fills MA's own AudioBuffer instead of this
 # duplicate channel, the ceiling question moves there.
@@ -2388,6 +2388,10 @@ class _ItemAudio:
             ):
                 self._zero_run += len(chunk)
                 if self._zero_run > int(_TAIL_PAD_GRACE_S * _BYTES_PER_SECOND):
+                    # still counted as written: the drain's tail target is met by the
+                    # item's timeline, refused padding included, or it would wait out
+                    # the whole stall timeout on the run's last item
+                    self._written += len(chunk)
                     self._last_write = time.monotonic()
                     return
         else:

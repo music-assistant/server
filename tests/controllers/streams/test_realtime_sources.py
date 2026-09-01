@@ -788,6 +788,7 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
                 fadein_trimmed_duration=0.0,
                 crossfade_duration=8.0,
                 pre_crossfade_duration=0.0,
+                post_crossfade_duration=0.0,
             )
         )
     )
@@ -894,6 +895,7 @@ async def _run_smartfade_boundary(
                     fadein_trimmed_duration=0.0,
                     crossfade_duration=8.0,
                     pre_crossfade_duration=0.0,
+                    post_crossfade_duration=0.0,
                 )
             )
         ),
@@ -1075,6 +1077,7 @@ async def test_smartfade_a_source_still_delivering_hands_over_gapless(
                 fadein_trimmed_duration=0.0,
                 crossfade_duration=8.0,
                 pre_crossfade_duration=0.0,
+                post_crossfade_duration=0.0,
             )
         )
     )
