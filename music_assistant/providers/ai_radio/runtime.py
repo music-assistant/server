@@ -16,10 +16,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientTimeout
 from music_assistant_models.enums import (
-    EventType,
     ImageType,
     MediaType,
-    PlaybackState,
 )
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
@@ -56,7 +54,6 @@ from .constants import (
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
     FAHRENHEIT_COUNTRY_CODES,
-    SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
     WEATHER_PLACEHOLDER_TOKENS,
@@ -71,17 +68,14 @@ from .helpers import (
     pick_weighted_choice,
     slugify,
     track_songinfo,
-    utc_now_iso,
 )
 from .models import (
     PlannedSection,
-    SessionState,
     Slot,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import PlayableMediaItemType
     from music_assistant_models.queue_item import QueueItem
 
@@ -104,32 +98,9 @@ class AIRadioRuntimeMixin:
         mass: MusicAssistant
         config: ProviderConfig
         logger: logging.Logger
-        _sessions: dict[str, SessionState]
 
         def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
             """Return a value collected by this provider's setup flow."""
-
-        def _schedule_replan(self, queue_id: str) -> None:
-            """Request a replan pass for the given queue."""
-
-        async def set_queue_dj(
-            self, queue_id: str, host_id: str | None
-        ) -> dict[str, dict[str, str]]:
-            """Enable, switch or disable the sticky AI DJ on a queue."""
-
-    def _set_session_progress(
-        self,
-        session: SessionState,
-        phase: str,
-        **details: Any,
-    ) -> None:
-        """Set progress payload with a stable phase key."""
-        session.progress = {
-            "phase": phase,
-            # Keep legacy key for compatibility with older UI code.
-            "step": phase,
-            **details,
-        }
 
     def _build_program(self, station: dict[str, Any], host: dict[str, Any]) -> dict[str, Any]:
         """Merge a station and its host into the dict the planner consumes."""
@@ -149,272 +120,6 @@ class AIRadioRuntimeMixin:
             "section_order": deepcopy(host.get("section_order", [])),
             "merge_section_id": str(host.get("merge_section_id", "")),
         }
-
-    async def _run_session(self, session_id: str, program: dict[str, Any]) -> None:
-        """Run one session in the background."""
-        session = self._sessions[session_id]
-        session.started_at = utc_now_iso()
-        self.logger.info(
-            "AI Radio run started: session=%s station=%s",
-            session.session_id,
-            session.station_id,
-        )
-        try:
-            result = await self._run_show(session, program)
-            session.result = result
-            queue_stopped = result.get("ended_reason") == "queue_stopped"
-            session.status = "stopped" if queue_stopped else "completed"
-            self.logger.info(
-                "AI Radio run %s: session=%s station=%s",
-                session.status,
-                session.session_id,
-                session.station_id,
-            )
-        except asyncio.CancelledError:
-            session.status = "stopped"
-            self.logger.info(
-                "AI Radio run cancelled: session=%s station=%s",
-                session.session_id,
-                session.station_id,
-            )
-            raise
-        except Exception as err:
-            session.status = "failed"
-            session.error = str(err).strip() or err.__class__.__name__
-            self.logger.exception("AI Radio session failed")
-        finally:
-            session.ended_at = utc_now_iso()
-            # a show session blocks queue DJ replans while it runs, so ending it must
-            # re-arm the DJ itself instead of waiting on the next queue change
-            if session.queue_id:
-                self._schedule_replan(session.queue_id)
-
-    async def _run_show(
-        self,
-        session: SessionState,
-        program: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Plan and queue the whole show in one pass, then start playback."""
-        program = deepcopy(program)
-        self.logger.debug(
-            "Show starting for station '%s' (%s)",
-            program.get("name", "AI Radio"),
-            program.get("id", ""),
-        )
-        self._set_session_progress(session, "fetch_source_tracks")
-        # runtime_tokens only feeds the require_placeholders_present guards below; its
-        # resolved text is discarded here and re-fetched fresh when each clip renders
-        runtime_tokens = await self._prepare_runtime_tokens(program)
-        player_id = str(program.get("default_player_id") or "").strip()
-        if not player_id:
-            raise MusicAssistantError("AI Radio requires a target player")
-        if not self.mass.players.get_player(player_id):
-            raise MusicAssistantError(f"Unknown target player: {player_id}")
-
-        tracks, playlist_name = await self._fetch_source_tracks(program)
-        tracks = self._apply_source_shuffle(tracks, program)
-        tracks = self._apply_track_duration_limit(tracks, program)
-        if not tracks:
-            raise MusicAssistantError("No source tracks available after applying station limits")
-
-        # a grouped player plays from the group leader's queue, so resolve the
-        # active queue up front and target that one for queueing and polling
-        queue_id = player_id
-        active_queue = self.mass.player_queues.get_active_queue(player_id)
-        if active_queue is not None:
-            queue_id = str(active_queue.queue_id)
-        # a queue runs one host at a time; the show is now that host, so any sticky
-        # DJ assignment on the queue is cleared before the show takes it over
-        await self.set_queue_dj(queue_id, None)
-        self.mass.player_queues.clear(queue_id)
-        session.queue_id = queue_id
-
-        # a shuffled queue reorders each batch, scattering sections away from their tracks
-        await self.mass.player_queues.set_shuffle(queue_id, False)
-
-        cumulative_minutes = [0.0]
-        for track in tracks:
-            duration = track.get("duration")
-            seconds = (
-                float(duration) if isinstance(duration, (int, float)) and duration > 0 else 210.0
-            )
-            cumulative_minutes.append(cumulative_minutes[-1] + (seconds / 60.0))
-
-        self._set_session_progress(session, "planning_sections", total_tracks=len(tracks))
-        planned_sections, _history = self._plan_sections(
-            session_id=session.session_id,
-            tracks=tracks,
-            program=program,
-            track_index_offset=0,
-            minute_offset=0.0,
-            history_state={},
-            allowed_slot_when=None,
-            runtime_tokens=runtime_tokens,
-        )
-        queue_items = self._compose_queue_items(
-            queue_id=queue_id,
-            session=session,
-            program=program,
-            tracks=tracks,
-            sections=planned_sections,
-        )
-        if not queue_items:
-            raise MusicAssistantError("No queue entries were generated")
-
-        self._set_session_progress(
-            session,
-            "initializing_queue",
-            total_tracks=len(tracks),
-            queue_entries=len(queue_items),
-            queue_id=queue_id,
-        )
-        # load() stages the items without starting playback, so every clip already carries its
-        # prompt by the time anything can ask for its audio
-        await self.mass.player_queues.load(
-            queue_id,
-            queue_items=queue_items,
-            keep_remaining=False,
-            keep_played=False,
-            shuffle=False,
-        )
-        await self.mass.player_queues.play_index(queue_id, 0)
-        self._set_session_progress(
-            session,
-            "running",
-            total_tracks=len(tracks),
-            queue_entries=len(queue_items),
-            queue_id=queue_id,
-        )
-        has_clips = any(ATTR_SESSION_ID in item.extra_attributes for item in queue_items)
-        ended_reason = await self._await_show_end(
-            session, queue_id, len(queue_items) - 1, has_clips=has_clips
-        )
-        return {
-            "ended_reason": ended_reason,
-            "source_playlist_name": playlist_name,
-            "source_tracks": len(tracks),
-            "queue_id": queue_id,
-            "queue_entries": len(queue_items),
-            "planned_sections": len(planned_sections),
-            "skipped_sections": session.skipped_sections,
-        }
-
-    async def _await_show_end(
-        self, session: SessionState, queue_id: str, last_index: int, *, has_clips: bool
-    ) -> str:
-        """
-        Block until this session's show is over and report why it ended.
-
-        :param session: The session whose clips are in the queue.
-        :param queue_id: The queue playing the show.
-        :param last_index: Queue index of the final entry this session enqueued.
-        :param has_clips: Whether this run enqueued any AI Radio clips at all. A clip-free
-            show (every section was skipped by its rules) must not be mistaken for one whose
-            clips were cleared out from under it, so that rule is skipped entirely here.
-        :return: ``"source_exhausted"`` when the show played out, ``"queue_stopped"`` when the
-            queue was stopped or taken over before reaching the end.
-        :raises MusicAssistantError: if playback never starts within
-            :data:`SHOW_START_TIMEOUT_SECONDS`.
-        """
-        finished = asyncio.Event()
-        playback_started = asyncio.Event()
-        # a queue that has not started yet must never be mistaken for a stopped one
-        playback_seen = False
-        ended_reason = "queue_stopped"
-
-        def _check_show_state() -> None:
-            nonlocal playback_seen, ended_reason
-            queue = self.mass.player_queues.get(queue_id)
-            if queue is None:
-                finished.set()
-                return
-            if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                playback_seen = True
-                playback_started.set()
-            if has_clips and not self._session_has_clips(queue_id, session.session_id):
-                finished.set()
-                return
-            if not playback_seen or queue.state != PlaybackState.IDLE:
-                return
-            # playing out and being stopped both end IDLE, so position is the discriminator
-            current_index = queue.current_index
-            if current_index is not None and current_index >= last_index:
-                ended_reason = "source_exhausted"
-            self.logger.info(
-                "Queue %s went idle at index %s of %s, ending show (%s)",
-                queue_id,
-                current_index,
-                last_index,
-                ended_reason,
-            )
-            finished.set()
-
-        def _on_queue_event(_event: MassEvent) -> None:
-            _check_show_state()
-
-        unsubscribe = self.mass.subscribe(
-            _on_queue_event,
-            (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
-            id_filter=queue_id,
-        )
-        try:
-            # the queue may already have gone away, or (for a show with clips) already lost
-            # them, by the time this subscribes; IDLE-after-playout still needs a fresh event,
-            # since playback_seen is not latched yet
-            _check_show_state()
-            await self._await_playback_start(playback_started, finished)
-            await finished.wait()
-        finally:
-            unsubscribe()
-        return ended_reason
-
-    async def _await_playback_start(
-        self, playback_started: asyncio.Event, finished: asyncio.Event
-    ) -> None:
-        """
-        Wait for the show to either start playing or end before it ever did.
-
-        :param playback_started: Set once the queue is first observed playing or paused.
-        :param finished: Set once the show is over, however that came about.
-        :raises MusicAssistantError: if neither happens within
-            :data:`SHOW_START_TIMEOUT_SECONDS`.
-        """
-        if playback_started.is_set() or finished.is_set():
-            return
-        # a player that never comes online (or whose clips all fail) must not pin this
-        # session's "running" status, and its max-concurrent-runs slot, forever
-        wait_tasks = (
-            asyncio.ensure_future(playback_started.wait()),
-            asyncio.ensure_future(finished.wait()),
-        )
-        try:
-            done, _pending = await asyncio.wait(
-                wait_tasks,
-                timeout=SHOW_START_TIMEOUT_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            for task in wait_tasks:
-                if not task.done():
-                    task.cancel()
-        if not done:
-            raise MusicAssistantError(
-                f"Playback did not start within {SHOW_START_TIMEOUT_SECONDS}s"
-            )
-
-    def _session_has_clips(self, queue_id: str, session_id: str) -> bool:
-        """Return whether any queue item still belongs to the given session."""
-        page_size = 500
-        offset = 0
-        while True:
-            page = self.mass.player_queues.items(queue_id, limit=page_size, offset=offset)
-            if not page:
-                return False
-            if any(item.extra_attributes.get(ATTR_SESSION_ID) == session_id for item in page):
-                return True
-            if len(page) < page_size:
-                return False
-            offset += page_size
 
     async def _fetch_source_tracks(
         self, station: dict[str, Any]
@@ -804,39 +509,6 @@ class AIRadioRuntimeMixin:
             weather_required=all_weather_required,
             history_events=history_events,
         )
-
-    def _compose_queue_items(
-        self,
-        queue_id: str,
-        session: SessionState,
-        program: dict[str, Any],
-        tracks: list[dict[str, Any]],
-        sections: list[PlannedSection],
-    ) -> list[QueueItem]:
-        """
-        Build the queue items for a whole show.
-
-        Clips carry their render state in ``extra_attributes`` from the moment they are built, so
-        a clip is renderable as soon as the queue holds it.
-
-        :param queue_id: The queue the items are built for.
-        :param session: The session that owns the show.
-        :param program: The station+host program being played.
-        :param tracks: The normalized source tracks, in play order.
-        :param sections: The planned sections to interleave between them.
-        """
-        sections_by_index: dict[int, list[PlannedSection]] = defaultdict(list)
-        for item in sections:
-            sections_by_index[item.insert_at_index].append(item)
-        items: list[QueueItem] = []
-        for index in range(len(tracks) + 1):
-            for section in sorted(sections_by_index.get(index, []), key=lambda item: item.order):
-                items.append(
-                    self._section_to_clip_item(queue_id, session.session_id, program, section)
-                )
-            if index < len(tracks) and (media_item := tracks[index].get("media_item")) is not None:
-                items.append(build_queue_item(queue_id, media_item))
-        return items
 
     def _section_to_clip_item(
         self,
@@ -1329,19 +1001,6 @@ class AIRadioRuntimeMixin:
             "No AI engine available. Set up a plugin that provides AI (for example Home "
             "Assistant with an ai_task entity) and select it in the AI Radio settings."
         )
-
-    async def _stop_session_queue(self, session: SessionState) -> None:
-        """Stop playback of the queue a run was playing on."""
-        queue_id = session.queue_id
-        if queue_id is None:
-            return
-        queue = self.mass.player_queues.get(queue_id)
-        if queue is None or getattr(queue, "state", None) == PlaybackState.IDLE:
-            return
-        try:
-            await self.mass.player_queues.stop(queue_id)
-        except MusicAssistantError as err:
-            self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
     async def _get_tts_engine(self, engine_uid: str | None = None) -> TTSEngine:
         """Return the engine used for TTS tasks, preferring a host-specific engine_uid."""

@@ -7,7 +7,6 @@ from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
@@ -23,18 +22,15 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import (
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
-    DEFAULT_MAX_CONCURRENT_RUNS,
     ENGINE_DISCOVERY_TIMEOUT,
     ENGINE_RECHECK_GRACE,
     ENGINE_RETRY_DELAY,
-    MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
 )
-from .helpers import utc_now_iso
 from .hosts import AIRadioHostsMixin
 from .media import AIRadioMediaMixin
-from .models import DJQueueState, SessionState
+from .models import DJQueueState
 from .queue_dj import AIRadioQueueDJMixin
 from .rendering import AIRadioRenderMixin
 from .runtime import AIRadioRuntimeMixin
@@ -79,11 +75,9 @@ class AIRadioProvider(
         """Initialize the AI Radio provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._station_lock = asyncio.Lock()
-        self._session_lock = asyncio.Lock()
         self._unregister_handles: list[Callable[[], None]] = []
         self._unloading = False
         self._engine_recheck_task: asyncio.Task[None] | None = None
-        self._sessions: dict[str, SessionState] = {}
         self._stations: dict[str, dict[str, Any]] = {}
         self._sections: dict[str, dict[str, Any]] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
@@ -143,9 +137,6 @@ class AIRadioProvider(
             ("ai_radio/hosts/template", self.host_template),
             ("ai_radio/hosts/presets/list", self.list_host_presets),
             ("ai_radio/engines/tts/list", self.list_tts_engines),
-            ("ai_radio/start", self.start_run),
-            ("ai_radio/stop", self.stop_run),
-            ("ai_radio/status", self.get_status),
             ("ai_radio/queue_dj/set", self.set_queue_dj),
             ("ai_radio/queue_dj/status", self.get_queue_dj_status),
         )
@@ -157,7 +148,7 @@ class AIRadioProvider(
             else:
                 required_scope = (
                     Scope.CONFIG_PROVIDERS_READ
-                    if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
+                    if command.endswith(("/list", "/get", "/template", "/validate"))
                     else Scope.CONFIG_PROVIDERS_WRITE
                 )
             self._unregister_handles.append(
@@ -191,22 +182,13 @@ class AIRadioProvider(
         self._unloading = True
         if self._engine_recheck_task and not self._engine_recheck_task.done():
             self._engine_recheck_task.cancel()
-        cancelled = 0
-        for session in self._sessions.values():
-            if session.task and not session.task.done():
-                session.task.cancel()
-                cancelled += 1
         for state in self._dj_queues.values():
             if state.task and not state.task.done():
                 state.task.cancel()
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
-        self.logger.info(
-            "AI Radio unloaded (removed=%s, cancelled_sessions=%d)",
-            is_removed,
-            cancelled,
-        )
+        self.logger.info("AI Radio unloaded (removed=%s)", is_removed)
         await super().unload(is_removed)
 
     async def list_stations(self) -> list[dict[str, Any]]:
@@ -364,113 +346,6 @@ class AIRadioProvider(
         engines = await get_tts_engines(self.mass)
         return [{"uid": engine.uid, "name": engine.name} for engine in engines]
 
-    async def start_run(
-        self,
-        station_id: str,
-        source_playlist_id_override: str | None = None,
-        source_playlist_provider_override: str | None = None,
-        player_id_override: str | None = None,
-        dynamic_source_playtime_cap_override: int | float | None = None,  # noqa: PYI041
-    ) -> dict[str, Any]:
-        """Start a new AI Radio run."""
-        if station_id not in self._stations:
-            raise KeyError(f"Unknown station id: {station_id}")
-
-        station = deepcopy(self._stations[station_id])
-        overrides = {
-            "source_playlist_id": source_playlist_id_override,
-            "source_playlist_provider": source_playlist_provider_override,
-            "default_player_id": player_id_override,
-        }
-        for key, value in overrides.items():
-            if value:
-                station[key] = value
-        if dynamic_source_playtime_cap_override is not None:
-            if float(dynamic_source_playtime_cap_override) < 0:
-                raise InvalidDataError("dynamic_source_playtime_cap_override must be >= 0")
-            station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
-        player_id = str(station.get("default_player_id") or "").strip()
-        if not player_id:
-            raise InvalidDataError("AI Radio requires a target player")
-        player = self.mass.players.get_player(player_id)
-        if player is None:
-            raise InvalidDataError(f"Unknown target player: {player_id}")
-        if player.available is False:
-            raise InvalidDataError(f"Target player is unavailable: {player_id}")
-        if player.enabled is False:
-            raise InvalidDataError(f"Target player is disabled: {player_id}")
-
-        host_id = str(station.get("host_id") or "")
-        host = self._hosts.get(host_id)
-        if host is None:
-            raise InvalidDataError(f"Station references unknown host: {host_id}")
-        program = self._build_program(station, deepcopy(host))
-
-        # the run guards and the session insert must stay one critical section, or a future
-        # await between them would let concurrent callers slip past the concurrency limits
-        async with self._session_lock:
-            max_runs = DEFAULT_MAX_CONCURRENT_RUNS
-            running = [
-                session for session in self._sessions.values() if session.status == "running"
-            ]
-            if len(running) >= max_runs:
-                raise InvalidDataError(
-                    f"Max concurrent runs reached ({max_runs}). Stop an active run first."
-                )
-            if any(
-                session.status == "running" and session.station_id == station_id
-                for session in self._sessions.values()
-            ):
-                raise InvalidDataError(f"Station {station_id} already has an active run")
-
-            session_id = uuid4().hex
-            session = SessionState(
-                session_id=session_id,
-                station_id=station_id,
-            )
-            self._sessions[session_id] = session
-            self._prune_finished_sessions()
-            session.task = self.mass.create_task(
-                self._run_session(session_id, program),
-                task_id=f"ai_radio_session_{session_id}",
-            )
-        self.logger.debug(
-            "AI Radio session started: session=%s station=%s",
-            session_id,
-            station_id,
-        )
-        return session.as_dict()
-
-    async def stop_run(
-        self,
-        session_id: str | None = None,
-        station_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Stop an active run."""
-        selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
-
-        # cancel first so the run cannot queue another batch after playback stopped
-        if selected.task and not selected.task.done():
-            selected.task.cancel()
-        selected.status = "stopped"
-        selected.ended_at = utc_now_iso()
-        await self._stop_session_queue(selected)
-        self.logger.info(
-            "AI Radio session stopped: session=%s station=%s",
-            selected.session_id,
-            selected.station_id,
-        )
-        return selected.as_dict()
-
-    async def get_status(self, session_id: str | None = None) -> dict[str, Any]:
-        """Return run status information."""
-        if session_id:
-            if session_id not in self._sessions:
-                raise KeyError(f"Unknown session id: {session_id}")
-            return {"sessions": [self._sessions[session_id].as_dict()]}
-        sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
-        return {"sessions": [session.as_dict() for session in sessions]}
-
     async def _wait_for_engines(self, timeout: float | None = None) -> None:
         """
         Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
@@ -551,39 +426,3 @@ class AIRadioProvider(
                 allow_retry=True,
                 task_id=f"load_provider_{self.instance_id}",
             )
-
-    def _prune_finished_sessions(self) -> None:
-        """Drop the oldest finished sessions beyond the retention limit."""
-        finished = sorted(
-            (session for session in self._sessions.values() if session.status != "running"),
-            key=lambda item: item.created_at,
-            reverse=True,
-        )
-        for session in finished[MAX_FINISHED_SESSIONS:]:
-            self._sessions.pop(session.session_id, None)
-
-    def _resolve_session_for_stop(
-        self,
-        session_id: str | None,
-        station_id: str | None,
-    ) -> SessionState:
-        """Resolve which running session should be stopped."""
-        if session_id:
-            selected = self._sessions.get(session_id)
-            if selected is None:
-                raise KeyError(f"Unknown session id: {session_id}")
-            if selected.status != "running":
-                raise InvalidDataError(
-                    f"Session {session_id} is not running (status={selected.status})"
-                )
-            return selected
-
-        running = [session for session in self._sessions.values() if session.status == "running"]
-        if station_id:
-            running = [session for session in running if session.station_id == station_id]
-            if not running:
-                raise KeyError(f"No active run found for station: {station_id}")
-        elif not running:
-            raise KeyError("No active AI Radio run found")
-
-        return max(running, key=lambda item: item.created_at)

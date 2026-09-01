@@ -66,12 +66,6 @@ DEFAULT_WEATHER_TIMEOUT_SECONDS = 20
 FAHRENHEIT_COUNTRY_CODES = frozenset(
     {"US", "PR", "GU", "VI", "AS", "MP", "LR", "MM", "BS", "BZ", "KY", "PW"}
 )
-DEFAULT_MAX_CONCURRENT_RUNS = 1
-MAX_FINISHED_SESSIONS = 20
-
-# a show whose playback never starts within this window is declared failed
-SHOW_START_TIMEOUT_SECONDS = 300
-
 # last-resort guard so a wedged engine fails the clip instead of hanging the session.
 # Kept above the deadlines the engines apply themselves (120s in the OpenAI-compatible
 # providers), so their own, more specific error is the one that surfaces.

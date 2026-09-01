@@ -6,8 +6,6 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from music_assistant.helpers.datetime import utc
-
 
 @dataclass(slots=True)
 class Slot:
@@ -63,39 +61,3 @@ class DJQueueState:
     replan_pending: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
-
-
-@dataclass(slots=True)
-class SessionState:
-    """State container for an AI Radio run."""
-
-    session_id: str
-    station_id: str
-    status: str = "running"
-    created_at: str = field(default_factory=lambda: utc().isoformat())
-    started_at: str | None = None
-    ended_at: str | None = None
-    progress: dict[str, Any] = field(default_factory=dict)
-    result: dict[str, Any] = field(default_factory=dict)
-    error: str | None = None
-    skipped_sections: int = 0
-    last_render_error: str | None = None
-    task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
-    queue_id: str | None = field(default=None, repr=False, compare=False)
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return session as a serializable dictionary."""
-        return {
-            "session_id": self.session_id,
-            "station_id": self.station_id,
-            "queue_id": self.queue_id,
-            "status": self.status,
-            "created_at": self.created_at,
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-            "progress": self.progress,
-            "result": self.result,
-            "error": self.error,
-            "skipped_sections": self.skipped_sections,
-            "last_render_error": self.last_render_error,
-        }

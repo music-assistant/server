@@ -40,7 +40,6 @@ from .constants import (
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
-    ATTR_SESSION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
@@ -67,8 +66,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
-
-    from .models import SessionState
 
 
 @dataclass(slots=True)
@@ -100,7 +97,6 @@ class AIRadioRenderMixin:
         config: ProviderConfig
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
-        _sessions: dict[str, SessionState]
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -118,7 +114,11 @@ class AIRadioRenderMixin:
             raise MediaNotFoundError(f"AI Radio clip {item_id} is not in any queue")
         prompt = str(queue_item.extra_attributes.get(ATTR_PROMPT) or "")
         if not prompt:
-            self._record_skip(queue_item, "clip has no prompt to render")
+            self.logger.warning(
+                "AI Radio clip %s (%s) skipped: clip has no prompt to render",
+                item_id,
+                queue_item.name,
+            )
             raise MediaNotFoundError(f"AI Radio clip {item_id} has no prompt to render")
 
         async with self._lock_for(item_id):
@@ -266,18 +266,12 @@ class AIRadioRenderMixin:
 
     def _candidate_queue_ids(self, clip_id: str) -> list[str]:
         """
-        Return the queue ids to search for a clip, the most likely one first.
+        Return the queue ids to search for a clip.
 
-        The owning session knows its queue, but the session registry is empty after a
-        restart while the clip lives on in the persisted queue, so every queue stays a
-        candidate. Clip ids carry a uuid4-based session id, so a hit is unambiguous.
+        Nothing tracks which queue a clip belongs to, so every queue is a candidate.
+        Clip ids carry a uuid4-based session id, so a hit is unambiguous.
         """
-        queue_ids = [queue.queue_id for queue in self.mass.player_queues.all()]
-        session = self._sessions.get(clip_id.rpartition("_")[0])
-        if session is not None and session.queue_id in queue_ids:
-            queue_ids.remove(session.queue_id)
-            queue_ids.insert(0, session.queue_id)
-        return queue_ids
+        return [queue.queue_id for queue in self.mass.player_queues.all()]
 
     def _find_clip_in_queue(self, clip_id: str, queue_id: str) -> QueueItem | None:
         """Return the queue item holding the given clip, paging through the queue."""
@@ -309,7 +303,6 @@ class AIRadioRenderMixin:
                 self.logger.warning(
                     "AI Radio clip %s (%s) skipped: %s", clip_id, queue_item.name, error
                 )
-                self._record_skip(queue_item, error)
                 raise MediaNotFoundError(f"AI Radio clip {clip_id} has no weather data")
             # weather is optional in this clip, so the LLM must skip it rather than invent it
             for token in empty_weather_tokens:
@@ -336,7 +329,6 @@ class AIRadioRenderMixin:
             self.logger.warning(
                 "AI Radio clip %s (%s) failed to generate: %s", clip_id, queue_item.name, err
             )
-            self._record_skip(queue_item, f"generation failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed to generate") from err
         if max_chars > 0:
             text = soft_limit_text(text, max_chars=max_chars)
@@ -371,7 +363,6 @@ class AIRadioRenderMixin:
             duration = await self._probe_duration(path)
         except Exception as err:
             self.logger.warning("AI Radio clip %s failed TTS: %s", clip_id, err)
-            self._record_skip(queue_item, f"TTS failed: {err}")
             raise MediaNotFoundError(f"AI Radio clip {clip_id} failed TTS") from err
         # measuring costs a fetch and a decode on the just-in-time render path, so it only
         # runs where the reading has somewhere to go
@@ -466,11 +457,3 @@ class AIRadioRenderMixin:
             self.logger.warning("Could not determine AI Radio clip duration: %s", err)
             return None
         return int(tags.duration) if tags.duration else None
-
-    def _record_skip(self, queue_item: QueueItem, error: str) -> None:
-        """Record a skipped clip on its owning session."""
-        session_id = str(queue_item.extra_attributes.get(ATTR_SESSION_ID) or "")
-        if (session := self._sessions.get(session_id)) is None:
-            return
-        session.skipped_sections += 1
-        session.last_render_error = error
