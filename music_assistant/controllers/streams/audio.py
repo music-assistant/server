@@ -1997,19 +1997,23 @@ class StreamsAudio:
             # continue the boundary mix live where the outgoing stream stopped
             # consuming it (the POST portion, this item's blended intro)
             if (mix := handover.stream) is not None:
-                if handover.pcm_format != pcm_format:
-                    # the format changed across the boundary: resample the live mix
-                    async with aclosing(mix):
+                try:
+                    if handover.pcm_format != pcm_format:
+                        # the format changed across the boundary: resample the live mix
                         async for _chunk in resample_pcm_audio(
                             mix, handover.pcm_format, pcm_format
                         ):
                             yield _chunk
                             bytes_written += len(_chunk)
-                else:
-                    async with aclosing(mix):
+                    else:
                         async for _chunk in mix:
                             yield _chunk
                             bytes_written += len(_chunk)
+                finally:
+                    # the wrapper's own finally only runs once it has started: a
+                    # failure (or abandonment) before its first pull would strand
+                    # the raw mix behind it, so release the whole handover
+                    await handover.close()
             # skip past the source media the mix consumed (final now it is drained)
             discard_position = handover.fade_in_media_duration
             handover = None
