@@ -383,6 +383,44 @@ class TestYnisonClientParseState:
 
         assert client.state.last_update_is_echo is True
 
+    def test_fully_authored_queue_advance_applies_reset_status(self, client: YnisonClient) -> None:
+        """A fully authored echo advances canonical queue and resets its status."""
+        client.state.player_state = {
+            "status": {"paused": False, "progress_ms": "90000", "duration_ms": "200000"},
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "A"}, {"playable_id": "B"}],
+            },
+        }
+        authored_version = {
+            "device_id": "test-device-id",
+            "version": "10",
+            "timestamp_ms": "0",
+        }
+
+        client._parse_state(
+            {
+                "player_state": {
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "0",
+                        "duration_ms": "0",
+                        "version": authored_version,
+                    },
+                    "player_queue": {
+                        "current_playable_index": 1,
+                        "playable_list": [{"playable_id": "A"}, {"playable_id": "B"}],
+                        "version": authored_version,
+                    },
+                }
+            }
+        )
+
+        assert client.state.last_update_is_echo is True
+        assert client.state.current_track_id == "B"
+        assert client.state.progress_ms == 0
+        assert client.state.duration_ms == 0
+
     async def test_attached_queue_heartbeat_does_not_overwrite_newer_seek(
         self, client: YnisonClient
     ) -> None:

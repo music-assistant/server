@@ -610,9 +610,9 @@ class YnisonClient:
             "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
         }
 
-    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> bool:
+    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> tuple[bool, bool]:
         """
-        Return True iff `incoming_ps` is our own broadcast round-tripping.
+        Classify an inbound state as an echo and whether its status is stale.
 
         Full state broadcasts require both queue and status authorship. Ynison
         normalizes playing-status heartbeats to an empty/zero version, so a
@@ -624,7 +624,7 @@ class YnisonClient:
         queue_is_ours = queue_block.get("device_id") == own_id
         status_is_ours = status_block.get("device_id") == own_id
         if queue_is_ours and status_is_ours:
-            return True
+            return True, False
         incoming_queue = incoming_ps.get("player_queue")
         queue_changed = (
             incoming_queue is not None
@@ -635,7 +635,7 @@ class YnisonClient:
             "version": "0",
             "timestamp_ms": "0",
         }:
-            return False
+            return False, False
 
         status = incoming_ps.get("status") or {}
         current_track = self.state.current_track_id
@@ -648,8 +648,8 @@ class YnisonClient:
                 and int(status.get("duration_ms", -1)) == watermark.duration_ms
                 and status.get("paused") is watermark.paused
             ):
-                return True
-        return False
+                return True, True
+        return False, False
 
     # ------------------------------------------------------------------
     # Connection internals
@@ -910,10 +910,10 @@ class YnisonClient:
             # messages, and stored state is round-tripped via send_full_state
             # (on reconnect) and update_player_state (on queue edits).
             normalize_player_state_timestamps(incoming_ps)
-            is_echo = self._classify_state_as_echo(incoming_ps)
+            is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
-                if is_echo and key == "status":
+                if suppress_status and key == "status":
                     continue
                 existing_ps[key] = value
             self.state.last_update_is_echo = is_echo
