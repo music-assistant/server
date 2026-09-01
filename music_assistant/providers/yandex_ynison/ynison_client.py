@@ -1019,9 +1019,6 @@ class YnisonClient:
                     except LoginFailed:
                         refresh_attempted = True
                         self._logger.warning("Token refresh permanently failed", exc_info=True)
-                    except Exception:
-                        refresh_attempted = True
-                        self._logger.warning("Token refresh failed", exc_info=True)
             except asyncio.CancelledError:
                 return
             except Exception:

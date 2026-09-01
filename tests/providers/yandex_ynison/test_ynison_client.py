@@ -2023,7 +2023,7 @@ class TestTokenRefreshOnReconnect:
         assert client._token == SecretStr("old-token")
 
     async def test_auth_failure_callback_raises(self) -> None:
-        """A failed refresh is attempted once per reconnect episode."""
+        """An unexpected callback error escapes instead of hiding a programming defect."""
         on_state = AsyncMock()
         on_auth_failure = AsyncMock(side_effect=RuntimeError("refresh failed"))
 
@@ -2038,13 +2038,10 @@ class TestTokenRefreshOnReconnect:
         client._session.closed = False
 
         attempt_count = 0
-        stop_after = 6
 
         async def failing_redirect() -> tuple[str, str, int]:
             nonlocal attempt_count
             attempt_count += 1
-            if attempt_count >= stop_after:
-                client._stop_event.set()
             raise LoginFailed("expired")
 
         with (
@@ -2055,6 +2052,7 @@ class TestTokenRefreshOnReconnect:
                 new_callable=AsyncMock,
                 side_effect=failing_redirect,
             ),
+            pytest.raises(RuntimeError, match="refresh failed"),
         ):
             await client._reconnect()
 

@@ -2117,9 +2117,13 @@ class YandexYnisonProvider(PluginProvider):
     ) -> None:
         """Launch a dynamic session only after resolving the real source format."""
         launched = False
+        started_unclaimed = self._in_use_by_player is None
         try:
             details = await self._get_dynamic_stream_details(track_id, generation)
-            if generation != self._dynamic_generation or self._in_use_by_player != owner_player_id:
+            if generation != self._dynamic_generation or not (
+                self._in_use_by_player == owner_player_id
+                or (started_unclaimed and self._in_use_by_player is None)
+            ):
                 self.logger.debug("Discarding stale dynamic launch for %s", track_id)
                 return
             if self._ynison and (
@@ -2145,7 +2149,10 @@ class YandexYnisonProvider(PluginProvider):
                 signature[2],
                 signature[3],
             )
-            if generation != self._dynamic_generation or self._in_use_by_player != owner_player_id:
+            if generation != self._dynamic_generation or not (
+                self._in_use_by_player == owner_player_id
+                or (started_unclaimed and self._in_use_by_player is None)
+            ):
                 self.logger.debug("Cancelling owner-stale dynamic launch for %s", track_id)
                 return
             await self.mass.player_queues.play_media(owner_player_id, str(self._audio_source.uri))
@@ -2646,7 +2653,7 @@ class YandexYnisonProvider(PluginProvider):
             wrapped_index = queue_view.next_index(wrap=True)
             if wrapped_index is not None:
                 if await self._advance_queue_index(wrapped_index):
-                    return "change"
+                    return "restart" if wrapped_index == current_index else "change"
                 return "stop"
         try:
             await self._send_progress_to_ynison(

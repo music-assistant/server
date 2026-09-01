@@ -1107,6 +1107,20 @@ class TestYnisonStateHandling:
         assert outcome == "change"
         assert sent_state["player_queue"]["current_playable_index"] == 2
 
+    async def test_repeat_all_single_item_restarts_without_waiting(self) -> None:
+        """A one-item repeat-all queue restarts because no index change is possible."""
+        provider = _make_provider()
+        mock_ynison = _mock_ynison(
+            _make_ynison_state(
+                current_playable_index=0,
+                playable_list=[{"playable_id": "t1"}],
+            )
+        )
+        mock_ynison.state.player_state["player_queue"]["options"] = {"repeat_mode": "ALL"}
+        provider._ynison = mock_ynison
+
+        assert await provider._signal_track_completion() == "restart"
+
     async def test_explicit_next_ignores_repeat_one(self) -> None:
         """A user next command advances even when natural completion repeats one."""
         provider = _make_provider()
@@ -4034,6 +4048,44 @@ class TestDynamicSessionCoordinator:
 
         provider.mass.player_queues.play_media.assert_not_awaited()
         assert provider._dynamic_target_track_id is None
+
+    async def test_initial_dynamic_launch_allows_unclaimed_preload(self) -> None:
+        """Dynamic startup may resolve before on_source_selected claims the owner."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._in_use_by_player = None
+        provider._dynamic_target_track_id = "track2"
+        provider._ynison = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "track2"}])
+        )
+        _stub_attr(
+            provider,
+            "_get_dynamic_stream_details",
+            AsyncMock(return_value=self._details(96_000, 24)),
+        )
+
+        await provider._launch_dynamic_session("track2", 1000, "player1", 7)
+
+        provider.mass.player_queues.play_media.assert_awaited_once()
+
+    async def test_dynamic_launch_stays_cancelled_after_owner_releases(self) -> None:
+        """A claimed launch cannot treat teardown as an initial unclaimed preload."""
+        provider = _make_provider()
+        self._enable(provider, [(96_000, 24)])
+        provider._dynamic_target_track_id = "track2"
+        provider._ynison = _mock_ynison(
+            _make_ynison_state(playable_list=[{"playable_id": "track2"}])
+        )
+
+        async def details_then_release(_track_id: str, _generation: int) -> MagicMock:
+            provider._in_use_by_player = None
+            return self._details(96_000, 24)
+
+        _stub_attr(provider, "_get_dynamic_stream_details", details_then_release)
+
+        await provider._launch_dynamic_session("track2", 1000, "player1", 7)
+
+        provider.mass.player_queues.play_media.assert_not_awaited()
 
     async def test_next_track_prefetch_uses_immediate_playable_successor(self) -> None:
         """Prefetch must use index + 1 and retain current plus next details only."""
