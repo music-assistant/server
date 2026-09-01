@@ -620,6 +620,7 @@ class _SingleTrackRun:
         self._unpaired = False
         self._stopped = False
         self._item_over = False
+        self._engine_exited = False
         self._teardown_done = False
         self._engine_playing = False
         self._sink_running = False
@@ -698,6 +699,7 @@ class _SingleTrackRun:
         # the reader must be attached before the sink starts producing, or the
         # sink's first writes go to a reader-less FIFO and are dropped
         self._reader, self._transport = await _open_fifo_reader(sink.fifo_path)
+        self._spawn_task(self._watch_exit(proc))
         self._spawn_task(self._read_capture())
         await self._set_sink(running=True)
 
@@ -952,6 +954,18 @@ class _SingleTrackRun:
         self._unpaired = True
         self._fail("the stored session is gone")
 
+    async def _watch_exit(self, proc: AsyncProcess) -> None:
+        """
+        Record the daemon's exit the moment it happens.
+
+        The engine exits when its item finishes, and the sink renders silence from
+        then on: the reader needs a signal that does not depend on the process
+        being reaped, or the item's end is only found by wading through that
+        silence - the tail-zone budget late, every track.
+        """
+        await proc.wait()
+        self._engine_exited = True
+
     async def _read_capture(self) -> None:
         """
         Read the capture FIFO for the run's whole life and cushion it for the consumer.
@@ -980,7 +994,7 @@ class _SingleTrackRun:
             try:
                 chunk = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), _READ_SLICE_S)
             except TimeoutError:
-                if proc.returncode is not None:
+                if self._engine_exited:
                     # the engine exited and its tail has drained: the item is over
                     self._finish_delivery()
                     return
@@ -1009,7 +1023,7 @@ class _SingleTrackRun:
                 paced_bytes = 0
             paced_bytes += len(chunk)
             chunk = self._scrub(chunk)
-            if chunk and proc.returncode is not None and chunk.count(0) == len(chunk):
+            if chunk and self._engine_exited and chunk.count(0) == len(chunk):
                 # the engine is gone: what the sink renders from here on is only
                 # padding, so the item's audio has fully arrived
                 chunk = b""
@@ -1017,7 +1031,7 @@ class _SingleTrackRun:
                 self._read_bytes += len(chunk)
                 if not await self._hand_over(chunk):
                     return
-            elif proc.returncode is not None:
+            elif self._engine_exited:
                 self._finish_delivery()
                 return
             resume_at = pace_anchor + paced_bytes / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
@@ -1098,7 +1112,7 @@ class _SingleTrackRun:
         assert proc is not None
         if not await client.wait_until_ready(_STARTUP_TIMEOUT_S):
             # a natural exit right at startup still has to release the waiters
-            if proc.returncode is None:
+            if not self._engine_exited and proc.returncode is None:
                 self._fail("the run did not publish its WebSocket endpoint")
             client_ready.set()
             return
@@ -1109,7 +1123,7 @@ class _SingleTrackRun:
             except asyncio.CancelledError:
                 raise
             except Exception as err:
-                if proc.returncode is not None:
+                if self._engine_exited or proc.returncode is not None:
                     # the daemon exited (the item finished); the socket dying with
                     # it is not an error
                     return
