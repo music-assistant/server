@@ -58,38 +58,41 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
-# Ceiling on how fast a single queue item is handed to a player, once it has had its opening
-# burst. Music Assistant serves audio for listening, not for collecting: at twice playback the
-# player's buffer still grows in realtime, while pulling a whole catalogue takes about as long
-# as listening to it would. These are the fastest we go, not a target - a player that needs
-# feeding more gently (Chromecast is the known case) can be paced slower than this.
+# Ceiling on how fast stream output is handed to a player, once it has had its opening
+# burst. Music Assistant serves audio for listening, not for collecting: barely above
+# playback speed the player's buffer still grows, while pulling a whole catalogue takes
+# about as long as listening to it would. A gentle feed also keeps a realtime source's
+# banked head start resident for its end-of-track crossfade, and spares players with a
+# small input buffer (Chromecast is the known case).
 # Do not remove this to "fix" slow buffering; raise the burst instead. See the usage policy.
-SINGLE_ITEM_READRATE: Final[str] = "1.2"
-SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
+OUTPUT_READRATE: Final[str] = "1.02"
+OUTPUT_READRATE_INITIAL_BURST: Final[str] = "3"
 
-# Pacing for a realtime-source track. The head start such a source banks is the only
-# material its end-of-track crossfade can use; the standard burst would hand it all
-# to the player at stream open. Matching the source's ceiling keeps it resident until
-# EOF while the player still receives at least playback speed. Buffered sources keep
-# the standard pacing (MusicCast needs the large burst before it will do gapless).
-REALTIME_ITEM_READRATE: Final[str] = "1.05"
-REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "3"
+# The burst profile for players that must hold a whole track before they play gapless
+# (MusicCast is the known case). Same ceiling rationale and usage-policy note as above.
+BURST_OUTPUT_READRATE: Final[str] = "1.2"
+BURST_OUTPUT_READRATE_INITIAL_BURST: Final[str] = "60"
 
 
-def single_item_pacing_args(is_realtime: bool) -> list[str]:
-    """Return the ffmpeg pacing arguments for one queue item's output stream."""
-    if is_realtime:
+def output_pacing_args(*, big_burst: bool = False) -> list[str]:
+    """
+    Return the ffmpeg pacing arguments for a stream handed to a player.
+
+    :param big_burst: Whether the player needs a large opening burst before it
+        will play gapless, at the cost of any banked crossfade material.
+    """
+    if big_burst:
         return [
             "-readrate",
-            REALTIME_ITEM_READRATE,
+            BURST_OUTPUT_READRATE,
             "-readrate_initial_burst",
-            REALTIME_ITEM_READRATE_INITIAL_BURST,
+            BURST_OUTPUT_READRATE_INITIAL_BURST,
         ]
     return [
         "-readrate",
-        SINGLE_ITEM_READRATE,
+        OUTPUT_READRATE,
         "-readrate_initial_burst",
-        SINGLE_ITEM_READRATE_INITIAL_BURST,
+        OUTPUT_READRATE_INITIAL_BURST,
     ]
 
 

@@ -37,7 +37,7 @@ from music_assistant.controllers.streams.audio import (
     tail_hold_target,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import BufferSize, single_item_pacing_args
+from music_assistant.controllers.streams.constants import BufferSize, output_pacing_args
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.streams.smart_fades.fades import StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
@@ -303,29 +303,29 @@ async def test_eof_reflects_producer_completion() -> None:
     assert buf.eof
 
 
-def test_a_realtime_item_is_paced_to_keep_its_head_start_resident() -> None:
+def test_default_pacing_keeps_a_banked_head_start_resident() -> None:
     """
-    A realtime item's output pacing must not flush its banked head start.
+    The default output pacing must not flush a realtime source's banked head start.
 
     The head start a realtime source banks into the item's buffer is the only
-    material its end-of-track crossfade can be built from. The standard pacing
-    hands it to the player in the opening burst and then drains above the fill
-    rate, so the buffer is empty by EOF and every boundary loses its fade.
+    material its end-of-track crossfade can be built from. A large opening burst
+    hands it to the player at stream open and then drains above the fill rate,
+    so the buffer is empty by EOF and every boundary loses its fade.
     """
-    realtime = single_item_pacing_args(True)
-    buffered = single_item_pacing_args(False)
+    default = output_pacing_args()
+    burst = output_pacing_args(big_burst=True)
 
     def value(args: list[str], key: str) -> float:
         return float(args[args.index(key) + 1])
 
     # the drain must not exceed the ~1.1x a realtime source can deliver, and the
     # opening burst must not swallow a whole banked window
-    assert value(realtime, "-readrate") <= 1.1
-    assert value(realtime, "-readrate_initial_burst") <= 10
-    # buffered sources keep the pacing gapless players rely on (MusicCast needs
-    # a large opening burst before it will do gapless at all)
-    assert value(buffered, "-readrate") == 1.2
-    assert value(buffered, "-readrate_initial_burst") == 60
+    assert value(default, "-readrate") <= 1.1
+    assert value(default, "-readrate_initial_burst") <= 10
+    # the burst profile keeps the pacing its players rely on for gapless (MusicCast
+    # needs a large opening burst before it will do gapless at all)
+    assert value(burst, "-readrate") == 1.2
+    assert value(burst, "-readrate_initial_burst") == 60
 
 
 # -- the holdback decision --
@@ -1463,7 +1463,10 @@ class _FakeStreamResponse:
 
 
 def _single_item_handler(
-    *, is_realtime: bool, capture_ffmpeg: pytest.MonkeyPatch | None = None
+    *,
+    is_realtime: bool,
+    capture_ffmpeg: pytest.MonkeyPatch | None = None,
+    player_provider_domain: str = "test",
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
     """
     Return a single-item stream handler rigged to stop early.
@@ -1497,6 +1500,7 @@ def _single_item_handler(
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.provider.domain = player_provider_domain
     player.state.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
     player.state.name = "Player"
     mass.players.get_player.return_value = player
@@ -1568,19 +1572,25 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
     controller.get_crossfade_mode.assert_called_once()
 
 
-@pytest.mark.parametrize("is_realtime", [True, False], ids=["realtime", "buffered"])
-async def test_single_item_handler_paces_by_source_type(
-    monkeypatch: pytest.MonkeyPatch, is_realtime: bool
+@pytest.mark.parametrize(
+    ("player_provider_domain", "big_burst"),
+    [("sonos", False), ("musiccast", True)],
+    ids=["default", "musiccast"],
+)
+async def test_single_item_handler_paces_by_player(
+    monkeypatch: pytest.MonkeyPatch, player_provider_domain: str, big_burst: bool
 ) -> None:
-    """The encode ffmpeg is paced for the source: realtime tracks get the realtime args."""
+    """Every player gets the gentle default; MusicCast gets its gapless opening burst."""
     controller, request, seen = _single_item_handler(
-        is_realtime=is_realtime, capture_ffmpeg=monkeypatch
+        is_realtime=True,
+        capture_ffmpeg=monkeypatch,
+        player_provider_domain=player_provider_domain,
     )
 
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_item_stream(request)
 
-    assert seen["extra_input_args"] == single_item_pacing_args(is_realtime)
+    assert seen["extra_input_args"] == output_pacing_args(big_burst=big_burst)
 
 
 # -- StreamsAudio.get_stream_details --
