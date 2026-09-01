@@ -9,12 +9,13 @@ flow, stored per instance):
   (passthrough). Simple, but relies on reverse-engineered internals: accounts created
   since December 2024 cannot use it.
 - **`backends/soloist.py`** — Spotify Soloist, Spotify's official headless client. One
-  continuous session, fed one track ahead, playing into a private PulseAudio capture
+  `soloist --single-track` run per item, playing into a private PulseAudio capture
   sink (`music_assistant/helpers/pulse_capture.py`) whose FIFO is read back slightly above realtime pace
   as s32le/44.1kHz PCM. Driven over the daemon's local WebSocket API.
 
-Source capacity is **2** on either backend — for librespot two parallel fetches, for
-Soloist the item that is ending and the item that continues from the same session.
+Source capacity is **2** on librespot (two parallel fetches) and **1** on Soloist: the
+account's single stream. The queue's prefetch takes the freed slot the moment an item
+has fully arrived.
 
 The provider itself (`provider.py`) stays backend-agnostic: it owns the Web API,
 parsing, StreamDetails and the audiobook chapter logic, and hands canonical
@@ -72,86 +73,31 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   streams core hands ffmpeg, while `audio_format` is for display. Note MA classifies
   24-bit/44.1kHz as hi-res rather than lossless.
 - **One daemon per data directory**: the engine refuses to start while another
-  session still holds it, so `_session_lock` covers the teardown as well as the
-  bookkeeping — a replacement session is never spawned before the previous daemon
+  run still holds it, so `_run_lock` covers the teardown as well as the
+  bookkeeping — a replacement run is never spawned before the previous daemon
   has been reaped.
-- **One session, fed one track ahead**: a Spotify account supports a single active
-  Soloist session, so items are not fetched one by one. The session plays consecutive
-  tracks continuously — `play(uri)` for the first, `add_to_queue(uri)` for the follower
-  — and that one continuous audio stream is split into ordinary per-item streams: an
-  item's stream ends where the session reports moving on, and the next item's stream
-  begins there. Played back to back the items reproduce the session's audio sample for
-  sample, so the cut position does not matter. Only consecutive tracks are stitched; a
-  podcast episode or audiobook chapter is played on its own. Channels are per
-  occurrence rather than per track, so a queue holding the same track twice in a row
-  stitches through it like any other pair — the engine names both under one URI, and
-  the order they were fed in is what tells them apart.
-- **Use the engine's transport before respawning it.** A next-track lands on the item
-  that was fed one ahead, so the engine is told to skip to it and the session
-  survives. A next item the session was *not* fed — the queue was reordered after the
-  feed, or the user picked something else — is queued and skipped to in the same way,
-  as long as the engine has nothing else queued behind what it plays: its queue offers
-  no way to remove or replace an entry, only to append one and move past it. Tearing a
-  session down and spawning another costs a login, an activate and a re-feed, which is
-  seconds — and the daemon never exits on its own, so nothing is gained by waiting for
-  it either: it is closed straight away.
-- **A session in use is never cut short**: the engine allows one session, so an item
-  the running one cannot serve would otherwise restart it and truncate whatever it is
-  still delivering. That happens at boundaries the session does not drive — a podcast
-  episode or audiobook chapter (never stitched) or another player — so those are
-  reported as `ProviderStreamLimitError` instead. A
-  speculative prepare then gives up softly, and the real request, made once the other
-  item has been released, gets the session. The cost is a cold start at those
-  boundaries rather than a warm buffer. The queue's own seek of the item being
-  delivered is the exception: the engine is seeked in place where it can be, and
-  otherwise the session restarts at the target — an audiobook's chapters are separate
-  URIs, so a seek across one asks for a URI the engine is not on. Only a request that
-  *starts* an item stream may take the session over: a chapter boundary is a fresh
-  session, so a stream the seek replaced can arrive at one having released its own
-  channel, and taking the session back there would undo the seek. Such a stream ends
-  with `StreamSupersededError` instead, rather than stitching its next chapter on.
-- **The Spotify app can reach in, and that ends the session.** The engine always
-  advertises itself as a Connect device and offers no way to suppress that, so the
-  device is listed in the user's Spotify apps for as long as Music Assistant is
-  playing — named `SOLOIST_DEVICE_NAME`, deliberately *not* the plain "Music
-  Assistant" the Spotify Connect provider advertises by default, so the two do
-  not arrive under one name. Three things the user can do there are handled:
-  - **Move playback to another device**, which shows up as `is_active` going false
-    on `device_changed`/`auth_state` (`playback_state.is_active` is optional and
-    rides on deltas, so it is ignored). Only a loss of the active status the session
-    itself claimed counts — a daemon is inactive until `_play` activates it.
-  - **Start something else on this device**, which shows up as the engine moving
-    somewhere it was never sent while the current item is still part-way through
-    (`_ItemState.mid_play`). Only the item fed behind the current one is exempt —
-    a skip in the app lands there, which is also where the queue goes next, so the
-    two stay in step. The engine's own autoplay and the item it restores at startup
-    both fail the `mid_play` test, which is what keeps them out of it. Note the
-    last 10s of an item is a blind spot by design: judging a boundary needs that
-    allowance, so a takeover inside it is missed rather than risking a false one on
-    every track.
-  - **Pause**, which is put back a couple of times (an accidental tap) and then
-    taken at face value.
-
-  All three end the session and hold off a replacement for `_APP_CONTROL_COOLDOWN_S`
-  through `SoloistAppControlError`. That hold is the point: without it the next queue
-  item spawns a daemon that claims the Connect device straight back off whatever the
-  user just moved to. It is a `ProviderStreamLimitError` so the queue treats it as
-  capacity — the item stays playable, other providers get a chance at it, and an
-  explicit play stops the queue with a message saying what happened.
-- **The session asks for the buffer, and writes into it.** The core's blind next-item
-  pre-buffer is suppressed for a realtime source (`controllers/streams/audio.py`),
-  because the next item's audio does not exist until the session gets there. When the
-  engine reaches an item, the session calls `open_provider_audio_fill()` on the queue
-  controller, which finds the upcoming queue item that item's audio belongs to (by
-  provider mapping — a queue reorder may have moved it), creates its `AudioBuffer` and
-  hands back a `ProviderAudioFill` the captured PCM is written straight into. The
-  queue's later playback request finds that buffer and reuses it, so those items never
-  go through `get_audio_stream` or ffmpeg at all. The item Music Assistant *asks* for —
-  the first of a run, a seek, a skip — already owns its buffer, so it keeps the
-  ordinary generator path and is handed the same write handle unattached.
-  Nothing is banked provider-side either way: until an item's buffer is open, the
-  capture sink is held down and the reader holds its chunk, so the item's first samples
-  wait in the sink rather than being dropped.
+- **One engine run per item (single-track mode)**: every Spotify URI is played by its
+  own daemon, spawned with `--single-track`, which restores the stored session without
+  advertising a Spotify Connect device, plays that one item with shuffle and repeat off,
+  and exits when it finishes. The provider is an ordinary single-stream source: the
+  item's `AudioBuffer` consumes the run's PCM like any other provider's stream, and no
+  track is ever stitched to another provider-side.
+- **One stream slot**: a Spotify account supports a single active stream, and the run
+  is it. A request for another item while a run is live is reported as
+  `ProviderStreamLimitError` capacity: a speculative prepare gives up softly (or waits
+  its slot budget out), and the real request gets the slot once the stream holding it
+  is released. The slot frees the moment an item's audio has *fully arrived* — the
+  buffer's fill closes the provider stream at EOF and the fill-complete hook starts
+  fetching the next queue item right away, so the engine's ~1.1x delivery surplus
+  compounds across a listening session. A new request for the very item being
+  delivered is a seek of it: the run restarts at the target. A continuation the seek
+  replaced (an audiobook's next chapter) ends with `StreamSupersededError` instead of
+  taking the run back.
+- **The Spotify app cannot reach in.** Single-track mode advertises no Connect device
+  and disables remote control and transfer for its playback context, so there is
+  nothing for the app to move, pause or take over. Playing on the account from another
+  device can still kill the stream Spotify-side; that ends the run as an incomplete
+  delivery and the queue moves on.
 - **The engine never crossfades**: its own crossfade is written off in the prefs before
   every spawn, so each track's audio arrives clean from its first sample. Music Assistant
   mixes the boundary itself from the tail it holds back, which is what keeps waveforms,
@@ -160,40 +106,30 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   on Spotify audio.
 - **Pacing**: the capture FIFO is reader-clocked — how fast it is read *is* how fast
   the engine plays, because the pipe sink applies no rate limit of its own (read
-  unpaced, PulseAudio renders silence rather than pushing back, and the session runs
+  unpaced, PulseAudio renders silence rather than pushing back, and the run runs
   off the end of its content). It is read at **1.1x** with a small (1s) initial burst,
-  both ear-tested: the surplus banks the cushion (~6s per minute) that carries an item
-  boundary, while a large burst window is unpaced and audibly destabilizes track
-  starts. Do not add ffmpeg-side pacing on top of this. The pacing clock restarts after
-  any gap instead of making it up, since catching up would mean exactly that unpaced
-  burst.
-- **Backpressure is ours to apply**: reading above realtime means the engine runs ahead
-  of the player, and nothing upstream stops it. the session caps how far ahead of
-  playback its audio may pile up - one item beyond what is still consumed, and within
-  an item whatever its buffer's memory-tiered capacity holds — everything its handles still hold plus
-  everything the item buffers hold past the furthest position playback has read, so the
-  seek window a buffer legitimately keeps *behind* playback does not count — and
-  suspends the capture sink past it, which stalls the engine until the player catches
-  up. Without that cap the cushion grows without limit and the engine's own item
-  eventually runs further ahead than the queue lookahead of the buffer request reaches.
-  The same gate keeps rebuffering and pause silence out of the delivered PCM, and holds
-  the sink down while an item has no buffer to write into yet, so all sink control goes
-  through one place (`_apply_sink_state`).
-- **Delimiting**: the FIFO never ends on its own (the sink keeps rendering silence), so
-  WebSocket state delimits the items. An item stream is deliberately **not** capped at
-  the item duration, but it is bounded, and completeness is validated against the
-  furthest playback position the engine reported for it. The **last** item
-  of a run gets no track change to cut it on, so a stop/idle/pause snapshot at its own
-  end arms a bounded tail drain instead; a pause part-way through is treated as app
-  interference, and the engine resuming cancels the drain. A channel is served **once**:
-  its audio is written to one buffer as it arrives, so a repeated track (or repeat
-  wrapping back to the top) starts a fresh session rather than reusing a spent channel.
-  Exit code 10 (expired build) triggers a forced binary refresh.
+  both ear-tested: the surplus is the lead a boundary's crossfade is built from, while
+  a large burst window is unpaced and audibly destabilizes track starts. Do not add
+  ffmpeg-side pacing on top of this. The pacing clock restarts after any gap instead
+  of making it up, since catching up would mean exactly that unpaced burst.
+- **Backpressure is the cushion's**: the FIFO holds well under a second, so the reader
+  drains it continuously into a small bounded cushion the item stream consumes. A full
+  cushion — the item's buffer is at its memory-tiered capacity — suspends the capture
+  sink, which pauses the engine; space resumes it. The engine's pause silence is kept
+  out of the delivered PCM the same way, and leading infrastructure silence and the
+  sink's tail padding are trimmed per run.
+- **Delimiting**: the run ends when the daemon exits — the item finished, stopped or
+  was refused. Whatever the sink renders after the exit is padding and is dropped. The
+  delivered length is validated against the item's duration, so an engine that refuses
+  an item (unavailable to the account or region) surfaces as an incomplete delivery
+  instead of a silently 'completed' track. A cold seek is confirmed against the
+  engine's position reports before any PCM is released, with the sink held down until
+  then. Exit code 10 (expired build) triggers a forced binary refresh.
 - **Normalization**: exactly one of the two normalizes, and a provider option decides
   which. On (the default) the engine's own normalizer is enabled and the provider
-  declares `delivers_normalized_audio(streamdetails)` for the queue that session serves,
-  which makes the streams core skip normalization for those items — another queue gets
-  the configured answer instead, since the running session says nothing about it.
+  declares `delivers_normalized_audio(streamdetails)` for the item its run is serving,
+  which makes the streams core skip normalization for it — any other item gets
+  the configured answer instead, since a run says nothing about anything else.
   Spotify uses values computed over its whole catalogue and will not push a quiet track
   past its remaining headroom, and MA correcting that again would be normalizing twice,
   the second time against a measurement of Spotify's own output.

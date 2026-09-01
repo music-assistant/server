@@ -32,7 +32,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
     MIN_CROSSFADE_DURATION,
-    CrossfadeData,
+    CrossfadeHandover,
     StreamsAudio,
     tail_hold_target,
 )
@@ -580,7 +580,7 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
     # is buffered as crossfade data for the next item's own stream
     assert len(output) == pcm_format.pcm_sample_size * 16
     build.assert_awaited_once()
-    crossfade_data = audio._crossfade_data.get("queue-1")
+    crossfade_data = audio._crossfade_handover.get("queue-1")
     assert crossfade_data is not None
     assert crossfade_data.queue_item_id == "next"
 
@@ -739,13 +739,13 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     # a fade being mixed for this item is waited for, and picked up when it lands
     handoff = asyncio.Event()
     audio._crossfade_pending["queue-1"] = ("next", handoff)
-    expected = CrossfadeData(
+    expected = CrossfadeHandover(
         stream=None, fade_in_media_duration=0.0, pcm_format=pcm_format, queue_item_id="next"
     )
 
     async def _land_it() -> None:
         await asyncio.sleep(0.05)
-        audio._crossfade_data["queue-1"] = expected
+        audio._crossfade_handover["queue-1"] = expected
         handoff.set()
 
     task = asyncio.create_task(_land_it())
@@ -753,7 +753,7 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     await task
 
     # a mix that never finishes costs the fade, not the stream
-    audio._crossfade_data.pop("queue-1", None)
+    audio._crossfade_handover.pop("queue-1", None)
     audio._crossfade_pending["queue-1"] = ("next", asyncio.Event())
     started = asyncio.get_event_loop().time()
     assert await audio._await_pending_crossfade(queue, item) is None
@@ -868,7 +868,7 @@ async def test_smartfade_a_source_still_delivering_hands_over_gapless(
     # every byte the source produced reaches the player, and no fade is planned
     assert len(output) >= pcm_format.pcm_sample_size * 16
     build.assert_not_awaited()
-    assert "queue-1" not in audio._crossfade_data
+    assert "queue-1" not in audio._crossfade_handover
 
 
 # -- Path level: get_queue_flow_stream --
@@ -1143,6 +1143,9 @@ async def test_smartfade_short_remainder_still_crossfades(
         yield _audio(pcm_format, 8)
         yield _audio(pcm_format, 26)
 
+    # everything left of a short remainder is fade material: nothing bypasses
+    # the holdback anymore
+
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
         cast("Any", player),
@@ -1158,7 +1161,7 @@ async def test_smartfade_short_remainder_still_crossfades(
     build.assert_awaited_once()
     assert build.await_args is not None
     fade_out_seconds = len(build.await_args.kwargs["fade_out_data"]) / pcm_format.pcm_sample_size
-    assert fade_out_seconds == pytest.approx(26, abs=1)
+    assert fade_out_seconds == pytest.approx(34, abs=1)
 
 
 async def test_smartfade_stub_remainder_does_not_crossfade(
@@ -1221,7 +1224,7 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
     ) -> AsyncGenerator[bytes]:
         if queue_item is not current_item:
             return
-        yield _audio(pcm_format, 8)
+        # 2s remainder: under MIN_CROSSFADE_DURATION, so nothing to blend with
         yield _audio(pcm_format, 2)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
@@ -1235,7 +1238,7 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
 
     output = b"".join([chunk async for chunk in stream])
 
-    assert len(output) == pcm_format.pcm_sample_size * 10
+    assert len(output) == pcm_format.pcm_sample_size * 2
     build.assert_not_awaited()
 
 

@@ -331,7 +331,7 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     _ = [chunk async for chunk in stream]
 
     assert incoming_seconds_read > resident_media_duration
-    crossfade_data = audio._crossfade_data["queue-1"]
+    crossfade_data = audio._crossfade_handover["queue-1"]
     assert crossfade_data.queue_item_id == "next"
     # the window is stream time, so fast playback reaches the incoming track's
     # half-duration cap sooner: at 2x an 8s overlap would eat this whole track

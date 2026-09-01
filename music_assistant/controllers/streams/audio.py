@@ -176,7 +176,6 @@ if TYPE_CHECKING:
 
 # Seconds of PCM at the start of a track that are yielded straight to the player,
 # never held back for a crossfade.
-WARMUP_DURATION = 8
 # Minimum overlap worth blending; below this the tail plays out and the boundary
 # is a hard cut. The configured mode picks the fade, this only decides whether a
 # boundary can carry one at all.
@@ -216,7 +215,7 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
 
 
 @dataclass
-class CrossfadeData:
+class CrossfadeHandover:
     """The live continuation of a boundary mix, handed from the outgoing stream to the next."""
 
     # the not-yet-consumed remainder of the mix; exhausted (and owned) by the next
@@ -556,7 +555,7 @@ class StreamsAudio:
         """
         self.mass = mass
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.streams.audio")
-        self._crossfade_data: dict[str, CrossfadeData] = {}
+        self._crossfade_handover: dict[str, CrossfadeHandover] = {}
         # queue_id -> (item the fade is being built for, set once its data is stored).
         # The speaker asks for the next item's url before the outgoing stream is done,
         # so without this the handoff is a race the fade loses.
@@ -1810,14 +1809,12 @@ class StreamsAudio:
                 # tracks and sound effects are finite files that fill and close immediately;
                 # live sources (radio, audio_source) open an upstream connection that would
                 # sit idle and likely time out before the player actually consumes it.
-                # a realtime source is excluded for the same reason from the other side:
-                # the next item's audio does not exist yet at any point during this one,
-                # so only the source itself can say when it does - it triggers the
-                # pre-buffer through prepare_next_audio_buffer() when it gets there.
+                # For a realtime source this is the fallback trigger: its slot usually
+                # frees (and prepares the next item) when an earlier fill completes, but
+                # once the lead spans a whole item that moment has no next item yet.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
-                    and not streamdetails.is_realtime
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
@@ -1894,14 +1891,14 @@ class StreamsAudio:
         assert streamdetails
         # popped, not read: the mix continuation is a one-shot generator, and a
         # duplicate prefetch of the same url must not consume its twin's audio
-        crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
-        if crossfade_data is None and not streamdetails.seek_position:
+        handover = self._crossfade_handover.pop(queue.queue_id, None)
+        if handover is None and not streamdetails.seek_position:
             # the outgoing stream may still be building this item's fade. A seek
             # discards the fade below either way, and waiting for one would only
             # hold the response open on audio that is about to be thrown away.
-            crossfade_data = await self._await_pending_crossfade(queue, queue_item)
+            handover = await self._await_pending_crossfade(queue, queue_item)
 
-        if crossfade_data and streamdetails.seek_position > 0:
+        if handover and streamdetails.seek_position > 0:
             # don't do crossfade when seeking into track; the mix would never be
             # consumed, and an unconsumed one holds its incoming stream open
             self.logger.debug(
@@ -1909,20 +1906,20 @@ class StreamsAudio:
                 queue.display_name,
                 streamdetails.seek_position,
             )
-            await crossfade_data.close()
-            crossfade_data = None
-        if crossfade_data and (crossfade_data.queue_item_id != queue_item.queue_item_id):
+            await handover.close()
+            handover = None
+        if handover and (handover.queue_item_id != queue_item.queue_item_id):
             # edge case alert: the next item changed just while we were preloading/crossfading
             self.logger.warning(
                 "Skipping crossfade data for queue %s - next item changed!"
                 " (expected queue_item_id=%s, got=%s)",
                 queue.display_name,
-                crossfade_data.queue_item_id,
+                handover.queue_item_id,
                 queue_item.queue_item_id,
             )
-            await crossfade_data.close()
-            crossfade_data = None
-        elif not crossfade_data:
+            await handover.close()
+            handover = None
+        elif not handover:
             self.logger.debug(
                 "No crossfade data available for queue %s (queue_item_id=%s)",
                 queue.display_name,
@@ -1938,7 +1935,7 @@ class StreamsAudio:
             queue.display_name,
             player.name,
             crossfade_mode,
-            "true" if crossfade_data else "false",
+            "true" if handover else "false",
         )
         # report the fade this item was actually faded into; the fade leaving it is
         # only known once the next item's overlap has been selected further down
@@ -1946,13 +1943,16 @@ class StreamsAudio:
             queue.queue_id,
             queue_item,
             pcm_format,
-            crossfade_data.crossfade_mode if crossfade_data else CrossfadeMode.DISABLED,
+            handover.crossfade_mode if handover else CrossfadeMode.DISABLED,
             session_id,
             # only radio carries an overlay outside flow mode, and this path is tracks-only
             overlay_enabled=False,
         )
 
-        buffer = bytearray()
+        # Passes chunks straight through until the source has delivered the whole
+        # item (the hold target is zero until buffer EOF); from that moment it
+        # collects the item's last window once, as the boundary's fade material.
+        tail_window = bytearray()
         bytes_written = 0
         # calculate crossfade buffer size (the ceiling; a slow source's boundary
         # carries whatever its buffer held at EOF, which can be less)
@@ -1983,24 +1983,24 @@ class StreamsAudio:
         # pin the body to DYNAMIC when the intro was baked DYNAMIC,
         # else a late measurement flips it and causes a volume jump
         norm_override: VolumeNormalizationMode | None = None
-        if crossfade_data and crossfade_data.normalization_mode == VolumeNormalizationMode.DYNAMIC:
+        if handover and handover.normalization_mode == VolumeNormalizationMode.DYNAMIC:
             norm_override = VolumeNormalizationMode.DYNAMIC
 
-        exact_buffer_seek = crossfade_data is not None
-        if crossfade_data:
+        exact_buffer_seek = handover is not None
+        if handover:
             # reported media-time (TRIM + CF) is decoupled from the raw buffer seek below (X)
-            streamdetails.seek_position = crossfade_data.elapsed_time_offset
+            streamdetails.seek_position = handover.elapsed_time_offset
             # continue the boundary mix live where the outgoing stream stopped
             # consuming it (the POST portion, this item's blended intro)
-            if (mix := crossfade_data.stream) is not None:
-                if crossfade_data.pcm_format != pcm_format:
+            if (mix := handover.stream) is not None:
+                if handover.pcm_format != pcm_format:
                     # the format changed across the boundary: collect, then resample
                     mixed = bytearray()
                     async with aclosing(mix):
                         async for _chunk in mix:
                             mixed.extend(_chunk)
                     async for _chunk in resample_pcm_audio(
-                        bytes(mixed), crossfade_data.pcm_format, pcm_format
+                        bytes(mixed), handover.pcm_format, pcm_format
                     ):
                         yield _chunk
                         bytes_written += len(_chunk)
@@ -2010,15 +2010,11 @@ class StreamsAudio:
                             yield _chunk
                             bytes_written += len(_chunk)
             # skip past the source media the mix consumed (final now it is drained)
-            discard_position = crossfade_data.fade_in_media_duration
-            crossfade_data = None
+            discard_position = handover.fade_in_media_duration
+            handover = None
         else:
             discard_position = float(streamdetails.seek_position)
 
-        # Yield the first WARMUP_DURATION worth of audio immediately so playback starts
-        # right away. After that, start accumulating the crossfade holdback buffer.
-        warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
-        warmup_bytes = 0
         total_chunks_received = 0
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         async for chunk in self.get_queue_item_stream(
@@ -2031,30 +2027,21 @@ class StreamsAudio:
             exact_seek=exact_buffer_seek,
         ):
             total_chunks_received += 1
-
-            if warmup_bytes < warmup_size:
-                # warmup: yield directly, don't buffer
-                yield chunk
-                warmup_bytes += len(chunk)
-                bytes_written += len(chunk)
-                del chunk
-                continue
-
-            buffer.extend(chunk)
+            tail_window.extend(chunk)
             del chunk
             hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
-            if len(buffer) <= hold_target:
+            if len(tail_window) <= hold_target:
                 await asyncio.sleep(0)
                 continue
-            # yield everything above the current holdback window; the slice can
-            # run short of a whole second when the window is small, so credit
-            # what is actually yielded - a nominal full-second credit inflates
-            # the play log and the reported duration
-            while len(buffer) > hold_target:
-                pcm_slice = bytes(buffer[: pcm_format.pcm_sample_size])
+            # yield everything above the window; the slice can run short of a
+            # whole second when the window is small, so credit what is actually
+            # yielded - a nominal full-second credit inflates the play log and
+            # the reported duration
+            while len(tail_window) > hold_target:
+                pcm_slice = bytes(tail_window[: pcm_format.pcm_sample_size])
                 yield pcm_slice
                 bytes_written += len(pcm_slice)
-                del buffer[: len(pcm_slice)]
+                del tail_window[: len(pcm_slice)]
                 await asyncio.sleep(0)
 
         #### HANDLE END OF TRACK
@@ -2100,7 +2087,7 @@ class StreamsAudio:
             )
         try:
             if (
-                len(buffer) >= min_fade_out_size
+                len(tail_window) >= min_fade_out_size
                 and next_queue_item
                 and next_queue_item.streamdetails
             ):
@@ -2129,14 +2116,14 @@ class StreamsAudio:
                         next_queue_item.streamdetails,
                         crossfade_mode,
                         standard_crossfade_duration,
-                        fade_out_seconds=len(buffer) / pcm_format.pcm_sample_size,
+                        fade_out_seconds=len(tail_window) / pcm_format.pcm_sample_size,
                         playback_speed=fade_in_playback_speed,
                     )
                     crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
             if not crossfade_allowed:
                 # no crossfade enabled/allowed, just yield the buffer last part
-                bytes_written += len(buffer)
-                for pcm_slice in iter_pcm_slices(bytes(buffer), pcm_format, 1000):
+                bytes_written += len(tail_window)
+                for pcm_slice in iter_pcm_slices(bytes(tail_window), pcm_format, 1000):
                     yield pcm_slice
                     await asyncio.sleep(0)
             else:
@@ -2145,8 +2132,8 @@ class StreamsAudio:
                 assert next_queue_item.streamdetails.buffer is not None
                 fade_in_audio_buffer = cast("AudioBuffer", next_queue_item.streamdetails.buffer)
                 # the remaining buffer is the fade-out tail of the current track
-                fade_out_data = bytes(buffer)
-                buffer = bytearray()
+                fade_out_data = bytes(tail_window)
+                tail_window = bytearray()
                 fade_in_buffer_size = int(pcm_format.pcm_sample_size * fade_in_buffer_duration)
                 fade_in_buffer_size = (fade_in_buffer_size // frame_size) * frame_size
                 # initialized before the try block — the except handler reads it
@@ -2168,7 +2155,7 @@ class StreamsAudio:
                         else transition_mode
                     )
                     crossfade_timing = smart_fade.timing_info
-                    handover = CrossfadeData(
+                    next_handover = CrossfadeHandover(
                         stream=None,
                         fade_in_media_duration=0.0,
                         pcm_format=pcm_format,
@@ -2203,7 +2190,7 @@ class StreamsAudio:
                                     break
                                 take = chunk[:remaining] if len(chunk) >= remaining else chunk
                                 fade_in_bytes_consumed += len(take)
-                                handover.fade_in_media_duration = (
+                                next_handover.fade_in_media_duration = (
                                     fade_in_bytes_consumed / pcm_format.pcm_sample_size
                                 ) * fade_in_playback_speed
                                 yield take
@@ -2254,11 +2241,11 @@ class StreamsAudio:
                             session_id,
                             overlay_enabled=False,
                         )
-                        handover.stream = _continue_mix(split_leftover, mix_stream)
-                        if stale := self._crossfade_data.pop(queue_item.queue_id, None):
+                        next_handover.stream = _continue_mix(split_leftover, mix_stream)
+                        if stale := self._crossfade_handover.pop(queue_item.queue_id, None):
                             # a boundary nothing consumed (a skip landed in between)
                             await stale.close()
-                        self._crossfade_data[queue_item.queue_id] = handover
+                        self._crossfade_handover[queue_item.queue_id] = next_handover
                         published = True
                     finally:
                         if not published:
@@ -2307,7 +2294,7 @@ class StreamsAudio:
                 if self._crossfade_pending.get(queue.queue_id, (None, None))[1] is handoff:
                     del self._crossfade_pending[queue.queue_id]
         # make sure the buffer gets cleaned up
-        del buffer
+        del tail_window
         # a capacity reselection inside the stream replaces the queue item's details,
         # so rebind before the writebacks land on an orphaned object
         streamdetails = queue_item.streamdetails or streamdetails
@@ -2336,7 +2323,7 @@ class StreamsAudio:
             queue.display_name,
             (
                 next_queue_item.name
-                if next_queue_item and queue_item.queue_id in self._crossfade_data
+                if next_queue_item and queue_item.queue_id in self._crossfade_handover
                 else "N/A"
             ),
         )
@@ -2514,7 +2501,6 @@ class StreamsAudio:
                 crossfade_buffer_size = int(pcm_format.pcm_sample_size * crossfade_buffer_duration)
                 # Round down to nearest frame boundary
                 crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
-                warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
 
                 # raw_seek_position feeds the PCM buffer; streamdetails.seek_position
                 # (overwritten below) only drives reported elapsed time.
@@ -2613,7 +2599,6 @@ class StreamsAudio:
 
                 bytes_written = 0
                 crossfade_buffer = bytearray()
-                warmup_bytes = 0
                 first_chunk_received = False
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
@@ -2657,17 +2642,6 @@ class StreamsAudio:
                         if item_crossfade_mode == CrossfadeMode.DISABLED:
                             # no cross/smart fade: yield chunks directly without intermediate buffer
                             yield chunk
-                            bytes_written += len(chunk)
-                            del chunk
-                            continue
-
-                        # Warmup: yield chunks directly until we have streamed WARMUP_DURATION
-                        # worth of audio, so playback starts immediately. Skip warmup when
-                        # crossfade data from the previous track is pending — we need a full
-                        # buffer for the mix.
-                        if warmup_bytes < warmup_size and not last_fadeout_part:
-                            yield chunk
-                            warmup_bytes += len(chunk)
                             bytes_written += len(chunk)
                             del chunk
                             continue
@@ -2851,7 +2825,6 @@ class StreamsAudio:
                             last_streamdetails = None
                             last_queue_track = None
                             crossfade_buffer = bytearray()
-                            warmup_bytes = 0
 
                         # yield everything above the current holdback window; the
                         # slice can run short of a whole second when the window is
@@ -3110,13 +3083,13 @@ class StreamsAudio:
 
         return True
 
-    def clear_crossfade_data(self, queue_id: str) -> None:
+    def clear_crossfade_handover(self, queue_id: str) -> None:
         """
         Clear any pending crossfade data for a queue.
 
         :param queue_id: The queue ID to clear crossfade data for.
         """
-        if (stale := self._crossfade_data.pop(queue_id, None)) is not None:
+        if (stale := self._crossfade_handover.pop(queue_id, None)) is not None:
             self.logger.debug("Clearing crossfade data for queue %s", queue_id)
             if stale.stream is not None:
                 self.mass.create_task(stale.close())
@@ -3944,7 +3917,7 @@ class StreamsAudio:
 
     async def _await_pending_crossfade(
         self, queue: PlayerQueue, queue_item: QueueItem
-    ) -> CrossfadeData | None:
+    ) -> CrossfadeHandover | None:
         """
         Wait briefly for a fade into this item that is still being mixed.
 
@@ -3966,15 +3939,15 @@ class StreamsAudio:
         with suppress(TimeoutError):
             await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
         # popped, not read: ownership of the one-shot mix moves to this request
-        crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
+        handover = self._crossfade_handover.pop(queue.queue_id, None)
         self.logger.debug(
             "Waited %.1fs for the fade into %s on queue %s - %s",
             asyncio.get_event_loop().time() - waited_from,
             queue_item.name,
             queue.display_name,
-            "landed" if crossfade_data else "gave up",
+            "landed" if handover else "gave up",
         )
-        return crossfade_data
+        return handover
 
     async def _await_realtime_fade_source(self, streamdetails: StreamDetails) -> None:
         """

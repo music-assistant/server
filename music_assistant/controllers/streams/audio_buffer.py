@@ -158,16 +158,6 @@ class AudioBuffer:
         return sum(len(chunk) for chunk in self._chunks) / self.pcm_format.pcm_sample_size
 
     @property
-    def undrained_seconds(self) -> float:
-        """
-        Return the seconds of buffered audio past the furthest position playback has read.
-
-        What a source that produces faster than playback is held back on.
-        """
-        produced = self._discarded_chunks + len(self._chunks)
-        return max(0.0, float(produced - self._served_chunks))
-
-    @property
     def is_buffering(self) -> bool:
         """Return whether the upstream source producer is still active."""
         return self._producer_task is not None and not self._producer_task.done()
@@ -324,12 +314,19 @@ class AudioBuffer:
         ):
             yield chunk
 
-    def fill(self, audio_source: AsyncGenerator[bytes], source_name: str = "unknown") -> None:
+    def fill(
+        self,
+        audio_source: AsyncGenerator[bytes],
+        source_name: str = "unknown",
+        on_complete: Callable[[], None] | None = None,
+    ) -> None:
         """
         Start filling the buffer from an async generator of PCM audio chunks.
 
         :param audio_source: Async generator yielding 1-second PCM audio chunks.
         :param source_name: Name for logging purposes.
+        :param on_complete: Called once the source delivered everything, after its
+            generator (and the stream slot it held) has been released.
         """
         self._fill_started = time.monotonic()
         self._source_name = source_name
@@ -347,6 +344,8 @@ class AudioBuffer:
                         await self._put(chunk)
                         await asyncio.sleep(0)
                 await self._set_eof()
+                if on_complete is not None:
+                    on_complete()
             except asyncio.CancelledError:
                 status = "cancelled"
                 raise
@@ -495,39 +494,23 @@ class AudioBuffer:
             filter_params=None,
             source_wait_timeout=source_wait_timeout,
         )
-        audio_buffer.fill(audio_source, source_name=streamdetails.uri)
+
+        def _source_complete() -> None:
+            # a realtime source's one stream slot frees the moment this item has
+            # fully arrived: start fetching the next item right away
+            if (
+                streamdetails.is_realtime
+                and streamdetails.media_type == MediaType.TRACK
+                and streamdetails.queue_id
+            ):
+                mass.player_queues.prepare_next_audio_buffer(streamdetails.queue_id)
+
+        audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=_source_complete)
 
         if wait_ready:
             await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
 
         return audio_buffer
-
-    @staticmethod
-    def open_provider_fill(
-        mass: MusicAssistant, streamdetails: StreamDetails, reason: str = ""
-    ) -> ProviderAudioFill:
-        """
-        Create the buffer for an item whose provider writes its PCM in, and return the handle.
-
-        For a source that produces an item's audio on its own schedule rather than on
-        request — the audio exists only while the source is on that item — so its buffer
-        has to be there to receive it. The buffer is attached to the given stream details,
-        where a later playback request finds and reuses it.
-
-        :param mass: The MusicAssistant instance.
-        :param streamdetails: Stream details of the item the audio belongs to.
-        :param reason: Caller context for logging.
-        """
-        log_prefix = f"open_provider_fill[{reason}]" if reason else "open_provider_fill"
-        audio_buffer, _ = _new_buffer(mass, streamdetails, 0, log_prefix)
-        fill = ProviderAudioFill(audio_buffer.pcm_format, streamdetails, buffer=audio_buffer)
-        audio_buffer.fill(
-            # the buffer counts one chunk as one second, so the provider's own write
-            # sizes are gathered into that before they reach it
-            _in_chunks_of(fill.stream(), audio_buffer.chunk_size_bytes),
-            source_name=streamdetails.uri,
-        )
-        return fill
 
     # -- Private methods --
 
@@ -803,145 +786,6 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
-
-
-class ProviderAudioFill:
-    """
-    Write side of a buffer a provider fills itself, for audio nothing has requested yet.
-
-    Not a buffer of its own: an adapter between the provider pushing chunks and the
-    ``AudioBuffer`` pulling them, carrying the release contract back to the provider.
-
-    The provider writes whole PCM sample frames in ``pcm_format`` as its source produces
-    them, and ends the item with :meth:`close` (its audio has all been handed over) or
-    :meth:`fail` (it was cut short). Writes to a handle that is no longer ``active`` are
-    dropped: whatever was going to read them is gone.
-    """
-
-    def __init__(
-        self,
-        pcm_format: AudioFormat,
-        streamdetails: StreamDetails | None = None,
-        buffer: AudioBuffer | None = None,
-    ) -> None:
-        """
-        Initialize the handle.
-
-        :param pcm_format: The PCM format the provider writes.
-        :param streamdetails: The stream details the audio belongs to, when known.
-        :param buffer: The buffer being filled, when the audio goes to one.
-        """
-        self.pcm_format = pcm_format
-        self.streamdetails = streamdetails
-        self._buffer = buffer
-        self._chunks: deque[bytes] = deque()
-        self._pending_bytes = 0
-        self._error: Exception | None = None
-        self._data_available = asyncio.Event()
-        self._closed = False
-        self._released = False
-        if buffer is not None:
-            # a buffer released elsewhere (a queue stop, a reselection) takes the handle
-            # with it, so the provider stops writing into audio nothing can read
-            buffer.register_cancel_callback(self._release)
-
-    @property
-    def active(self) -> bool:
-        """Return whether audio written to this handle can still reach a consumer."""
-        return not self._closed and not self._released
-
-    @property
-    def capacity_seconds(self) -> float | None:
-        """Return the most seconds the backing buffer will hold, or None without one."""
-        buffer = self._buffer or (self.streamdetails.buffer if self.streamdetails else None)
-        if isinstance(buffer, AudioBuffer):
-            return float(buffer.max_size_seconds)
-        return None
-
-    @property
-    def pending_seconds(self) -> float:
-        """Return the seconds of written audio playback has not consumed yet."""
-        pending = self._pending_bytes / self.pcm_format.pcm_sample_size
-        # the buffer written to directly, or - for a handle handed over as a stream -
-        # the one the item's audio is being streamed into
-        buffer = self._buffer or (self.streamdetails.buffer if self.streamdetails else None)
-        if isinstance(buffer, AudioBuffer):
-            pending += buffer.undrained_seconds
-        return pending
-
-    def write(self, chunk: bytes) -> None:
-        """
-        Hand over the next PCM audio for this item.
-
-        :param chunk: Whole sample frames in this handle's PCM format.
-        """
-        if not self.active or not chunk:
-            return
-        self._chunks.append(chunk)
-        self._pending_bytes += len(chunk)
-        self._data_available.set()
-
-    def close(self) -> None:
-        """End the item: everything it was going to deliver has been written."""
-        if self._closed:
-            return
-        self._closed = True
-        self._data_available.set()
-
-    def fail(self, error: Exception) -> None:
-        """
-        End the item on a failure, so a consumer sees the real cause.
-
-        :param error: Why the item's audio was not delivered in full.
-        """
-        if self._closed:
-            return
-        self._error = error
-        self._closed = True
-        self._data_available.set()
-
-    async def stream(self) -> AsyncGenerator[bytes]:
-        """Yield the written audio as it arrives, ending where the provider ended it."""
-        try:
-            while True:
-                while self._chunks:
-                    chunk = self._chunks.popleft()
-                    self._pending_bytes -= len(chunk)
-                    yield chunk
-                if self._closed:
-                    if self._error is not None:
-                        raise self._error
-                    return
-                self._data_available.clear()
-                await self._data_available.wait()
-        finally:
-            self._release()
-
-    def _release(self) -> None:
-        """Drop the handle: nothing is going to read what is written from here on."""
-        self._released = True
-        self._chunks.clear()
-        self._pending_bytes = 0
-
-
-async def _in_chunks_of(source: AsyncGenerator[bytes], chunk_size: int) -> AsyncGenerator[bytes]:
-    """
-    Re-cut an audio source into chunks of the given size.
-
-    The trailing part-chunk is yielded as it is: it is still the source's audio.
-
-    :param source: The audio to re-cut.
-    :param chunk_size: Size in bytes of each yielded chunk.
-    """
-    held = bytearray()
-    async with aclosing(source):
-        async for chunk in source:
-            held.extend(chunk)
-            while len(held) >= chunk_size:
-                yield bytes(held[:chunk_size])
-                del held[:chunk_size]
-    if held:
-        yield bytes(held)
 
 
 def _new_buffer(
