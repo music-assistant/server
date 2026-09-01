@@ -344,7 +344,12 @@ class AudioBuffer:
                         await asyncio.sleep(0)
                 await self._set_eof()
                 if on_complete is not None:
-                    on_complete()
+                    # isolated like the cancel callbacks in clear(): a failing
+                    # callback must not retro-fail a source that delivered fully
+                    try:
+                        on_complete()
+                    except Exception:
+                        LOGGER.exception("Completion callback failed for %s", source_name)
             except asyncio.CancelledError:
                 status = "cancelled"
                 raise

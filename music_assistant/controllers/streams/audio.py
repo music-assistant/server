@@ -2257,6 +2257,12 @@ class StreamsAudio:
                             # may await, or a cleanup landing in that window is
                             # overridden by the publish.
                             raise AudioError("the boundary was cleared during its mix")
+                        # starting the fade-in stream can settle the next item's
+                        # normalization mode: record what the intro was actually
+                        # rendered with, or the pinned body jumps in volume
+                        next_handover.normalization_mode = (
+                            next_queue_item.streamdetails.volume_normalization_mode
+                        )
                         next_handover.stream = _continue_mix(split_leftover, mix_stream)
                         next_handover.source = mix_stream
                         self._crossfade_handover[queue_item.queue_id] = next_handover
