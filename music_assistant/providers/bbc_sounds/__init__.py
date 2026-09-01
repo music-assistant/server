@@ -438,8 +438,56 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         return None
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
-    async def _station_list(self, include_local: bool = False) -> list[Radio]:
-        """Get list of stations as Radios."""
+    async def _station_programme_display(self, station: LiveStation) -> StreamMetadata | None:
+        if station and station.titles:
+            title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
+            return StreamMetadata(title=title, artist=None, image_url=station.image_url)
+        return None
+
+    async def _station_list_as_folders(
+        self,
+        path_parts: list[str],
+        include_local: bool = False,
+    ) -> list[BrowseFolder]:
+        """Get list of stations as BrowseFolders."""
+        radio_list: list[BrowseFolder] = []
+        for station in await self.client.stations.get_stations(include_local=include_local):
+            if station and station.item_id:
+                radio_list.append(
+                    BrowseFolder(
+                        item_id=station.id,
+                        path="/".join([*path_parts, station.id]),
+                        name=(
+                            station.network.short_title
+                            if station.network and station.network.short_title
+                            else "Unknown station"
+                        ),
+                        provider=self.domain,
+                        image=MediaItemImage(
+                            type=ImageType.THUMB,
+                            provider=self.domain,
+                            path=station.network.logo_url,
+                            remotely_accessible=True,
+                        )
+                        if station.network and station.network.logo_url
+                        else None,
+                    )
+                )
+        return radio_list
+
+    # @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _station_list(
+        self,
+        include_local: bool = False,
+        show_current_programme: bool = False,
+        show_as_folders: bool = False,
+    ) -> list[Radio]:
+        """
+        Get list of stations as Radios.
+
+        We do this manually so we can append the current programme. We don't want this by
+        default as it gets cached in other places.
+        """
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
             if station and station.item_id:
@@ -598,6 +646,21 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             ]
         return []
 
+    async def _get_station_menu(
+        self,
+        station_id: str,
+        path_parts: list[str],
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Lookup the full schedule menu for a station."""
+        schedules = await self.client.stations.get_station_menu(station_id)
+        item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        if schedules and schedules.sub_items:
+            for folder in schedules.sub_items:
+                new_folder = await self._render_browse_item(folder, path_parts=path_parts)
+                if new_folder:
+                    item_list.append(new_folder)
+        return item_list
+
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse this provider's items.
@@ -634,6 +697,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 path_parts=path_parts,
                 station_id=sub_sub_path,
                 date=sub_sub_sub_path,
+            )
+        if sub_path == "stations" and sub_sub_path and not sub_sub_sub_path:
+            return await self._get_station_menu(sub_sub_path, path_parts)
+        if sub_path == "stations" and not (sub_sub_path or sub_sub_sub_path):
+            return await self._station_list_as_folders(
+                path_parts=path_parts, include_local=self.show_local_stations
             )
         # If no special cases, pass the rest of the path to iterate through
         return await self._get_subpath_menu(path_parts[1:])
