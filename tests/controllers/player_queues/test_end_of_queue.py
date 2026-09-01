@@ -423,3 +423,13 @@ def test_playing_a_track_to_its_end_settles_the_queue() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+def test_a_completed_sound_effect_settles_the_queue() -> None:
+    """A sound effect that played to its end reaches the settle handling like any other item."""
+    tracker = _tracker()
+    prev_state, new_state = _stop_states(_item(MediaType.SOUND_EFFECT))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_called_once()
