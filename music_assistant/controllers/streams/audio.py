@@ -231,6 +231,9 @@ class CrossfadeHandover:
     elapsed_time_offset: float = 0.0
     # Normalization mode the intro PCM was baked with, used to pin the next track's body to the same mode
     normalization_mode: VolumeNormalizationMode | None = None
+    # the running mix underneath the continuation: closing an unstarted generator
+    # wrapper never runs its finally, so the source needs closing of its own
+    source: AsyncGenerator[bytes] | None = None
 
     async def close(self) -> None:
         """Release a mix continuation nothing is going to consume."""
@@ -238,6 +241,10 @@ class CrossfadeHandover:
             with suppress(Exception):
                 await self.stream.aclose()
             self.stream = None
+        if self.source is not None:
+            with suppress(Exception):
+                await self.source.aclose()
+            self.source = None
 
 
 def _snap_supported_rate_up(target: int, supported_sample_rates: list[int]) -> int:
@@ -1889,9 +1896,17 @@ class StreamsAudio:
 
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        # popped, not read: the mix continuation is a one-shot generator, and a
-        # duplicate prefetch of the same url must not consume its twin's audio
-        handover = self._crossfade_handover.pop(queue.queue_id, None)
+        # Popped only when it is this item's: the mix continuation is a one-shot
+        # generator, so a duplicate prefetch of the same url must not consume its
+        # twin's audio - while a request for another item must not steal (and
+        # close) a boundary that still belongs to the item after it.
+        handover = self._crossfade_handover.get(queue.queue_id)
+        if handover is not None and handover.queue_item_id == queue_item.queue_item_id:
+            self._crossfade_handover.pop(queue.queue_id, None)
+        elif handover is not None:
+            # a leftover boundary for another item (a skip landed in between);
+            # left in place for its own request, replaced by the next publish
+            handover = None
         if handover is None and not streamdetails.seek_position:
             # the outgoing stream may still be building this item's fade. A seek
             # discards the fade below either way, and waiting for one would only
@@ -1908,18 +1923,7 @@ class StreamsAudio:
             )
             await handover.close()
             handover = None
-        if handover and (handover.queue_item_id != queue_item.queue_item_id):
-            # edge case alert: the next item changed just while we were preloading/crossfading
-            self.logger.warning(
-                "Skipping crossfade data for queue %s - next item changed!"
-                " (expected queue_item_id=%s, got=%s)",
-                queue.display_name,
-                handover.queue_item_id,
-                queue_item.queue_item_id,
-            )
-            await handover.close()
-            handover = None
-        elif not handover:
+        if not handover:
             self.logger.debug(
                 "No crossfade data available for queue %s (queue_item_id=%s)",
                 queue.display_name,
@@ -1994,16 +1998,13 @@ class StreamsAudio:
             # consuming it (the POST portion, this item's blended intro)
             if (mix := handover.stream) is not None:
                 if handover.pcm_format != pcm_format:
-                    # the format changed across the boundary: collect, then resample
-                    mixed = bytearray()
+                    # the format changed across the boundary: resample the live mix
                     async with aclosing(mix):
-                        async for _chunk in mix:
-                            mixed.extend(_chunk)
-                    async for _chunk in resample_pcm_audio(
-                        bytes(mixed), handover.pcm_format, pcm_format
-                    ):
-                        yield _chunk
-                        bytes_written += len(_chunk)
+                        async for _chunk in resample_pcm_audio(
+                            mix, handover.pcm_format, pcm_format
+                        ):
+                            yield _chunk
+                            bytes_written += len(_chunk)
                 else:
                     async with aclosing(mix):
                         async for _chunk in mix:
@@ -2241,7 +2242,14 @@ class StreamsAudio:
                             session_id,
                             overlay_enabled=False,
                         )
+                        pending = self._crossfade_pending.get(queue.queue_id)
+                        if pending is None or pending[1] is not handoff:
+                            # the queue was cleared (or moved on) while the mix was
+                            # being consumed: publishing now would resurrect a
+                            # continuation nothing owns
+                            raise AudioError("the boundary was cleared during its mix")
                         next_handover.stream = _continue_mix(split_leftover, mix_stream)
+                        next_handover.source = mix_stream
                         if stale := self._crossfade_handover.pop(queue_item.queue_id, None):
                             # a boundary nothing consumed (a skip landed in between)
                             await stale.close()
@@ -3940,6 +3948,10 @@ class StreamsAudio:
             await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
         # popped, not read: ownership of the one-shot mix moves to this request
         handover = self._crossfade_handover.pop(queue.queue_id, None)
+        if handover is None and self._crossfade_pending.get(queue.queue_id) is pending:
+            # the wait was given up: un-claim the boundary so it is not published
+            # later, playing an intro this request is about to play itself
+            self._crossfade_pending.pop(queue.queue_id, None)
         self.logger.debug(
             "Waited %.1fs for the fade into %s on queue %s - %s",
             asyncio.get_event_loop().time() - waited_from,

@@ -196,7 +196,7 @@ class SoloistSessionBusyError(ProviderStreamLimitError):
 
 class SoloistBackend(SpotifyPlaybackBackend):
     """
-    Fetches Spotify audio from one continuous ``soloist`` session, fed one track ahead.
+    Fetches Spotify audio with one ``soloist --single-track`` engine run per item.
 
     Requires a stored paired session in the per-instance data directory
     (provisioned by the setup flow via ``soloist --pair``).
@@ -379,8 +379,25 @@ class SoloistBackend(SpotifyPlaybackBackend):
             same item already started by the stream that replaced it.
         """
         media_key = streamdetails.uri if streamdetails is not None else None
-        async with self._run_lock:
-            if (run := self._run) is not None:
+        for attempt in range(2):
+            async with self._run_lock:
+                if (run := self._run) is None:
+                    # cheap thanks to the shared verify cache; swaps in a fresh build
+                    # when the installed one is nearing its 90-day expiry
+                    try:
+                        self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(
+                            self._consent
+                        )
+                    except SoloistError as err:
+                        raise AudioError(f"Spotify Soloist binary unavailable: {err}") from err
+                    fresh = _SingleTrackRun(self, spotify_uri, seek_position * 1000, streamdetails)
+                    try:
+                        await fresh.start()
+                    except BaseException:
+                        await fresh.stop()
+                        raise
+                    self._run = fresh
+                    return fresh
                 if run.media_key != media_key or media_key is None:
                     raise SoloistSessionBusyError(self.provider)
                 if continuation and run.spotify_uri != spotify_uri:
@@ -388,24 +405,21 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # fresh run) before it could continue into its next chapter -
                     # a run it must not take back
                     raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
-                # a new request for the very item being delivered is a seek of it:
-                # the run restarts at the target
-                await run.stop()
-                self._run = None
-            # cheap thanks to the shared verify cache; swaps in a fresh build when
-            # the installed one is nearing its 90-day expiry
-            try:
-                self._binary = await SoloistBinaryManager(self.mass).ensure_fresh(self._consent)
-            except SoloistError as err:
-                raise AudioError(f"Spotify Soloist binary unavailable: {err}") from err
-            run = _SingleTrackRun(self, spotify_uri, seek_position * 1000, streamdetails)
-            try:
-                await run.start()
-            except BaseException:
-                await run.stop()
-                raise
-            self._run = run
-            return run
+            if attempt > 0:
+                break
+            # Same item, run still held. A seek's replacement request races the
+            # release of the stream it replaces, so give that release a moment -
+            # but never steal a held run: a second queue occurrence of the same
+            # track asks with the same details, and stopping its twin would cut
+            # playback mid-track.
+            await self._wait_run_released(run)
+        raise SoloistSessionBusyError(self.provider)
+
+    async def _wait_run_released(self, run: _SingleTrackRun, timeout: float = 2.0) -> None:
+        """Wait briefly for the given run to be released by the stream holding it."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while self._run is run and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
 
     @property
     def _api_key(self) -> str:
@@ -635,8 +649,6 @@ class _SingleTrackRun:
         self._chunks: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=cushion_chunks)
         self._delivered = 0
         self._read_bytes = 0
-        self._lead_done = False
-        self._lead_skipped = 0
         self._tail_zeros = 0
 
     async def start(self) -> None:
@@ -793,8 +805,12 @@ class _SingleTrackRun:
         """Unblock everything waiting on this run: startup, seek and the consumer."""
         self._started.set()
         self._seek_confirmed.set()
-        # a full cushion holds audio nobody will take anymore; the sentinel has
-        # to reach the consumer either way
+        if self._item_over and self._error is None:
+            # a cleanly ended run already queued its sentinel behind the item's
+            # remaining audio, which the consumer is still entitled to
+            return
+        # a failed or aborted run's cushion holds audio nobody will take anymore;
+        # the sentinel has to reach the consumer either way
         while True:
             try:
                 self._chunks.get_nowait()
@@ -1047,14 +1063,7 @@ class _SingleTrackRun:
                 await asyncio.sleep(delay)
 
     def _scrub(self, chunk: bytes) -> bytes:
-        """Drop the sink's own silence from the item's head and tail."""
-        if not self._lead_done:
-            chunk, dropped = _trim_lead_silence(chunk, self._lead_skipped)
-            self._lead_skipped += dropped
-            if not chunk:
-                return b""
-            # first real audio (or silence past the trim budget): the lead is over
-            self._lead_done = True
+        """Drop the sink's tail padding (the capture shaper already trims the lead)."""
         if self._duration_ms is not None and chunk.count(0) == len(chunk):
             # zeros inside the item's own tail zone are the sink idling while the
             # engine winds down, not content; an item no longer than the zone has
@@ -1094,8 +1103,12 @@ class _SingleTrackRun:
 
     def _finish_delivery(self) -> None:
         """Mark the item's audio as fully handed over."""
-        with suppress(asyncio.QueueFull):
+        try:
             self._chunks.put_nowait(None)
+        except asyncio.QueueFull:
+            # the cushion is full: the sentinel is the run's only end signal, so
+            # it queues behind the audio rather than being dropped
+            self._spawn_task(self._chunks.put(None))
 
     async def _set_sink(self, *, running: bool) -> None:
         """Run the capture sink only while its audio has somewhere to go."""

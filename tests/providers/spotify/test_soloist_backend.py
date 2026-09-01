@@ -364,20 +364,17 @@ async def _collect(run: _SingleTrackRun) -> bytes:
     return bytes(collected)
 
 
-def test_scrub_drops_the_lead_and_then_leaves_silence_alone(tmp_path: Path) -> None:
-    """Startup zeros are dropped once; silence after the first audio is content."""
+def test_scrub_leaves_mid_track_silence_alone(tmp_path: Path) -> None:
+    """A quiet passage outside the tail zone is content (the shaper owns the lead)."""
     run = _make_run(tmp_path)
-    assert run._scrub(b"\x00" * 1024) == b""
-    assert run._scrub(b"\x01" * 64) == b"\x01" * 64
-    # a quiet passage mid-track passes untouched from here on
     run._read_bytes = 10 * _BYTES_PER_SECOND
     assert run._scrub(b"\x00" * 1024) == b"\x00" * 1024
+    assert run._scrub(b"\x01" * 64) == b"\x01" * 64
 
 
 def test_scrub_refuses_padding_in_the_items_tail_zone(tmp_path: Path) -> None:
     """Zeros inside the tail zone are the sink idling out the engine's end."""
     run = _make_run(tmp_path, duration=60)
-    run._lead_done = True
     second = _BYTES_PER_SECOND
     run._read_bytes = 55 * second
     grace = int(_TAIL_PAD_GRACE_S * second)
@@ -393,7 +390,6 @@ def test_scrub_refuses_padding_in_the_items_tail_zone(tmp_path: Path) -> None:
 def test_scrub_leaves_a_short_items_silence_alone(tmp_path: Path) -> None:
     """An item no longer than the zone has no distinguishable tail."""
     run = _make_run(tmp_path, duration=int(_TAIL_PAD_ZONE_S))
-    run._lead_done = True
     run._read_bytes = int(_TAIL_PAD_ZONE_S - 1) * _BYTES_PER_SECOND
     chunk = b"\x00" * (2 * int(_TAIL_PAD_GRACE_S * _BYTES_PER_SECOND))
     assert run._scrub(chunk) == chunk
