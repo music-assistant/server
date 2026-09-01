@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
@@ -62,6 +62,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+PREF_SIDEBAR_SHORTCUTS = "sidebar.shortcuts"
 
 # Database schema version
 DB_SCHEMA_VERSION = 5
@@ -1291,6 +1293,55 @@ class AuthenticationManager:
             else None,
             keep_player=(lambda x: x not in player_ids) if player_ids else None,
         )
+
+    async def cleanup_user_shortcuts(
+        self,
+        rewrite: Callable[[str], Awaitable[str | None]],
+    ) -> None:
+        """
+        Rewrite or remove sidebar shortcuts from all users' preferences.
+
+        :param rewrite: Called for each shortcut URI. Return the URI to keep it,
+            a different URI to rewrite it, or None to drop it.
+        """
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                prefs: dict[str, Any] = json_loads(row["preferences"]) if row["preferences"] else {}
+                shortcuts: list[str] = prefs.get(PREF_SIDEBAR_SHORTCUTS, [])
+                if not shortcuts:
+                    continue
+                remaining: list[str] = []
+                dropped: list[str] = []
+                rewritten: list[str] = []
+                for uri in shortcuts:
+                    new_uri = await rewrite(uri)
+                    if new_uri is None:
+                        dropped.append(uri)
+                    elif new_uri != uri:
+                        remaining.append(new_uri)
+                        rewritten.append(f"{uri} -> {new_uri}")
+                    else:
+                        remaining.append(uri)
+                if remaining == shortcuts:
+                    continue
+                prefs[PREF_SIDEBAR_SHORTCUTS] = remaining
+                await self.database.update(
+                    "users",
+                    {"user_id": row["user_id"]},
+                    {"preferences": json_dumps(prefs)},
+                )
+                if dropped:
+                    LOGGER.info(
+                        "Removed shortcuts from user '%s': %s",
+                        row["username"],
+                        ", ".join(dropped),
+                    )
+                if rewritten:
+                    LOGGER.info(
+                        "Rewrote shortcuts for user '%s': %s",
+                        row["username"],
+                        ", ".join(rewritten),
+                    )
 
     async def replace_player_in_user_filters(
         self,
