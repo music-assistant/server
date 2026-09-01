@@ -1567,7 +1567,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # a user-picked item must stay the one that plays, so hold it out of the shuffle
             pinned = next_items[:1] if pin_first else []
             shuffled = next_items[1:] if pin_first else next_items
-            # SFREQ-03: Keep MA's protected part of the queue fixed. Only the future part MA
+            # Keep MA's protected part of the queue fixed. Only the future part MA
             # already considers safe to move should be reordered.
             preceding_item = pinned[-1] if pinned else (prev_items[-1] if prev_items else None)
             if self._smart_shuffle.is_enabled(queue_id):

@@ -118,7 +118,7 @@ def test_core_config_entries_global_feature_defaults() -> None:
     smart_shuffle = by_key[CONF_SMART_SHUFFLE_ENABLED]
     assert smart_shuffle.default_value == CONF_VALUE_DISABLED
     assert {opt.value for opt in smart_shuffle.options} == {CONF_VALUE_ENABLED, CONF_VALUE_DISABLED}
-    # SFREQ-02: The ordering option is opt-in by default.
+    # The ordering option is opt-in by default.
     smart_fades_ordering = by_key[CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES]
     assert smart_fades_ordering.default_value == CONF_VALUE_DISABLED
     assert {opt.value for opt in smart_fades_ordering.options} == {

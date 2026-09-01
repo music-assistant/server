@@ -75,7 +75,15 @@
     },
     "smart_shuffle_optimize_smart_fades": {
       "label": "Optimize order for Smart Fades",
-      "description": "When Smart crossfade is active, reorder upcoming tracks so neighbouring tracks are more likely to support a musical blend. Uses only existing Smart Fades analysis; tracks without analysis remain neutral."
+      "description": "When Smart crossfade is active, reorder upcoming tracks so neighbouring tracks are more likely to support a musical blend. Uses only existing Smart Fades analysis; tracks without analysis remain neutral.",
+      "options": {
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "global": "Global"
+      },
+      "option_descriptions": {
+        "global": "Follow the Player Queues default."
+      }
     },
     "smart_shuffle_song_recency": {
       "label": "Avoid replaying the same song heard within",

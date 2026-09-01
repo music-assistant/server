@@ -443,7 +443,7 @@ def test_artist_recency_not_hard_excluded() -> None:
 async def test_fill_reconciles_after_smart_fade_reordering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-04: Reordering a refill must not skip finite-source bookkeeping."""
+    """Reordering a refill must not skip finite-source bookkeeping."""
     queues = MagicMock()
     pool = ManagedPool(queues)
     queue = MagicMock(queue_id="q1", current_index=None)

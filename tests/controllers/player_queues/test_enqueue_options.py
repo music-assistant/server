@@ -531,7 +531,7 @@ async def test_play_with_start_item_keeps_order_when_shuffle_is_off() -> None:
 
 
 async def test_add_with_shuffle_reorders_only_mutable_tail_and_passes_anchor() -> None:
-    """SFREQ-03: ADD keeps the protected prefix fixed and only reshuffles the movable tail."""
+    """ADD keeps the protected prefix fixed and only reshuffles the movable tail."""
     ctrl = _controller()
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]

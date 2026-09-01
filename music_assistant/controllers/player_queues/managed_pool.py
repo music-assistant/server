@@ -174,7 +174,7 @@ class ManagedPool:
             preceding_artists=preceding,
         )
         if chosen and self.queues.smart_fade_ordering_enabled(queue):
-            # SFREQ-04/SFREQ-08: Dynamic Mode already picked the refill tracks. Reorder only that
+            # Dynamic Mode already picked the refill tracks. Reorder only that
             # batch, starting from the queue tail.
             chosen = await order_tracks(
                 self.mass,

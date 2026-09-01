@@ -175,7 +175,7 @@ def test_deterministic_under_seed() -> None:
 
 
 def test_smart_fade_ordering_activation_gate() -> None:
-    """SFREQ-02: The option and active Smart Crossfade are both required."""
+    """The option and active Smart Crossfade are both required."""
     queues = MagicMock()
     smart_shuffle = SmartShuffle(queues)
     queue = MagicMock(queue_id="q1", smart_fades_active=True)
@@ -195,7 +195,7 @@ def test_smart_fade_ordering_activation_gate() -> None:
 async def test_smart_fade_ordering_runs_inside_smart_shuffle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-01: SmartShuffle.arrange owns the Smart Fades ordering step."""
+    """SmartShuffle.arrange owns the Smart Fades ordering step."""
     queues = MagicMock()
     smart_shuffle = SmartShuffle(queues)
     queue = MagicMock(queue_id="q1")
@@ -226,7 +226,7 @@ async def test_smart_fade_ordering_runs_inside_smart_shuffle(
 async def test_smart_fades_ordering_stays_inside_recency_tiers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-05: Transition ordering must not move a recent song ahead of a fresh tier."""
+    """Transition ordering must not move a recent song ahead of a fresh tier."""
     recent = [_item(f"r{i}", artist=f"R{i}") for i in range(3)]
     fresh = [_item(f"f{i}", artist=f"F{i}") for i in range(3)]
     snapshot = _snapshot(song_recent=("r0", "r1", "r2"))

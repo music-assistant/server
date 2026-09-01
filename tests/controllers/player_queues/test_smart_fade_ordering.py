@@ -14,6 +14,7 @@ from music_assistant.controllers.player_queues.smart_fade_ordering import (
     _energy_score,
     _pair_score,
     _tempo_score,
+    order_queue_items,
     order_tracks,
 )
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
@@ -63,14 +64,14 @@ def _track(item_id: str, *, artist: str = "A") -> Track:
 
 
 def test_missing_analysis_is_exactly_neutral() -> None:
-    """SFREQ-07: No analysis is neutral; it is neither a bonus nor a penalty."""
+    """No analysis is neutral; it is neither a bonus nor a penalty."""
     known = _analysis()
     assert _pair_score(None, known) == 0.0
     assert _pair_score(known, None) == 0.0
 
 
 def test_partial_analysis_has_lower_confidence_than_full_match() -> None:
-    """SFREQ-07: Missing fields stay at zero; known fields do not get extra weight."""
+    """Missing fields stay at zero; known fields do not get extra weight."""
     outgoing = _analysis(bpm=120.0, key="C", mode="major", tail=0.5)
     partial = AudioAnalysisData(key="G", mode="major")
     full = _analysis(bpm=120.0, key="G", mode="major", head=0.5)
@@ -81,21 +82,26 @@ def test_partial_analysis_has_lower_confidence_than_full_match() -> None:
     assert 0.0 < partial_score < full_score
 
 
-def test_half_and_double_time_count_as_tempo_matches() -> None:
-    """SFREQ-06: Half/double-time relationships count as tempo matches."""
-    assert _tempo_score(120.0, 60.0) == 1.0
-    assert _tempo_score(120.0, 240.0) == 1.0
+def test_half_and_double_time_are_not_tempo_matches() -> None:
+    """Half/double-time pairs are outside the tempo range Smart Fades can beat match."""
+    half_time = _tempo_score(120.0, 60.0)
+    double_time = _tempo_score(120.0, 240.0)
+
+    assert half_time is not None
+    assert half_time < 0.0
+    assert double_time is not None
+    assert double_time < 0.0
 
 
 def test_outside_stretch_window_scores_negative() -> None:
-    """SFREQ-06: A tempo mismatch lowers the score but does not make the track ineligible."""
+    """A tempo mismatch lowers the score but does not make the track ineligible."""
     score = _tempo_score(120.0, 150.0)
     assert score is not None
     assert score < 0.0
 
 
 def test_good_harmonic_energy_pair_beats_bad_pair() -> None:
-    """SFREQ-06: A better tempo/key/energy match should get the better score."""
+    """A better tempo/key/energy match should get the better score."""
     outgoing = _analysis(bpm=120.0, key="C", mode="major", tail=0.5)
     good = _analysis(bpm=122.0, key="G", mode="major", head=0.5)
     bad = _analysis(bpm=145.0, key="F#", mode="minor", head=0.05)
@@ -104,7 +110,7 @@ def test_good_harmonic_energy_pair_beats_bad_pair() -> None:
 
 
 def test_energy_score_prefers_matching_edges() -> None:
-    """SFREQ-06: Matching end-to-start energy should score better."""
+    """Matching end-to-start energy should score better."""
     outgoing = _analysis(tail=0.5)
     matching = _analysis(head=0.5)
     dropping = _analysis(head=0.05)
@@ -117,9 +123,17 @@ def test_energy_score_prefers_matching_edges() -> None:
     assert good_score > bad_score
 
 
+def test_energy_score_ignores_silent_outgoing_tail() -> None:
+    """A silent outgoing tail does not create a misleading energy match."""
+    outgoing = _analysis(tail=0.005)
+    incoming = _analysis(head=0.005)
+
+    assert _energy_score(outgoing, incoming) is None
+
+
 @pytest.mark.asyncio
 async def test_order_tracks_prefers_better_transition(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SFREQ-06/SFREQ-08: The preceding track anchors the first choice in the batch."""
+    """The preceding track anchors the first choice in the batch."""
     anchor = _track("anchor")
     bad = _track("bad")
     good = _track("good")
@@ -146,7 +160,7 @@ async def test_order_tracks_prefers_better_transition(monkeypatch: pytest.Monkey
 async def test_input_order_does_not_block_better_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-04: Once a track is in the refill batch, its source position does not lock it in place."""
+    """Once a track is in the refill batch, its source position does not lock it in place."""
     anchor = _track("anchor")
     first = _track("first")
     second = _track("second")
@@ -177,7 +191,7 @@ async def test_input_order_does_not_block_better_transition(
 async def test_order_tracks_prefers_different_artist_before_transition_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-05: Keep existing artist spacing ahead of transition score."""
+    """Keep existing artist spacing ahead of transition score."""
     anchor = _track("anchor", artist="A")
     same_artist = _track("same", artist="A")
     other_artist = _track("other", artist="B")
@@ -201,8 +215,43 @@ async def test_order_tracks_prefers_different_artist_before_transition_score(
 
 
 @pytest.mark.asyncio
+async def test_fixed_queue_considers_tracks_beyond_dynamic_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fixed queue can select the best transition from the full population."""
+    anchor = _track("anchor")
+    bad_tracks = [_track(f"bad-{index}") for index in range(7)]
+    good = _track("good")
+    rows = {
+        "anchor": _analysis(bpm=120.0, key="C", mode="major", tail=0.5),
+        **{
+            track.item_id: _analysis(bpm=150.0, key="F#", mode="minor", head=0.05)
+            for track in bad_tracks
+        },
+        "good": _analysis(bpm=120.0, key="G", mode="major", head=0.5),
+    }
+    mass = MagicMock()
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        side_effect=lambda item_id, *_args, **_kwargs: rows.get(item_id)
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_fade_ordering.random.choice",
+        lambda values: values[0],
+    )
+
+    ordered = await order_queue_items(
+        mass,
+        [*bad_tracks, good],
+        get_track=lambda track: track,
+        preceding_track=anchor,
+    )
+
+    assert ordered[0] is good
+
+
+@pytest.mark.asyncio
 async def test_analysis_lookups_are_bounded_to_local_window() -> None:
-    """SFREQ-07/SFREQ-09: Only look up the small local set we are actually considering."""
+    """Only look up the small local set we are actually considering."""
     anchor = _track("anchor")
     tracks = [_track(f"track-{index}") for index in range(20)]
     active = 0
@@ -226,7 +275,7 @@ async def test_analysis_lookups_are_bounded_to_local_window() -> None:
 
 @pytest.mark.asyncio
 async def test_near_ties_keep_random_choice(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SFREQ-09: Near-equal candidates should still leave room for a random choice."""
+    """Near-equal candidates should still leave room for a random choice."""
     anchor = _track("anchor")
     first = _track("first")
     second = _track("second")
@@ -256,7 +305,7 @@ async def test_near_ties_keep_random_choice(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_ordering_does_not_call_full_transition_planner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SFREQ-10: Queue ordering must not ask the full planner to rank candidates."""
+    """Queue ordering must not ask the full planner to rank candidates."""
     anchor = _track("anchor")
     first = _track("first")
     second = _track("second")

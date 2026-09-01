@@ -1,15 +1,15 @@
 """
 Smart Fades-aware ordering for Smart Shuffle.
 
-SFREQ-01: Only reorder tracks MA already has. Do not pick extra music here.
+This only reorders tracks MA has already selected. It uses stored tempo, key and end-to-start
+energy; missing analysis stays neutral and nothing is analysed just to place a track in the queue.
 
-SFREQ-06/SFREQ-07: Use stored tempo, key and end-to-start energy. Missing analysis stays neutral,
-and nothing is analysed just to find a place in the queue.
+Dynamic refills use a small local candidate window because new batches keep arriving. Fixed queues
+can consider the full movable population within each recency tier. Close choices retain some
+randomness.
 
-SFREQ-09: Keep the search local and keep some randomness when the choices are close.
-
-SFREQ-10: Do not ask the full transition planner to rank queue candidates. This code finds better
-neighbours; Smart Fades still decides the actual transition.
+This does not call the full transition planner to rank candidates. Smart Fades still decides the
+actual transition.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from statistics import median
 from typing import TYPE_CHECKING, TypeVar
 
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.controllers.streams.smart_fades.helpers import keys_compatible
+from music_assistant.controllers.streams.smart_fades.helpers import camelot_affinity
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
 )
@@ -35,14 +35,15 @@ if TYPE_CHECKING:
 
 ItemT = TypeVar("ItemT")
 
-# SFREQ-09: Keep this local. We only need a few sensible next choices, not a perfect route
-# through the whole queue.
-_LOOKAHEAD = 6
+# Dynamic refills only need a few sensible next choices, not a perfect route through the whole queue.
+_DYNAMIC_LOOKAHEAD = 6
+_ANALYSIS_BATCH_SIZE = 32
 _MOVE_PENALTY = 0.03
 _NEAR_TIE_DELTA = 0.08
 _EDGE_WINDOW_SECONDS = 15.0
+_SILENT_TAIL_CUTOFF = 0.01
 
-# SFREQ-07: Missing pieces stay at zero. Do not boost the pieces we do know just because
+# Missing pieces stay at zero. Do not boost the pieces we do know just because
 # something else is missing.
 _TEMPO_WEIGHT = 0.45
 _KEY_WEIGHT = 0.30
@@ -56,7 +57,7 @@ async def order_queue_items(
     get_track: Callable[[ItemT], Track | None],
     preceding_track: Track | None = None,
 ) -> list[ItemT]:
-    """SFREQ-01: Reorder tracks only; a non-track item starts a new run."""
+    """Reorder tracks only; a non-track item starts a new run."""
     if len(items) <= 1:
         return list(items)
 
@@ -73,6 +74,7 @@ async def order_queue_items(
             run,
             get_track=get_track,
             preceding_track=anchor,
+            candidate_limit=None,
         )
         result.extend(ordered)
         anchor = get_track(ordered[-1]) if ordered else None
@@ -97,12 +99,13 @@ async def order_tracks(
     *,
     preceding_track: Track | None = None,
 ) -> list[Track]:
-    """SFREQ-04: Reorder an accepted batch without changing which tracks are in it."""
+    """Reorder an accepted batch without changing which tracks are in it."""
     return await _order_run(
         mass,
         list(tracks),
         get_track=lambda track: track,
         preceding_track=preceding_track,
+        candidate_limit=_DYNAMIC_LOOKAHEAD,
     )
 
 
@@ -112,8 +115,9 @@ async def _order_run(
     *,
     get_track: Callable[[ItemT], Track | None],
     preceding_track: Track | None,
+    candidate_limit: int | None,
 ) -> list[ItemT]:
-    """SFREQ-09: Pick good local neighbours and keep randomness between close choices."""
+    """Pick good neighbours and keep randomness between close choices."""
     if len(items) <= 1:
         return list(items)
 
@@ -138,9 +142,10 @@ async def _order_run(
             if track not in analysis_cache and track not in seen:
                 pending.append(track)
                 seen.add(track)
-        if pending:
-            loaded = await asyncio.gather(*(_stored_analysis(mass, track) for track in pending))
-            analysis_cache.update(zip(pending, loaded, strict=True))
+        for start in range(0, len(pending), _ANALYSIS_BATCH_SIZE):
+            batch = pending[start : start + _ANALYSIS_BATCH_SIZE]
+            loaded = await asyncio.gather(*(_stored_analysis(mass, track) for track in batch))
+            analysis_cache.update(zip(batch, loaded, strict=True))
         return [analysis_cache[remaining[index][1]] for index in indices]
 
     current_track = preceding_track
@@ -148,7 +153,10 @@ async def _order_run(
     ordered: list[ItemT] = []
 
     while remaining:
-        window = list(range(min(_LOOKAHEAD, len(remaining))))
+        window_size = (
+            len(remaining) if candidate_limit is None else min(candidate_limit, len(remaining))
+        )
+        window = list(range(window_size))
         window = _prefer_different_artist(window, remaining, current_track)
 
         if current_analysis is None:
@@ -158,7 +166,8 @@ async def _order_run(
             candidate_analyses = await analyses_for(window)
             scored = [
                 (
-                    _pair_score(current_analysis, analysis) - (_MOVE_PENALTY * index),
+                    _pair_score(current_analysis, analysis)
+                    - (_MOVE_PENALTY * min(index, _DYNAMIC_LOOKAHEAD - 1)),
                     index,
                 )
                 for index, analysis in zip(window, candidate_analyses, strict=True)
@@ -180,7 +189,7 @@ def _prefer_different_artist(
     remaining: list[tuple[ItemT, Track]],
     current_track: Track | None,
 ) -> list[int]:
-    """SFREQ-05: Keep the existing same-artist spacing when a local alternative exists."""
+    """Keep the existing same-artist spacing when a local alternative exists."""
     current_artists = _artist_names(current_track)
     if not current_artists:
         return indices
@@ -201,7 +210,7 @@ async def _stored_analysis(
     mass: MusicAssistant,
     track: Track,
 ) -> AudioAnalysisData | None:
-    """SFREQ-07: Read stored Smart Fades analysis only; never start analysis here."""
+    """Read stored Smart Fades analysis only; never start analysis here."""
     for mapping in sorted(track.provider_mappings, key=lambda item: item.quality, reverse=True):
         provider = mapping.provider_instance or mapping.provider_domain
         analysis = await mass.streams.audio_analysis.get_audio_analysis(
@@ -227,7 +236,7 @@ def _pair_score(
     outgoing: AudioAnalysisData | None,
     incoming: AudioAnalysisData | None,
 ) -> float:
-    """SFREQ-06/SFREQ-07: Score known compatibility; missing information adds zero."""
+    """Score known compatibility; missing information adds zero."""
     if outgoing is None or incoming is None:
         return 0.0
 
@@ -236,19 +245,15 @@ def _pair_score(
     if (tempo := _tempo_score(outgoing.bpm, incoming.bpm)) is not None:
         weighted += _TEMPO_WEIGHT * tempo
 
-    if (
-        outgoing.key is not None
-        and outgoing.mode is not None
-        and incoming.key is not None
-        and incoming.mode is not None
-    ):
-        # SFREQ-06: A key clash lowers the score; it does not remove the track.
-        key_score = (
-            1.0
-            if keys_compatible(outgoing.key, outgoing.mode, incoming.key, incoming.mode)
-            else -0.35
-        )
-        weighted += _KEY_WEIGHT * key_score
+    affinity = camelot_affinity(
+        outgoing.key,
+        outgoing.mode,
+        incoming.key,
+        incoming.mode,
+    )
+    if affinity is not None:
+        # Normalize affinity onto the existing penalty/point scale.
+        weighted += _KEY_WEIGHT * (affinity * 1.5 - 0.5)
 
     if (energy := _energy_score(outgoing, incoming)) is not None:
         weighted += _ENERGY_WEIGHT * energy
@@ -257,25 +262,18 @@ def _pair_score(
 
 
 def _tempo_score(outgoing_bpm: float | None, incoming_bpm: float | None) -> float | None:
-    """SFREQ-06: Score tempo distance, including half/double-time matches."""
+    """Score tempo distance within the range Smart Fades can currently beat match."""
     if not outgoing_bpm or not incoming_bpm or outgoing_bpm <= 0 or incoming_bpm <= 0:
         return None
 
     ratio = incoming_bpm / outgoing_bpm
-    diff_percent = (
-        min(
-            abs(1.0 - ratio),
-            abs(1.0 - ratio * 2.0),
-            abs(1.0 - ratio / 2.0),
-        )
-        * 100.0
-    )
+    diff_percent = abs(1.0 - ratio) * 100.0
     limit = TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
 
     if diff_percent <= limit:
         return 1.0 - (diff_percent / limit)
 
-    # SFREQ-06: A tempo clash makes the pair less attractive; it does not remove the track.
+    # A tempo clash makes the pair less attractive; it does not remove the track.
     return -min(1.0, (diff_percent - limit) / (limit * 2.0))
 
 
@@ -283,10 +281,12 @@ def _energy_score(
     outgoing: AudioAnalysisData,
     incoming: AudioAnalysisData,
 ) -> float | None:
-    """SFREQ-06: Compare outgoing-tail energy with incoming-head energy."""
+    """Compare outgoing-tail energy with incoming-head energy."""
     out_level = _edge_energy(outgoing, from_start=False)
     in_level = _edge_energy(incoming, from_start=True)
     if out_level is None or in_level is None:
+        return None
+    if out_level <= _SILENT_TAIL_CUTOFF:
         return None
 
     # RMS is normalized by the analysis provider. Equal edges score +1, a 0.5 jump is neutral,

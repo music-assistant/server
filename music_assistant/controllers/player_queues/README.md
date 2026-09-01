@@ -235,17 +235,18 @@ Fades already has to improve the order of upcoming tracks. Recency stays in char
 are selected.
 
 In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
-part it already considers safe to move. The last fixed track is used as the starting point.
+part it already considers safe to move. Within each recency tier, the full movable population can
+be considered when choosing the next track. The last fixed track is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail.
+accepted batch from the existing queue tail, using a small local candidate window because new
+batches keep arriving.
 
-No analysis is started for this. Unknown data stays neutral. The score uses tempo (including
-half/double time), Camelot-compatible key and end-to-start RMS energy. These are ranking signals,
-not filters.
+No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
+key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
+tail is ignored for the energy part of the score.
 
-The search stays local instead of trying to optimise the whole queue, and close choices keep some
-randomness. Smart Fades still decides the actual transition.
+Close choices keep some randomness, and Smart Fades still decides the actual transition.
 
 ## Track Resolution
 

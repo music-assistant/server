@@ -77,7 +77,7 @@ class SmartShuffle:
             == CONF_VALUE_ENABLED
         )
 
-    # SFREQ-02: Only run this extra ordering when the option is on and Smart Crossfade is active.
+    # Only run this extra ordering when the option is on and Smart Crossfade is active.
     # Turning it off leaves normal Smart Shuffle alone.
 
     def is_smart_fade_ordering_enabled(self, queue: PlayerQueue) -> bool:
@@ -166,7 +166,7 @@ async def _arrange_for_smart_fades(
     *,
     preceding_item: QueueItem | None,
 ) -> list[QueueItem]:
-    """SFREQ-05: Keep recency tiers fixed and improve the order only inside each tier."""
+    """Keep recency tiers fixed and improve the order only inside each tier."""
     counts = Counter(_song_key(item) for item in items)
     tiers: dict[int, list[QueueItem]] = {0: [], 1: [], 2: []}
     for item in items:
@@ -177,7 +177,7 @@ async def _arrange_for_smart_fades(
     for tier in (0, 1, 2):
         if not (bucket := tiers[tier]):
             continue
-        # SFREQ-05: Spread duplicates first. Artist spacing happens in the local selector so we do
+        # Spread duplicates first. Artist spacing happens in the local selector so we do
         # not reshuffle the result afterwards.
         bucket = await order_queue_items(
             mass,
