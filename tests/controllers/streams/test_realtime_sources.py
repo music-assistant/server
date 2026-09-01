@@ -740,7 +740,7 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     handoff = asyncio.Event()
     audio._crossfade_pending["queue-1"] = ("next", handoff)
     expected = CrossfadeData(
-        data=b"", fade_in_media_duration=0.0, pcm_format=pcm_format, queue_item_id="next"
+        stream=None, fade_in_media_duration=0.0, pcm_format=pcm_format, queue_item_id="next"
     )
 
     async def _land_it() -> None:
