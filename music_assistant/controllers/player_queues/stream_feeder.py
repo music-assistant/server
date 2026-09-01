@@ -90,6 +90,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # a stop (or stop and restart) completed during the awaits above and
             # released everything this fill would re-arm
             return None
+        if (raced := streamdetails.buffer) is not None and not raced.has_error and raced.is_valid():
+            # a playback claim attached a buffer during the awaits above; opening a
+            # second producer for the item would split it
+            return None
         # record whose audio this is, so a queue stop releases the buffer with its session
         streamdetails.queue_session_id = session_id
         self.logger.debug(

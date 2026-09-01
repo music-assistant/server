@@ -1892,7 +1892,9 @@ class StreamsAudio:
 
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        crossfade_data = self._crossfade_data.get(queue.queue_id)
+        # popped, not read: the mix continuation is a one-shot generator, and a
+        # duplicate prefetch of the same url must not consume its twin's audio
+        crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
         if crossfade_data is None and not streamdetails.seek_position:
             # the outgoing stream may still be building this item's fade. A seek
             # discards the fade below either way, and waiting for one would only
@@ -1909,7 +1911,6 @@ class StreamsAudio:
             )
             await crossfade_data.close()
             crossfade_data = None
-            self._crossfade_data.pop(queue.queue_id, None)
         if crossfade_data and (crossfade_data.queue_item_id != queue_item.queue_item_id):
             # edge case alert: the next item changed just while we were preloading/crossfading
             self.logger.warning(
@@ -1921,7 +1922,6 @@ class StreamsAudio:
             )
             await crossfade_data.close()
             crossfade_data = None
-            self._crossfade_data.pop(queue.queue_id, None)
         elif not crossfade_data:
             self.logger.debug(
                 "No crossfade data available for queue %s (queue_item_id=%s)",
@@ -2012,7 +2012,6 @@ class StreamsAudio:
             # skip past the source media the mix consumed (final now it is drained)
             discard_position = crossfade_data.fade_in_media_duration
             crossfade_data = None
-            self._crossfade_data.pop(queue.queue_id, None)
         else:
             discard_position = float(streamdetails.seek_position)
 
@@ -3966,7 +3965,8 @@ class StreamsAudio:
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
             await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
-        crossfade_data = self._crossfade_data.get(queue.queue_id)
+        # popped, not read: ownership of the one-shot mix moves to this request
+        crossfade_data = self._crossfade_data.pop(queue.queue_id, None)
         self.logger.debug(
             "Waited %.1fs for the fade into %s on queue %s - %s",
             asyncio.get_event_loop().time() - waited_from,
