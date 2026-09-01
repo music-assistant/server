@@ -590,8 +590,7 @@ async def test_forward_axis_progress_leaves_history_untouched(tmp_path: Path) ->
     dummy.player_queues._queue.index_in_buffer = 1
     await dummy._replan_queue("queue-1")
 
-    # the axis moved forward (more songs are now behind the window), yet every
-    # recorded event keeps its original, unshifted value
+    # more songs sit behind the window now, yet no event shifted with it
     assert state.songs_before_window == 2
     assert state.history == history_before
 
@@ -623,8 +622,7 @@ async def test_queue_clear_and_refill_speaks_again(tmp_path: Path) -> None:
 
     new_loads = queues.loads[loaded_before_clear:]
     assert new_loads
-    # the break the clear discarded never aired, so it holds nothing back and the DJ
-    # speaks at the first gap the buffer guard allows
+    # the discarded break never aired, so nothing but the buffer guard holds the DJ back
     assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
 
 
@@ -643,8 +641,7 @@ async def test_clear_and_refill_at_the_same_position_speaks_again(tmp_path: Path
     queues._queue.index_in_buffer = None
     await dummy._replan_queue("queue-1")
 
-    # same track count behind the window as before the clear, so the axis offsets are
-    # identical and only the queue content tells the two apart
+    # same track count behind the window as before, so the offsets cannot tell them apart
     fresh = [_track(index) for index in range(8)]
     queues._items = fresh
     queues._queue.current_index = 0
@@ -788,8 +785,7 @@ async def test_jump_to_top_speaks_in_head_gaps_without_redeciding_the_tail(
     new_loads = queues.loads[loaded_before_jump:]
     assert new_loads
     new_gap_ids = {load[0][0].extra_attributes[ATTR_GAP_NEXT_ID] for load in new_loads}
-    # the rebased history caps at the first gap of the head, so the guard clears three
-    # songs later; the tail gaps stay decided from the pass before the jump
+    # the history is capped at the head's first gap, so the guard clears three songs later
     assert new_gap_ids == {tracks[4].queue_item_id}
     assert new_gap_ids.isdisjoint(tail_gap_ids)
 
@@ -834,8 +830,7 @@ async def test_a_probed_duration_alone_does_not_move_the_history(tmp_path: Path)
     minutes_before = state.minutes_before_window
     assert history_before
 
-    # a played track's estimated duration is replaced by a shorter probed one, so only the
-    # minute count behind the window drops
+    # a shorter probed duration replaces the estimate, so only the minute count drops
     tracks[0].duration = 30
     await dummy._replan_queue("queue-1")
 
@@ -872,8 +867,7 @@ async def test_hourly_host_speaks_again_after_a_clear_and_refill(tmp_path: Path)
 
     new_loads = queues.loads[loaded_before_clear:]
     assert new_loads
-    # the discarded break never aired, so it spends none of the once-per-hour budget and
-    # the fresh queue does not have to play out an hour before hearing an hourly section
+    # the discarded break never aired, so it spends none of the once-per-hour budget
     assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
 
 
@@ -889,8 +883,7 @@ async def test_replacing_the_upcoming_tracks_reanchors_the_guard(tmp_path: Path)
     assert queues.loads
     loaded_after_pass1 = len(queues.loads)
 
-    # the playing track stays, so the axis does not move; only the tracks the history was
-    # recorded against are gone
+    # the playing track stays, so the axis holds still and only the history's tracks go
     new_tail = [_track(20 + index) for index in range(5)]
     queues._items = [tracks_v1[0], *new_tail]
     await dummy._replan_queue("queue-1")

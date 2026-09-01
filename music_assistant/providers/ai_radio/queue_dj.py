@@ -224,8 +224,7 @@ class AIRadioQueueDJMixin:
             decided_before = state.decided_gap_ids
             state.decided_gap_ids = decided_before & {item.queue_item_id for item in items}
             if decided_before and not state.decided_gap_ids:
-                # not one of the tracks this history was recorded against is left, so every
-                # break still waiting on one went with them and may claim no guard budget
+                # nothing this history was recorded against is left, so its queue is gone
                 self._drop_unaired_dj_history(state, items, guard_index)
 
             window = self._dj_window(items, guard_index)
@@ -237,10 +236,9 @@ class AIRadioQueueDJMixin:
             # measured from the same point the planner counts from, or OPTIONAL guard
             # positions drift between passes. recomputed every pass so state self-corrects
             offsets = self._dj_window_offsets(items, window[0].queue_item_id)
-            # only the song count marks a queue that moved: the minute count is derived from
-            # track durations and dips on its own when a probed duration replaces an estimate
+            # a lower song count means the queue rewound under the history, e.g. a clear or a
+            # jump back to the top; minutes dip on their own when a probed duration lands
             if offsets[0] < state.songs_before_window:
-                # the queue rewound under the history, e.g. a clear or a jump back to the top
                 self._rebase_dj_history(state, *offsets)
             state.songs_before_window, state.minutes_before_window = offsets
             host = self._hosts.get(state.host_id)
@@ -481,8 +479,7 @@ class AIRadioQueueDJMixin:
     ) -> None:
         """Re-anchor the guard history onto the given start of the planning window."""
         # events behind the window move with it so they keep their distance, while the ones
-        # still ahead of it are capped at the window start: their clips are either gone or
-        # far enough down the queue that they must not suppress every gap in between
+        # ahead are capped at the window start: their old position no longer means anything
         song_delta = min(songs_before_window - state.songs_before_window, 0)
         minute_delta = min(minutes_before_window - state.minutes_before_window, 0.0)
         state.history = {
