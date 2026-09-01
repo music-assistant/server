@@ -350,6 +350,22 @@ async def test_a_stopped_queue_declines_live_audio() -> None:
     open_fill.assert_not_called()
 
 
+async def test_a_stop_during_stream_details_resolution_declines_the_fill() -> None:
+    """A stop that completes while stream details resolve must not re-arm a fresh buffer."""
+    controller, _items, mass = _controller_with_live_source_queue()
+    streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
+
+    async def _stop_completes(**_kwargs: object) -> SimpleNamespace:
+        controller._queue_data["queue-1"].session_id = None
+        return streamdetails
+
+    mass.streams.audio.get_stream_details = AsyncMock(side_effect=_stop_completes)
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
+    open_fill.assert_not_called()
+    assert streamdetails.queue_session_id is None
+
+
 async def test_a_duplicate_of_the_playing_track_is_declined_not_taken_over() -> None:
     """The playing occurrence's audio belongs to its own stream, whatever its buffer's state."""
     controller, items, _mass = _controller_with_live_source_queue()

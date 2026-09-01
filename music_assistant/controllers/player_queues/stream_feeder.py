@@ -61,7 +61,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             upcoming item this audio belongs to (it moved on, or another provider serves it).
         """
         queue_data = self._queue_data.get(queue_id)
-        if queue_data is None or queue_data.session_id is None:
+        if queue_data is None or (session_id := queue_data.session_id) is None:
             # no playback session: a stop just released everything this fill would
             # re-arm, and nothing will ever read the buffer
             return None
@@ -90,8 +90,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 # the item. One that failed is replaced instead, as a playback request would
                 return None
             await existing.clear()
+        if self._queue_data.get(queue_id) is not queue_data or queue_data.session_id != session_id:
+            # a stop (or stop and restart) completed during the awaits above and
+            # released everything this fill would re-arm
+            return None
         # record whose audio this is, so a queue stop releases the buffer with its session
-        streamdetails.queue_session_id = queue_data.session_id
+        streamdetails.queue_session_id = session_id
         self.logger.debug(
             "Buffering live %s audio for %s on queue %s",
             provider_instance_id,

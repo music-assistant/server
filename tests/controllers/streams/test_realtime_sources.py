@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
     MIN_CROSSFADE_DURATION,
     CrossfadeData,
@@ -1443,8 +1444,33 @@ class _PcmFormatRequested(Exception):
     """Raised to stop the handler once it has decided on crossfading."""
 
 
-def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str, Any]]:
-    """Return a single-item stream handler that stops once the PCM format is picked."""
+class _FfmpegArgsCaptured(Exception):
+    """Raised to stop the handler once the encode ffmpeg would start."""
+
+
+class _FakeStreamResponse:
+    """Accept the handler's response plumbing without a real HTTP transport."""
+
+    def __init__(self, **_kwargs: Any) -> None:
+        self.content_type: str | None = None
+        self.content_length: int | None = None
+
+    def enable_chunked_encoding(self) -> None:
+        """Accept the chunked-profile branch."""
+
+    async def prepare(self, request: Any) -> None:
+        """Accept the response start."""
+
+
+def _single_item_handler(
+    *, is_realtime: bool, capture_ffmpeg: pytest.MonkeyPatch | None = None
+) -> tuple[Any, MagicMock, dict[str, Any]]:
+    """
+    Return a single-item stream handler rigged to stop early.
+
+    Without ``capture_ffmpeg`` it stops once the PCM format is picked; with it, the
+    handler runs on to the encode ffmpeg call and records its keyword arguments.
+    """
     streamdetails = _make_stream_details(MediaType.TRACK, is_realtime=is_realtime)
     queue_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1477,9 +1503,11 @@ def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str
 
     seen: dict[str, Any] = {}
 
-    async def _select_pcm_format(**kwargs: Any) -> None:
+    async def _select_pcm_format(**kwargs: Any) -> Any:
         seen["crossfade_enabled"] = kwargs["crossfade_enabled"]
-        raise _PcmFormatRequested
+        if capture_ffmpeg is None:
+            raise _PcmFormatRequested
+        return TEST_PCM_FORMAT
 
     audio = MagicMock()
     audio.select_pcm_format = _select_pcm_format
@@ -1496,7 +1524,25 @@ def _single_item_handler(*, is_realtime: bool) -> tuple[Any, MagicMock, dict[str
         "player_id": "player-1",
         "session_id": "session-1",
         "queue_item_id": "item-1",
+        "fmt": "flac",
     }
+    if capture_ffmpeg is not None:
+        audio.get_output_format = AsyncMock(
+            return_value=AudioFormat(
+                content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
+            )
+        )
+        player.get_config_value = MagicMock(return_value="default")
+        controller._update_audio_processing_context = MagicMock()
+
+        def _capture_ffmpeg_args(**kwargs: Any) -> None:
+            seen["extra_input_args"] = kwargs["extra_input_args"]
+            raise _FfmpegArgsCaptured
+
+        capture_ffmpeg.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
+        capture_ffmpeg.setattr(
+            controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse)
+        )
     return controller, request, seen
 
 
@@ -1520,6 +1566,21 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
     assert seen["crossfade_enabled"] is True
     controller.get_crossfade_mode.assert_called_once()
+
+
+@pytest.mark.parametrize("is_realtime", [True, False], ids=["realtime", "buffered"])
+async def test_single_item_handler_paces_by_source_type(
+    monkeypatch: pytest.MonkeyPatch, is_realtime: bool
+) -> None:
+    """The encode ffmpeg is paced for the source: realtime tracks get the realtime args."""
+    controller, request, seen = _single_item_handler(
+        is_realtime=is_realtime, capture_ffmpeg=monkeypatch
+    )
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_item_stream(request)
+
+    assert seen["extra_input_args"] == single_item_pacing_args(is_realtime)
 
 
 # -- StreamsAudio.get_stream_details --
