@@ -453,14 +453,6 @@ async def test_a_seek_counts_towards_the_delivery(tmp_path: Path) -> None:
     await _collect(run)
 
 
-def test_the_engine_moving_to_another_item_fails_the_run(tmp_path: Path) -> None:
-    """Single-track mode plays one URI; anything else is not what was asked."""
-    run = _make_run(tmp_path)
-    run._observe_item(TRACK_B, 100_000)
-    assert run._error is not None
-    assert run._started.is_set()  # a startup waiter must not sit out its timeout
-
-
 def test_the_own_item_report_starts_the_run_and_refines_the_duration(tmp_path: Path) -> None:
     """The engine reaching the item is what playback start means."""
     run = _make_run(tmp_path, duration=180)
@@ -516,3 +508,26 @@ def test_session_normalizes_answers_only_for_the_items_own_run(tmp_path: Path) -
     backend._run = run
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_A)) is True
     assert backend.session_normalizes(_streamdetails_for(uri=TRACK_B)) is None
+
+
+async def test_the_engine_wandering_on_after_delivery_ends_the_run_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Autoplay reaching the next track right before exit is this item's natural end."""
+    run = _make_run(tmp_path, duration=60)
+    run._observe_item(TRACK_A, 60_000)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._chunks.put_nowait(b"\x01" * (60 * _BYTES_PER_SECOND))
+    run._observe_item(TRACK_B, 100_000)
+    assert run._error is None
+    assert run._item_over is True
+    assert await _collect(run) == b"\x01" * (60 * _BYTES_PER_SECOND)
+    run.mass.create_task.assert_called_once()
+
+
+def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> None:
+    """Before this run's item ever played, a foreign report is not an ending."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._observe_item(TRACK_B, 100_000)
+    assert run._error is not None

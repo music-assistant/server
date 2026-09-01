@@ -619,6 +619,7 @@ class _SingleTrackRun:
         self._data_dir_busy = False
         self._unpaired = False
         self._stopped = False
+        self._item_over = False
         self._teardown_done = False
         self._engine_playing = False
         self._sink_running = False
@@ -971,6 +972,11 @@ class _SingleTrackRun:
         paced_bytes = 0
         stalled_for = 0.0
         while not self._stopped:
+            if self._item_over:
+                # the engine moved on: everything after this point is the next
+                # (autoplayed) track's audio, not this item's
+                self._finish_delivery()
+                return
             try:
                 chunk = await asyncio.wait_for(reader.read(_READ_CHUNK_SIZE), _READ_SLICE_S)
             except TimeoutError:
@@ -1141,11 +1147,20 @@ class _SingleTrackRun:
                     await self._set_sink(running=False)
 
     def _observe_item(self, uri: str, duration_ms: int | None) -> None:
-        """Record the engine reaching an item, which can only be this run's own."""
+        """Record the engine reaching an item."""
         if uri != self.spotify_uri:
-            # single-track mode never moves to another item; whatever this is,
-            # the engine is not playing what was asked
-            self._fail(f"the engine moved to {uri}")
+            if not self._started.is_set():
+                # the engine started on something else entirely: whatever it is
+                # playing, it is not what was asked
+                self._fail(f"the engine started on {uri}")
+                return
+            # The engine wanders into the next track (autoplay) in the instant
+            # before a finished single-track run exits: this run's item is over,
+            # and what renders now is not its audio. The daemon is put down
+            # rather than left to play to nobody on the account's one stream.
+            self._item_over = True
+            self._finish_delivery()
+            self.mass.create_task(self.backend.discard_run, self)
             return
         if duration_ms:
             self._duration_ms = duration_ms
