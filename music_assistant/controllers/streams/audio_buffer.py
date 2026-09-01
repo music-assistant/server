@@ -104,8 +104,6 @@ class AudioBuffer:
         self._ready_at_chunk = ready_threshold  # updated by get_buffer to account for seek
         self._chunks: deque[bytes] = deque()
         self._discarded_chunks = 0
-        # furthest chunk playback has taken, as an absolute chunk number; passive
-        # (analysis) reads deliberately leave it alone
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
         self._space_available = asyncio.Condition(self._lock)
