@@ -176,13 +176,13 @@ _FOLLOWER_SEARCH_DEPTH: Final[int] = 4
 # memory held and how far the engine's item can run ahead of the queue's, which
 # the item lookahead of the buffer request depends on. Resume well below the cap
 # so the sink is not flipped on every chunk.
-# Sized for a crossfade, not for playback: this cap bounds the head start an item
-# can bank, and with it the fade window a boundary can offer (~21MB per session
-# at s32le/44.1k/2ch). Measured against what playback has not taken out of the
-# item buffers yet, so the seek window a buffer legitimately retains behind
-# playback does not count towards it.
-_MAX_RETAINED_S: Final[float] = 60.0
-_RESUME_RETAINED_S: Final[float] = 40.0
+# Sized to bank a whole next track, so a boundary offers its full fade window the
+# moment the item is claimed (~85MB per session at s32le/44.1k/2ch when fully
+# extended). Measured against what playback has not taken out of the item buffers
+# yet, so the seek window a buffer legitimately retains behind playback does not
+# count towards it.
+_MAX_RETAINED_S: Final[float] = 240.0
+_RESUME_RETAINED_S: Final[float] = 220.0
 # how long the queue is given to open the buffer of an item the engine reached;
 # past it the item has no audio destination and _expire_idle ends the session
 _FILL_OPEN_TIMEOUT_S: Final[float] = 15.0
