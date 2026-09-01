@@ -54,6 +54,7 @@ from music_assistant.controllers.player_queues.constants import (
 )
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
+    committed_index,
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
@@ -108,11 +109,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # Replace is exempt: it swaps the whole queue below without ever emptying it.
             self._clear(queue_id, skip_stop=True)
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            cur_index = (
-                queue.index_in_buffer
-                if queue.index_in_buffer is not None
-                else (queue.current_index if queue.current_index is not None else 0)
-            )
+            boundary_index = committed_index(queue)
+            cur_index = boundary_index if boundary_index is not None else 0
         else:
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1
@@ -985,9 +983,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
         # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)
-        base_index = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
+        base_index = committed_index(queue)
         insert_at = 0 if base_index is None else base_index + 1
         if option == QueueOption.REPLACE:
             # A replace is a fresh queue, so the pool takes the place of the old items rather than
@@ -1035,6 +1031,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 self._ensure_current_index(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+        # the rebuild published its items while the queue was still transitioning, so the player
+        # was not told about the upcoming track it replaced
+        self.update_next_item_on_player(queue_id)
 
     async def _get_similar_tracks(
         self,
