@@ -379,7 +379,8 @@ class SoloistBackend(SpotifyPlaybackBackend):
             same item already started by the stream that replaced it.
         """
         media_key = streamdetails.uri if streamdetails is not None else None
-        for attempt in range(2):
+        waited = False
+        while True:
             async with self._run_lock:
                 if (run := self._run) is None:
                     # cheap thanks to the shared verify cache; swaps in a fresh build
@@ -405,15 +406,21 @@ class SoloistBackend(SpotifyPlaybackBackend):
                     # fresh run) before it could continue into its next chapter -
                     # a run it must not take back
                     raise StreamSupersededError(f"The stream of {spotify_uri} was replaced")
-            if attempt > 0:
-                break
-            # Same item, run still held. A seek's replacement request races the
+                if seek_position:
+                    # a positive seek can only target the item being delivered (a
+                    # prefetch never seeks): the run restarts at the target
+                    await run.stop()
+                    self._run = None
+                    continue
+            if waited:
+                raise SoloistSessionBusyError(self.provider)
+            # Same item, no seek, run still held. A restart-from-zero races the
             # release of the stream it replaces, so give that release a moment -
             # but never steal a held run: a second queue occurrence of the same
-            # track asks with the same details, and stopping its twin would cut
-            # playback mid-track.
+            # track asks with these same details, and stopping its playing twin
+            # would cut it mid-track.
+            waited = True
             await self._wait_run_released(run)
-        raise SoloistSessionBusyError(self.provider)
 
     async def _wait_run_released(self, run: _SingleTrackRun, timeout: float = 2.0) -> None:
         """Wait briefly for the given run to be released by the stream holding it."""

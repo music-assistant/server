@@ -15,7 +15,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
@@ -527,3 +527,27 @@ def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> 
     run.mass.create_task = MagicMock()  # type: ignore[method-assign]
     run._observe_item(TRACK_B, 100_000)
     assert run._error is not None
+
+
+async def test_a_seek_replaces_the_held_run(tmp_path: Path) -> None:
+    """A positive seek restarts the item's run; only a prefetch must never steal it."""
+    backend = _make_backend(tmp_path, {CONF_SOLOIST_API_KEY: "k" * 20})
+    backend._server = MagicMock()
+    backend._binary = tmp_path / "soloist-bin"
+    held = _make_run(tmp_path, uri=TRACK_A, media_key=_streamdetails_for(uri=TRACK_A).uri)
+    held.stop = AsyncMock()  # type: ignore[method-assign]
+    backend._run = held
+
+    with (
+        patch(
+            "music_assistant.providers.spotify.backends.soloist.SoloistBinaryManager.ensure_fresh",
+            AsyncMock(),
+        ),
+        patch.object(soloist_backend._SingleTrackRun, "start", AsyncMock()),
+    ):
+        run = await backend._acquire_run(
+            TRACK_A, 30, _streamdetails_for(uri=TRACK_A), continuation=False
+        )
+    held.stop.assert_awaited_once()
+    assert run is not held
+    assert backend._run is run
