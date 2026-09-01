@@ -3,8 +3,10 @@
   "domain": "abc_radio_network",
   "stage": "beta",
   "name": "ABC Radio Network",
-  "description": "Stream the live music stations of the Australian ABC Radio network — including triple j, Double J, ABC Classic and ABC Jazz — with live now-playing information.",
-  "codeowners": ["@OzGav"],
+  "description": "Stream the live national stations of the Australian ABC Radio network, including triple j, Double J, ABC Classic, ABC Jazz, ABC Radio National, ABC NewsRadio, and ABC Sport, with now-playing information on the music stations.",
+  "codeowners": [
+    "@OzGav"
+  ],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/abc-radio-network/",
   "multi_instance": false
