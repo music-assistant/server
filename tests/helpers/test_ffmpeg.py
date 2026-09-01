@@ -237,6 +237,46 @@ def test_get_ffmpeg_args_single_channel_output_declares_mono() -> None:
     ]
 
 
+def test_get_ffmpeg_args_pcm_input_ignores_stale_source_codec() -> None:
+    """A PCM input keeps its raw decoder even when a source codec is still attached."""
+    # background analysis builds its PCM format from the track's own AudioFormat,
+    # which swaps content_type but carries the encoded codec_type over
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        codec_type=ContentType.FLAC,
+        sample_rate=96000,
+        bit_depth=16,
+        channels=2,
+    )
+
+    args = get_ffmpeg_args(input_format, input_format, [], input_path="-", output_path="NULL")
+    input_args = args[: args.index("-i")]
+
+    assert input_args.count("-acodec") == 1
+    assert input_args[input_args.index("-acodec") + 1] == "pcm_s16le"
+    assert "flac" not in input_args
+
+
+def test_get_ffmpeg_args_encoded_input_still_declares_source_codec() -> None:
+    """A non-PCM input keeps declaring the codec ffmpeg should decode with."""
+    input_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        codec_type=ContentType.FLAC,
+        sample_rate=96000,
+        bit_depth=16,
+        channels=2,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=96000, bit_depth=16, channels=2
+    )
+
+    args = get_ffmpeg_args(input_format, output_format, [], input_path="-")
+    input_args = args[: args.index("-i")]
+
+    assert input_args.count("-acodec") == 1
+    assert input_args[input_args.index("-acodec") + 1] == "flac"
+
+
 @pytest.mark.parametrize(
     ("output_path", "output_content_type", "expected"),
     [
