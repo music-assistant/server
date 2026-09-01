@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         ItemMapping,
         MediaItemType,
         Playlist,
+        Radio,
         RecommendationFolder,
         Track,
     )
@@ -482,6 +483,25 @@ class PluginProvider(Provider):
 
         :param prov_playlist_id: Provider-scoped playlist id.
         :param page: Zero-based page index for paginated results.
+        """
+        raise NotImplementedError
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """
+        Return details of a single radio station owned by this plugin.
+
+        :param prov_radio_id: Provider-scoped radio id.
+        """
+        raise NotImplementedError
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
+
+        Return an empty batch to signal the station's feed is exhausted; the queue then
+        plays out its remaining items and ends.
+
+        :param prov_radio_id: Provider-scoped radio id.
         """
         raise NotImplementedError
 
