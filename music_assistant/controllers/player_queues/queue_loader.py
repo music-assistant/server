@@ -1031,9 +1031,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 self._ensure_current_index(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
-            # the rebuild published its items while the queue was still transitioning, so the
-            # player was not told about the upcoming track it replaced
-            self.update_next_item_on_player(queue_id)
+        # the rebuild published its items while the queue was still transitioning, so the player
+        # was not told about the upcoming track it replaced
+        self.update_next_item_on_player(queue_id)
 
     async def _get_similar_tracks(
         self,

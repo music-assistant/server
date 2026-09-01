@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
     Album,
@@ -296,6 +297,30 @@ async def test_enter_dynamic_mode_hands_the_replacement_to_the_player() -> None:
     await ctrl._enter_dynamic_mode("q1", QueueOption.ADD)
 
     assert calls[-2:] == ["transitioning=False", "notified"]
+
+
+async def test_enter_dynamic_mode_hands_over_nothing_when_it_fails() -> None:
+    """A rebuild that cannot start playback leaves the player alone rather than half-applying."""
+    ctrl = _dynamic_controller()
+    ctrl.play_index = AsyncMock(side_effect=RuntimeError("could not start"))  # type: ignore[method-assign]
+    ctrl._enqueue_next_item = Mock()  # type: ignore[method-assign]
+    ctrl._cleanup_queue_audio_data = AsyncMock()  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue_data = PlayerQueueData(queue=queue)
+    ctrl._queue_data = {"q1": queue_data}
+    items = [QueueItem.from_media_item("q1", _track(f"old{index}")) for index in range(3)]
+    queue_data.items = items
+    queue.items = len(items)
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    queue.current_item = items[0]
+    queue.index_in_buffer = 0
+
+    with pytest.raises(RuntimeError):
+        await ctrl._enter_dynamic_mode("q1", QueueOption.PLAY)
+
+    assert not queue_data.transitioning
+    ctrl._enqueue_next_item.assert_not_called()
 
 
 async def test_enter_dynamic_mode_add_on_idle_does_not_start_playback() -> None:
