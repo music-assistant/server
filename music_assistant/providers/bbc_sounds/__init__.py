@@ -8,11 +8,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -686,7 +682,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 if action:
                     try:
                         success = await self.client.streaming.update_play_status(
-                            pid=media_item.item_id, elapsed_time=position, action=action
+                            pid=prov_item_id, elapsed_time=position, action=action
                         )
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
