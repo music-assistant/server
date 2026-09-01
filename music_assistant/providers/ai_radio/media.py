@@ -91,12 +91,7 @@ class AIRadioMediaMixin:
                     library_item.item_id, prov_item, overwrite=True
                 )
             keep_db_ids.add(str(library_item.item_id))
-        async for library_radio in radio_ctrl.iter_library_items():
+        async for library_radio in radio_ctrl.iter_library_items(provider=self.instance_id):
             if str(library_radio.item_id) in keep_db_ids:
-                continue
-            if not any(
-                mapping.provider_instance == self.instance_id
-                for mapping in library_radio.provider_mappings
-            ):
                 continue
             await radio_ctrl.remove_item_from_library(library_radio.item_id)
