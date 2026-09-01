@@ -50,10 +50,7 @@ class CoreConfigMixin:
             if include_values
             else cast(
                 "CoreConfig",
-                CoreConfig.parse(
-                    [],
-                    self.get(f"{CONF_CORE}/{core_controller}", {"domain": core_controller}),
-                ),
+                CoreConfig.parse([], self._get_raw_core_config(core_controller)),
             )
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
@@ -61,11 +58,7 @@ class CoreConfigMixin:
     @api_command("config/core/get", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
-        if not isinstance(raw_conf, dict):
-            raw_conf = {}
-        if "domain" not in raw_conf:
-            raw_conf = {**raw_conf, "domain": domain}
+        raw_conf = self._get_raw_core_config(domain)
         # build the schema straight from the controller (no dynamic UI options):
         # CoreConfig.parse stamps the translation owner itself
         controller: CoreController = getattr(self.mass, domain)
@@ -241,15 +234,44 @@ class CoreConfigMixin:
 
         Note that this only stores the (raw) value without any validation or default.
         """
-        if not self.get(f"{CONF_CORE}/{core_module}"):
-            # create base object first if needed
-            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        self.ensure_core_config_base(core_module)
         self.set(f"{CONF_CORE}/{core_module}/values/{key}", value)
         # also update the controller's in-place config copy (if any) so
         # object-local value reads stay in sync with raw writes
         controller = getattr(self.mass, core_module, None)
         if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
             entry.value = value
+
+    def ensure_core_config_base(self, core_module: str) -> None:
+        """
+        Make sure the stored config block of a core controller is a valid CoreConfig object.
+
+        Call this before writing a raw value into the block: ``set`` creates missing parents
+        on the fly, so a raw write into a not-yet-existing block would leave a stub behind
+        that has no ``domain`` key and therefore fails to parse as a CoreConfig.
+
+        :param core_module: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{core_module}")
+        if not isinstance(raw_conf, dict) or not raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        elif "domain" not in raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}/domain", core_module)
+
+    def _get_raw_core_config(self, domain: str) -> dict[str, Any]:
+        """
+        Return the stored raw config of a core controller, safe to parse as a CoreConfig.
+
+        :param domain: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
+        if not isinstance(raw_conf, dict):
+            raw_conf = {}
+        if "domain" not in raw_conf:
+            # a raw write into the block (or an install predating the write-path fix)
+            # can leave the mandatory domain key behind; fill it in for the caller
+            return {**raw_conf, "domain": domain}
+        return raw_conf
 
     async def _resolve_core_config_entries(
         self, domain: str, entries: tuple[ConfigEntry, ...]
