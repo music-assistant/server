@@ -17,16 +17,13 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
-from music_assistant_models.config_entries import ConfigActionResult
-from music_assistant_models.errors import ActionUnavailable
 
-from music_assistant.providers.fastmcp_server import _init_helpers
 from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
@@ -37,7 +34,6 @@ from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lo
 from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
 from music_assistant.providers.fastmcp_server.connect.page import HTML
 from music_assistant.providers.fastmcp_server.constants import CONF_CONNECT_EXTERNAL_URL
-from music_assistant.providers.fastmcp_server.provider import MCPServerProvider
 
 from .conftest import FakeWebserver, build_aiohttp_app
 
@@ -81,7 +77,7 @@ async def wizard_client(wizard_mass: MagicMock) -> AsyncIterator[TestClient]:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["query:library", "control:playback"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
     )
     async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
@@ -134,31 +130,30 @@ async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> 
     assert resp.headers.get("Cache-Control") == "no-store"
 
 
-async def test_scheme_guard_rejects_plaintext_non_loopback_login(
-    wizard_client: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    ("path", "payload", "auth_attr"),
+    [
+        ("/mcp/v1/connect/login", {"username": "admin", "password": "hunter2"}, "login"),
+        ("/mcp/v1/connect/exchange", {"bootstrap": "boot-1"}, "authenticate_with_token"),
+    ],
+)
+async def test_scheme_guard_rejects_plaintext_non_loopback_credentials(
+    wizard_client: TestClient,
+    wizard_mass: MagicMock,
+    path: str,
+    payload: dict[str, str],
+    auth_attr: str,
 ) -> None:
-    """
-    ``/connect/login`` over plaintext http to a non-loopback host is refused.
-
-    The wizard's only credential-bearing endpoints (login/exchange/token) must
-    not accept plaintext HTTP from a LAN-reachable host — the password and
-    bootstrap tokens would be sniffable. HTTPS is allowed, and so is
-    loopback (the bytes never leave the box). Anything else gets a 400.
-    """
-    # TestClient binds to 127.0.0.1, so the request scheme is http and we'd
-    # naturally pass the loopback exception. Force ``request.host`` to a LAN
-    # address via the Host header to exercise the rejection path.
+    """Credential endpoints refuse plaintext HTTP from a LAN-reachable host."""
     resp = await wizard_client.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
+        path,
+        json=payload,
         headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
     )
     assert resp.status == 400
     body = await resp.json()
     assert body["success"] is False
-    assert "plaintext" in body["error"].lower() or "https" in body["error"].lower()
-    # MA's login must NOT have been called — credentials never crossed the wire.
-    wizard_mass.webserver.auth.login.assert_not_awaited()
+    getattr(wizard_mass.webserver.auth, auth_attr).assert_not_awaited()
 
 
 async def test_scheme_guard_allows_loopback_plaintext_login(
@@ -172,19 +167,6 @@ async def test_scheme_guard_allows_loopback_plaintext_login(
     )
     assert resp.status == 200
     wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_rejects_plaintext_non_loopback_exchange(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Bootstrap exchange over plaintext non-loopback is refused before any MA call."""
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/exchange",
-        json={"bootstrap": "boot-1"},
-        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
-    )
-    assert resp.status == 400
-    wizard_mass.webserver.auth.authenticate_with_token.assert_not_awaited()
 
 
 def _install_fake_ingress_helper(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
@@ -282,7 +264,7 @@ async def wizard_client_trust_proxy(wizard_mass: MagicMock) -> AsyncIterator[Tes
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["query:library", "control:playback"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
         trust_forwarded_proto=True,
     )
@@ -313,57 +295,27 @@ async def test_scheme_guard_trust_proxy_off_ignores_forwarded_proto(
     wizard_mass.webserver.auth.login.assert_not_awaited()
 
 
-async def test_scheme_guard_trust_proxy_allows_forwarded_https(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
+@pytest.mark.parametrize(
+    "forwarded_headers",
+    [
+        {"X-Forwarded-Proto": "https"},
+        {"X-Forwarded-Scheme": "https"},
+        {"X-Forwarded-Proto": "https, http"},
+    ],
+)
+async def test_scheme_guard_trust_proxy_treats_forwarded_https_as_secure(
+    wizard_client_trust_proxy: TestClient,
+    wizard_mass: MagicMock,
+    forwarded_headers: dict[str, str],
 ) -> None:
-    """
-    Trust on + ``X-Forwarded-Proto: https`` → request is treated as secure.
-
-    Reproduces the reverse-proxy deployment (nginx / NPM / Traefik / Caddy):
-    TLS terminates at the proxy, the proxy-to-MA hop is plain HTTP, and the
-    proxy reports the original scheme via ``X-Forwarded-Proto``.
-    """
+    """Trust on: proxy HTTPS signals make the plaintext MA hop acceptable."""
     resp = await wizard_client_trust_proxy.post(
         "/mcp/v1/connect/login",
         json={"username": "admin", "password": "hunter2"},
         headers={
             "Origin": "http://localhost:8095",
             "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_accepts_forwarded_scheme_header(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: Nginx-Proxy-Manager's ``X-Forwarded-Scheme: https`` also counts."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Scheme": "https",
-        },
-    )
-    assert resp.status == 200
-    wizard_mass.webserver.auth.login.assert_awaited_once()
-
-
-async def test_scheme_guard_trust_proxy_multi_hop_uses_first_value(
-    wizard_client_trust_proxy: TestClient, wizard_mass: MagicMock
-) -> None:
-    """Trust on: a chained ``https, http`` list is read as the client hop (https)."""
-    resp = await wizard_client_trust_proxy.post(
-        "/mcp/v1/connect/login",
-        json={"username": "admin", "password": "hunter2"},
-        headers={
-            "Origin": "http://localhost:8095",
-            "Host": "musicassistant.example.com",
-            "X-Forwarded-Proto": "https, http",
+            **forwarded_headers,
         },
     )
     assert resp.status == 200
@@ -398,7 +350,7 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
         "mount_path",
         "mcp_url_loopback",
         "mcp_url_advertised",
-        "permissions",
+        "default_policy",
         "clients",
         "well_known_url",
     ):
@@ -406,25 +358,51 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
     assert data["mount_path"] == "/mcp/v1"
     assert data["mcp_url_loopback"].endswith("/mcp/v1")
     assert isinstance(data["clients"], list)
-    assert len(data["clients"]) >= 10
-    assert isinstance(data["permissions"], list)
-    assert all(isinstance(p, str) for p in data["permissions"])
+    assert len(data["clients"]) == 15
+    clients = {client["id"]: client for client in data["clients"]}
+    assert {
+        client_id: [method["id"] for method in client["methods"]]
+        for client_id, client in clients.items()
+    } == {
+        "claude-code": ["cli", "project-config"],
+        "cursor": ["user-config", "project-config"],
+        "opencode": ["user-config", "project-config"],
+        "windsurf": ["devin-user", "devin-project", "legacy-cascade"],
+        "vscode": ["user-config", "workspace-config"],
+        "github-copilot-cli": ["cli", "interactive", "user-config", "project-config"],
+        "codex-cli": ["cli", "user-config"],
+        "gemini-cli": ["cli", "user-config", "project-config"],
+        "cline": ["user-config", "cli-wizard"],
+        "roo-code": ["global-config", "project-config"],
+        "zed": ["settings-ui", "user-config", "project-config"],
+        "openclaw": ["cli", "user-config"],
+        "openhands": ["cli", "user-config"],
+        "hermes": ["cli", "user-config", "desktop-editor"],
+        "custom": ["parameters"],
+    }
+    assert "claude-desktop" not in clients
+    assert "chatgpt" not in clients
+    assert data["default_policy"] == {"profile": "Trusted"}
+    assert "permissions" not in data
 
 
-async def test_info_reflects_enabled_tags(wizard_mass: MagicMock) -> None:
-    """``info.permissions`` reflects whatever ``enabled_tags_provider()`` returns."""
+async def test_info_exposes_only_default_profile(wizard_mass: MagicMock) -> None:
+    """Connect metadata never exposes capability matrices or token overrides."""
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=lambda: ["control:playback", "edit:queue"],
+        default_profile_provider=lambda: "Trusted",
         extra_origins_csv="",
     )
     try:
         async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
             resp = await client.get("/mcp/v1/connect/info")
             data = await resp.json()
-            assert "control:playback" in data["permissions"]
-            assert "edit:queue" in data["permissions"]
+            assert data["default_policy"] == {"profile": "Trusted"}
+            assert "permissions" not in data
+            assert "allow" not in data["default_policy"]
+            assert "confirm" not in data["default_policy"]
+            assert "deny" not in data["default_policy"]
     finally:
         unmount()
 
@@ -624,6 +602,34 @@ async def test_login_dataclass_failure_returns_401(
 # ── Per-client token mint ────────────────────────────────────────────────────
 
 
+async def test_token_endpoint_binds_minted_identity(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """A successful mint writes the new bearer into the request-identity registry."""
+    bound: list[tuple[str, str, str | None]] = []
+
+    async def _run() -> None:
+        unmount = await mount_connect_wizard(
+            wizard_mass,
+            mount_path="/mcp/v1",
+            default_profile_provider=lambda: "Trusted",
+            identity_binder=lambda bearer, user_id, token_id: bound.append(
+                (bearer, user_id, token_id)
+            ),
+        )
+        async with TestClient(TestServer(build_aiohttp_app(wizard_mass.webserver))) as client:
+            resp = await client.post(
+                "/mcp/v1/connect/token",
+                json={"session_token": "sess-1", "client_id": "cursor"},
+                headers={"Origin": "http://localhost:8095"},
+            )
+            assert resp.status == 200
+        unmount()
+
+    await _run()
+    assert bound == [("jwt-xyz", mock_user.user_id, "tid:jwt-xyz")]
+
+
 async def test_token_endpoint_mints_named(
     wizard_client: TestClient, wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
@@ -769,7 +775,7 @@ async def test_mount_unmount_cycle(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        enabled_tags_provider=list,
+        default_profile_provider=lambda: "Safe queries",
         extra_origins_csv="",
     )
     assert len(fake_ws.routes) == 5
@@ -782,7 +788,7 @@ async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/custom",
-        enabled_tags_provider=list,
+        default_profile_provider=lambda: "Safe queries",
         extra_origins_csv="",
     )
     try:
@@ -803,7 +809,6 @@ async def test_action_handler_signals_url_with_bootstrap(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
     wizard_mass.webserver.auth.create_token.assert_awaited_with(
@@ -834,7 +839,6 @@ async def test_action_handler_uses_url_fragment_for_bootstrap(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
     assert isinstance(url, str)
@@ -852,7 +856,6 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
-        base_url="http://localhost:8095",
     )
 
     wizard_mass.webserver.auth.create_token.assert_not_called()
@@ -1127,7 +1130,6 @@ async def test_dispatch_detects_ws_client_base_url(
         )
     ]
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-
     url = await _dispatch_open_connect(
         mass,
         {"mount_path": "/mcp/v1"},
@@ -1148,7 +1150,6 @@ async def test_dispatch_falls_back_to_config_override(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-
     url = await _dispatch_open_connect(
         mass,
         {
@@ -1176,7 +1177,6 @@ async def test_dispatch_rejects_unsafe_override_and_falls_back(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-
     url = await _dispatch_open_connect(
         mass,
         {
@@ -1200,7 +1200,6 @@ async def test_dispatch_falls_back_to_path_only_when_nothing_known(
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-
     url = await _dispatch_open_connect(
         mass,
         {"mount_path": "/mcp/v1"},
@@ -1229,35 +1228,6 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
     assert url.startswith("http://192.0.2.20:8095/mcp/v1/connect")
 
 
-async def test_open_connect_action_reports_the_url_to_open() -> None:
-    """The action hands the wizard URL back as the url the client opens once."""
-    provider = MagicMock()
-    with patch.object(
-        _init_helpers,
-        "_dispatch_open_connect",
-        AsyncMock(return_value="/mcp/v1/connect?bootstrap=jwt-xyz"),
-    ):
-        result = await MCPServerProvider.handle_config_action(provider, "open_connect")
-
-    assert isinstance(result, ConfigActionResult)
-    assert result.open_url == "/mcp/v1/connect?bootstrap=jwt-xyz"
-    assert result.message is None
-
-
-async def test_open_connect_action_without_a_url_reports_failure() -> None:
-    """A dispatch that yields no URL failed, so the action reports an error."""
-    provider = MagicMock()
-    provider.translation_owner = "provider.fastmcp_server"
-    with (
-        patch.object(_init_helpers, "_dispatch_open_connect", AsyncMock(return_value=None)),
-        pytest.raises(ActionUnavailable) as err,
-    ):
-        await MCPServerProvider.handle_config_action(provider, "open_connect")
-
-    assert err.value.translation_key == "connect_wizard_unavailable"
-    assert err.value.translation_owner == "provider.fastmcp_server"
-
-
 # ── Client template integrity ────────────────────────────────────────────────
 
 
@@ -1265,13 +1235,65 @@ def test_cursor_template_round_trips() -> None:
     """The Cursor template renders to valid JSON with url + Authorization Bearer header."""
     cursor = lookup_client("cursor")
     assert cursor is not None
-    rendered = cursor.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = cursor.methods[0]
+    assert method.id == "user-config"
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
     parsed = json.loads(rendered)
     server = parsed["mcpServers"]["ma"]
     assert server["url"] == "http://localhost:8095/mcp/v1"
     assert server["headers"]["Authorization"] == "Bearer TOK-123"
+
+
+def test_opencode_template_round_trips() -> None:
+    """The OpenCode preset renders an authenticated remote MCP configuration."""
+    spec = lookup_client("opencode")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    parsed = json.loads(rendered)
+    server = parsed["mcp"]["ma"]
+    assert parsed["$schema"] == "https://opencode.ai/config.json"
+    assert server["type"] == "remote"
+    assert server["url"] == "http://localhost:8095/mcp/v1"
+    assert server["enabled"] is True
+    assert server["oauth"] is False
+    assert server["headers"]["Authorization"] == "Bearer TOK-123"
+
+
+def test_openhands_template_uses_http_transport_and_bearer_header() -> None:
+    """The OpenHands preset follows the documented remote-server CLI syntax."""
+    spec = lookup_client("openhands")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("openhands mcp add ma --transport http")
+    assert '--header "Authorization: Bearer TOK-123"' in rendered
+    assert rendered.endswith("http://localhost:8095/mcp/v1")
+
+
+def test_github_copilot_cli_template_uses_mcp_add_form() -> None:
+    """The Copilot CLI preset supplies every value requested by ``/mcp add``."""
+    spec = lookup_client("github-copilot-cli")
+    assert spec is not None
+    rendered = (
+        spec.methods[1]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("/mcp add\n")
+    assert "Server Name: ma" in rendered
+    assert "Server Type: HTTP" in rendered
+    assert "URL: http://localhost:8095/mcp/v1" in rendered
+    assert 'HTTP Headers: {"Authorization":"Bearer TOK-123"}' in rendered
+    assert "Tools: *" in rendered
 
 
 def test_claude_code_template_uses_positional_url() -> None:
@@ -1283,45 +1305,137 @@ def test_claude_code_template_uses_positional_url() -> None:
     """
     spec = lookup_client("claude-code")
     assert spec is not None
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
-        "{{TOKEN}}", "TOK-123"
+    assert [method.id for method in spec.methods] == ["cli", "project-config"]
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
     )
     assert "--url" not in rendered, "claude mcp add does not accept a --url flag"
     # URL must appear right after the server name (the positional slot).
-    assert "claude mcp add ma http://localhost:8095/mcp/v1" in rendered
+    assert "ma http://localhost:8095/mcp/v1" in rendered
     assert "--transport http" in rendered
+    assert "--scope user" in rendered
     assert '--header "Authorization: Bearer TOK-123"' in rendered
 
 
-def test_openclaw_template_round_trips() -> None:
-    """
-    The OpenClaw preset renders a valid ``openclaw mcp set`` command.
-
-    The embedded JSON must pin the streamable-HTTP transport and carry the
-    minted token as an ``Authorization: Bearer`` header — OpenClaw's bundle-mcp
-    client speaks streamable-HTTP and reads custom headers from this object.
-    """
-    spec = lookup_client("openclaw")
+def test_claude_code_manual_config_round_trips() -> None:
+    """Claude Code's alternate project config remains valid authenticated JSON."""
+    spec = lookup_client("claude-code")
     assert spec is not None
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = spec.methods[1]
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
-    assert rendered.startswith("openclaw mcp set ma ")
-    # The JSON payload is the single-quoted argument to `openclaw mcp set`.
-    start = rendered.index("'")
-    end = rendered.rindex("'")
-    payload = json.loads(rendered[start + 1 : end])
-    assert payload["url"] == "http://localhost:8095/mcp/v1"
-    assert payload["transport"] == "streamable-http"
-    assert payload["headers"]["Authorization"] == "Bearer TOK-123"
+    server = json.loads(rendered)["mcpServers"]["ma"]
+    assert server == {
+        "type": "http",
+        "url": "http://localhost:8095/mcp/v1",
+        "headers": {"Authorization": "Bearer TOK-123"},
+    }
+
+
+def test_current_cli_templates_use_streamable_http_and_bearer_options() -> None:
+    """Reviewed CLI presets use each product's current first-party syntax."""
+    rendered: dict[str, str] = {}
+    for client_id in ("github-copilot-cli", "gemini-cli", "openclaw", "openhands"):
+        spec = lookup_client(client_id)
+        assert spec is not None
+        rendered[client_id] = (
+            spec.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+        )
+    assert rendered["github-copilot-cli"].startswith("copilot mcp add --transport http")
+    assert '--header "Authorization: Bearer TOKEN"' in rendered["github-copilot-cli"]
+    assert rendered["gemini-cli"].startswith("gemini mcp add --scope user --transport http")
+    assert rendered["openclaw"].startswith("openclaw mcp add ma")
+    assert "--transport streamable-http" in rendered["openclaw"]
+    assert rendered["openhands"].startswith("openhands mcp add ma")
+
+
+def test_current_config_templates_use_product_specific_http_keys() -> None:
+    """Reviewed JSON presets retain each client's distinct transport schema."""
+    windsurf = lookup_client("windsurf")
+    vscode = lookup_client("vscode")
+    cline = lookup_client("cline")
+    assert windsurf is not None
+    assert vscode is not None
+    assert cline is not None
+    devin = json.loads(
+        windsurf.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["mcpServers"]["ma"]
+    vs_server = json.loads(
+        vscode.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["servers"]["ma"]
+    cline_server = json.loads(
+        cline.methods[0].template.replace("{{URL}}", "URL").replace("{{TOKEN}}", "TOKEN")
+    )["mcpServers"]["ma"]
+    assert devin["transport"] == "http"
+    assert vs_server["type"] == "http"
+    assert cline_server["type"] == "streamableHttp"
+
+
+def test_custom_template_exposes_connection_parameters() -> None:
+    """Custom renders product-neutral values needed by any MCP client."""
+    spec = lookup_client("custom")
+    assert spec is not None
+    assert spec.label == "Custom"
+    assert len(spec.methods) == 1
+    method = spec.methods[0]
+    assert method.id == "parameters"
+    assert method.kind == "text"
+    rendered = method.template.replace("{{URL}}", "https://ma.example/mcp/v1").replace(
+        "{{TOKEN}}", "TOK-123"
+    )
+    assert "Server name: ma" in rendered
+    assert "Transport: Streamable HTTP" in rendered
+    assert "URL: https://ma.example/mcp/v1" in rendered
+    assert "Header name: Authorization" in rendered
+    assert "Header value: Bearer TOK-123" in rendered
+
+
+def test_roo_code_template_uses_streamable_http() -> None:
+    """Roo Code renders its documented remote server configuration."""
+    spec = lookup_client("roo-code")
+    assert spec is not None
+    assert [method.id for method in spec.methods] == ["global-config", "project-config"]
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "https://ma.example/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    server = json.loads(rendered)["mcpServers"]["ma"]
+    assert server == {
+        "type": "streamable-http",
+        "url": "https://ma.example/mcp/v1",
+        "headers": {"Authorization": "Bearer TOK-123"},
+        "disabled": False,
+        "alwaysAllow": [],
+    }
+    assert "global" in spec.methods[0].config_path_hint.lower()
+    assert spec.methods[1].config_path_hint == ".roo/mcp.json in the project root."
+
+
+def test_openclaw_template_round_trips() -> None:
+    """The OpenClaw preset uses its current add command and HTTP transport."""
+    spec = lookup_client("openclaw")
+    assert spec is not None
+    rendered = (
+        spec.methods[0]
+        .template.replace("{{URL}}", "http://localhost:8095/mcp/v1")
+        .replace("{{TOKEN}}", "TOK-123")
+    )
+    assert rendered.startswith("openclaw mcp add ma --url http://localhost:8095/mcp/v1")
+    assert "--transport streamable-http" in rendered
+    assert '--header "Authorization: Bearer TOK-123"' in rendered
 
 
 def test_hermes_template_round_trips() -> None:
     """The Hermes preset renders valid YAML with url + Authorization Bearer header."""
     spec = lookup_client("hermes")
     assert spec is not None
-    assert spec.kind == "yaml"
-    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+    method = spec.methods[1]
+    assert method.kind == "yaml"
+    rendered = method.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
         "{{TOKEN}}", "TOK-123"
     )
     parsed = yaml.safe_load(rendered)
@@ -1338,7 +1452,36 @@ def test_all_clients_have_required_fields() -> None:
         assert spec.id not in seen_ids
         seen_ids.add(spec.id)
         assert spec.label
-        assert spec.kind in {"json", "shell", "toml", "yaml"}
-        assert "{{URL}}" in spec.template
-        assert "{{TOKEN}}" in spec.template
-        assert spec.config_path_hint  # non-empty doc hint
+        assert spec.methods
+        seen_method_ids: set[str] = set()
+        for method in spec.methods:
+            assert method.id
+            assert method.id not in seen_method_ids
+            seen_method_ids.add(method.id)
+            assert method.label
+            assert method.kind in {"json", "shell", "text", "toml", "yaml"}
+            assert method.action in {"copy", "download"}
+            assert "{{URL}}" in method.template
+            assert "{{TOKEN}}" in method.template
+            assert method.config_path_hint
+            if method.kind in {"json", "toml", "yaml"}:
+                assert method.action == "download"
+                assert method.filename
+
+
+def test_page_selects_recommended_method_without_minting() -> None:
+    """Method selection is client-local presentation and cannot mint credentials."""
+    assert "selectedMethodIds: {}" in HTML
+    assert "c.methods[0].id" in HTML
+    assert "selectMethod(c.id, method.id)" in HTML
+    select_method = HTML.split("function selectMethod", 1)[1].split("function ", 1)[0]
+    assert "mintForSelected" not in select_method
+    assert "method-label recommended" in HTML
+
+
+def test_page_uses_network_url_by_default() -> None:
+    """Generated connection details prefer the advertised network endpoint."""
+    assert '<button data-which="network" class="active">Network</button>' in HTML
+    assert '<button data-which="loopback">Loopback</button>' in HTML
+    assert 'urlMode: "network"' in HTML
+    assert 'mode === "network"' in HTML

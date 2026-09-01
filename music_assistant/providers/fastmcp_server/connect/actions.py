@@ -1,12 +1,4 @@
-"""
-ACTION-handler: mints a bootstrap token and returns the wizard URL.
-
-Triggered by the ``open_connect`` ``ConfigEntryType.ACTION`` button defined in
-:mod:`provider.config`. The returned URL is delivered to the frontend as the
-``open_url`` of the ``ConfigActionResult`` in the ``invoke_action`` response,
-which opens it one-shot in a new tab (request-scoped, so no session correlation
-needed).
-"""
+"""ACTION-handler: mints a bootstrap token and returns the wizard URL."""
 
 from __future__ import annotations
 
@@ -32,7 +24,6 @@ async def handle_open_connect_action(
     *,
     current_user: Any,
     mount_path: str,
-    base_url: str = "",
     external_base_url: str | None = None,
     setup_callback_path: str | None = None,
 ) -> str:
@@ -44,8 +35,6 @@ async def handle_open_connect_action(
         ``None`` when no user context is available — in which case the wizard
         is opened without a bootstrap token and falls back to its login form.
     :param mount_path: HTTP path prefix where the MCP server is mounted.
-    :param base_url: Deprecated — kept in the signature for backwards
-        compatibility; ignored. Pass ``external_base_url`` instead.
     :param external_base_url: Externally reachable base URL (scheme + host +
         optional ingress path prefix) to prepend to the wizard URL. When
         omitted, falls back to a path-only URL that the browser resolves
@@ -53,8 +42,6 @@ async def handle_open_connect_action(
     :param setup_callback_path: Optional setup-flow callback path to signal
         after the wizard generates a client configuration.
     """
-    del base_url  # kept in signature for backwards compatibility; ignored
-
     bootstrap: str | None = None
     if current_user is not None:
         # GC any prior wizard plumbing rows for this user before minting a

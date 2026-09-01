@@ -8,8 +8,18 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.server.auth import AccessToken
 
-from music_assistant.providers.fastmcp_server.auth import MASTokenVerifier
+from music_assistant.providers.fastmcp_server.auth import (
+    LEGACY_TOKEN_CLIENT_ID,
+    LOOKUP_FAILURE_CLIENT_ID,
+    MASTokenVerifier,
+    request_identity_holds,
+)
+from music_assistant.providers.fastmcp_server.token_identity import (
+    TokenIdentity,
+    TokenIdentityRegistry,
+)
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
@@ -28,6 +38,7 @@ def _make_jwt(payload: dict[str, object]) -> str:
 async def test_valid_token_returns_access_token(mock_mass: MagicMock, mock_user: MagicMock) -> None:
     """A valid token yields an AccessToken bound to the canonical resource URI."""
     mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(return_value="exact-token-id")
     verifier = MASTokenVerifier(
         mock_mass,
         base_url="http://localhost:8095",
@@ -37,10 +48,80 @@ async def test_valid_token_returns_access_token(mock_mass: MagicMock, mock_user:
     token = await verifier.verify_token("valid-token")
 
     assert token is not None
-    assert token.client_id == "u1"
+    assert token.client_id == "exact-token-id"
     assert token.scopes == []
     assert token.resource == "http://localhost:8095/mcp/v1"
     assert token.token == "valid-token"
+
+
+@pytest.mark.asyncio
+async def test_two_tokens_for_one_user_have_distinct_exact_client_ids(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """FastMCP identity remains exact-token scoped even when MA users match."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=["token-id-a", "token-id-b"]
+    )
+    verifier = MASTokenVerifier(mock_mass)
+
+    first = await verifier.verify_token("bearer-a")
+    second = await verifier.verify_token("bearer-b")
+
+    assert first is not None
+    assert second is not None
+    assert first.client_id == "token-id-a"
+    assert second.client_id == "token-id-b"
+    assert first.client_id != second.client_id
+
+
+@pytest.mark.asyncio
+async def test_non_authoritative_client_ids_do_not_use_user_or_application_identity(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """Legacy and lookup-failure states use explicit safe sentinel client IDs."""
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=[None, RuntimeError("lookup unavailable")]
+    )
+    verifier = MASTokenVerifier(mock_mass)
+
+    legacy = await verifier.verify_token("legacy")
+    failed = await verifier.verify_token("failed")
+
+    assert legacy is not None
+    assert failed is not None
+    assert legacy.client_id == LEGACY_TOKEN_CLIENT_ID
+    assert failed.client_id == LOOKUP_FAILURE_CLIENT_ID
+
+
+def test_request_identity_holds_for_exact_binding() -> None:
+    """Command and resource paths share one identity comparison."""
+    token = AccessToken(token="bearer", client_id="tid-1", scopes=[])
+    user = MagicMock(user_id="user-1", enabled=True)
+    identity = TokenIdentity(user_id="user-1", token_id="tid-1")
+
+    assert request_identity_holds(token, user, identity, live_token_id="tid-1") is True
+    assert request_identity_holds(token, user, None, live_token_id="tid-1") is False
+    assert request_identity_holds(token, user, identity, lookup_failed=True) is False
+
+
+@pytest.mark.asyncio
+async def test_token_resolution_failures_are_counted_without_identity_details(
+    mock_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """Lookup exceptions and malformed IDs increment one aggregate diagnostic counter."""
+    registry = TokenIdentityRegistry()
+    mock_mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
+    mock_mass.webserver.auth.get_token_id_from_token = AsyncMock(
+        side_effect=[RuntimeError("secret lookup detail"), "invalid token id with spaces"]
+    )
+    verifier = MASTokenVerifier(mock_mass, identity_registry=registry)
+
+    assert await verifier.verify_token("first-secret-bearer") is not None
+    assert await verifier.verify_token("second-secret-bearer") is not None
+
+    assert registry.token_resolution_failures == 2
 
 
 @pytest.mark.asyncio
