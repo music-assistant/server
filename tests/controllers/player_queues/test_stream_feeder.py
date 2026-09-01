@@ -325,12 +325,45 @@ async def test_a_failed_buffer_is_replaced_rather_than_left_holding_the_item() -
     broken = MagicMock()
     broken.has_error = True
     broken.is_valid.return_value = True
+    broken.clear = AsyncMock()
     items[1].streamdetails = SimpleNamespace(
         provider="spotify--a", buffer=broken, queue_session_id=None
     )
     fill = MagicMock()
     with patch.object(AudioBuffer, "open_provider_fill", return_value=fill):
         assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is fill
+    # the superseded buffer is cleared, not orphaned with its chunks and monitor
+    broken.clear.assert_awaited_once()
+
+
+async def test_a_stopped_queue_declines_live_audio() -> None:
+    """
+    A queue whose playback session ended must not accept a live fill.
+
+    The stop just released everything this would re-arm, and nothing will read
+    the buffer - the source daemon would linger holding the account's stream.
+    """
+    controller, _items, _mass = _controller_with_live_source_queue()
+    controller._queue_data["queue-1"].session_id = None
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
+    open_fill.assert_not_called()
+
+
+async def test_a_duplicate_of_the_playing_track_is_declined_not_taken_over() -> None:
+    """The playing occurrence's audio belongs to its own stream, whatever its buffer's state."""
+    controller, items, _mass = _controller_with_live_source_queue()
+    # the playing item IS the announced item (a duplicate up next), with a buffer
+    # whose head has been evicted - taking it over would cut playback mid-track
+    stale = MagicMock()
+    stale.has_error = False
+    stale.is_valid.return_value = False
+    items[0].streamdetails = SimpleNamespace(
+        provider="spotify--a", buffer=stale, queue_session_id=None
+    )
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "aaa") is None
+    open_fill.assert_not_called()
 
 
 async def test_unresolvable_stream_details_leave_the_live_audio_unbuffered() -> None:

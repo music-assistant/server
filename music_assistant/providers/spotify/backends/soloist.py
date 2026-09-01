@@ -2263,7 +2263,9 @@ class _SoloistSession:
                 return
             item.claim(fill.streamdetails.uri if fill.streamdetails else None)
             await self.open_item_audio(item, fill, fill.streamdetails)
-        except (TimeoutError, MusicAssistantError) as err:
+        except Exception as err:
+            # a lookahead convenience: any failure here means a cold start for one
+            # item, never a reason to kill the session
             self.logger.debug("No buffer for the live audio of %s: %s", item.uri, err)
             if fill is not None:
                 fill.fail(AudioError(f"No audio was routed to the buffer of {item.uri}"))

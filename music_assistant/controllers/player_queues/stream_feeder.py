@@ -60,6 +60,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :return: The handle to write the item's audio into, or None when the queue has no
             upcoming item this audio belongs to (it moved on, or another provider serves it).
         """
+        queue_data = self._queue_data.get(queue_id)
+        if queue_data is None or queue_data.session_id is None:
+            # no playback session: a stop just released everything this fill would
+            # re-arm, and nothing will ever read the buffer
+            return None
         queue_item = self._upcoming_provider_item(queue_id, provider_instance_id, provider_item_id)
         if queue_item is None:
             return None
@@ -79,17 +84,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
         if streamdetails.provider != provider_instance_id:
             # the queue resolved this item to another provider, so this audio is not its
             return None
-        if (
-            (existing := streamdetails.buffer) is not None
-            and not existing.has_error
-            and existing.is_valid()
-        ):
-            # already being filled (or filled) elsewhere; taking it over would split the
-            # item. One that failed is replaced instead, as a playback request would
-            return None
+        if existing := streamdetails.buffer:
+            if not existing.has_error and existing.is_valid():
+                # already being filled (or filled) elsewhere; taking it over would split
+                # the item. One that failed is replaced instead, as a playback request would
+                return None
+            await existing.clear()
         # record whose audio this is, so a queue stop releases the buffer with its session
-        if (queue_data := self._queue_data.get(queue_id)) is not None:
-            streamdetails.queue_session_id = queue_data.session_id
+        streamdetails.queue_session_id = queue_data.session_id
         self.logger.debug(
             "Buffering live %s audio for %s on queue %s",
             provider_instance_id,
@@ -182,20 +184,33 @@ class StreamFeederMixin(_PlayerQueuesBase):
             item = self.get_item(queue_id, queue.current_index + offset)
             if item is None:
                 return None
-            if item.media_type == MediaType.AUDIO_SOURCE or (media_item := item.media_item) is None:
+            if offset == 0 and item.streamdetails is not None:
+                # the playing item's audio belongs to its own stream; matching it only
+                # serves to recognise a duplicate of the playing track and decline
+                if self._matches_provider_item(item, provider_instance_id, provider_item_id):
+                    return None
+                continue
+            if item.media_type == MediaType.AUDIO_SOURCE:
                 # AudioSource items are live and bypass the AudioBuffer entirely
                 continue
-            if media_item.provider == provider_instance_id and media_item.item_id == (
-                provider_item_id
-            ):
-                return item
-            if any(
-                mapping.provider_instance == provider_instance_id
-                and mapping.item_id == provider_item_id
-                for mapping in media_item.provider_mappings
-            ):
+            if self._matches_provider_item(item, provider_instance_id, provider_item_id):
                 return item
         return None
+
+    @staticmethod
+    def _matches_provider_item(
+        item: QueueItem, provider_instance_id: str, provider_item_id: str
+    ) -> bool:
+        """Return whether the queue item maps to the given provider item."""
+        if (media_item := item.media_item) is None:
+            return False
+        if media_item.provider == provider_instance_id and media_item.item_id == provider_item_id:
+            return True
+        return any(
+            mapping.provider_instance == provider_instance_id
+            and mapping.item_id == provider_item_id
+            for mapping in media_item.provider_mappings
+        )
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""
