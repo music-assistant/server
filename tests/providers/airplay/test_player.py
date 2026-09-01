@@ -1137,7 +1137,8 @@ def test_volume_reports_are_ignored_while_our_own_level_echoes(
     A level we sent ourselves is ignored when the receiver echoes it back.
 
     Every level handed to a receiver comes back over DACP; taken at face value that
-    echo reads as the user turning the knob and is written straight back out.
+    echo reads as the user turning the knob and would be adopted over the newer
+    level we already sent.
     """
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
     airplay_player._attr_volume_level = 30
