@@ -48,6 +48,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+    from .media import _ShowRun
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -87,6 +89,7 @@ class AIRadioProvider(
         self._hosts: dict[str, dict[str, Any]] = {}
         self._dj_queues: dict[str, DJQueueState] = {}
         self._dj_lock = asyncio.Lock()
+        self._show_runs: dict[str, _ShowRun] = {}
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"

@@ -15,7 +15,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
-from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
+from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID, FALLBACK_TRACK_SECONDS
 from .models import DJQueueState, PlannedSection, SessionState
 
 if TYPE_CHECKING:
@@ -26,10 +26,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.mass import MusicAssistant
-
-# a track without a known duration still has to count for something in the minute
-# bookkeeping, so it is billed as an average length song
-FALLBACK_TRACK_SECONDS = 210
 
 QUEUE_PAGE_SIZE = 500
 

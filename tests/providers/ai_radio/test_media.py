@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.providers.ai_radio.media import AIRadioMediaMixin
 
@@ -29,6 +30,8 @@ class _Media(AIRadioMediaMixin):
     def __init__(self, stations: dict[str, dict[str, Any]]) -> None:
         """Stamp the attrs AIRadioMediaMixin reads, skipping real provider init."""
         self._stations = stations
+        self._show_runs: dict[str, Any] = {}
+        self._hosts: dict[str, Any] = {}
         self.instance_id = "ai_radio"
         self.domain = "ai_radio"
         self.mass: MagicMock = MagicMock()
@@ -73,3 +76,75 @@ async def test_library_upkeep_adds_missing_show() -> None:
     radio_ctrl.iter_library_items = MagicMock(return_value=_no_items())
     await media._sync_show_library_items()
     radio_ctrl.add_item_to_library.assert_awaited_once()
+
+
+def _track(item_id: str) -> Track:
+    """Build a minimal Track with one provider mapping."""
+    return Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="library",
+                provider_instance="library",
+            )
+        },
+    )
+
+
+def _media_with_show(track_count: int, max_duration_minutes: float = 0.0) -> _Media:
+    """Build a _Media harness with a station whose source playlist has track_count tracks."""
+    station = {**STATION, "max_duration_minutes": max_duration_minutes}
+    media = _Media({"morning_show": station})
+    media._fetch_source_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            [
+                {
+                    "index": i,
+                    "item_id": f"t{i}",
+                    "duration": 210,
+                    "media_item": _track(f"t{i}"),
+                }
+                for i in range(track_count)
+            ],
+            "My Playlist",
+        )
+    )
+    media.mass.player_queues.all = MagicMock(return_value=[])
+    return media
+
+
+async def test_first_call_starts_a_run_and_pages() -> None:
+    """The first call snapshots the show and pages through it 25 tracks at a time."""
+    media = _media_with_show(track_count=30)
+    page1 = await media.get_dynamic_radio_tracks("morning_show")
+    assert len(page1) == 25
+    page2 = await media.get_dynamic_radio_tracks("morning_show")
+    assert len(page2) == 5
+    assert await media.get_dynamic_radio_tracks("morning_show") == []
+
+
+async def test_run_end_allows_a_fresh_run() -> None:
+    """Ending a run lets a later call start a fresh snapshot instead of staying exhausted."""
+    media = _media_with_show(track_count=3)
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 3
+    assert await media.get_dynamic_radio_tracks("morning_show") == []
+    media._end_show_run("morning_show")
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 3
+
+
+async def test_duration_cap_trims_snapshot() -> None:
+    """The run's snapshot is trimmed to the station's configured maximum duration."""
+    media = _media_with_show(track_count=10, max_duration_minutes=7.0)
+    page = await media.get_dynamic_radio_tracks("morning_show")
+    # 10 tracks of 210s; the cap keeps tracks until >= 7 minutes (2 tracks)
+    assert len(page) == 2
+
+
+async def test_unknown_station_raises() -> None:
+    """get_dynamic_radio_tracks raises when the station id is unknown."""
+    media = _Media({})
+    with pytest.raises(MediaNotFoundError):
+        await media.get_dynamic_radio_tracks("nope")

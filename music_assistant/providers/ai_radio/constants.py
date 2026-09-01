@@ -95,6 +95,17 @@ MIN_LOUDNESS_REFERENCE_SECONDS = 2
 # a clip is seconds of audio, so a measurement that takes this long is a wedged fetch
 LOUDNESS_MEASURE_TIMEOUT = 60
 
+# a track without a known duration still has to count for something in the minute
+# bookkeeping, so it is billed as an average length song
+FALLBACK_TRACK_SECONDS = 210
+
+# tracks returned per get_dynamic_radio_tracks call, matching the dynamic-radio pool's target size
+SHOW_FEED_PAGE_SIZE = 25
+
+# a show run that never gets bound to a queue (its enqueue failed downstream) is dropped
+# after this long, so a retried play_media is not stuck replaying an abandoned snapshot
+SHOW_RUN_UNBOUND_TTL_SECONDS = 300
+
 # spoken clips are handed to MA already decoded, so the filter chain runs once here
 # instead of once per output
 TTS_CLIP_PCM_FORMAT = AudioFormat(
