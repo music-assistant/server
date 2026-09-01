@@ -517,7 +517,7 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client.current_token != token:
+            if not client.matches_token(token):
                 continue
             client.bind_sendspin_player(player_id)
             user = client.authenticated_user

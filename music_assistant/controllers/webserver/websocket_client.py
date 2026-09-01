@@ -97,14 +97,17 @@ class WebsocketClientHandler:
         return self._authenticated_user
 
     @property
-    def current_token(self) -> str | None:
-        """Return the access token this client authenticated with, if any."""
-        return self._current_token
-
-    @property
     def webrtc_session_id(self) -> str | None:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
+
+    def matches_token(self, token: str) -> bool:
+        """
+        Return True if this client authenticated with the given access token.
+
+        :param token: The access token to compare against.
+        """
+        return self._current_token == token
 
     def bind_sendspin_player(self, player_id: str) -> None:
         """
