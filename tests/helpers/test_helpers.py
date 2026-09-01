@@ -1,5 +1,6 @@
 """Tests for utility/helper functions."""
 
+import logging
 import os
 import signal
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -20,6 +22,47 @@ from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import _ml_inference_probe, uri, util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
+
+
+def test_redact_sensitive_headers() -> None:
+    """Credential-bearing request headers are redacted without hiding diagnostics."""
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer secret-token",
+        "aUtHoRiZaTiOn-Extra": "secret-extra",
+        "PROXY-AUTHORIZATION": "Basic secret-proxy",
+    }
+
+    assert redact_sensitive_headers(headers) == {
+        "Accept": "application/json",
+        "Authorization": "<redacted>",
+        "aUtHoRiZaTiOn-Extra": "<redacted>",
+        "PROXY-AUTHORIZATION": "<redacted>",
+    }
+    assert "secret-token" not in str(redact_sensitive_headers(headers))
+    assert "secret-proxy" not in str(redact_sensitive_headers(headers))
+
+
+async def test_unhandled_request_log_redacts_sensitive_headers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The catch-all request log never includes an Authorization value."""
+    logger = logging.getLogger("test_webserver")
+    webserver = Webserver(logger, enable_dynamic_routes=True)
+    request = make_mocked_request(
+        "GET",
+        "/unknown",
+        headers={"Authorization": "Bearer secret-token", "Accept": "application/json"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        response = await webserver._handle_catch_all(request)
+
+    assert response.status == 404
+    assert "secret-token" not in caplog.text
+    assert "<redacted>" in caplog.text
+    assert "application/json" in caplog.text
 
 
 def test_version_extract() -> None:
@@ -75,6 +118,37 @@ def test_version_extract() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "Fiji"
     assert version == "Oliver Smith Remix (Mixed)"
+
+
+def test_version_extracts_multiple_qualifiers() -> None:
+    """All recognized title qualifiers contribute to the version."""
+    title, version = util.parse_title_and_version("( ) [Deluxe] [2022 Remaster]")
+
+    assert title == "( )"
+    assert version == "Deluxe 2022 Remaster"
+
+
+@pytest.mark.parametrize(
+    ("test_str", "expected"),
+    [
+        ("Barcelona (Special Edition - Deluxe)", ("Barcelona", "Special Edition - Deluxe")),
+        (
+            "All of Me (Tiësto's Birthday Treatment Remix - Radio Edit)",
+            ("All of Me", "Tiësto's Birthday Treatment Remix - Radio Edit"),
+        ),
+        (
+            "Crime Of The Century (2014 - HD Remaster)",
+            ("Crime Of The Century", "2014 - HD Remaster"),
+        ),
+        ("Song (Live) - Remastered 2011", ("Song", "Live Remastered 2011")),
+        ("Song (Remastered) (Remastered)", ("Song", "Remastered")),
+        ("Allejoppa - Extended [Extended]", ("Allejoppa", "Extended")),
+        ("Song - Single (Deluxe)", ("Song", "Deluxe Single")),
+    ],
+)
+def test_version_extract_sequential_passes(test_str: str, expected: tuple[str, str]) -> None:
+    """Later parsing passes see the title as reduced by earlier passes."""
+    assert util.parse_title_and_version(test_str) == expected
 
 
 def test_with_handling_in_titles() -> None:
@@ -355,11 +429,29 @@ def test_get_zeroconf_args_dual_stack() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
     assert "192.168.1.10" in result["interfaces"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "freebsd14"])
+def test_get_zeroconf_args_dual_stack_ipv4_fallback(platform: str) -> None:
+    """Test that a dual-stack host falls back to IPv4-only on macOS/FreeBSD."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
+    ]
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", platform),
+    ):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.V4Only
+    assert result["interfaces"] == InterfaceChoice.Default
 
 
 def test_get_zeroconf_args_ipv4_only() -> None:
@@ -401,7 +493,10 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=True)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)

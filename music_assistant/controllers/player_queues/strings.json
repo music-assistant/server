@@ -4,6 +4,10 @@
     "description": "Configuration of the core player queue management module"
   },
   "config_entries": {
+    "autoplay_enabled": {
+      "label": "Autoplay",
+      "description": "Whether a queue has Autoplay on by default. Each queue's player controls can still turn it on or off individually."
+    },
     "autoplay_label": {
       "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
     },
@@ -27,6 +31,10 @@
     "autoplay_playlist": {
       "label": "Autoplay playlist",
       "description": "The playlist Autoplay pulls tracks from to keep the music going."
+    },
+    "crossfade_enabled": {
+      "label": "Crossfade",
+      "description": "Whether a queue has crossfade on by default. Each queue's player controls can still turn it on or off individually."
     },
     "crossfade_label": {
       "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions)."
@@ -209,6 +217,70 @@
       "options": {
         "play": "Play (and keep queue)",
         "replace": "Play (and replace queue)"
+      }
+    },
+    "default_click_action_artist": {
+      "label": "What clicking an artist does.",
+      "description": "Choose whether clicking an artist opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_album": {
+      "label": "What clicking an album does.",
+      "description": "Choose whether clicking an album opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_track": {
+      "label": "What clicking a track does.",
+      "description": "Choose whether clicking a track opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_genre": {
+      "label": "What clicking a genre does.",
+      "description": "Choose whether clicking a genre opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_radio": {
+      "label": "What clicking a radio does.",
+      "description": "Choose whether clicking a radio opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_click_action_playlist": {
+      "label": "What clicking a playlist does.",
+      "description": "Choose whether clicking a playlist opens it or starts playing it.",
+      "options": {
+        "browse": "Open it",
+        "play": "Play it"
+      }
+    },
+    "default_play_action_album_track": {
+      "label": "What playing a track from an album does.",
+      "description": "Choose whether the album continues after the track you picked, or only that track is played.",
+      "options": {
+        "play_from_here": "Play from this track onwards",
+        "play_track": "Play only this track"
+      }
+    },
+    "default_play_action_playlist_track": {
+      "label": "What playing a track from a playlist does.",
+      "description": "Choose whether the playlist continues after the track you picked, or only that track is played.",
+      "options": {
+        "play_from_here": "Play from this track onwards",
+        "play_track": "Play only this track"
       }
     }
   }

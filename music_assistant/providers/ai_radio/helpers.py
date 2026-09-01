@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import random
 import re
 from typing import Any
@@ -17,6 +18,12 @@ from .models import Slot
 def utc_now_iso() -> str:
     """Return a UTC ISO timestamp."""
     return utc().isoformat()
+
+
+def format_ai_radio_timestamp(moment: datetime.datetime) -> str:
+    """Format a moment for the <timestamp> placeholder, spelling out the weekday and month."""
+    # spelled out so the LLM never has to derive the weekday from a numeric date
+    return moment.strftime("%A %d %B %Y, %H:%M %Z")
 
 
 def slugify(value: str) -> str:

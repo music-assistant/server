@@ -9,10 +9,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ProviderFeature
-
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads, strip_code_fence
+from music_assistant.helpers.plugin_engines import resolve_ai_engine
+from music_assistant.providers.music_quiz.ai_guards import (
+    ai_prompt_exceeds_limit,
+    validate_ai_response,
+)
+from music_assistant.providers.music_quiz.constants import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
 
 if TYPE_CHECKING:
@@ -20,10 +23,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
-MAX_AI_RESPONSE_LINES = 32
 MAX_AI_CONTEXT_VALUE_LENGTH = 500
 MAX_AI_LABEL_LENGTH = 200
 MAX_AI_SYNTHETIC_COUNT = 12
@@ -49,36 +48,30 @@ async def request_ai_distractors(
     mass: MusicAssistant,
     prompt: str,
     *,
+    engine_uid: str | None,
     timeout: float = AI_QUERY_TIMEOUT_SECONDS,
 ) -> object | None:
     """
-    Request distractors from the deterministic primary AI provider.
+    Request distractors from the configured AI engine.
 
-    :param mass: Music Assistant instance used to discover AI providers.
+    :param mass: Music Assistant instance used to discover AI engines.
     :param prompt: Bounded prompt to submit.
+    :param engine_uid: The configured engine uid.
     :param timeout: Maximum request duration in seconds.
-    :return: The untrusted provider response, or ``None`` when unavailable.
+    :return: The untrusted engine response, or ``None`` when unavailable.
     """
-    if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
+    if ai_prompt_exceeds_limit(prompt):
         return None
-    providers = sorted(
-        (
-            provider
-            for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-            if isinstance(provider, PluginProvider)
-        ),
-        key=lambda provider: provider.instance_id,
-    )
-    if not providers:
+    engine = await resolve_ai_engine(mass, engine_uid)
+    if engine is None:
         return None
-    provider = providers[0]
     try:
         async with asyncio.timeout(timeout):
-            return await provider.ai_query(prompt)
+            return await engine.provider.ai_query(prompt, engine_id=engine.id)
     except Exception as err:
         LOGGER.debug(
             "Music Quiz AI distractor request failed via %s (%s)",
-            provider.instance_id,
+            engine.uid,
             type(err).__name__,
         )
         return None
@@ -97,18 +90,13 @@ def parse_ai_distractor_response(
     :param expected_kinds: Exact ordered synthetic distractor kinds requested.
     :return: Strictly validated ranking and synthetic labels.
     """
-    if not isinstance(response, str):
-        raise TypeError("response must be a string")
-    if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
-        raise ValueError("response exceeds the size limit")
-    if len(response.splitlines()) > MAX_AI_RESPONSE_LINES:
-        raise ValueError("response exceeds the line limit")
+    response_text = validate_ai_response(response)
     if len(expected_kinds) > MAX_AI_SYNTHETIC_COUNT:
         raise ValueError("too many synthetic distractors were requested")
     if len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate IDs must be unique")
     try:
-        payload = json_loads(response)
+        payload = json_loads(strip_code_fence(response_text))
     except JSON_DECODE_EXCEPTIONS as err:
         raise ValueError("response is not valid JSON") from err
     if not isinstance(payload, dict) or payload.keys() != {"ranked_ids", "synthetic"}:

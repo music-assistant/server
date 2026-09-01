@@ -1,11 +1,14 @@
 """Tests for the discovery core controller."""
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
 
 
@@ -21,6 +24,36 @@ class StubUpnpProvider:
         self.manifest = MagicMock(mdns_discovery=None, upnp_discovery=["roku:ecp"])
         self.on_mdns_service_state_change = AsyncMock()
         self.on_upnp_service_discovered = AsyncMock()
+
+
+@pytest.mark.parametrize(
+    ("controller_level", "library_level"),
+    [
+        (VERBOSE_LOG_LEVEL, logging.DEBUG),
+        (logging.DEBUG, logging.INFO),
+        (logging.INFO, logging.WARNING),
+    ],
+)
+def test_discovery_library_logger_levels(
+    mass_minimal: MusicAssistant, controller_level: int, library_level: int
+) -> None:
+    """Discovery library loggers should only expose debug output at VERBOSE."""
+    controller_logger = mass_minimal.discovery.logger
+    library_loggers = [
+        logging.getLogger("async_upnp_client"),
+        logging.getLogger("zeroconf"),
+    ]
+    previous_controller_level = controller_logger.level
+    previous_library_levels = [logger.level for logger in library_loggers]
+    try:
+        controller_logger.setLevel(controller_level)
+        mass_minimal.discovery._configure_library_loggers()
+
+        assert all(logger.level == library_level for logger in library_loggers)
+    finally:
+        controller_logger.setLevel(previous_controller_level)
+        for logger, previous_level in zip(library_loggers, previous_library_levels, strict=True):
+            logger.setLevel(previous_level)
 
 
 async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssistant) -> None:
@@ -70,16 +103,9 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
     mock_zc.async_unregister_service = AsyncMock()
     mock_zc.async_close = AsyncMock()
 
-    # Mock a dual-stack adapter so get_zeroconf_args returns predictable results
-    mock_adapter = MagicMock()
-    mock_adapter.nice_name = "eth0"
-    mock_ipv4 = MagicMock()
-    mock_ipv4.is_IPv6 = False
-    mock_ipv4.ip = "192.168.1.10"
-    mock_ipv6 = MagicMock()
-    mock_ipv6.is_IPv6 = True
-    mock_ipv6.ip = ("fd00::1", 0, 2)
-    mock_adapter.ips = [mock_ipv4, mock_ipv6]
+    # Stub the resolved zeroconf args so the assertion below does not depend on
+    # the host's network adapters or platform (both are covered by the util tests)
+    zc_args = {"ip_version": IPVersion.All, "interfaces": ["192.168.1.10", "fd00::1%2"]}
 
     with (
         patch(
@@ -91,18 +117,20 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
             new=AsyncMock(return_value=b"\x7f\x00\x00\x01"),
         ),
         patch(
-            "music_assistant.helpers.util.ifaddr.get_adapters",
-            return_value=[mock_adapter],
-        ),
+            "music_assistant.controllers.discovery.controller.get_zeroconf_args",
+            autospec=True,
+            return_value=zc_args,
+        ) as mock_get_zeroconf_args,
     ):
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
         assert mass_minimal.discovery.aiozc is mock_zc
 
     await mass_minimal.discovery.close()
 
+    mock_get_zeroconf_args.assert_called_once_with(True)
     mock_async_zeroconf.assert_called_once_with(
-        ip_version=IPVersion.All,
-        interfaces=["192.168.1.10", "fd00::1%2"],
+        ip_version=zc_args["ip_version"],
+        interfaces=zc_args["interfaces"],
     )
 
 
@@ -133,6 +161,35 @@ async def test_mass_service_advertises_webserver_publish_addresses(
         await mass_minimal.discovery._register_mass_service()
 
     assert mock_service_info.call_args.kwargs["addresses"] == [b"192.168.1.10", b"fd00::10"]
+
+
+async def test_mass_service_refreshes_on_core_state_update(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A server info change must refresh the already registered mdns record."""
+    mass_minimal.webserver = MagicMock(
+        publish_ip="192.168.1.10",
+        publish_addresses=["192.168.1.10"],
+        publish_port=8095,
+        base_url="http://192.168.1.10:8095",
+    )
+    mock_zc = MagicMock(spec=AsyncZeroconf)
+    mock_zc.async_register_service = AsyncMock()
+    mock_zc.async_update_service = AsyncMock()
+    mass_minimal.discovery._aiozc = mock_zc
+    mass_minimal.discovery._mass_service_info = MagicMock()
+
+    with (
+        patch("music_assistant.controllers.discovery.controller.AsyncServiceInfo"),
+        patch(
+            "music_assistant.controllers.discovery.controller.get_ip_pton",
+            new=AsyncMock(side_effect=lambda ip: ip.encode()),
+        ),
+    ):
+        await mass_minimal.discovery._on_core_state_updated(MagicMock())
+
+    mock_zc.async_update_service.assert_awaited_once()
+    mock_zc.async_register_service.assert_not_awaited()
 
 
 async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssistant) -> None:

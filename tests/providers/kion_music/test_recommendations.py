@@ -17,6 +17,7 @@ from yandex_music import Track as YandexTrack
 from music_assistant.providers.kion_music import SUPPORTED_FEATURES
 from music_assistant.providers.kion_music.constants import MY_WAVE_PLAYLIST_ID
 from music_assistant.providers.kion_music.provider import KionMusicProvider
+from tests.common import use_real_create_task
 
 from .conftest import DE_JSON_CLIENT
 
@@ -104,6 +105,7 @@ def provider() -> KionMusicProvider:
     # default: every cache lookup is a miss (tests override to simulate warm entries)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
+    use_real_create_task(mass)
     manifest = Mock()
     manifest.domain = "kion_music"
     config = Mock()

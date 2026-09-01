@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import Album, ItemMapping
 
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
@@ -14,6 +14,7 @@ from music_assistant.providers.apple_music.parsers import (
     parse_artwork_image,
     parse_track,
 )
+from tests.common import use_real_create_task
 
 BLOBSTORE_ARTWORK = {
     "url": "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=abc",
@@ -47,6 +48,7 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     return provider
 
 
@@ -92,6 +94,20 @@ def _artists_relationship(*names: str) -> dict[str, Any]:
             ]
         }
     }
+
+
+def test_parse_album_preserves_provider_upc() -> None:
+    """Apple UPC values are not padded before shared identifier normalization."""
+    provider = _create_provider_mock()
+    album_obj = _make_album_obj(
+        {"artistName": "Test Artist", "upc": "00724354283857"},
+        _artists_relationship("Test Artist"),
+    )
+
+    result = parse_album(provider, album_obj)
+
+    assert isinstance(result, Album)
+    assert (ExternalID.BARCODE, "00724354283857") in result.external_ids
 
 
 def test_parse_album_compilation_uses_album_level_artist_name() -> None:
@@ -300,6 +316,42 @@ def test_parse_track_library_song_uses_library_album_name_fallback() -> None:
 
     assert isinstance(result.album, ItemMapping)
     assert result.album.name == "Album From Library"
+
+
+def test_parse_track_empty_artists_relationship_uses_artist_name() -> None:
+    """An artists relationship without data should fall back to artistName."""
+    provider = _create_provider_mock()
+    track_obj = {
+        "id": "i.librarytrack1",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Mr. Brightside",
+            "artistName": "The Killers",
+            "durationInMillis": 222000,
+            "playParams": {"catalogId": "1526194192"},
+        },
+        "relationships": {
+            "artists": {"data": []},
+            "catalog": {
+                "data": [
+                    {
+                        "id": "1526194192",
+                        "attributes": {
+                            "name": "Mr. Brightside",
+                            "artistName": "The Killers",
+                            "durationInMillis": 222000,
+                            "playParams": {"id": "1526194192"},
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    result = parse_track(provider, track_obj)
+
+    assert len(result.artists) == 1
+    assert result.artists[0].name == "The Killers"
 
 
 @pytest.mark.asyncio
@@ -548,7 +600,7 @@ async def test_library_tracks_fetches_detail_when_list_item_has_no_album() -> No
     assert isinstance(tracks[0].album, ItemMapping)
     assert tracks[0].album.name == "Album From Detail"
     provider.api_client.get_data.assert_called_once_with(
-        "me/library/songs/i.librarytrack3", include="catalog,albums,artists"
+        "me/library/songs", ids="i.librarytrack3", include="catalog,albums,artists"
     )
 
 
@@ -614,7 +666,7 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
     assert tracks[0].album.item_id == "l.album4"
     assert tracks[0].album.name == "Resolved Album"
     provider.api_client.get_data.assert_called_once_with(
-        "me/library/songs/i.librarytrack4", include="catalog,albums,artists"
+        "me/library/songs", ids="i.librarytrack4", include="catalog,albums,artists"
     )
 
 
@@ -957,3 +1009,133 @@ async def test_get_artwork_url_unknown_media_type() -> None:
     manager = AppleMusicMediaManager(provider)
 
     assert await manager.get_artwork_url("bogus", "1") is None
+
+
+def _availability(parsed: Any) -> bool:
+    """Return the availability flag off a parsed item's single provider mapping."""
+    return bool(next(iter(parsed.provider_mappings)).available)
+
+
+def _library_song_obj(play_params: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a library-songs object with no catalog twin and the given playParams."""
+    return {
+        "id": "i.librarysong",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Library Song",
+            "artistName": "Artist 1",
+            "albumName": "Album 1",
+            "durationInMillis": 180000,
+            **({"playParams": play_params} if play_params is not None else {}),
+        },
+        "relationships": {},
+    }
+
+
+def test_parse_track_purchase_only_is_unavailable() -> None:
+    """A purchase with no catalog twin has playParams but Apple refuses to stream it."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj(
+        {"id": "i.librarysong", "kind": "song", "isLibrary": True, "purchasedId": "397010985"}
+    )
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is False
+
+
+def test_parse_track_without_play_params_is_unavailable() -> None:
+    """Apple omits a usable playParams entirely for withdrawn catalog items."""
+    provider = _create_provider_mock()
+
+    result = parse_track(provider, _library_song_obj({}))
+
+    assert _availability(result) is False
+
+
+def test_parse_track_upload_stays_available() -> None:
+    """An upload carries neither purchasedId nor catalogId and must stay playable."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj({"id": "i.librarysong", "kind": "song", "isLibrary": True})
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_track_purchase_with_catalog_twin_is_available() -> None:
+    """A purchase that also exists in the catalog is playable from the catalog."""
+    provider = _create_provider_mock()
+    track_obj = _library_song_obj(
+        {
+            "id": "i.librarysong",
+            "kind": "song",
+            "isLibrary": True,
+            "purchasedId": "397010985",
+            "catalogId": "1440774173",
+        }
+    )
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_track_catalog_song_is_available() -> None:
+    """A plain catalog song keeps the previous behaviour."""
+    provider = _create_provider_mock()
+    track_obj = {
+        "id": "1440774173",
+        "type": "songs",
+        "attributes": {
+            "name": "Catalog Song",
+            "artistName": "Artist 1",
+            "durationInMillis": 180000,
+            "playParams": {"id": "1440774173", "kind": "song"},
+        },
+        "relationships": {},
+    }
+
+    result = parse_track(provider, track_obj)
+
+    assert _availability(result) is True
+
+
+def test_parse_album_without_play_params_is_unavailable() -> None:
+    """An album Apple will not serve carries no usable playParams."""
+    provider = _create_provider_mock()
+    album_obj = {
+        "id": "l.libraryalbum",
+        "type": "library-albums",
+        "attributes": {"name": "Library Album", "artistName": "Artist 1", "playParams": {}},
+        "relationships": {},
+    }
+
+    result = parse_album(provider, album_obj)
+
+    assert _availability(result) is False
+
+
+def test_parse_album_library_album_is_available() -> None:
+    """
+    A library album with usable playParams stays available.
+
+    Apple exposes no purchase marker on a library album - its playParams carry only
+    id/kind/isLibrary - so the purchase-only rule cannot fire here even when every
+    track on the album is a purchase. See music-assistant/support#6032.
+    """
+    provider = _create_provider_mock()
+    album_obj = {
+        "id": "l.libraryalbum",
+        "type": "library-albums",
+        "attributes": {
+            "name": "Library Album",
+            "artistName": "Artist 1",
+            "playParams": {"id": "l.libraryalbum", "kind": "album", "isLibrary": True},
+        },
+        "relationships": {},
+    }
+
+    result = parse_album(provider, album_obj)
+
+    assert _availability(result) is True

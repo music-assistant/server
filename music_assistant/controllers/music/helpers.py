@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import TYPE_CHECKING, Any, Final
 
-from music_assistant_models.media_items import Artist, ItemMapping, MediaItemType, SearchResults
+from music_assistant_models.helpers import create_safe_string
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    MediaItemMetadata,
+    MediaItemType,
+    ProviderMapping,
+    SearchResults,
+)
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.compare import create_safe_string
-
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from music_assistant_models.enums import MediaType
 
@@ -114,3 +121,44 @@ def filter_search_results(
         podcasts=[x for x in results.podcasts if _keep(x)],
         sound_effects=[x for x in results.sound_effects if _keep(x)],
     )
+
+
+def metadata_for_update(
+    stored: MediaItemMetadata, update: MediaItemMetadata, overwrite: bool
+) -> MediaItemMetadata:
+    """
+    Return the metadata to store for a library item update.
+
+    An overwrite replaces the stored metadata, unless the given item carries none at
+    all: providers embed a bare stub of an album or artist in their track payloads.
+
+    :param stored: Metadata currently stored for the library item.
+    :param update: Metadata of the item as delivered by the provider.
+    :param overwrite: Whether the given item replaces the stored one.
+    """
+    if overwrite and any(getattr(update, field.name) for field in fields(update)):
+        return update
+    return stored.update(update)
+
+
+def provider_mappings_for_update(
+    stored: Iterable[ProviderMapping], update: Iterable[ProviderMapping], overwrite: bool
+) -> set[ProviderMapping]:
+    """
+    Return the provider mappings to store for a library item update.
+
+    An overwrite replaces the mappings of the providers the given item comes from, so a
+    changed item id (a moved file) drops its stale row, and keeps the mappings written
+    by the other providers the item is linked to.
+
+    :param stored: Provider mappings currently stored for the library item.
+    :param update: Provider mappings of the item as delivered by the provider.
+    :param overwrite: Whether the given item replaces the stored one.
+    """
+    if not overwrite:
+        return {*update, *stored}
+    updated_instances = {mapping.provider_instance for mapping in update}
+    return {
+        *update,
+        *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
+    }

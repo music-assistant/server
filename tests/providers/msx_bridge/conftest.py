@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -10,7 +11,10 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, _render_qr
+from music_assistant.providers.msx_bridge.http_server import (
+    MSXHTTPServer,
+    _render_qr,
+)
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
@@ -79,12 +83,23 @@ def mass_mock(player_config_mock: Mock) -> Mock:
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_next_track = AsyncMock()
     mass.players.cmd_previous_track = AsyncMock()
+    mass.players._handle_cmd_pause = AsyncMock()
+    mass.players._handle_cmd_play = AsyncMock()
+    mass.players._handle_cmd_stop = AsyncMock()
+    mass.players._handle_play_media = AsyncMock()
     mass.players.get = Mock(return_value=None)
     mass.players.get_player = Mock(return_value=None)
+
+    @asynccontextmanager
+    async def _player_lock(*_args: Any, **_kwargs: Any) -> AsyncGenerator[None]:
+        yield
+
+    mass.players.get_player_lock = Mock(side_effect=_player_lock)
     mass.players.register = AsyncMock()
     mass.players.unregister = AsyncMock()
     mass.players.all = Mock(return_value=[])
     mass.players.all_players = Mock(return_value=[])
+    mass.players.iter_players = Mock(return_value=[])
 
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)

@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -45,12 +46,15 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(x.strip() for x in values if x not in (None, "", " "))
 
 
-def clean_mbid(value: str | None, source: str | None = None) -> str | None:
+def clean_mbid(
+    value: str | None, source: str | None = None, logger: logging.Logger | None = None
+) -> str | None:
     """
     Return a MusicBrainz identifier in canonical (lowercase UUID) form, or None if invalid.
 
-    :param value: The raw MusicBrainz identifier value from the file tags.
-    :param source: Origin of the value (e.g. filename), included in the log when invalid.
+    :param value: The raw MusicBrainz identifier value, from file tags or a provider payload.
+    :param source: Origin of the value (e.g. file path or provider item), logged when invalid.
+    :param logger: Logger to emit the warning to, defaults to the tags logger.
     """
     if not value:
         return None
@@ -59,9 +63,11 @@ def clean_mbid(value: str | None, source: str | None = None) -> str | None:
         return str(UUID(value.strip("\x00 \t\r\n")))
     except ValueError, TypeError, AttributeError:
         if source:
-            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r in %s", value, source)
+            (logger or LOGGER).warning(
+                "Ignoring invalid MusicBrainz identifier %r in %s", value, source
+            )
         else:
-            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r", value)
+            (logger or LOGGER).warning("Ignoring invalid MusicBrainz identifier %r", value)
         return None
 
 
@@ -728,7 +734,7 @@ def parse_tags(
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
-        if not input_file.startswith("http") and os.path.isfile(input_file):
+        if not input_file.startswith("http") and Path(input_file).is_file():
             extra_tags = parse_tags_mutagen(input_file)
             if extra_tags:
                 tags.tags.update(extra_tags)
@@ -1458,7 +1464,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
     # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
-    if not input_file.startswith(("http://", "https://")) and os.path.isfile(input_file):
+    if not input_file.startswith(("http://", "https://")) and Path(input_file).is_file():
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):

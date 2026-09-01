@@ -39,10 +39,21 @@ from music_assistant.controllers.player_queues.autoplay import (
     AutoplayMode,
 )
 from music_assistant.controllers.player_queues.constants import (
+    CLICK_ACTION_BROWSE,
+    CLICK_ACTION_DEFAULT_VALUE,
+    CLICK_ACTION_PLAY,
+    CONF_AUTOPLAY_ENABLED,
     CONF_AUTOPLAY_LABEL,
     CONF_AUTOPLAY_MODE,
     CONF_AUTOPLAY_PLAYLIST,
+    CONF_CROSSFADE_ENABLED,
     CONF_CROSSFADE_LABEL,
+    CONF_DEFAULT_CLICK_ACTION_ALBUM,
+    CONF_DEFAULT_CLICK_ACTION_ARTIST,
+    CONF_DEFAULT_CLICK_ACTION_GENRE,
+    CONF_DEFAULT_CLICK_ACTION_PLAYLIST,
+    CONF_DEFAULT_CLICK_ACTION_RADIO,
+    CONF_DEFAULT_CLICK_ACTION_TRACK,
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
     CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
@@ -57,13 +68,20 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+    CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_LABEL,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
+    DEFAULT_AUTOPLAY_ENABLED,
+    DEFAULT_CROSSFADE_ENABLED,
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+    PLAY_ACTION_PLAY_FROM_HERE,
+    PLAY_ACTION_PLAY_TRACK,
+    PLAY_ACTION_TRACK_DEFAULT_VALUE,
     SMART_SHUFFLE_ARTIST_RECENCY_DEFAULT,
     SMART_SHUFFLE_ARTIST_RECENCY_OPTIONS,
     SMART_SHUFFLE_DUPLICATE_GAP_DEFAULT,
@@ -78,6 +96,7 @@ if TYPE_CHECKING:
 # category names for frontend grouping (labels live under config_categories.<name> in strings.json)
 CATEGORY_ITEMS_TO_SELECT = "items_to_select"
 CATEGORY_DEFAULT_ENQUEUE_OPTION = "default_enqueue_option"
+CATEGORY_CLICK_ACTIONS = "click_actions"
 CATEGORY_SMART_SHUFFLE = "smart_shuffle"
 CATEGORY_AUTOPLAY = "autoplay"
 CATEGORY_CROSSFADE = "crossfade"
@@ -88,9 +107,10 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
     """
     Return the core-module (global) config entries for the Player Queues controller.
 
-    These are the queue-controller-wide defaults: the per-media-type enqueue behaviour plus the
-    global smart-shuffle, autoplay, crossfade and volume-normalization settings that individual
-    queues follow (via their "global" option) or override.
+    These are the queue-controller-wide defaults: the per-media-type enqueue behaviour, the click
+    actions clients apply to a media item, plus the global smart-shuffle, autoplay, crossfade and
+    volume-normalization settings that individual queues follow (via their "global" option) or
+    override.
 
     Kept option-free (the global autoplay-playlist dropdown is populated by the config controller
     when serving the entries to the UI) so this stays cheap for the config parse/value path.
@@ -99,6 +119,7 @@ def core_config_entries(mass: MusicAssistant) -> tuple[ConfigEntry, ...]:
     """
     return (
         *_enqueue_default_entries(),
+        *_click_action_entries(),
         *_smart_shuffle_entries(per_queue=False),
         *_autoplay_entries(mass, None, per_queue=False),
         *_crossfade_entries(mass, per_queue=False),
@@ -229,6 +250,49 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
     ]
 
 
+def _click_action_entries() -> list[ConfigEntry]:
+    """
+    Define what clients do on a media item click, and what a track row's play button starts.
+
+    Not read by the server itself: these are the shared, discoverable home for behaviour every
+    client would otherwise have to define (and diverge on) locally, next to the enqueue defaults
+    that already live here.
+    """
+    click_options = [ConfigValueOption(CLICK_ACTION_BROWSE), ConfigValueOption(CLICK_ACTION_PLAY)]
+    play_action_options = [
+        ConfigValueOption(PLAY_ACTION_PLAY_FROM_HERE),
+        ConfigValueOption(PLAY_ACTION_PLAY_TRACK),
+    ]
+
+    def _entry(key: str, default: str, options: list[ConfigValueOption]) -> ConfigEntry:
+        return ConfigEntry(
+            key=key,
+            type=ConfigEntryType.STRING,
+            default_value=default,
+            options=options,
+            category=CATEGORY_CLICK_ACTIONS,
+        )
+
+    return [
+        _entry(CONF_DEFAULT_CLICK_ACTION_ARTIST, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(CONF_DEFAULT_CLICK_ACTION_ALBUM, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(CONF_DEFAULT_CLICK_ACTION_TRACK, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(CONF_DEFAULT_CLICK_ACTION_GENRE, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(CONF_DEFAULT_CLICK_ACTION_RADIO, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(CONF_DEFAULT_CLICK_ACTION_PLAYLIST, CLICK_ACTION_DEFAULT_VALUE, click_options),
+        _entry(
+            CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
+            PLAY_ACTION_TRACK_DEFAULT_VALUE,
+            play_action_options,
+        ),
+        _entry(
+            CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+            PLAY_ACTION_TRACK_DEFAULT_VALUE,
+            play_action_options,
+        ),
+    ]
+
+
 def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
     """Smart-shuffle entries: the enabled toggle (per-queue overridable) + global-only tuning."""
     entries = [
@@ -287,7 +351,7 @@ def _recency_entry(
 def _autoplay_entries(
     mass: MusicAssistant, playlist_options: list[ConfigValueOption] | None, *, per_queue: bool
 ) -> list[ConfigEntry]:
-    """Autoplay entries: the mode select (per-queue overridable) + its playlist companion."""
+    """Autoplay entries: the global on/off default, mode select and its playlist companion."""
     similar_available = any(
         ProviderFeature.SIMILAR_TRACKS in provider.supported_features
         for provider in mass.music.providers
@@ -300,12 +364,25 @@ def _autoplay_entries(
     ]
     if per_queue:
         mode_options.append(ConfigValueOption(CONF_VALUE_GLOBAL))
-    return [
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_AUTOPLAY_LABEL,
             type=ConfigEntryType.LABEL,
             category=CATEGORY_AUTOPLAY,
         ),
+    ]
+    if not per_queue:
+        # global-only: the per-queue Autoplay toggle is a runtime command, not a config entry
+        # so we only define the default here
+        entries.append(
+            ConfigEntry(
+                key=CONF_AUTOPLAY_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_AUTOPLAY_ENABLED,
+                category=CATEGORY_AUTOPLAY,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_AUTOPLAY_MODE,
             type=ConfigEntryType.STRING,
@@ -324,10 +401,11 @@ def _autoplay_entries(
             category=CATEGORY_AUTOPLAY,
         ),
     ]
+    return entries
 
 
 def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigEntry]:
-    """Crossfade entries: the mode select (per-queue overridable) + global-only duration."""
+    """Crossfade entries: the global on/off default, mode select and global-only duration."""
     smart_fades_available = mass.streams.smart_fades_available
     mode_options = [
         ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
@@ -340,12 +418,24 @@ def _crossfade_entries(mass: MusicAssistant, *, per_queue: bool) -> list[ConfigE
         if smart_fades_available
         else CrossfadeMode.STANDARD_CROSSFADE.value
     )
-    entries = [
+    entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_CROSSFADE_LABEL,
             type=ConfigEntryType.LABEL,
             category=CATEGORY_CROSSFADE,
         ),
+    ]
+    if not per_queue:
+        # global-only: the per-queue crossfade toggle is a runtime command, not a config entry
+        entries.append(
+            ConfigEntry(
+                key=CONF_CROSSFADE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_CROSSFADE_ENABLED,
+                category=CATEGORY_CROSSFADE,
+            )
+        )
+    entries += [
         ConfigEntry(
             key=CONF_CROSSFADE_MODE,
             type=ConfigEntryType.STRING,

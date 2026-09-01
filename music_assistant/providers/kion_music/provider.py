@@ -1886,9 +1886,10 @@ class KionMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
-        Get My Mix tracks for virtual playlist (uncached; uses cursor for page > 0).
+        Get My Mix tracks for virtual playlist (uses cursor for page > 0).
 
         Fetches MY_WAVE_BATCH_SIZE Rotor API batches per page call to reduce
         the number of round-trips when the player controller paginates through pages.
@@ -1963,6 +1964,7 @@ class KionMusicProvider(MusicProvider):
             self._my_wave_playlist_next_cursor = next_cursor
             return tracks
 
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_liked_tracks_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get liked tracks for virtual playlist (sorted in reverse chronological order).
@@ -2416,7 +2418,6 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.
@@ -2440,6 +2441,17 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Liked Tracks playlist returned %s tracks", len(result))
             return result
 
+        return await self._get_regular_playlist_tracks(prov_playlist_id, page)
+
+    @use_cache(3600 * 3, allow_expired_cache=True)
+    async def _get_regular_playlist_tracks(self, prov_playlist_id: str, page: int) -> list[Track]:
+        """
+        Get the tracks of a regular (non-virtual) playlist.
+
+        :param prov_playlist_id: The provider playlist ID (format: "owner_id:kind").
+        :param page: Page number for pagination.
+        :return: List of Track objects.
+        """
         # KION Music API returns all playlist tracks in one call (no server-side pagination).
         # Return empty list for page > 0 so the controller pagination loop terminates.
         if page > 0:
@@ -2560,7 +2572,8 @@ class KionMusicProvider(MusicProvider):
             try:
                 yield parse_artist(self, artist)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library artist: %s", err)
+                # only raised for a missing artist id, so the item is unidentifiable
+                self.report_skipped_sync_item(MediaType.ARTIST, None, err)
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from KION Music."""
@@ -2570,7 +2583,9 @@ class KionMusicProvider(MusicProvider):
             try:
                 yield parse_album(self, album)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library album: %s", err)
+                # album.id may still be usable even if one of its artists is not
+                item_id = str(album.id) if album.id is not None else None
+                self.report_skipped_sync_item(MediaType.ALBUM, item_id, err)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from KION Music."""
@@ -2588,7 +2603,9 @@ class KionMusicProvider(MusicProvider):
                 try:
                     yield parse_track(self, track)
                 except InvalidDataError as err:
-                    self.logger.debug("Error parsing library track: %s", err)
+                    # track.id may still be usable even if its artist/album is not
+                    item_id = str(track.id) if track.id is not None else None
+                    self.report_skipped_sync_item(MediaType.TRACK, item_id, err)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """
@@ -2608,7 +2625,11 @@ class KionMusicProvider(MusicProvider):
                 seen_ids.add(parsed.item_id)
                 yield parsed
             except InvalidDataError as err:
-                self.logger.debug("Error parsing library playlist: %s", err)
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
         # User-liked editorial playlists (not in users_playlists_list)
         liked_playlists = await self.client.get_liked_playlists()
         for playlist in liked_playlists:
@@ -2617,7 +2638,11 @@ class KionMusicProvider(MusicProvider):
                 if parsed.item_id not in seen_ids:
                     yield parsed
             except InvalidDataError as err:
-                self.logger.debug("Error parsing liked playlist: %s", err)
+                # mirrors the "owner_id:kind" id parse_playlist() derives
+                owner_id = str(playlist.owner.uid) if playlist.owner else str(self.client.user_id)
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, f"{owner_id}:{playlist.kind}", err
+                )
 
     # Library edit methods
 

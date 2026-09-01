@@ -75,6 +75,12 @@ class MusicMeProvider(MusicProvider):
     http_session: aiohttp.ClientSession
     throttler: ThrottlerManager
 
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """Return the media types this provider can serve."""
+        # full catalogue access via search/browse, but only playlists as library items
+        return {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST}
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)

@@ -1,7 +1,7 @@
 {
   "type": "plugin",
   "domain": "radio_playlist",
-  "stage": "experimental",
+  "stage": "beta",
   "name": "Endless Mix Playlists",
   "description": "Generates dynamic 'endless mix' playlists (a mix of a seed item's own tracks and similar tracks) for any artist, album, track, genre or playlist.",
   "codeowners": ["@music-assistant"],

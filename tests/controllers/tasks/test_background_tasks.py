@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import _migrate_metadata_maintenance_schedule
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
+    ALBUM_RECONCILIATION_TASK_ID,
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -41,6 +43,7 @@ from music_assistant.controllers.tasks import (
     get_current_task,
     get_current_task_id,
     report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress,
     update_current_task_progress_from_index,
     update_current_task_progress_text,
@@ -97,6 +100,11 @@ async def test_run_background_task(tasks_controller: TasksController) -> None:
         seen_task_id = get_current_task_id()
         update_current_task_progress(42, "Processing playlist items")
         update_current_task_progress_text("Refreshing playlist")
+        await asyncio.to_thread(
+            set_current_task_report,
+            "## Result\n\nAdded 42 playlist items.",
+        )
+        await asyncio.sleep(0)
         handler_started.set()
 
     task = tasks_controller.run_background_task(
@@ -117,6 +125,7 @@ async def test_run_background_task(tasks_controller: TasksController) -> None:
     assert task.finished_at is not None
     assert task.progress == 42
     assert task.progress_text == "Refreshing playlist"
+    assert task.report == "## Result\n\nAdded 42 playlist items."
     assert any("Task started" in line for line in task.logs)
     assert any("Task completed successfully" in line for line in task.logs)
 
@@ -145,6 +154,185 @@ async def test_task_can_report_partial_success(tasks_controller: TasksController
     assert task.progress == 50
     assert task.progress_text == "Matching playlist items"
     assert any("completed with 1 issue" in line for line in task.logs)
+
+
+async def test_task_report_updates_from_thread_and_clears_on_retry(
+    tasks_controller: TasksController,
+) -> None:
+    """Task reports should dispatch from threads and reset before a retry."""
+    retry_started = asyncio.Event()
+    finish_retry = asyncio.Event()
+    attempt = 0
+
+    async def handler() -> None:
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            raise RuntimeError("First attempt failed")
+        retry_started.set()
+        await finish_retry.wait()
+
+    task = tasks_controller.run_background_task(
+        name="Retry report test",
+        handler=handler,
+        allow_retry=True,
+    )
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.FAILED)
+    previous_updated_at = task.updated_at
+    tasks_controller._signal_task_update()
+
+    await asyncio.to_thread(
+        tasks_controller.set_task_report,
+        task.id,
+        "## First attempt\n\nSome items could not be processed.",
+    )
+    await asyncio.sleep(0)
+
+    assert task.report == "## First attempt\n\nSome items could not be processed."
+    assert task.updated_at > previous_updated_at
+    assert tasks_controller._scheduled_task_update_at is not None
+
+    tasks_controller.retry_task(task.id)
+    await retry_started.wait()
+
+    task = tasks_controller.get_task(task.id)
+    assert task.report is None
+
+    finish_retry.set()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+
+
+async def test_stale_task_context_cannot_update_retry_report(
+    tasks_controller: TasksController,
+) -> None:
+    """A worker from an earlier run should not update the current run report."""
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    retry_started = asyncio.Event()
+    finish_retry = asyncio.Event()
+    attempt = 0
+
+    def worker() -> None:
+        worker_started.set()
+        release_worker.wait()
+        set_current_task_report("Report from cancelled run")
+        worker_finished.set()
+
+    async def handler() -> None:
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            await asyncio.to_thread(worker)
+            return
+        retry_started.set()
+        await finish_retry.wait()
+
+    task = tasks_controller.run_background_task(
+        name="Stale report test",
+        handler=handler,
+        allow_retry=True,
+    )
+    assert await asyncio.to_thread(worker_started.wait, 2)
+
+    tasks_controller.cancel_task(task.id)
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.CANCELLED)
+    tasks_controller.retry_task(task.id)
+    await retry_started.wait()
+
+    release_worker.set()
+    assert await asyncio.to_thread(worker_finished.wait, 2)
+    await asyncio.sleep(0)
+
+    assert task.report is None
+
+    finish_retry.set()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+
+
+async def test_stale_task_context_cannot_update_recreated_task_report(
+    tasks_controller: TasksController,
+) -> None:
+    """A worker from a replaced task should not update its replacement report."""
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    replacement_started = asyncio.Event()
+    finish_replacement = asyncio.Event()
+
+    def worker() -> None:
+        worker_started.set()
+        release_worker.wait()
+        set_current_task_report("Report from replaced task")
+        worker_finished.set()
+
+    async def first_handler() -> None:
+        await asyncio.to_thread(worker)
+
+    async def replacement_handler() -> None:
+        replacement_started.set()
+        await finish_replacement.wait()
+
+    task = tasks_controller.run_background_task(
+        task_id="recreated_task_report",
+        name="Recreated report test",
+        handler=first_handler,
+    )
+    assert await asyncio.to_thread(worker_started.wait, 2)
+    tasks_controller.cancel_task(task.id)
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.CANCELLED)
+
+    replacement = tasks_controller.run_background_task(
+        task_id=task.id,
+        name="Recreated report test",
+        handler=replacement_handler,
+    )
+    await replacement_started.wait()
+
+    release_worker.set()
+    assert await asyncio.to_thread(worker_finished.wait, 2)
+    await asyncio.sleep(0)
+
+    assert replacement.report is None
+
+    finish_replacement.set()
+    await _wait_for_task_status(tasks_controller, replacement.id, TaskStatus.SUCCESS)
+
+
+async def test_scheduled_report_reset_is_persisted_while_pending(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """A queued scheduled run should persist its cleared report."""
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+    tasks_controller._max_concurrent_tasks = 1
+
+    async def blocker() -> None:
+        blocker_started.set()
+        await release_blocker.wait()
+
+    async def scheduled_handler() -> None:
+        """No-op scheduled task handler."""
+
+    tasks_controller.run_background_task(name="Block task slot", handler=blocker)
+    await blocker_started.wait()
+    task = tasks_controller.register_scheduled_task(
+        task_id="scheduled_report_reset",
+        name="Scheduled report reset",
+        handler=scheduled_handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    tasks_controller.set_task_report(task.id, "Previous report")
+
+    tasks_controller.run_task(task.id)
+
+    persisted_states = mass_minimal.config.get("core/tasks/scheduled_task_states", {})
+    assert persisted_states[task.id]["status"] == TaskStatus.PENDING.value
+    assert persisted_states[task.id]["report"] is None
+
+    release_blocker.set()
+    await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
 
 
 async def test_priority_task_runs_before_normal(tasks_controller: TasksController) -> None:
@@ -221,6 +409,128 @@ async def test_user_scoped_task_visibility(tasks_controller: TasksController) ->
         set_current_user(None)
 
 
+def _register_blocking_task(
+    tasks_controller: TasksController,
+    task_id: str,
+    handler: Callable[[], Awaitable[None]],
+) -> None:
+    """Register and immediately queue a scheduled task with the given handler."""
+    tasks_controller.register_scheduled_task(
+        task_id=task_id,
+        name="Test sync",
+        handler=handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    tasks_controller.run_task(task_id)
+
+
+async def test_unregister_scheduled_task_and_wait_waits_for_running_task(
+    tasks_controller: TasksController,
+) -> None:
+    """Unregistering with a wait should only return once the cancelled task unwound."""
+    started = asyncio.Event()
+    cleanup_finished = False
+
+    async def handler() -> None:
+        nonlocal cleanup_finished
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            # cleanup that yields to the event loop, like a sync closing its resources
+            await asyncio.sleep(0.05)
+            cleanup_finished = True
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    assert await tasks_controller.unregister_scheduled_task_and_wait("test_sync_task") is True
+    assert cleanup_finished is True
+    assert "test_sync_task" not in tasks_controller._tasks
+
+
+async def test_unregister_scheduled_task_and_wait_gives_up_after_timeout(
+    tasks_controller: TasksController,
+) -> None:
+    """A task that ignores cancellation must not block the caller indefinitely."""
+    started = asyncio.Event()
+    unwound = asyncio.Event()
+
+    async def handler() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            # cleanup that outlives the caller's patience
+            await asyncio.sleep(0.3)
+            unwound.set()
+            raise
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    unregistered = await tasks_controller.unregister_scheduled_task_and_wait(
+        "test_sync_task", timeout=0.05
+    )
+
+    assert unregistered is False
+    assert not unwound.is_set()
+    # the task still finishes (and cleans itself up) on its own
+    await asyncio.wait_for(unwound.wait(), timeout=2)
+    await asyncio.sleep(0)
+    assert "test_sync_task" not in tasks_controller._tasks
+
+
+async def test_unregister_scheduled_task_and_wait_from_within_the_task(
+    tasks_controller: TasksController,
+) -> None:
+    """A task that unregisters itself must not wait for itself."""
+    unregistered: bool | None = None
+    returned = asyncio.Event()
+
+    async def handler() -> None:
+        nonlocal unregistered
+        # yield once so the managed task is fully registered before it cancels itself
+        await asyncio.sleep(0)
+        unregistered = await tasks_controller.unregister_scheduled_task_and_wait("test_sync_task")
+        returned.set()
+        await asyncio.sleep(30)
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+
+    await asyncio.wait_for(returned.wait(), timeout=2)
+    assert unregistered is True
+
+
+async def test_unschedule_provider_sync_waits_for_running_sync(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """Unscheduling a provider sync should wait for an in-flight sync of that provider."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+    task_id = music._get_sync_task_id("test_provider--instance", MediaType.TRACK)
+    started = asyncio.Event()
+    cleanup_finished = False
+
+    async def handler() -> None:
+        nonlocal cleanup_finished
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.sleep(0.05)
+            cleanup_finished = True
+
+    _register_blocking_task(tasks_controller, task_id, handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    await music.unschedule_provider_sync("test_provider--instance")
+
+    assert cleanup_finished is True
+    assert task_id not in tasks_controller._tasks
+
+
 async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) -> None:
     """Scheduled tasks should restore their edited schedule and persisted runtime state."""
     controller = TasksController(mass_minimal)
@@ -247,6 +557,7 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
     task.last_run_user_id = "admin-user"
     task.failure_count = 2
     task.failure_messages[:] = ["Album import failed", "Artwork lookup failed"]
+    task.report = "## Sync result\n\nImported 12 artists."
     controller._persist_scheduled_task_state(controller._get_managed_task(task.id))
 
     persisted_states = mass_minimal.config.get("core/tasks/scheduled_task_states", {})
@@ -276,6 +587,7 @@ async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) ->
             "Album import failed",
             "Artwork lookup failed",
         ]
+        assert restored_task.report == "## Sync result\n\nImported 12 artists."
         assert restored_task.schedule is not None
         assert restored_task.schedule.enabled is False
         assert restored_task.schedule.type == TaskScheduleType.WEEKLY
@@ -414,6 +726,52 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
 
 
+async def test_on_provider_unload_keeps_persisted_sync_state(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether persisted sync state survives is decided by unload_provider, not by the hook."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain="test_provider",
+        instance_id="test_provider--instance",
+        name="Test provider",
+    )
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+    provider = DummyMusicProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain="test_provider",
+            name="Test provider",
+            description="Test provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+    )
+
+    async def handler() -> None:
+        """No-op sync handler for a task that is never run."""
+
+    task_id = music._get_sync_task_id(provider, MediaType.TRACK)
+    tasks_controller.register_scheduled_task(
+        task_id=task_id,
+        name="Sync tracks",
+        handler=handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    assert task_id in tasks_controller._get_persisted_task_states()
+
+    await music.on_provider_unload(provider)
+
+    assert task_id in tasks_controller._get_persisted_task_states()
+
+
 async def test_core_maintenance_tasks_register_nightly_schedules(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
@@ -441,6 +799,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     artist_scan_task = tasks_controller.get_task(MISSING_ARTIST_METADATA_SCAN_TASK_ID)
     playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
     thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
+    album_reconciliation_task = tasks_controller.get_task(ALBUM_RECONCILIATION_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
     assert cache_task.translation_owner == "core.cache"
@@ -476,6 +835,13 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert 0 <= artist_scan_task.schedule.minute <= 59
     assert artist_scan_task.schedule == playlist_scan_task.schedule
     assert thumb_cleanup_task.schedule == artist_scan_task.schedule
+
+    # Album reconciliation is bounded to a handful of albums per run, so it runs hourly
+    # instead of spread across the day like the other (MusicBrainz-hitting) scans.
+    assert album_reconciliation_task.translation_key == "background_task.reconcile_duplicate_albums"
+    assert album_reconciliation_task.translation_owner == "core.metadata"
+    assert album_reconciliation_task.metadata == {"task_domain": "metadata_album_reconciliation"}
+    assert album_reconciliation_task.schedule == TaskSchedule.hourly()
 
 
 async def test_music_sync_completion_queues_database_cleanup_background_task(

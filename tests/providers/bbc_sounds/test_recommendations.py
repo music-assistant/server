@@ -10,7 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
-from sounds import MenuRecommendationOptions
+from sounds import MenuRecommendationOptions, SoundsClient
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
@@ -50,8 +50,9 @@ def _stub_api(provider: BBCSoundsProvider, payload: list[RecommendationFolder]) 
     sub_items = [Mock() for _ in payload]
     menu = Mock()
     menu.sub_items = sub_items
-    client = Mock()
-    client.get_menu = AsyncMock(return_value=menu)
+    # spec_set so a renamed/removed client method fails here instead of at runtime
+    client = Mock(spec_set=SoundsClient)
+    client.get_menu.return_value = menu
     provider.client = client
     conversions = dict(zip(sub_items, payload, strict=True))
     adaptor = Mock()

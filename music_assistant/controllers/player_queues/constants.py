@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from music_assistant_models.enums import MediaType
+
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
@@ -22,10 +24,34 @@ CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
+CONF_DEFAULT_CLICK_ACTION_ARTIST = "default_click_action_artist"
+CONF_DEFAULT_CLICK_ACTION_ALBUM = "default_click_action_album"
+CONF_DEFAULT_CLICK_ACTION_TRACK = "default_click_action_track"
+CONF_DEFAULT_CLICK_ACTION_GENRE = "default_click_action_genre"
+CONF_DEFAULT_CLICK_ACTION_RADIO = "default_click_action_radio"
+CONF_DEFAULT_CLICK_ACTION_PLAYLIST = "default_click_action_playlist"
+
+CLICK_ACTION_BROWSE = "browse"
+CLICK_ACTION_PLAY = "play"
+CLICK_ACTION_DEFAULT_VALUE = CLICK_ACTION_BROWSE
+
+CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK = "default_play_action_album_track"
+CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK = "default_play_action_playlist_track"
+
+PLAY_ACTION_PLAY_FROM_HERE = "play_from_here"
+PLAY_ACTION_PLAY_TRACK = "play_track"
+PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
+
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
 CONF_CROSSFADE_LABEL = "crossfade_label"
+CONF_CROSSFADE_ENABLED = "crossfade_enabled"
+
+# global defaults the per-queue autoplay/crossfade toggles follow when not overridden
+DEFAULT_AUTOPLAY_ENABLED = True
+DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
@@ -63,6 +89,19 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a radio station is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.RADIO,
+)
+
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
@@ -80,3 +119,11 @@ QUEUE_CACHE_SAVE_DELAY = 5
 # Bumped when the on-disk queue cache layout changes in a way older code can't read; a version
 # mismatch makes the restore fall back to a clean queue instead of trusting incompatible data.
 CACHE_FORMAT_VERSION = 1
+
+# Media types that may reach us without a duration, so one determined while streaming is applied.
+# Radio and audio sources would wrongly become seekable. Tracks always carry a duration and a
+# rounded value would affect crossfade and gapless timing.
+PROBED_DURATION_MEDIA_TYPES = (
+    MediaType.PODCAST_EPISODE,
+    MediaType.AUDIOBOOK,
+)

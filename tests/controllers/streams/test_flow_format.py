@@ -324,6 +324,36 @@ async def test_select_pcm_format_uses_stereo_f32_for_radio_overlay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_select_pcm_format_folds_surround_source_to_stereo() -> None:
+    """A surround source is narrowed to stereo, since no output format carries more."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24, channels=6)
+
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
+
+    assert fmt.channels == 2
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_keeps_mono_source_mono() -> None:
+    """A mono source is not widened when no processing stage needs a stereo pivot."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24, channels=1)
+
+    fmt = await audio.select_pcm_format(player, streamdetails, crossfade_enabled=False)
+
+    assert fmt.channels == 1
+
+
+@pytest.mark.asyncio
 async def test_select_flow_pcm_format_uses_f32_when_volume_normalization_active() -> None:
     """Active volume normalization on the start track triggers F32 headroom."""
     audio = _make_streams_audio()
@@ -693,6 +723,9 @@ def _make_streamdetails(
     streamdetails.audio_format = AudioFormat(
         sample_rate=sample_rate, bit_depth=bit_depth, channels=channels
     )
+    # a real StreamDetails leaves this unset unless the provider handed over
+    # already-decoded audio, and a MagicMock attribute would read as one
+    streamdetails.decoded_audio_format = None
     streamdetails.volume_normalization_mode = volume_normalization_mode
     streamdetails.media_type = media_type
     return streamdetails

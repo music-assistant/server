@@ -9,6 +9,7 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
 )
 
@@ -19,12 +20,39 @@ SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
 
+# Seconds to wait for a Cast receiver to acknowledge an app launch.
+APP_LAUNCH_TIMEOUT = 30.0
+
+# Seconds the receiver app is kept running after playback stopped, so a
+# follow-up command can reuse the Cast session instead of starting a new one.
+APP_QUIT_DELAY = 10.0
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
 # Interval (seconds) before an unavailable player is re-evaluated as a possible
 # passive multichannel endpoint that should be removed from the setup.
 MULTICHANNEL_RECHECK_INTERVAL = 600
+
+# Translation key (owned by the Sendspin provider, which renders it) of the warning
+# shown on the Sendspin output of a Cast device. Its presence also makes that output
+# default to disabled, so Sendspin over Cast is opt-in per device.
+SENDSPIN_CAST_EXPERIMENTAL_NOTE = "sendspin_cast_experimental"
+
+# Marker on a Cast player whose receiver reported it cannot run the Sendspin client.
+# Kept on the Cast player rather than on the bridge, which is removed for good once set.
+CONF_SENDSPIN_UNSUPPORTED = "sendspin_unsupported"
+
+# Marker on a Cast player that was never offered the Sendspin bridge before, so its
+# output has to end up switched off. Persisted the moment the device is first bridged,
+# because applying the opt-out needs the protocol link, which may not be in place before
+# the run that decided it ends.
+CONF_SENDSPIN_OPT_OUT_PENDING = "sendspin_opt_out_pending"
+
+# Bounded wait for the protocol link of a freshly registered Sendspin Cast bridge to
+# be persisted, before the bridge is switched off again for the user to opt in.
+SENDSPIN_LINK_WAIT_INTERVAL = 0.5
+SENDSPIN_LINK_WAIT_TRIES = 20
 
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
@@ -37,6 +65,7 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     # enable flow mode by default as cast devices handle a continuous
     # flow stream more reliably than enqueueing individual tracks
