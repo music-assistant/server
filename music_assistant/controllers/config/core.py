@@ -244,11 +244,10 @@ class CoreConfigMixin:
 
     def ensure_core_config_base(self, core_module: str) -> None:
         """
-        Make sure the stored config block of a core controller is a valid CoreConfig object.
+        Create or repair the stored config block of a core controller.
 
-        Call this before writing a raw value into the block: ``set`` creates missing parents
-        on the fly, so a raw write into a not-yet-existing block would leave a stub behind
-        that has no ``domain`` key and therefore fails to parse as a CoreConfig.
+        Call this before storing a raw value in the block, so the block is left in a state
+        that still parses as a CoreConfig.
 
         :param core_module: The domain of the core controller.
         """
@@ -260,7 +259,7 @@ class CoreConfigMixin:
 
     def _get_raw_core_config(self, domain: str) -> dict[str, Any]:
         """
-        Return the stored raw config of a core controller, safe to parse as a CoreConfig.
+        Return the stored raw config of a core controller, ready to parse as a CoreConfig.
 
         :param domain: The domain of the core controller.
         """
@@ -268,8 +267,7 @@ class CoreConfigMixin:
         if not isinstance(raw_conf, dict):
             raw_conf = {}
         if "domain" not in raw_conf:
-            # a raw write into the block (or an install predating the write-path fix)
-            # can leave the mandatory domain key behind; fill it in for the caller
+            # older versions could store the block without its mandatory domain key
             return {**raw_conf, "domain": domain}
         return raw_conf
 

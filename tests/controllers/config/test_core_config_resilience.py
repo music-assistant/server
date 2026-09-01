@@ -3,15 +3,14 @@ Regression tests for domain-less core config blocks (issue #6278).
 
 The background tasks controller persists its scheduler state with a raw path write to
 ``core/tasks/scheduled_task_states``. On a fresh install that block does not exist yet,
-so the underlying ``set`` helper created it on the fly, leaving a stub without the
-``domain`` key that ``CoreConfig`` requires. Listing the core configs (Settings -> System)
-then crashed with "Field 'domain' of type str is missing in CoreConfig instance".
+so the underlying ``set`` helper created it on the fly and left a stub without the
+``domain`` key that ``CoreConfig`` requires. Listing the core configs then crashed with
+"Field 'domain' of type str is missing in CoreConfig instance".
 
-Two complementary fixes are covered here:
-- the write path creates a valid CoreConfig base object first, so a raw write can no
-  longer leave a domain-less stub behind (root cause).
-- the read path fills in a missing ``domain``, so installs that already carry such a
-  stub on disk render their core config again.
+Two complementary fixes are covered here. The write path creates a valid CoreConfig base
+object first, so a raw write can no longer leave a domain-less stub behind (root cause).
+The read path fills in a missing ``domain``, so installs that already carry such a stub
+on disk render their core config again.
 """
 
 from __future__ import annotations
@@ -24,9 +23,8 @@ async def test_fresh_install_leaves_a_parsable_tasks_core_config(mass: MusicAssi
     """
     A first start on empty storage must not leave a domain-less core/tasks block behind.
 
-    This is the reported scenario: ``migrate()`` bails out early when there is no
-    settings.json yet, so nothing repairs the block that the scheduled tasks registered
-    at startup write; only the write path itself can keep it valid on a first run.
+    This is the reported scenario. No settings.json exists yet, so the repair in
+    ``migrate()`` never runs and only the write path can keep the block valid.
     """
     raw_conf = mass.config.get(f"{CONF_CORE}/tasks")
     assert raw_conf["domain"] == "tasks"
