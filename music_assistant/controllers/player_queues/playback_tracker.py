@@ -60,9 +60,7 @@ if TYPE_CHECKING:
 
 # media types that never put a queue in the ended state: a live source has no natural end,
 # so it going idle means the source stopped and not that the queue ran out (marking it
-# ended would strand a later resume). A sound effect is deliberately NOT in here: a queue
-# whose last item is one (a doorbell, a show outro) really is done — autoplay after it is
-# separately blocked by AUTOPLAY_EXCLUDED_MEDIA_TYPES.
+# ended would strand a later resume)
 UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 
 
