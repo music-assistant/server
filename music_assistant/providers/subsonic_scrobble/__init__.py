@@ -104,7 +104,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
 
     async def _get_subsonic_provider_and_item_id(
         self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
-    ) -> tuple[None | OpenSonicProvider, str]:
+    ) -> tuple[OpenSonicProvider | None, str]:
         """
         Return a OpenSonicProvider or None if no subsonic provider, and the Subsonic item_id.
 

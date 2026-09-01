@@ -86,11 +86,49 @@ class WebsocketClientHandler:
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
             self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
+    @property
+    def token_id(self) -> str | None:
+        """Return the id of the auth token this client authenticated with, if any."""
+        return self._token_id
+
+    @property
+    def authenticated_user(self) -> User | None:
+        """Return the user this client authenticated as, if any."""
+        return self._authenticated_user
+
+    @property
+    def webrtc_session_id(self) -> str | None:
+        """Return the id of the WebRTC session this client connected through, if any."""
+        return self._webrtc_session_id
+
+    def matches_token(self, token: str) -> bool:
+        """
+        Return True if this client authenticated with the given access token.
+
+        :param token: The access token to compare against.
+        """
+        return self._current_token == token
+
+    def bind_sendspin_player(self, player_id: str) -> None:
+        """
+        Bind a sendspin web player to this connection.
+
+        :param player_id: Id of the sendspin player this connection owns.
+        """
+        self._sendspin_player_id = player_id
+
     async def disconnect(self) -> None:
-        """Disconnect client."""
-        self._cancel()
+        """Disconnect client and wait for its writer to finish."""
+        self.cancel()
         if self._writer_task is not None:
             await self._writer_task
+
+    def cancel(self) -> None:
+        """Cancel the connection, without waiting for its writer to finish."""
+        if self._handle_task is not None:
+            self._handle_task.cancel()
+        if self._writer_task is not None:
+            self._writer_task.cancel()
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle a websocket response."""
@@ -349,7 +387,7 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
         """
@@ -372,7 +410,7 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     async def _handle_auth_command(self, msg: CommandMessage) -> None:
         """
@@ -587,10 +625,3 @@ class WebsocketClientHandler:
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
-
-    def _cancel(self) -> None:
-        """Cancel the connection."""
-        if self._handle_task is not None:
-            self._handle_task.cancel()
-        if self._writer_task is not None:
-            self._writer_task.cancel()

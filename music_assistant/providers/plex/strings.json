@@ -58,6 +58,17 @@
       "label": "Extended recommendations",
       "description": "Show additional recommendation hubs in the dashboard, including 'Mixes For You', recent library playlists, and 'On This Day' releases. Matches the hub set Plex's own clients surface. Changes take effect on the next recommendations refresh."
     },
+    "stream_quality": {
+      "label": "Stream quality",
+      "description": "Audio quality to request from Plex. Original streams the source file directly. Lower bitrates ask Plex Media Server to transcode before sending audio to Music Assistant.",
+      "options": {
+        "original": "Original",
+        "96": "96 kbps",
+        "128": "128 kbps",
+        "192": "192 kbps",
+        "320": "320 kbps"
+      }
+    },
     "gdm": {
       "label": "Use Plex GDM to discover local servers",
       "description": "Enable \"GDM\" to discover local Plex servers automatically.",
