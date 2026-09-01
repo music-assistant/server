@@ -1102,29 +1102,23 @@ class AirPlayProvider(PlayerProvider):
                         task_id=f"debounced_pause_{player_id}",
                     )
             elif "dmcp.device-volume=" in path and not player.ignore_volume_reports:
-                # This is a bit annoying as this can be either the device confirming a new volume
-                # we've sent or the device requesting a new volume itself.
-                # In case of a small rounding difference, we ignore this,
-                # to prevent an endless pingpong of volume changes
+                # a report of a level the device already applied: adopt it, never write
+                # a volume back. A write-back is redundant on a sane device, and on a
+                # LinkPlay group leader it triggers the firmware's group-volume
+                # redistribution (observed sliding the whole group to volume 0).
                 airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 if airplay_volume <= AIRPLAY_VOLUME_MUTE:
                     player._attr_volume_muted = True
-                    if player.stream and player.stream.running:
-                        self.mass.create_task(player.stream.send_cli_command("VOLUME=0"))
                     player.update_state()
                 else:
                     if player.volume_muted:
                         player._attr_volume_muted = False
-                        if player.stream and player.stream.running:
-                            self.mass.create_task(
-                                player.stream.send_cli_command(f"VOLUME={player.volume_level or 0}")
-                            )
                     volume = convert_airplay_volume(airplay_volume)
-                    player.update_volume_from_device(volume)
+                    player.update_volume_from_device(volume, device_applied=True)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
-                player.update_volume_from_device(volume)
+                player.update_volume_from_device(volume, device_applied=False)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 # Cancel any pending debounced pause since prevent-playback takes precedence

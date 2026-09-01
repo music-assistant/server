@@ -818,18 +818,28 @@ class AirPlayPlayer(Player):
             self._volume_reports_ignored_until, time.time() + seconds
         )
 
-    def update_volume_from_device(self, volume: int) -> None:
-        """Update volume from device feedback."""
+    def update_volume_from_device(self, volume: int, *, device_applied: bool) -> None:
+        """
+        Handle a volume level the device sent us.
+
+        :param volume: The level (0..100) the device sent.
+        :param device_applied: True when the device reports a level it already applied,
+            which is adopted as state without writing anything back; False when the
+            device requests a new level (e.g. hardware volume buttons), which is
+            executed like any other volume command.
+        """
         if self.ignore_volume_reports:
             return
-
-        cur_volume = self.volume_level or 0
-        if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
-            self.mass.create_task(self._adopt_device_volume(volume))
-        else:
-            self._attr_volume_level = volume
-            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
-            self.update_state()
+        if not device_applied:
+            self.mass.create_task(self.volume_set(volume))
+            return
+        # a report of a level the device already applied: adopt it, never write a
+        # volume back. A write-back is redundant on a sane device, and on a LinkPlay
+        # group leader it triggers the firmware's group-volume redistribution
+        # (observed sliding the whole group to volume 0)
+        self._attr_volume_level = volume
+        self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
+        self.update_state()
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Set/update the discovery info for the player."""
@@ -1020,21 +1030,6 @@ class AirPlayPlayer(Player):
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
-
-    async def _adopt_device_volume(self, volume: int) -> None:
-        """
-        Take over a level the device set itself.
-
-        :param volume: The level the device reported.
-        """
-        ignored_until = self._volume_reports_ignored_until
-        await self.volume_set(volume)
-        # Writing the level back is a volume command like any other and opens the echo
-        # window, but this one only hands the device its own level: leaving the window
-        # open would swallow the rest of a volume the user is still turning up. A longer
-        # window opened while this was in flight (an announcement) still stands.
-        if self._volume_reports_ignored_until <= time.time() + AIRPLAY_VOLUME_ECHO_GRACE_S:
-            self._volume_reports_ignored_until = ignored_until
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""

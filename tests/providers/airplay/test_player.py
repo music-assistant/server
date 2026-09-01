@@ -1004,7 +1004,7 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
     airplay_player.last_command_sent = time.time()
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.update_volume_from_device(57)
+        airplay_player.update_volume_from_device(57, device_applied=True)
 
     assert airplay_player._attr_volume_level == 57
     airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
@@ -1146,7 +1146,7 @@ def test_volume_reports_are_ignored_while_our_own_level_echoes(
 
     assert airplay_player.ignore_volume_reports is True
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
-        airplay_player.update_volume_from_device(55)
+        airplay_player.update_volume_from_device(55, device_applied=True)
     assert airplay_player._attr_volume_level == 30
     mock_update.assert_not_called()
     airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
@@ -1167,69 +1167,64 @@ def test_volume_report_suppression_expires(airplay_player: AirPlayPlayer) -> Non
         assert airplay_player.ignore_volume_reports is False
 
 
-@pytest.mark.asyncio
-async def test_adopting_a_device_level_keeps_the_next_report_visible(
+def test_device_volume_report_is_adopted_without_a_writeback(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    Writing a device-reported level back does not blind us to the reports after it.
+    A device-applied report is adopted as state and never written back.
 
-    That write is a volume command like any other and so arms the echo grace, but it
-    only hands the device its own level: left armed it would swallow the rest of a
-    volume the user is still turning up.
+    Regression test for a live incident: MA set volume 10 over HTTP, the device
+    reported -27.15 dB (~9.5, rounding down to 9), and a stale AirPlay child at 15
+    made a naive diff check re-send the volume. On a LinkPlay group leader that
+    redundant write triggered the firmware's group-volume redistribution, sliding
+    the whole group to 0 within 130ms. A device-applied report must never write
+    a volume back, regardless of any diff with the last known level.
     """
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
-    airplay_player._attr_volume_level = 30
+    airplay_player._attr_volume_level = 15
     stream = MagicMock(running=True)
-    # the running stream arms the grace for every level it delivers
-    stream.send_cli_command = AsyncMock(
-        side_effect=lambda _command: airplay_player.suppress_volume_reports()
-    )
+    stream.send_cli_command = AsyncMock()
     airplay_player.stream = stream
-    adoptions: list[Coroutine[Any, Any, None]] = []
-    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
 
-    airplay_player.update_volume_from_device(55)
-    while adoptions:
-        await adoptions.pop()
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(9, device_applied=True)
 
-    assert airplay_player._attr_volume_level == 55
-    stream.send_cli_command.assert_awaited_once_with("VOLUME=55")
-
-    # the user keeps turning the knob: the report that follows is acted on
-    airplay_player.update_volume_from_device(70)
-    while adoptions:
-        await adoptions.pop()
-
-    assert airplay_player._attr_volume_level == 70
+    stream.send_cli_command.assert_not_called()
+    assert airplay_player._attr_volume_level == 9
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.player_id, CONF_STORED_VOLUME, 9
+    )
+    mock_update.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_adopting_a_device_level_keeps_an_announcement_window(
+def test_device_volume_request_routes_to_volume_set(airplay_player: AirPlayPlayer) -> None:
+    """A device-initiated volume request (e.g. hardware buttons) is executed like any command."""
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tasks: list[Coroutine[Any, Any, None]] = []
+    airplay_player.mass.create_task = MagicMock(side_effect=tasks.append)  # type: ignore[method-assign]
+
+    airplay_player.update_volume_from_device(45, device_applied=False)
+
+    assert len(tasks) == 1
+    tasks[0].close()
+
+
+def test_ignore_volume_reports_drops_both_report_and_request_forms(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """
-    Adopting a device level leaves a longer window opened meanwhile in place.
-
-    An announcement holds the reports off for its whole span; a write-back that lands
-    inside it must clear only the moment its own command opened, not that span.
-    """
+    """While the echo window is open, both a device report and a device request are dropped."""
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
     airplay_player._attr_volume_level = 30
-    stream = MagicMock(running=True)
-    # an announcement arms its own span while the write-back is in flight
-    stream.send_cli_command = AsyncMock(
-        side_effect=lambda _command: airplay_player.suppress_volume_reports(30)
-    )
-    airplay_player.stream = stream
-    adoptions: list[Coroutine[Any, Any, None]] = []
-    airplay_player.mass.create_task = MagicMock(side_effect=adoptions.append)  # type: ignore[method-assign]
-
-    airplay_player.update_volume_from_device(55)
-    while adoptions:
-        await adoptions.pop()
-
+    airplay_player.suppress_volume_reports(10)
     assert airplay_player.ignore_volume_reports is True
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.update_volume_from_device(55, device_applied=True)
+        airplay_player.update_volume_from_device(60, device_applied=False)
+
+    assert airplay_player._attr_volume_level == 30
+    mock_update.assert_not_called()
+    airplay_player.mass.create_task.assert_not_called()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
