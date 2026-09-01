@@ -691,12 +691,10 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         self.logger.error(f"Error updating play status: {err}")
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch the experience-menu recommendation folders, with items."""
+        """Fetch the recommendation menu folders, with items."""
         self.logger.debug("Getting recommendations from API")
         folders: list[RecommendationFolder] = []
-        recommendations = await self.client.personal.get_experience_menu(
-            recommendations=MenuRecommendationOptions.ONLY
-        )
+        recommendations = await self.client.get_menu(recommendations=MenuRecommendationOptions.ONLY)
         if recommendations.sub_items:
             for recommendation in recommendations.sub_items:
                 # recommendation is a RecommendedMenuItem

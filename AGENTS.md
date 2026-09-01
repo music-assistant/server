@@ -76,6 +76,20 @@ Do **not** use Google-style (`Args:`) or bullet-style (`- param:`) docstrings.
 ### File structure
 Private methods should be at the bottom of the file, public at the top.
 
+## Data changes need migrations
+
+Config entries and database rows are live user data. A renamed key, a changed type, a value that
+moves scope, a dropped column. None of it fails a test and none of it hurts a new install. It only
+breaks the installs that already hold data, and table creation code never repairs those.
+
+So when a change touches stored data, do not decide alone and do not leave it for the PR. Ask the
+developer in the session with an AskUserQuestion popup, along the lines of "the code we touch needs
+a migration, how do you want to handle it?", before treating the work as done.
+
+A migration step runs once, against data written by a version you cannot inspect. Make it
+idempotent, let it survive missing and half-written values, and never let it raise. A failed
+library migration resets the database and costs the user a full rescan.
+
 ## Branching and PRs
 
 - All PRs target `dev` (primary development branch). `stable` is for production releases.

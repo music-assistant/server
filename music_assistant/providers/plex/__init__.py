@@ -10,6 +10,8 @@ from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from datetime import MAXYEAR, MINYEAR, UTC, datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
+from urllib.parse import urlencode
+from uuid import uuid4
 
 import plexapi.exceptions
 import plexapi.utils
@@ -17,6 +19,7 @@ import requests
 import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
+    ConfigValueOption,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
@@ -84,6 +87,7 @@ from music_assistant.providers.plex.constants import (
     CONF_PLEX_FAVORITE_THRESHOLD,
     CONF_PLEX_LIKE_RATING,
     CONF_PLEX_UNLIKE_RATING,
+    CONF_STREAM_QUALITY,
     ERR_ARTIST_INVALID_ID,
     ERR_ARTIST_NOT_FOUND,
     ERR_AUTH_FAILED,
@@ -96,6 +100,11 @@ from music_assistant.providers.plex.constants import (
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
     RECOMMENDATIONS_HUB_PARAMS,
+    STREAM_QUALITY_96,
+    STREAM_QUALITY_128,
+    STREAM_QUALITY_192,
+    STREAM_QUALITY_320,
+    STREAM_QUALITY_ORIGINAL,
 )
 from music_assistant.providers.plex.helpers import (
     AUDIOBOOK_FEATURES,
@@ -214,6 +223,21 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 default_value="Collection: ",
                 depends_on=CONF_IMPORT_COLLECTIONS,
                 advanced=True,
+            )
+        )
+
+        entries.append(
+            ConfigEntry(
+                key=CONF_STREAM_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=STREAM_QUALITY_ORIGINAL,
+                options=[
+                    ConfigValueOption(STREAM_QUALITY_ORIGINAL),
+                    ConfigValueOption(STREAM_QUALITY_96),
+                    ConfigValueOption(STREAM_QUALITY_128),
+                    ConfigValueOption(STREAM_QUALITY_192),
+                    ConfigValueOption(STREAM_QUALITY_320),
+                ],
             )
         )
 
@@ -965,6 +989,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             raise MediaNotFoundError(ERR_TRACK_NOT_FOUND.format(item_id=item_id))
 
         media: PlexMedia = plex_track.media[0]
+        if not media.parts:
+            msg = f"Track {item_id} has no playable media parts"
+            raise MediaNotFoundError(msg)
 
         content_type = (
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
@@ -988,8 +1015,18 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             allow_seek=True,
         )
 
-        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+        if (
+            (quality_bitrate := self._get_stream_quality_bitrate())
+            and audio_stream
+            and media_part.size is not None
+        ):
+            stream_details.path = self._get_transcode_url(plex_track, quality_bitrate)
+            stream_details.stream_type = StreamType.HLS
+            stream_details.audio_format.content_type = ContentType.OPUS
+            stream_details.audio_format.bit_rate = quality_bitrate
+            return stream_details
 
+        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
         if content_type != ContentType.M4A:
             stream_details.path = download_url
             if audio_stream and audio_stream.samplingRate:
@@ -1077,6 +1114,57 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         db_row["item_id"],
                         err,
                     )
+
+    def _get_stream_quality_bitrate(self) -> int | None:
+        """Return the configured Plex transcode bitrate, if enabled."""
+        quality = str(self.config.get_value(CONF_STREAM_QUALITY) or STREAM_QUALITY_ORIGINAL)
+        if quality == STREAM_QUALITY_ORIGINAL:
+            return None
+        if quality in {
+            STREAM_QUALITY_96,
+            STREAM_QUALITY_128,
+            STREAM_QUALITY_192,
+            STREAM_QUALITY_320,
+        }:
+            return int(quality)
+        self.logger.warning("Invalid Plex stream quality configured: %s", quality)
+        return None
+
+    def _get_transcode_url(self, plex_track: PlexTrack, quality_bitrate: int) -> str:
+        """Return a Plex transcode URL for the requested bitrate."""
+        protocol = "hls"
+        audio_codec = "opus"
+        profile_extra = (
+            f"add-transcode-target(type=musicProfile&context=streaming&protocol={protocol}"
+            f"&container=mpegts&audioCodec={audio_codec})"
+            f"+add-limitation(scope=musicCodec&scopeName={audio_codec}&type=upperBound"
+            f"&name=audio.bitrate&value={quality_bitrate}&replace=true)"
+            f"+add-limitation(scope=musicCodec&scopeName={audio_codec}&type=lowerBound"
+            f"&name=audio.bitrate&value={quality_bitrate}&replace=true)"
+        )
+        params = {
+            "path": plex_track.key,
+            "mediaIndex": 0,
+            "partIndex": 0,
+            "minAudioBitrate": quality_bitrate,
+            "maxAudioBitrate": quality_bitrate,
+            "musicBitrate": quality_bitrate,
+            "directStreamAudio": 0,
+            "mediaBufferSize": 12288,
+            "session": str(uuid4()),
+            "protocol": protocol,
+            "directPlay": 0,
+            "directStream": 0,
+            "hasMDE": 1,
+            "X-Plex-Platform": "Chrome",
+            "X-Plex-Client-Profile-Extra": profile_extra,
+        }
+        return str(
+            self._plex_server.url(
+                f"/music/:/transcode/universal/start.m3u8?{urlencode(params)}",
+                True,
+            )
+        )
 
     async def _rank_artist_tracks(self, plex_artist: PlexArtist) -> list[PlexTrack]:
         """
@@ -1846,6 +1934,25 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         content_type = (
             ContentType.try_parse(first_container) if first_container else ContentType.UNKNOWN
         )
+        if (
+            (quality_bitrate := self._get_stream_quality_bitrate())
+            and len(parts) == 1
+            and (plex_track := self._get_single_transcodable_track(plex_tracks, item_id))
+        ):
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                media_type=MediaType.AUDIOBOOK,
+                audio_format=AudioFormat(
+                    content_type=ContentType.OPUS,
+                    bit_rate=quality_bitrate,
+                ),
+                stream_type=StreamType.HLS,
+                duration=int(total_duration),
+                path=self._get_transcode_url(plex_track, quality_bitrate),
+                can_seek=True,
+                allow_seek=True,
+            )
 
         return StreamDetails(
             provider=self.instance_id,
@@ -1990,6 +2097,49 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             )
         return parts, total_duration, first_container
 
+    def _get_single_playable_track(
+        self, plex_tracks: list[PlexTrack], item_id: str
+    ) -> PlexTrack | None:
+        """Return the only playable Plex track, if there is exactly one."""
+        playable_tracks: list[PlexTrack] = []
+        for plex_track in plex_tracks:
+            if self._track_media_or_log(plex_track, item_id) is not None:
+                playable_tracks.append(plex_track)
+        return playable_tracks[0] if len(playable_tracks) == 1 else None
+
+    def _get_single_transcodable_track(
+        self, plex_tracks: list[PlexTrack], item_id: str
+    ) -> PlexTrack | None:
+        """Return the only Plex track with the metadata needed for transcoding."""
+        playable_track = self._get_single_playable_track(plex_tracks, item_id)
+        if playable_track and self._track_is_transcodable(playable_track, item_id):
+            return playable_track
+        return None
+
+    def _track_is_transcodable(self, plex_track: PlexTrack, item_id: str) -> bool:
+        """Return whether the Plex track has the metadata needed for transcoding."""
+        media = self._track_media_or_log(plex_track, item_id)
+        if media is None:
+            return False
+        media_part: PlexMediaPart = media.parts[0]
+        if not media_part.audioStreams():
+            self.logger.debug(
+                "Skipping Plex transcode for '%s' (key=%s) in %s: no audio streams",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return False
+        if media_part.size is None:
+            self.logger.debug(
+                "Skipping Plex transcode for '%s' (key=%s) in %s: no media size",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return False
+        return True
+
     def _track_media_or_log(self, plex_track: PlexTrack, item_id: str) -> PlexMedia | None:
         """Return the first PlexMedia for a track, or log and return None if unavailable."""
         if not plex_track.media:
@@ -2038,15 +2188,28 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )
         media_part: PlexMediaPart = media.parts[0]
+        audio_streams = media_part.audioStreams()
+        audio_stream = audio_streams[0] if audio_streams else None
         download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+        stream_type = StreamType.HTTP
+        audio_format = AudioFormat(content_type=content_type)
+        if (
+            (quality_bitrate := self._get_stream_quality_bitrate())
+            and audio_stream
+            and media_part.size is not None
+        ):
+            download_url = self._get_transcode_url(plex_track, quality_bitrate)
+            stream_type = StreamType.HLS
+            audio_format.content_type = ContentType.OPUS
+            audio_format.bit_rate = quality_bitrate
 
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             media_type=MediaType.PODCAST_EPISODE,
-            audio_format=AudioFormat(content_type=content_type),
-            stream_type=StreamType.HTTP,
-            duration=plex_track.duration,
+            audio_format=audio_format,
+            stream_type=stream_type,
+            duration=int(plex_track.duration / 1000) if plex_track.duration else None,
             path=download_url,
             can_seek=True,
             allow_seek=True,
