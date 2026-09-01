@@ -422,8 +422,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         else:
             self.logger.debug(f"No song playing on {station_id}, displaying current programme info")
             programme = await self._station_current_programme(station_id)
-            if programme:
-                stream_details.stream_metadata = _station_programme_display(programme)
+            if metadata := _station_programme_display(programme):
+                stream_details.stream_metadata = metadata
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _vod_programme_display(self, pid: str) -> StreamMetadata | None:
