@@ -10,7 +10,7 @@ The "What does this implement/fix?" description must be short, specific, and in 
 Raise a `[PROBLEM]` when the description:
 
 - is a long AI-style essay, or a speculative root-cause narrative (often wrong), instead of a concise statement of the actual change;
-- adds sections beyond the PR template (e.g. Summary, Changes, Testing, Impact) — the template is used as-is, and bypassing or inflating it violates the AI Policy;
+- adds superfluous sections beyond the PR template (e.g. Summary, Testing, Impact, a separate "Root Cause" essay) — the template is used as-is. A short bulleted list of the changes is fine here (the maintainers' release notes reference it); a wall of extra headings is not;
 - is vague or generic, or does not match what the diff actually changes.
 
 When you raise it, say: "This needs to more clearly describe the issue you're having and what it's fixing," name any extra template sections to remove, and you may offer one concise rewrite (a few sentences) the author can validate and use. Judge the description, not the author.
