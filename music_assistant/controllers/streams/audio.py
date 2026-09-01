@@ -2911,17 +2911,22 @@ class StreamsAudio:
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
                 # armed late (or not at all) leaves less than that
                 min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_DURATION)
-                if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
+                # the fade is gated and stashed on the audible tail: silence past it is
+                # trimmed here (counted as media time), not blended into the next track
+                audible_end = len(crossfade_buffer) - min(silent_tail, len(crossfade_buffer))
+                if audible_end >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
                     player_id=queue.queue_id,
                     flow_mode=True,
                 ):
-                    last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
+                    window_start = max(0, audible_end - crossfade_buffer_size)
+                    last_fadeout_part = bytes(crossfade_buffer[window_start:audible_end])
+                    trimmed_tail_bytes = len(crossfade_buffer) - audible_end
                     last_streamdetails = queue_track.streamdetails
                     last_queue_track = queue_track
                     last_play_log_entry = play_log_entry
-                    remaining_bytes = bytes(crossfade_buffer[:-crossfade_buffer_size])
+                    remaining_bytes = bytes(crossfade_buffer[:window_start])
                     if remaining_bytes:
                         for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
                             yield pcm_slice

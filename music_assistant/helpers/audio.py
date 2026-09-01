@@ -180,7 +180,10 @@ def trailing_silence_bytes(chunk: bytes, pcm_format: AudioFormat, carried: int) 
     samples = np.frombuffer(chunk, dtype=np.dtype(dtype))
     if samples.size == 0:
         return carried
-    audible = np.flatnonzero(np.abs(samples) >= SILENCE_THRESHOLD * full_scale)
+    # no abs(): it overflows the minimum signed sample, reading a full-scale
+    # negative peak as silence
+    threshold = SILENCE_THRESHOLD * full_scale
+    audible = np.flatnonzero((samples >= threshold) | (samples <= -threshold))
     if audible.size == 0:
         # nothing audible: this chunk continues whatever the buffer already ended with
         return carried + len(chunk)
