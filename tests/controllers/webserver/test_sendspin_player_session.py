@@ -35,10 +35,14 @@ def webserver(mass_minimal: MusicAssistant) -> WebserverController:
 
 
 def _create_ws_client(
-    webserver: WebserverController, token: str, user: User = _GUEST_USER
+    webserver: WebserverController,
+    token: str,
+    user: User = _GUEST_USER,
+    webrtc_session_id: str | None = None,
 ) -> WebsocketClientHandler:
     """Create an authenticated websocket client handler holding the given token."""
-    request = make_mocked_request("GET", "/ws", app=web.Application())
+    query = f"?webrtc_session_id={webrtc_session_id}" if webrtc_session_id else ""
+    request = make_mocked_request("GET", f"/ws{query}", app=web.Application())
     client = WebsocketClientHandler(webserver, request)
     client._authenticated_user = user
     client._current_token = token
@@ -82,3 +86,16 @@ def test_unauthenticated_session_is_left_alone(webserver: WebserverController) -
     webserver.set_sendspin_player_for_token("token-a", "player-a")
 
     assert anonymous._sendspin_player_id is None
+
+
+def test_web_player_is_bound_to_the_webrtc_session_that_announced_it(
+    webserver: WebserverController,
+) -> None:
+    """A player announced over the WebRTC gateway lands on the session that carries its id."""
+    gateway = _create_ws_client(webserver, "token-a", webrtc_session_id="session-a")
+    other_gateway = _create_ws_client(webserver, "token-b", webrtc_session_id="session-b")
+
+    webserver.set_sendspin_player_for_webrtc_session("session-a", "player-a")
+
+    assert gateway._sendspin_player_id == "player-a"
+    assert other_gateway._sendspin_player_id is None
