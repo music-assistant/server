@@ -65,6 +65,10 @@ _INSTRUMENTAL_BLEND_BARS: int = 16
 # vocal duty (unpadded mask coverage) at or under this on BOTH decks
 # qualifies as near-instrumental
 _INSTRUMENTAL_DUTY_MAX: float = 0.05
+# The most of the incoming track's head a candidate may cut beyond what its own
+# overlap plays under the outgoing track: a deeper cut skips audio the listener
+# never hears any part of.
+_MAX_UNHEARD_INTRO_S: float = 2.0
 _TEMPO_BLEND_BARS: int = 8
 # QUICK_FADE bars by BPM incompatibility: (max diff %, bars); beyond -> 1 bar
 _QUICK_FADE_LADDER: tuple[tuple[float, int], ...] = ((12.0, 4), (20.0, 2))
@@ -472,6 +476,22 @@ class CandidateFactory:
                     return None
             else:
                 fadein_trim_start = aligned
+        if (
+            fadein_trim_start is not None
+            and fadein_trim_start > crossfade_duration + _MAX_UNHEARD_INTRO_S
+        ):
+            # deeper than the blend justifies: more of the incoming track would be
+            # skipped than the listener hears blended, so it plays from its head
+            self._logger.log(
+                VERBOSE_LOG_LEVEL,
+                "stripping fade-in trim for spec source=%s tier=%s: %.2fs trim exceeds "
+                "the %.2fs overlap",
+                spec.source,
+                tier,
+                fadein_trim_start,
+                crossfade_duration,
+            )
+            fadein_trim_start = None
 
         plan = TransitionPlan(
             tier=tier,
