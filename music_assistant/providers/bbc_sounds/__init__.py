@@ -684,7 +684,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 if action:
                     try:
                         success = await self.client.streaming.update_play_status(
-                            pid=media_item.item_id, elapsed_time=position, action=action
+                            pid=prov_item_id, elapsed_time=position, action=action
                         )
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
