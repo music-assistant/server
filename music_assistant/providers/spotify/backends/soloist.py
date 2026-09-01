@@ -29,7 +29,7 @@ import shutil
 import termios
 import time
 from collections import deque
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -447,8 +447,11 @@ class SoloistBackend(SpotifyPlaybackBackend):
             # never gets to read it must not leave the session unable to expire
             item.release()
             raise
-        async for chunk in fill.stream():
-            yield chunk
+        # closed explicitly: an async for left early would otherwise leave the
+        # handle's release to the garbage collector
+        async with aclosing(fill.stream()) as handed_over:
+            async for chunk in handed_over:
+                yield chunk
 
     async def discard_session(self, session: _SoloistSession) -> None:
         """
