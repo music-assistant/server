@@ -231,9 +231,9 @@ class AIRadioQueueDJMixin:
                 return
             # measured from the same point the planner counts from, or OPTIONAL guard
             # positions drift between passes. recomputed every pass so state self-corrects
-            state.songs_before_window, state.minutes_before_window = self._dj_window_offsets(
-                items, window[0].queue_item_id
-            )
+            offsets = self._dj_window_offsets(items, window[0].queue_item_id)
+            self._rebase_dj_history(state, *offsets)
+            state.songs_before_window, state.minutes_before_window = offsets
             host = self._hosts.get(state.host_id)
             if host is None:
                 self.logger.warning(
@@ -450,6 +450,29 @@ class AIRadioQueueDJMixin:
                 behind.append(item)
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
+
+    def _rebase_dj_history(
+        self, state: DJQueueState, songs_before_window: int, minutes_before_window: float
+    ) -> None:
+        """Move the guard history along when the queue's planning axis rewound."""
+        song_delta = songs_before_window - state.songs_before_window
+        minute_delta = minutes_before_window - state.minutes_before_window
+        if song_delta >= 0 and minute_delta >= 0:
+            # the axis only moved forward, so every event still holds a real position on it
+            return
+        # a cleared or restarted queue rewinds the axis, so aired events move back with it to
+        # keep their distance. events that were still ahead of the old window belonged to clips
+        # the rewind discarded, and are capped so they no longer suppress the gaps ahead
+        state.history = {
+            section_id: [
+                (
+                    min(song + min(song_delta, 0), songs_before_window),
+                    min(minute + min(minute_delta, 0.0), minutes_before_window),
+                )
+                for song, minute in events
+            ]
+            for section_id, events in state.history.items()
+        }
 
     def _dj_queue_items(self, queue_id: str) -> list[QueueItem]:
         """Return all items of a queue."""

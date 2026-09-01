@@ -574,6 +574,155 @@ async def test_planning_axis_stays_anchored_to_real_queue_positions(tmp_path: Pa
     assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3, 4, 5]
 
 
+async def test_forward_axis_progress_leaves_history_untouched(tmp_path: Path) -> None:
+    """A pass whose planning axis only moves forward must not touch the guard history."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(1))
+
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 1
+    history_before = {section_id: list(events) for section_id, events in state.history.items()}
+    assert history_before  # sanity: something is actually there to protect
+
+    dummy.player_queues._queue.current_index = 1
+    dummy.player_queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+
+    # the axis moved forward (more songs are now behind the window), yet every
+    # recorded event keeps its original, unshifted value
+    assert state.songs_before_window == 2
+    assert state.history == history_before
+
+
+async def test_queue_clear_and_refill_speaks_again(tmp_path: Path) -> None:
+    """A queue clear followed by a refill must not leave the DJ permanently muted."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_clear = len(queues.loads)
+
+    # clearing the queue leaves nothing to plan against, so the pass is a no-op
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+    assert len(queues.loads) == loaded_before_clear
+
+    fresh = [_track(index) for index in range(8)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the rebased history still enforces the guard, so the DJ speaks at the normal
+    # gap distance rather than being pushed all the way out to the tail
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[4].queue_item_id
+
+
+async def test_jump_to_top_speaks_in_head_gaps_without_redeciding_the_tail(
+    tmp_path: Path,
+) -> None:
+    """Jumping playback back to the top opens the head gaps without re-deciding the tail."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_jump = len(queues.loads)
+    tail_gap_ids = {
+        item.extra_attributes[ATTR_GAP_NEXT_ID]
+        for item in queues._items
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    }
+
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_jump:]
+    assert new_loads
+    new_gap_ids = {load[0][0].extra_attributes[ATTR_GAP_NEXT_ID] for load in new_loads}
+    # the rebased history caps at the first gap of the head, so the guard clears three
+    # songs later; the tail gaps stay decided from the pass before the jump
+    assert new_gap_ids == {tracks[4].queue_item_id}
+    assert new_gap_ids.isdisjoint(tail_gap_ids)
+
+
+async def test_hourly_host_speaks_again_after_a_clear_and_refill(tmp_path: Path) -> None:
+    """A max_per_60min guard must not keep muting the DJ off the old queue's high-water mark."""
+    old_items = [_track(index) for index in range(24)]
+    dummy = _make_replan_dj(
+        tmp_path, list(old_items), current_index=19, index_in_buffer=19, host=_hourly_host()
+    )
+    for section in _hourly_sections():
+        dummy._sections[section["id"]] = section
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+    assert len(queues.loads) == loaded_before_clear
+
+    # long enough to clear the rebased (small) high-water mark but nowhere near the
+    # unrebased one, which would need well over an hour of fresh music to clear
+    fresh = [_track(index) for index in range(25)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    assert len(queues.loads) > loaded_before_clear
+
+
+async def test_partial_tail_replace_keeps_guard_continuity(tmp_path: Path) -> None:
+    """Replacing every item but the one playing keeps the guard continuous, not reset."""
+    tracks_v1 = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks_v1), current_index=0, index_in_buffer=0, host=_optional_host(2)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_after_pass1 = len(queues.loads)
+
+    # everything but the currently playing item is swapped for ids the DJ has never
+    # seen before; an id-based "have I seen this queue" check would misread this
+    current_item = tracks_v1[0]
+    new_tail = [_track(20 + index) for index in range(5)]
+    queues._items = [current_item, *new_tail]
+    await dummy._replan_queue("queue-1")
+
+    # positionally nothing moved, so the guard from pass 1 still holds even though
+    # every other id in the queue is new
+    assert len(queues.loads) == loaded_after_pass1
+
+    more_tail = [_track(30), _track(31)]
+    queues._items = [current_item, *new_tail, *more_tail]
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_after_pass1:]
+    assert new_loads
+    # speaks again once the normal min_gap_songs distance has re-accumulated
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == more_tail[0].queue_item_id
+
+
 async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: Path) -> None:
     """A replan request raised by the pass's own inserts is served and then converges."""
     tracks = [_track(index) for index in range(4)]
