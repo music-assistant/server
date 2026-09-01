@@ -15,6 +15,7 @@ import random
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -134,7 +135,12 @@ class RadioPlaylistProvider(PluginProvider):
         seen: set[Track] = set()
         available_base_tracks: list[Track] = []
         for seed in random.sample(seeds, len(seeds)):
-            for track in await self.mass.player_queues.get_tracks_for_playback(seed):
+            # artist seeds only feed the base-track sample, so the bounded top tracks suffice
+            if seed.media_type == MediaType.ARTIST:
+                seed_tracks = await self.mass.music.artists.top_tracks(seed.item_id, seed.provider)
+            else:
+                seed_tracks = await self.mass.player_queues.get_tracks_for_playback(seed)
+            for track in seed_tracks:
                 if track not in seen:
                     seen.add(track)
                     available_base_tracks.append(track)

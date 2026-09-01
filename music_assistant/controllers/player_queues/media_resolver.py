@@ -236,7 +236,10 @@ class MediaResolver:
             result.extend(album_tracks[:5])
 
         for artist in artists:
-            artist_tracks = await self.get_artist_tracks(artist)
+            artist_tracks = await self.mass.music.artists.top_tracks(
+                artist.item_id, artist.provider
+            )
+            random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
         return result
 
