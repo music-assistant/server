@@ -733,11 +733,13 @@ class _SingleTrackRun:
             # and flush budgets - ten seconds on every natural track end.
             with suppress(Exception):
                 await asyncio.wait_for(proc.wait(), 5)
+        self.logger.debug("[run] stop: tasks")
         await _cancel_and_join(self._tasks)
         self._tasks.clear()
         if self._transport is not None:
             self._transport.close()
             self._transport = None
+        self.logger.debug("[run] stop: proc")
         if (proc := self._proc) is not None:
             # Closed straight away, with no grace period for a natural exit: on
             # an aborted stream the engine is mid-item and never quits on its
@@ -756,14 +758,17 @@ class _SingleTrackRun:
             # the retry something to close, or the daemon keeps the data
             # directory and every later run is refused
             self._proc = None
+        self.logger.debug("[run] stop: log task")
         if self._log_task is not None:
             await _cancel_and_join([self._log_task])
             self._log_task = None
+        self.logger.debug("[run] stop: sink")
         if (sink := self._sink) is not None:
             with suppress(Exception):
                 await sink.unload()
             self._sink = None
         self._teardown_done = True
+        self.logger.debug("[run] stop: done")
 
     # ---- internals ----
 
