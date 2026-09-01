@@ -53,6 +53,7 @@ class AIRadioMediaMixin:
         _stations: dict[str, dict[str, Any]]
         _show_runs: dict[str, _ShowRun]
         _show_runs_lock: asyncio.Lock
+        _show_library_ids: dict[str, str]
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
@@ -128,7 +129,7 @@ class AIRadioMediaMixin:
     async def _sync_show_library_items(self) -> None:
         """Mirror all shows into the library and prune rows of deleted shows."""
         radio_ctrl = self.mass.music.radio
-        keep_db_ids: set[str] = set()
+        show_library_ids: dict[str, str] = {}
         for station in self._stations.values():
             prov_item = self._station_to_radio(station)
             for prov_map in prov_item.provider_mappings:
@@ -143,11 +144,18 @@ class AIRadioMediaMixin:
                 library_item = await radio_ctrl.update_item_in_library(
                     library_item.item_id, prov_item, overwrite=True
                 )
-            keep_db_ids.add(str(library_item.item_id))
-        async for library_radio in radio_ctrl.iter_library_items(provider=self.instance_id):
-            if str(library_radio.item_id) in keep_db_ids:
-                continue
-            await radio_ctrl.remove_item_from_library(library_radio.item_id)
+            show_library_ids[str(library_item.item_id)] = str(station["id"])
+        # queue sources name shows by their library identity, so the map resolving
+        # them back to a station is rebuilt alongside the rows themselves
+        self._show_library_ids = show_library_ids
+        # deletions are collected first: deleting rows mid-pagination can skip rows
+        prune_db_ids = [
+            library_radio.item_id
+            async for library_radio in radio_ctrl.iter_library_items(provider=self.instance_id)
+            if str(library_radio.item_id) not in show_library_ids
+        ]
+        for db_id in prune_db_ids:
+            await radio_ctrl.remove_item_from_library(db_id)
 
     def _end_show_run(self, station_id: str) -> None:
         """Drop the station's active run so a replay starts fresh."""
@@ -155,12 +163,27 @@ class AIRadioMediaMixin:
 
     def _find_show_queue(self, station_id: str) -> str | None:
         """Return the queue currently playing this show, identified by its sources."""
+        for queue in self.mass.player_queues.all():
+            if any(
+                self._station_id_from_source_uri(source.uri) == station_id
+                for source in queue.sources
+            ):
+                return queue.queue_id
+        return None
+
+    def _station_id_from_source_uri(self, uri: str | None) -> str | None:
+        """Return the station id a queue source uri points at, if it is one of our shows."""
+        if not uri:
+            return None
         # matches the prefix instance_id::create_uri actually stamps on a show's Radio item,
         # not the provider domain, so a second AI Radio instance is matched correctly too
         prefix = f"{self.instance_id}://radio/"
-        for queue in self.mass.player_queues.all():
-            if any(source.uri == f"{prefix}{station_id}" for source in queue.sources):
-                return queue.queue_id
+        if uri.startswith(prefix):
+            return uri.removeprefix(prefix)
+        # shows are library-backed, so a queue's sources usually name the library item
+        library_prefix = "library://radio/"
+        if uri.startswith(library_prefix):
+            return self._show_library_ids.get(uri.removeprefix(library_prefix))
         return None
 
     async def _snapshot_show_tracks(self, station: dict[str, Any]) -> list[Track]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,6 +34,7 @@ class _Media(AIRadioMediaMixin):
         self._stations = stations
         self._show_runs: dict[str, Any] = {}
         self._show_runs_lock = asyncio.Lock()
+        self._show_library_ids: dict[str, str] = {}
         self._hosts: dict[str, Any] = {}
         self.instance_id = "ai_radio"
         self.domain = "ai_radio"
@@ -78,6 +80,8 @@ async def test_library_upkeep_adds_missing_show() -> None:
     radio_ctrl.iter_library_items = MagicMock(return_value=_no_items())
     await media._sync_show_library_items()
     radio_ctrl.add_item_to_library.assert_awaited_once()
+    # the sync also rebuilds the map that resolves a library row back to its station
+    assert media._show_library_ids == {"7": "morning_show"}
 
 
 def _track(item_id: str) -> Track:
@@ -119,12 +123,12 @@ def _media_with_show(track_count: int, max_duration_minutes: float = 0.0) -> _Me
 
 
 async def test_first_call_starts_a_run_and_pages() -> None:
-    """The first call snapshots the show and pages through it 25 tracks at a time."""
+    """The first call snapshots the show and pages through it 20 tracks at a time."""
     media = _media_with_show(track_count=30)
     page1 = await media.get_dynamic_radio_tracks("morning_show")
-    assert len(page1) == 25
+    assert len(page1) == 20
     page2 = await media.get_dynamic_radio_tracks("morning_show")
-    assert len(page2) == 5
+    assert len(page2) == 10
     assert await media.get_dynamic_radio_tracks("morning_show") == []
 
 
@@ -153,7 +157,32 @@ async def test_concurrent_first_calls_start_only_one_run() -> None:
         media.get_dynamic_radio_tracks("morning_show"),
     )
     media._fetch_source_tracks.assert_awaited_once()
-    assert {len(page1), len(page2)} == {25, 5}
+    assert {len(page1), len(page2)} == {20, 10}
+
+
+async def test_run_binds_to_a_queue_sourcing_the_shows_library_uri() -> None:
+    """A run binds to a queue whose source names the show by its library identity."""
+    media = _media_with_show(track_count=3)
+    media._show_library_ids = {"7": "morning_show"}
+    queue = SimpleNamespace(queue_id="q1", sources=[SimpleNamespace(uri="library://radio/7")])
+    media.mass.player_queues.all = MagicMock(return_value=[queue])
+
+    await media.get_dynamic_radio_tracks("morning_show")
+
+    assert media._show_runs["morning_show"].queue_id == "q1"
+
+
+async def test_run_binds_to_a_queue_sourcing_the_provider_uri() -> None:
+    """A run binds to a queue whose source names the show by its provider uri."""
+    media = _media_with_show(track_count=3)
+    queue = SimpleNamespace(
+        queue_id="q1", sources=[SimpleNamespace(uri="ai_radio://radio/morning_show")]
+    )
+    media.mass.player_queues.all = MagicMock(return_value=[queue])
+
+    await media.get_dynamic_radio_tracks("morning_show")
+
+    assert media._show_runs["morning_show"].queue_id == "q1"
 
 
 async def test_run_end_allows_a_fresh_run() -> None:

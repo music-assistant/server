@@ -93,8 +93,11 @@ LOUDNESS_MEASURE_TIMEOUT = 60
 # bookkeeping, so it is billed as an average length song
 FALLBACK_TRACK_SECONDS = 210
 
-# tracks returned per get_dynamic_radio_tracks call, matching the dynamic-radio pool's target size
-SHOW_FEED_PAGE_SIZE = 25
+# tracks returned per get_dynamic_radio_tracks call. Must never exceed the pool's minimum
+# top-up slot count (MANAGED_POOL_TARGET minus the refill trigger threshold): the feed
+# advances its cursor for the whole page, so tracks overflowing the pool's free slots
+# would be dropped silently and never air
+SHOW_FEED_PAGE_SIZE = 20
 
 # a show run that never gets bound to a queue (its enqueue failed downstream) is dropped
 # after this long, so a retried play_media is not stuck replaying an abandoned snapshot

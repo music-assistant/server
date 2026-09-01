@@ -54,6 +54,7 @@ class AIRadioQueueDJMixin:
         _unloading: bool
 
         def _end_show_run(self, station_id: str) -> None: ...
+        def _station_id_from_source_uri(self, uri: str | None) -> str | None: ...
 
     async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """
@@ -173,7 +174,14 @@ class AIRadioQueueDJMixin:
         station = self._stations.get(station_id)
         if station is None:
             return
-        await self.set_queue_dj(queue_id, str(station["host_id"]))
+        host_id = str(station["host_id"])
+        if host_id not in self._hosts:
+            # set_queue_dj would raise, and this runs inside the queue event handler
+            self.logger.debug(
+                "Not arming the DJ for show %s: host %s no longer exists", station_id, host_id
+            )
+            return
+        await self.set_queue_dj(queue_id, host_id)
         if (state := self._dj_queues.get(queue_id)) is None:
             return
         state.station_id = station_id
@@ -194,23 +202,44 @@ class AIRadioQueueDJMixin:
         await self.set_queue_dj(queue_id, None)
         self._end_show_run(station_id)
 
+    def _end_orphaned_show_runs(self, queue_id: str, queue_removed: bool = False) -> None:
+        """End the show runs bound to a queue that no longer plays their show."""
+        queue = None if queue_removed else self.mass.player_queues.get(queue_id)
+        for station_id, run in list(self._show_runs.items()):
+            if run.queue_id != queue_id:
+                continue
+            if (
+                queue is not None
+                and not queue.ended
+                and any(
+                    self._station_id_from_source_uri(source.uri) == station_id
+                    for source in queue.sources
+                )
+            ):
+                continue
+            self._end_show_run(station_id)
+
     async def _on_dj_queue_event(self, event: MassEvent) -> None:
         """Handle queue and player events for the queues that run a DJ."""
         queue_id = str(event.object_id or "")
         await self._ensure_show_dj(queue_id)
-        if queue_id not in self._dj_queues:
-            return
-        if event.event == EventType.PLAYER_REMOVED:
-            station_id = self._dj_queues[queue_id].station_id
-            async with self._dj_lock:
-                self._dj_queues.pop(queue_id, None)
-                await self._write_queue_dj()
-            if station_id:
-                self._end_show_run(station_id)
-            self.logger.debug("Dropped queue DJ for removed player %s", queue_id)
-            return
-        self._schedule_replan(queue_id)
-        await self._maybe_detach_show_dj(queue_id)
+        if queue_id in self._dj_queues:
+            if event.event == EventType.PLAYER_REMOVED:
+                station_id = self._dj_queues[queue_id].station_id
+                async with self._dj_lock:
+                    self._dj_queues.pop(queue_id, None)
+                    await self._write_queue_dj()
+                if station_id:
+                    self._end_show_run(station_id)
+                self.logger.debug("Dropped queue DJ for removed player %s", queue_id)
+            else:
+                self._schedule_replan(queue_id)
+                await self._maybe_detach_show_dj(queue_id)
+        # a run can outlive its DJ state (manual disable, deleted host, a failed arm), so
+        # orphaned runs are ended here independently of any DJ state
+        self._end_orphaned_show_runs(
+            queue_id, queue_removed=event.event == EventType.PLAYER_REMOVED
+        )
 
     def _schedule_replan(self, queue_id: str) -> None:
         """Request a replan pass for the given queue."""
@@ -316,9 +345,13 @@ class AIRadioQueueDJMixin:
                 # playback has not started: the show intro can still lead the queue
                 allowed_slot_when.append("start_of_playlist")
             run = self._show_runs.get(state.station_id) if state.station_id else None
+            outro_target: dict[str, Any] | None = None
             if run is not None and run.exhausted:
-                # the feed is done: the final window track is the show's last song
-                allowed_slot_when.append("end_of_playlist")
+                # the feed is done, but its last page may still be in flight: the outro is
+                # only offered once the run's final track is present in the window
+                outro_target = self._show_outro_target(run, window, window_tracks)
+                if outro_target is not None:
+                    allowed_slot_when.append("end_of_playlist")
             planned, history = self._plan_sections(
                 session_id=state.dj_session_id,
                 tracks=window_tracks,
@@ -345,9 +378,12 @@ class AIRadioQueueDJMixin:
                 # an end_of_playlist section targets a slot past the last window track;
                 # _plan_sections numbers it len(window_tracks), one past the last valid index
                 after_target = section.insert_at_index == len(window_tracks)
-                target = (
-                    window_tracks[-1] if after_target else window_tracks[section.insert_at_index]
-                )
+                if after_target:
+                    # the outro belongs after the show's true final track, which is not
+                    # necessarily the queue tail (a user may have appended tracks behind it)
+                    target = outro_target if outro_target is not None else window_tracks[-1]
+                else:
+                    target = window_tracks[section.insert_at_index]
                 outcome = self._splice_dj_clip(
                     queue_id=queue_id,
                     items=working,
@@ -514,6 +550,20 @@ class AIRadioQueueDJMixin:
         )
         return True
 
+    def _show_outro_target(
+        self, run: _ShowRun, window: list[QueueItem], window_tracks: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Return the window track the show's outro belongs after, if it has landed."""
+        if not run.tracks:
+            return window_tracks[-1] if window_tracks else None
+        final_uri = run.tracks[-1].uri
+        # searched from the tail so a song appearing twice matches its final occurrence
+        for index in range(len(window) - 1, -1, -1):
+            media_item = window[index].media_item
+            if media_item is not None and media_item.uri == final_uri:
+                return window_tracks[index]
+        return None
+
     def _dj_window(self, items: list[QueueItem], guard_index: int) -> list[QueueItem]:
         """Return the upcoming music items that this pass may plan against."""
         # every upcoming track, decided or not: the planner counts songs and minutes over a
@@ -610,8 +660,7 @@ class AIRadioQueueDJMixin:
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
             return None
-        prefix = f"{self.instance_id}://radio/"
         for source in queue.sources:
-            if source.uri and source.uri.startswith(prefix):
-                return source.uri.removeprefix(prefix)
+            if (station_id := self._station_id_from_source_uri(source.uri)) is not None:
+                return station_id
         return None
