@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -219,6 +220,8 @@ async def test_distribute_chunk_records_failure_when_provider_raises() -> None:
     raises.abort.assert_called_once()
     assert raises.abort.call_args.args[0] == session_key
     assert "boom" in raises.abort.call_args.args[1]
+    # an unexpected error carries no retry window, so the row blocks until cleared
+    assert raises.abort.call_args.args[2] is None
 
 
 @pytest.mark.asyncio
@@ -240,8 +243,30 @@ async def test_distribute_chunk_keeps_the_provider_failure_reason() -> None:
     await controller._distribute_chunk(session_key, b"\x00" * 1024)
 
     raises.abort.assert_called_once_with(
-        session_key, "audio decoding failed during loudness measurement"
+        session_key, "audio decoding failed during loudness measurement", None
     )
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_forwards_the_provider_retry_time() -> None:
+    """A retry window the provider attaches to its error reaches the failure record."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+    retry_at = datetime(2026, 9, 2, tzinfo=UTC)
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("models are not loaded", retry_at=retry_at)
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(session_key, "models are not loaded", retry_at)
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,34 @@ async def test_abort_records_a_blocking_failure_and_drops_the_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_abort_forwards_the_retry_time() -> None:
+    """A retry time given to abort() reaches the failure record unchanged."""
+    provider = _make_provider()
+    session = MagicMock()
+    provider._sessions["sess"] = session
+    provider._record_failure = AsyncMock()  # type: ignore[method-assign]
+    retry_at = datetime(2026, 9, 2, tzinfo=UTC)
+
+    await provider.abort("sess", "models are not loaded", retry_at)
+
+    provider._record_failure.assert_awaited_once_with(session, "models are not loaded", retry_at)
+
+
+@pytest.mark.asyncio
+async def test_abort_runs_cancel_for_subclass_cleanup() -> None:
+    """abort() delegates teardown to cancel() so subclass resource cleanup runs."""
+    provider = _make_provider()
+    provider._sessions["sess"] = MagicMock()
+    provider._record_failure = AsyncMock()  # type: ignore[method-assign]
+    provider.cancel = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.abort("sess", "audio processing failed (boom)")
+
+    provider.cancel.assert_awaited_once_with("sess")
+    provider._record_failure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_abort_on_unknown_session_records_nothing() -> None:
     """Aborting a session that already ended must not record a failure."""
     provider = _make_provider()

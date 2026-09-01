@@ -531,7 +531,7 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     # Provider was called twice: chunk 1 (success), chunk 2 (raised → evicted)
     assert call_count == 2
-    # Evicted provider does NOT get finalize, but does get cancel
+    # Evicted provider gets abort (which records the failure), not finalize or cancel
     mock_provider.finalize.assert_not_called()
     mock_provider.cancel.assert_not_called()
     mock_provider.abort.assert_called_once()
