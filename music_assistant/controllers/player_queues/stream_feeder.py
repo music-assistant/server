@@ -99,6 +99,32 @@ class StreamFeederMixin(_PlayerQueuesBase):
             abort_existing=True,
         )
 
+    def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
+        """
+        Hand the player the track that now follows the one it is playing.
+
+        Does nothing when the player already holds that track, so a queue change that leaves the
+        upcoming track alone costs nothing.
+
+        :param queue_id: The queue whose player should be updated.
+        :param force: Hand it over even when the player already holds it, for a change that
+            alters how the same track is streamed rather than which track it is.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        if queue.state != PlaybackState.PLAYING or queue.current_index is None:
+            return
+        if queue.index_in_buffer is None or queue_data.transitioning:
+            # no settled position to follow: a replace clears the buffered index while it swaps
+            # the items, and a starting track moves the two indexes one after the other
+            return
+        next_item = self.get_next_item(queue_id, queue.current_index)
+        if next_item is None:
+            return
+        if not force and next_item.queue_item_id == queue_data.next_item_id_enqueued:
+            return
+        self._enqueue_next_item(queue_id, next_item)
+
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""
         if not next_item:

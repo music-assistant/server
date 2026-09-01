@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import PlaybackState, QueueOption
 from plexapi.playqueue import PlayQueue
 
+from music_assistant.controllers.player_queues.helpers import committed_index
+
 from .parsing import plex_item_fields, plex_key_for_item
 
 if TYPE_CHECKING:
@@ -264,15 +266,16 @@ class QueueSyncMixin:
         :param current_index: The current track index in the MA queue.
         :return: The index of the last item that survives the replace.
         """
-        # REPLACE_NEXT inserts after the buffered index rather than the playing one, so a
-        # player already handed the next track keeps one item more than current_index.
+        # REPLACE_NEXT inserts after the track the player already holds rather than the playing
+        # one, so a player handed its next track keeps one item more than current_index.
         queue = self.provider.mass.player_queues.get(player_id)
         if (
             queue is not None
             and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             and queue.index_in_buffer is not None
+            and (boundary_index := committed_index(queue)) is not None
         ):
-            return int(queue.index_in_buffer)
+            return boundary_index
         return current_index
 
     async def _replace_remaining_queue(
