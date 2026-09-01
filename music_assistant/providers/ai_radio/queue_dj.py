@@ -237,7 +237,9 @@ class AIRadioQueueDJMixin:
             # measured from the same point the planner counts from, or OPTIONAL guard
             # positions drift between passes. recomputed every pass so state self-corrects
             offsets = self._dj_window_offsets(items, window[0].queue_item_id)
-            if offsets[0] < state.songs_before_window or offsets[1] < state.minutes_before_window:
+            # only the song count marks a queue that moved: the minute count is derived from
+            # track durations and dips on its own when a probed duration replaces an estimate
+            if offsets[0] < state.songs_before_window:
                 # the queue rewound under the history, e.g. a clear or a jump back to the top
                 self._rebase_dj_history(state, *offsets)
             state.songs_before_window, state.minutes_before_window = offsets

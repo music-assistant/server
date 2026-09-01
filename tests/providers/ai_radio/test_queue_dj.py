@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -715,6 +716,56 @@ async def test_jump_to_top_speaks_in_head_gaps_without_redeciding_the_tail(
     # songs later; the tail gaps stay decided from the pass before the jump
     assert new_gap_ids == {tracks[4].queue_item_id}
     assert new_gap_ids.isdisjoint(tail_gap_ids)
+
+
+async def test_stepping_back_a_track_keeps_staged_breaks_apart(tmp_path: Path) -> None:
+    """A break staged further down the queue still spaces the ones planned behind it."""
+    tracks = [_track(index) for index in range(12)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+
+    # the listener steps back a track, which reopens the gaps behind the staged clips
+    queues._queue.current_index = 4
+    queues._queue.index_in_buffer = 4
+    await dummy._replan_queue("queue-1")
+
+    clip_positions = [
+        index
+        for index, item in enumerate(queues._items)
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    for before, after in pairwise(clip_positions):
+        tracks_between = sum(
+            1
+            for item in queues._items[before + 1 : after]
+            if not item.extra_attributes.get(ATTR_QUEUE_DJ)
+        )
+        assert tracks_between >= 3
+
+
+async def test_a_probed_duration_alone_does_not_move_the_history(tmp_path: Path) -> None:
+    """A track duration correcting downwards is not a queue that rewound."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), current_index=4, index_in_buffer=4)
+
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    history_before = {section_id: list(events) for section_id, events in state.history.items()}
+    minutes_before = state.minutes_before_window
+    assert history_before
+
+    # a played track's estimated duration is replaced by a shorter probed one, so only the
+    # minute count behind the window drops
+    tracks[0].duration = 30
+    await dummy._replan_queue("queue-1")
+
+    assert state.minutes_before_window < minutes_before
+    assert state.songs_before_window == 5
+    assert state.history == history_before
 
 
 async def test_hourly_host_speaks_again_after_a_clear_and_refill(tmp_path: Path) -> None:
