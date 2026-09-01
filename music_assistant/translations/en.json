@@ -820,6 +820,8 @@
   "core.player_queues.config_entries.smart_shuffle_enabled.options.enabled": "Enabled",
   "core.player_queues.config_entries.smart_shuffle_enabled.options.global": "Global",
   "core.player_queues.config_entries.smart_shuffle_label.label": "Smart shuffle adds a bit of intelligence to shuffle: instead of pure random, it pushes songs and artists you've heard recently toward the back and spreads things out, so a playlist you keep re-adding stops repeating the same tracks.\n\nNOTE: Smart shuffle is always active when you're playing a dynamic playlist, regardless of this setting.",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.description": "When Smart crossfade is active, reorder upcoming tracks so neighbouring tracks are more likely to support a musical blend. Uses only existing Smart Fades analysis; tracks without analysis remain neutral.",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.label": "Optimize order for Smart Fades",
   "core.player_queues.config_entries.smart_shuffle_song_recency.description": "How long a song you've already heard is pushed toward the back of the queue. Applies to songs added once; deliberately duplicated songs use the repeat gap instead.",
   "core.player_queues.config_entries.smart_shuffle_song_recency.label": "Avoid replaying the same song heard within",
   "core.player_queues.config_entries.smart_shuffle_song_recency.options.0": "Off",

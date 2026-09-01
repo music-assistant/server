@@ -39,6 +39,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
     CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
     CONF_SMART_SHUFFLE_ENABLED,
+    CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     PLAY_ACTION_PLAY_FROM_HERE,
     PLAY_ACTION_PLAY_TRACK,
@@ -117,6 +118,13 @@ def test_core_config_entries_global_feature_defaults() -> None:
     smart_shuffle = by_key[CONF_SMART_SHUFFLE_ENABLED]
     assert smart_shuffle.default_value == CONF_VALUE_DISABLED
     assert {opt.value for opt in smart_shuffle.options} == {CONF_VALUE_ENABLED, CONF_VALUE_DISABLED}
+    # SFREQ-02: The ordering option is opt-in by default.
+    smart_fades_ordering = by_key[CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES]
+    assert smart_fades_ordering.default_value == CONF_VALUE_DISABLED
+    assert {opt.value for opt in smart_fades_ordering.options} == {
+        CONF_VALUE_ENABLED,
+        CONF_VALUE_DISABLED,
+    }
     volume_normalization = by_key[CONF_VOLUME_NORMALIZATION]
     assert volume_normalization.default_value == CONF_VALUE_ENABLED
     assert CONF_VALUE_GLOBAL not in {opt.value for opt in volume_normalization.options}
@@ -130,6 +138,7 @@ def test_queue_config_entries_offer_global_option() -> None:
     by_key = _by_key(queue_config_entries(_mass(similar_tracks=True, smart_fades=True)))
     for key in (
         CONF_SMART_SHUFFLE_ENABLED,
+        CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
         CONF_VOLUME_NORMALIZATION,
         CONF_CROSSFADE_MODE,
         CONF_AUTOPLAY_MODE,

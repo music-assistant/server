@@ -73,6 +73,10 @@
         "global": "Follow the Player Queues default."
       }
     },
+    "smart_shuffle_optimize_smart_fades": {
+      "label": "Optimize order for Smart Fades",
+      "description": "When Smart crossfade is active, reorder upcoming tracks so neighbouring tracks are more likely to support a musical blend. Uses only existing Smart Fades analysis; tracks without analysis remain neutral."
+    },
     "smart_shuffle_song_recency": {
       "label": "Avoid replaying the same song heard within",
       "description": "How long a song you've already heard is pushed toward the back of the queue. Applies to songs added once; deliberately duplicated songs use the repeat gap instead.",
