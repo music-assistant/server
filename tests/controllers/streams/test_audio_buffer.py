@@ -1280,3 +1280,148 @@ async def test_audio_source_stream_error_reset_on_retry(mass_minimal: MusicAssis
 
     assert chunks == [ONE_SECOND_CHUNK]
     assert streamdetails.stream_error is False
+
+
+# -- Provider-filled buffers --
+
+
+@pytest.mark.asyncio
+async def test_provider_fill_hands_its_audio_to_the_buffer() -> None:
+    """PCM a provider writes into its handle lands in the item's buffer."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    audio_buffer = cast("AudioBuffer", streamdetails.buffer)
+    # written in the provider's own sizes; the buffer still gets whole-second chunks
+    half = TEST_PCM_FORMAT.pcm_sample_size // 2
+    fill.write(b"\x01" * half)
+    fill.write(b"\x01" * half)
+    fill.write(b"\x02" * half)
+    fill.close()
+    await asyncio.sleep(0.05)
+    assert audio_buffer.eof is True
+    assert audio_buffer.seconds_available == 2
+    assert audio_buffer.duration_available == pytest.approx(1.5)
+    chunks = [chunk async for chunk in audio_buffer.get_raw_stream()]
+    assert chunks == [b"\x01" * TEST_PCM_FORMAT.pcm_sample_size, b"\x02" * half]
+    for task in tasks:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_provider_filled_buffer_is_reused_at_the_playback_claim() -> None:
+    """The buffer a provider opened early is the one playback is served from."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    opened = streamdetails.buffer
+    fill.write(_make_chunk(1))
+    await asyncio.sleep(0)
+    claimed = await AudioBuffer.get_buffer(
+        mass=cast("MusicAssistant", mass), streamdetails=streamdetails, reason="streaming"
+    )
+    assert claimed is opened
+    fill.close()
+    for task in tasks:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_provider_fill_is_not_reused() -> None:
+    """A handle that failed leaves an errored buffer, so the claim resolves the item again."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    opened = streamdetails.buffer
+    fill.fail(AudioError("cut short"))
+    await asyncio.sleep(0.05)
+    assert opened is not None
+    assert opened.has_error is True
+    replacement = await AudioBuffer.get_buffer(
+        mass=cast("MusicAssistant", mass), streamdetails=streamdetails, reason="streaming"
+    )
+    assert replacement is not opened
+    for task in tasks:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_seek_replaces_a_provider_filled_buffer() -> None:
+    """A seek cannot be served from audio captured before it, so a fresh buffer is made."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    streamdetails.is_realtime = True
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    opened = streamdetails.buffer
+    fill.write(_make_chunk(1))
+    await asyncio.sleep(0)
+    # a realtime source cannot produce the skipped audio any faster than playback
+    seeked = await AudioBuffer.get_buffer(
+        mass=cast("MusicAssistant", mass),
+        streamdetails=streamdetails,
+        seek_position_ms=120_000,
+        reason="streaming",
+    )
+    assert seeked is not opened
+    assert streamdetails.buffer is seeked
+    # the handle keeps feeding the buffer it was opened for, which a consumer may
+    # still be draining; the source is what ends it (see the soloist seek tests)
+    fill.close()
+    for task in tasks:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_released_buffer_takes_its_provider_handle_with_it() -> None:
+    """Once the buffer is gone the provider stops writing audio nothing can read."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    audio_buffer = cast("AudioBuffer", streamdetails.buffer)
+    active_before = fill.active
+    await audio_buffer.clear()
+    assert active_before is True
+    assert fill.active is False
+    for task in tasks:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_undrained_seconds_measures_the_lead_over_playback() -> None:
+    """A source running ahead of playback is measured by what playback has not read."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    for index in range(3):
+        await audio_buffer._put(_make_chunk(index))
+    assert audio_buffer.undrained_seconds == 3
+    assert await audio_buffer._get(chunk_number=0) == _make_chunk(0)
+    assert audio_buffer.undrained_seconds == 2
+    # the window a buffer retains *behind* playback is not a lead
+    assert await audio_buffer._get(chunk_number=2) == _make_chunk(2)
+    assert audio_buffer.undrained_seconds == 0
+    assert await audio_buffer._get(chunk_number=1) == _make_chunk(1)
+    assert audio_buffer.undrained_seconds == 0
+
+
+@pytest.mark.asyncio
+async def test_analysis_reads_do_not_count_as_playback() -> None:
+    """A passive analysis reader must not make the source look drained."""
+    audio_buffer = AudioBuffer(TEST_PCM_FORMAT)
+    await audio_buffer._put(_make_chunk(0))
+    assert await audio_buffer.read_chunk_for_analysis(0) == _make_chunk(0)
+    assert audio_buffer.undrained_seconds == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_fill_pending_covers_the_handle_and_the_buffer() -> None:
+    """The lead a provider holds is what it still has plus what the buffer has not served."""
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=300, allow_seek=True)
+    mass, _start_analysis, tasks = _make_mass_for_get_buffer()
+    fill = AudioBuffer.open_provider_fill(cast("MusicAssistant", mass), streamdetails)
+    fill.write(_make_chunk(1))
+    # not pumped into the buffer yet, but already ahead of playback
+    assert fill.pending_seconds == pytest.approx(1.0)
+    await asyncio.sleep(0.05)
+    assert fill.pending_seconds == pytest.approx(1.0)
+    fill.close()
+    for task in tasks:
+        task.cancel()

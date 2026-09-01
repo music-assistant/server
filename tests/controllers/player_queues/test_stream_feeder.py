@@ -7,15 +7,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
@@ -222,3 +224,119 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     await mass.create_task.call_args.args[0]()
 
     assert next_item.available
+
+
+def _controller_with_live_source_queue() -> tuple[PlayerQueuesController, list[Any], MagicMock]:
+    """Build a bare controller whose queue holds two tracks on one provider instance."""
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+    items = [_live_source_item("playing", "aaa"), _live_source_item("upcoming", "bbb")]
+    queue = SimpleNamespace(current_index=0, display_name="Queue")
+    controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
+    controller.get_item = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda _queue_id, index: items[index] if index < len(items) else None
+    )
+    controller._queue_data = {
+        "queue-1": cast("Any", SimpleNamespace(queue=queue, session_id="session-1"))
+    }
+    mass = MagicMock()
+    controller.mass = mass
+    return controller, items, mass
+
+
+def _live_source_item(queue_item_id: str, provider_item_id: str) -> Any:
+    """Build a queue item stand-in mapped to the live-source provider instance."""
+    media_item = SimpleNamespace(
+        provider="spotify--a", item_id=provider_item_id, provider_mappings=[]
+    )
+    return SimpleNamespace(
+        queue_item_id=queue_item_id,
+        media_type=MediaType.TRACK,
+        media_item=media_item,
+        streamdetails=None,
+        name=queue_item_id,
+    )
+
+
+async def test_a_live_source_gets_the_buffer_of_the_item_it_is_producing() -> None:
+    """The buffer is opened for the upcoming item the produced audio actually belongs to."""
+    controller, items, mass = _controller_with_live_source_queue()
+    streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
+    mass.streams.audio.get_stream_details = AsyncMock(return_value=streamdetails)
+    fill = MagicMock()
+    with patch.object(AudioBuffer, "open_provider_fill", return_value=fill) as open_fill:
+        result = await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb")
+
+    assert result is fill
+    assert items[1].streamdetails is streamdetails
+    # the buffer becomes this session's audio, so its stop releases it
+    assert streamdetails.queue_session_id == "session-1"
+    open_fill.assert_called_once_with(mass, streamdetails, reason="source_live")
+
+
+async def test_a_provider_mapping_locates_the_item_the_queue_reordered() -> None:
+    """An item is found by its provider mapping, not by the position it was fed at."""
+    controller, items, mass = _controller_with_live_source_queue()
+    items[1].media_item.provider = "library"
+    items[1].media_item.item_id = "42"
+    items[1].media_item.provider_mappings = [
+        SimpleNamespace(provider_instance="spotify--a", item_id="bbb")
+    ]
+    streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
+    mass.streams.audio.get_stream_details = AsyncMock(return_value=streamdetails)
+    with patch.object(AudioBuffer, "open_provider_fill", return_value=MagicMock()):
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is not None
+
+
+async def test_no_buffer_for_audio_the_queue_has_no_item_for() -> None:
+    """Audio for an item that is not (or no longer) upcoming is not buffered."""
+    controller, _items, mass = _controller_with_live_source_queue()
+    mass.streams.audio.get_stream_details = AsyncMock()
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "zzz") is None
+    open_fill.assert_not_called()
+    mass.streams.audio.get_stream_details.assert_not_awaited()
+
+
+async def test_no_buffer_once_the_queue_resolved_the_item_elsewhere() -> None:
+    """A queue that settled on another provider for the item is not handed this audio."""
+    controller, items, _mass = _controller_with_live_source_queue()
+    items[1].streamdetails = SimpleNamespace(provider="tidal--b", buffer=None)
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
+    open_fill.assert_not_called()
+
+
+async def test_no_second_buffer_for_an_item_that_already_has_one() -> None:
+    """A buffer another request is already filling must not be split with a second one."""
+    controller, items, _mass = _controller_with_live_source_queue()
+    warm = MagicMock()
+    warm.has_error = False
+    warm.is_valid.return_value = True
+    items[1].streamdetails = SimpleNamespace(provider="spotify--a", buffer=warm)
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
+    open_fill.assert_not_called()
+
+
+async def test_a_failed_buffer_is_replaced_rather_than_left_holding_the_item() -> None:
+    """A buffer whose fill failed is no reason to leave the live audio nowhere to go."""
+    controller, items, _mass = _controller_with_live_source_queue()
+    broken = MagicMock()
+    broken.has_error = True
+    broken.is_valid.return_value = True
+    items[1].streamdetails = SimpleNamespace(
+        provider="spotify--a", buffer=broken, queue_session_id=None
+    )
+    fill = MagicMock()
+    with patch.object(AudioBuffer, "open_provider_fill", return_value=fill):
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is fill
+
+
+async def test_unresolvable_stream_details_leave_the_live_audio_unbuffered() -> None:
+    """An item whose stream details cannot be resolved gets no buffer, and no exception."""
+    controller, _items, mass = _controller_with_live_source_queue()
+    mass.streams.audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
+        assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
+    open_fill.assert_not_called()

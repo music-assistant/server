@@ -104,6 +104,9 @@ class AudioBuffer:
         self._ready_at_chunk = ready_threshold  # updated by get_buffer to account for seek
         self._chunks: deque[bytes] = deque()
         self._discarded_chunks = 0
+        # furthest chunk playback has taken, as an absolute chunk number; passive
+        # (analysis) reads deliberately leave it alone
+        self._served_chunks = 0
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
         self._space_available = asyncio.Condition(self._lock)
@@ -153,6 +156,17 @@ class AudioBuffer:
     def duration_available(self) -> float:
         """Return the exact duration of resident PCM audio in seconds."""
         return sum(len(chunk) for chunk in self._chunks) / self.pcm_format.pcm_sample_size
+
+    @property
+    def undrained_seconds(self) -> float:
+        """
+        Return the seconds of buffered audio past the furthest position playback has read.
+
+        How far the source is running ahead of playback: a source that hands its audio
+        over faster than it is played can be held back on this.
+        """
+        produced = self._discarded_chunks + len(self._chunks)
+        return max(0.0, float(produced - self._served_chunks))
 
     @property
     def is_buffering(self) -> bool:
@@ -428,17 +442,6 @@ class AudioBuffer:
         # the producer may spend its source wait before the first byte arrives,
         # so the readiness budget covers that wait on top of the audio itself
         ready_timeout = BUFFER_READY_TIMEOUT + (source_wait_timeout or 0)
-        # determine buffer size from config
-        buffer_size = BufferSize(
-            mass.config.get_raw_core_config_value(
-                "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-            )
-        )
-        mode = (
-            BufferMode.ROLLING
-            if (not streamdetails.duration or not streamdetails.allow_seek)
-            else BufferMode.SEEKABLE
-        )
 
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer
@@ -481,89 +484,14 @@ class AudioBuffer:
                     )
                 return existing_buffer
 
-        # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
-        seek_seconds = seek_position_ms // 1000
-
-        # for large seeks without existing buffer, start at seek position.
-        # A realtime source can not produce the skipped audio any faster than playback,
-        # so it always seeks at the source instead of buffering up to the seek point.
-        buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
-
-        pcm_format = _buffer_pcm_format(streamdetails)
-
-        # determine ready threshold: how many seconds of audio must be buffered
-        # before signaling ready for playback
-        queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
-        crossfade_enabled = bool(
-            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
+        audio_buffer, buffer_seek_seconds = _new_buffer(
+            mass, streamdetails, seek_position_ms, log_prefix
         )
-        dynamic_normalization = (
-            streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
-        )
-        if streamdetails.is_realtime:
-            # A realtime source fills the buffer at playback pace, so every second of
-            # audio asked for here is a second of extra startup delay - on a seek or a
-            # track change as much as on a start. The queue's crossfade setting buys
-            # nothing for such a source, because its fade streams in as it arrives and
-            # is sized by the tail the outgoing track banked, not by what is resident
-            # here. Only dynamic normalization, which genuinely needs lookahead, raises
-            # this.
-            ready_threshold = 2 if dynamic_normalization else 1
-        elif crossfade_enabled:
-            ready_threshold = 8
-        elif dynamic_normalization:
-            # radio streams are continuous so the normalization will converge quickly,
-            # use a lower threshold to reduce startup latency
-            ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
-        else:
-            ready_threshold = 2
-
-        # cap threshold at buffer capacity to prevent deadlock
-        max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
-        ready_threshold = min(ready_threshold, max_size)
-
-        LOGGER.debug(
-            "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
-            log_prefix,
-            streamdetails.uri,
-            mode,
-            buffer_size,
-            seek_position_ms,
-        )
-        audio_buffer = AudioBuffer(
-            pcm_format,
-            buffer_size,
-            mode,
-            ready_threshold=ready_threshold,
-            is_realtime=streamdetails.is_realtime,
-        )
-        # align chunk numbering with the actual stream start position so that
-        # get_raw_stream(seek_position_ms) requests the correct chunk number
-        audio_buffer._discarded_chunks = buffer_seek_seconds
-        # set the chunk number at which the buffer should signal ready,
-        # accounting for seek position so we have enough data past the seek point
-        seek_chunk = seek_position_ms // 1000
-        audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
-        streamdetails.buffer = audio_buffer
-
-        # attach analyze jobs for ahead-of-time processing
-        # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
-        # (radio still runs analysis; the analyzer caps it at 10 minutes)
-        if seek_position_ms == 0 and streamdetails.media_type not in (
-            MediaType.AUDIO_SOURCE,
-            MediaType.SOUND_EFFECT,
-        ):
-            # audio analysis providers (loudness, beat tracking, key detection, etc.).
-            # Fire-and-forget: analysis setup — including a possible model (re)load — must never
-            # delay the buffer fill. The analysis worker reads the retained chunks once ready.
-            mass.create_task(
-                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
-            )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
             streamdetails,
-            pcm_format,
+            audio_buffer.pcm_format,
             seek_position=buffer_seek_seconds,
             filter_params=None,
             source_wait_timeout=source_wait_timeout,
@@ -574,6 +502,33 @@ class AudioBuffer:
             await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
 
         return audio_buffer
+
+    @staticmethod
+    def open_provider_fill(
+        mass: MusicAssistant, streamdetails: StreamDetails, reason: str = ""
+    ) -> ProviderAudioFill:
+        """
+        Create the buffer for an item whose provider writes its PCM in, and return the handle.
+
+        For a source that produces an item's audio on its own schedule rather than on
+        request — the audio exists only while the source is on that item — so its buffer
+        has to be there to receive it. The buffer is attached to the given stream details,
+        where a later playback request finds and reuses it.
+
+        :param mass: The MusicAssistant instance.
+        :param streamdetails: Stream details of the item the audio belongs to.
+        :param reason: Caller context for logging.
+        """
+        log_prefix = f"open_provider_fill[{reason}]" if reason else "open_provider_fill"
+        audio_buffer, _ = _new_buffer(mass, streamdetails, 0, log_prefix)
+        fill = ProviderAudioFill(audio_buffer.pcm_format, streamdetails, buffer=audio_buffer)
+        audio_buffer.fill(
+            # the buffer counts one chunk as one second, so the provider's own write
+            # sizes are gathered into that before they reach it
+            _in_chunks_of(fill.stream(), audio_buffer.chunk_size_bytes),
+            source_name=streamdetails.uri,
+        )
+        return fill
 
     # -- Private methods --
 
@@ -737,6 +692,7 @@ class AudioBuffer:
 
         result = self._chunks.popleft()
         self._discarded_chunks += 1
+        self._served_chunks = self._discarded_chunks
         self._space_available.notify_all()
         return result
 
@@ -772,6 +728,7 @@ class AudioBuffer:
             buffer_index = chunk_number - self._discarded_chunks
 
         result = self._chunks[buffer_index]
+        self._served_chunks = max(self._served_chunks, chunk_number + 1)
 
         # free space for the producer when buffer is at capacity,
         # but only if the producer is still running and needs space
@@ -847,6 +804,249 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
+
+
+class ProviderAudioFill:
+    """
+    Write side of a buffer a provider fills itself, for audio nothing has requested yet.
+
+    The provider writes whole PCM sample frames in ``pcm_format`` as its source produces
+    them, and ends the item with :meth:`close` (its audio has all been handed over) or
+    :meth:`fail` (it was cut short). Writes to a handle that is no longer ``active`` are
+    dropped: whatever was going to read them is gone.
+    """
+
+    def __init__(
+        self,
+        pcm_format: AudioFormat,
+        streamdetails: StreamDetails | None = None,
+        buffer: AudioBuffer | None = None,
+    ) -> None:
+        """
+        Initialize the handle.
+
+        :param pcm_format: The PCM format the provider writes.
+        :param streamdetails: The stream details the audio belongs to, when known.
+        :param buffer: The buffer being filled, when the audio goes to one.
+        """
+        self.pcm_format = pcm_format
+        self.streamdetails = streamdetails
+        self._buffer = buffer
+        self._chunks: deque[bytes] = deque()
+        self._pending_bytes = 0
+        self._error: Exception | None = None
+        self._data_available = asyncio.Event()
+        self._closed = False
+        self._released = False
+        if buffer is not None:
+            # a buffer released elsewhere (a queue stop, a reselection) takes the handle
+            # with it, so the provider stops writing into audio nothing can read
+            buffer.register_cancel_callback(self._release)
+
+    @property
+    def active(self) -> bool:
+        """Return whether audio written to this handle can still reach a consumer."""
+        return not self._closed and not self._released
+
+    @property
+    def pending_seconds(self) -> float:
+        """
+        Return the seconds of written audio playback has not consumed yet.
+
+        How far the source is running ahead of playback: everything still held here plus
+        everything the buffer holds past the furthest position playback has read.
+        """
+        pending = self._pending_bytes / self.pcm_format.pcm_sample_size
+        # the buffer written to directly, or - for a handle handed over as a stream -
+        # the one the item's audio is being streamed into
+        buffer = self._buffer or (self.streamdetails.buffer if self.streamdetails else None)
+        if isinstance(buffer, AudioBuffer):
+            pending += buffer.undrained_seconds
+        return pending
+
+    def write(self, chunk: bytes) -> None:
+        """
+        Hand over the next PCM audio for this item.
+
+        :param chunk: Whole sample frames in this handle's PCM format.
+        """
+        if not self.active or not chunk:
+            return
+        self._chunks.append(chunk)
+        self._pending_bytes += len(chunk)
+        self._data_available.set()
+
+    def close(self) -> None:
+        """End the item: everything it was going to deliver has been written."""
+        if self._closed:
+            return
+        self._closed = True
+        self._data_available.set()
+
+    def fail(self, error: Exception) -> None:
+        """
+        End the item on a failure, so a consumer sees the real cause.
+
+        :param error: Why the item's audio was not delivered in full.
+        """
+        if self._closed:
+            return
+        self._error = error
+        self._closed = True
+        self._data_available.set()
+
+    async def stream(self) -> AsyncGenerator[bytes]:
+        """Yield the written audio as it arrives, ending where the provider ended it."""
+        try:
+            while True:
+                while self._chunks:
+                    chunk = self._chunks.popleft()
+                    self._pending_bytes -= len(chunk)
+                    yield chunk
+                if self._closed:
+                    if self._error is not None:
+                        raise self._error
+                    return
+                self._data_available.clear()
+                if self._chunks or self._closed:
+                    # written while the flag was being cleared
+                    continue
+                await self._data_available.wait()
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        """Drop the handle: nothing is going to read what is written from here on."""
+        self._released = True
+        self._chunks.clear()
+        self._pending_bytes = 0
+
+
+async def _in_chunks_of(source: AsyncGenerator[bytes], chunk_size: int) -> AsyncGenerator[bytes]:
+    """
+    Re-cut an audio source into chunks of the given size.
+
+    The trailing part-chunk is yielded as it is: it is still the source's audio.
+
+    :param source: The audio to re-cut.
+    :param chunk_size: Size in bytes of each yielded chunk.
+    """
+    held = bytearray()
+    async with aclosing(source):
+        async for chunk in source:
+            held.extend(chunk)
+            while len(held) >= chunk_size:
+                yield bytes(held[:chunk_size])
+                del held[:chunk_size]
+    if held:
+        yield bytes(held)
+
+
+def _new_buffer(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    seek_position_ms: int,
+    log_prefix: str,
+) -> tuple[AudioBuffer, int]:
+    """
+    Create the buffer for the given stream details and attach it to them.
+
+    :param mass: The MusicAssistant instance.
+    :param streamdetails: The stream details the buffer belongs to.
+    :param seek_position_ms: Position in milliseconds playback starts from.
+    :param log_prefix: Caller context for logging.
+    :return: The buffer and the position (in seconds) its producer should start at.
+    """
+    # determine buffer size from config
+    buffer_size = BufferSize(
+        mass.config.get_raw_core_config_value("streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT)
+    )
+    mode = (
+        BufferMode.ROLLING
+        if (not streamdetails.duration or not streamdetails.allow_seek)
+        else BufferMode.SEEKABLE
+    )
+
+    # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
+    seek_seconds = seek_position_ms // 1000
+
+    # for large seeks without existing buffer, start at seek position.
+    # A realtime source can not produce the skipped audio any faster than playback,
+    # so it always seeks at the source instead of buffering up to the seek point.
+    buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
+
+    pcm_format = _buffer_pcm_format(streamdetails)
+
+    # determine ready threshold: how many seconds of audio must be buffered
+    # before signaling ready for playback
+    queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
+    crossfade_enabled = bool(
+        queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
+    )
+    dynamic_normalization = (
+        streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
+    )
+    if streamdetails.is_realtime:
+        # A realtime source fills the buffer at playback pace, so every second of
+        # audio asked for here is a second of extra startup delay - on a seek or a
+        # track change as much as on a start. The queue's crossfade setting buys
+        # nothing for such a source, because its fade streams in as it arrives and
+        # is sized by the tail the outgoing track banked, not by what is resident
+        # here. Only dynamic normalization, which genuinely needs lookahead, raises
+        # this.
+        ready_threshold = 2 if dynamic_normalization else 1
+    elif crossfade_enabled:
+        ready_threshold = 8
+    elif dynamic_normalization:
+        # radio streams are continuous so the normalization will converge quickly,
+        # use a lower threshold to reduce startup latency
+        ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
+    else:
+        ready_threshold = 2
+
+    # cap threshold at buffer capacity to prevent deadlock
+    max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
+    ready_threshold = min(ready_threshold, max_size)
+
+    LOGGER.debug(
+        "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
+        log_prefix,
+        streamdetails.uri,
+        mode,
+        buffer_size,
+        seek_position_ms,
+    )
+    audio_buffer = AudioBuffer(
+        pcm_format,
+        buffer_size,
+        mode,
+        ready_threshold=ready_threshold,
+        is_realtime=streamdetails.is_realtime,
+    )
+    # align chunk numbering with the actual stream start position so that
+    # get_raw_stream(seek_position_ms) requests the correct chunk number
+    audio_buffer._discarded_chunks = buffer_seek_seconds
+    # nothing has been read yet, so the source is not ahead of playback here
+    audio_buffer._served_chunks = buffer_seek_seconds
+    # set the chunk number at which the buffer should signal ready,
+    # accounting for seek position so we have enough data past the seek point
+    seek_chunk = seek_position_ms // 1000
+    audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
+    streamdetails.buffer = audio_buffer
+
+    # attach analyze jobs for ahead-of-time processing
+    # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
+    # (radio still runs analysis; the analyzer caps it at 10 minutes)
+    if seek_position_ms == 0 and streamdetails.media_type not in (
+        MediaType.AUDIO_SOURCE,
+        MediaType.SOUND_EFFECT,
+    ):
+        # audio analysis providers (loudness, beat tracking, key detection, etc.).
+        # Fire-and-forget: analysis setup — including a possible model (re)load — must never
+        # delay the buffer fill. The analysis worker reads the retained chunks once ready.
+        mass.create_task(mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails))
+
+    return audio_buffer, buffer_seek_seconds
 
 
 def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:

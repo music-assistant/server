@@ -10,7 +10,7 @@ and reads/mutates the controller's `PlayerQueueData` records.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import (
     MediaType,
@@ -26,14 +26,77 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.controllers.streams.audio_buffer import ProviderAudioFill
+
+# How far ahead of the playing item to look for the item a live source is producing.
+# A source that plays on by itself runs ahead of the player, but never far: what it
+# produces has to be held until playback gets there.
+LIVE_AUDIO_SEARCH_DEPTH: Final[int] = 3
+
 
 class StreamFeederMixin(_PlayerQueuesBase):
     """Feed the player's stream: enqueue the next item, preload/prepare its audio, clean up."""
+
+    async def open_provider_audio_fill(
+        self, queue_id: str, provider_instance_id: str, provider_item_id: str
+    ) -> ProviderAudioFill | None:
+        """
+        Open the audio buffer of an upcoming queue item its provider is producing audio for.
+
+        For a source that plays on by itself an item's audio exists only while the source
+        is on that item, so the source says when to buffer it rather than the queue
+        guessing. The returned handle is what that audio is written into; a later playback
+        request for the item finds the buffer and reuses it.
+
+        :param queue_id: Queue the source is serving.
+        :param provider_instance_id: Provider instance producing the audio.
+        :param provider_item_id: The provider's own id of the item now being produced.
+        :return: The handle to write the item's audio into, or None when the queue has no
+            upcoming item this audio belongs to (it moved on, or another provider serves it).
+        """
+        queue_item = self._upcoming_provider_item(queue_id, provider_instance_id, provider_item_id)
+        if queue_item is None:
+            return None
+        if (streamdetails := queue_item.streamdetails) is None:
+            try:
+                streamdetails = await self.mass.streams.audio.get_stream_details(
+                    queue_item=queue_item
+                )
+            except (AudioError, MediaNotFoundError) as err:
+                self.logger.debug(
+                    "No stream details for %s, cannot buffer its live audio: %s",
+                    queue_item.name,
+                    err,
+                )
+                return None
+            queue_item.streamdetails = streamdetails
+        if streamdetails.provider != provider_instance_id:
+            # the queue resolved this item to another provider, so this audio is not its
+            return None
+        if (
+            (existing := streamdetails.buffer) is not None
+            and not existing.has_error
+            and existing.is_valid()
+        ):
+            # already being filled (or filled) elsewhere; taking it over would split the
+            # item. One that failed is replaced instead, as a playback request would
+            return None
+        # record whose audio this is, so a queue stop releases the buffer with its session
+        if (queue_data := self._queue_data.get(queue_id)) is not None:
+            streamdetails.queue_session_id = queue_data.session_id
+        self.logger.debug(
+            "Buffering live %s audio for %s on queue %s",
+            provider_instance_id,
+            queue_item.name,
+            queue_id,
+        )
+        return AudioBuffer.open_provider_fill(self.mass, streamdetails, reason="source_live")
 
     def prepare_next_audio_buffer(self, queue_id: str) -> None:
         """
@@ -98,6 +161,41 @@ class StreamFeederMixin(_PlayerQueuesBase):
             task_id=f"prepare_next_audio_buffer_{queue_id}",
             abort_existing=True,
         )
+
+    def _upcoming_provider_item(
+        self, queue_id: str, provider_instance_id: str, provider_item_id: str
+    ) -> QueueItem | None:
+        """
+        Return the upcoming queue item that maps to the given provider item.
+
+        Located by provider mapping rather than by position: a source producing an item's
+        audio knows nothing of the queue's order, which a reorder may have changed.
+
+        :param queue_id: Queue to look in.
+        :param provider_instance_id: Provider instance the item must map to.
+        :param provider_item_id: The provider's own id of the item.
+        """
+        queue = self.get(queue_id)
+        if queue is None or queue.current_index is None:
+            return None
+        for offset in range(LIVE_AUDIO_SEARCH_DEPTH):
+            item = self.get_item(queue_id, queue.current_index + offset)
+            if item is None:
+                return None
+            if item.media_type == MediaType.AUDIO_SOURCE or (media_item := item.media_item) is None:
+                # AudioSource items are live and bypass the AudioBuffer entirely
+                continue
+            if media_item.provider == provider_instance_id and media_item.item_id == (
+                provider_item_id
+            ):
+                return item
+            if any(
+                mapping.provider_instance == provider_instance_id
+                and mapping.item_id == provider_item_id
+                for mapping in media_item.provider_mappings
+            ):
+                return item
+        return None
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""

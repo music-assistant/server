@@ -94,6 +94,8 @@ Supporting modules in `helpers/`:
 - `AudioBuffer.get_raw_stream()` - Get unprocessed raw PCM audio (playback consumer)
 - `AudioBuffer.read_chunk_for_analysis()` - Read one chunk for a passive analysis reader without mutating the buffer; raises when the chunk has been evicted (reader fell behind)
 - `AudioBuffer.fill()` - Start filling from an async generator of PCM chunks
+- `AudioBuffer.open_provider_fill()` - Create the buffer of an item whose provider writes the PCM itself, and return the `ProviderAudioFill` handle it writes into. For a source that produces an item's audio on its own schedule (the Spotify Soloist session), where the audio only exists while the source is on that item, so its buffer has to be there to receive it. The queue controller's `open_provider_audio_fill()` is what a provider calls; a later playback request finds the buffer through the usual `get_buffer()` reuse
+- `AudioBuffer.undrained_seconds` - How far the source is running ahead of playback, which a source that produces faster than playback can be held back on
 - `AudioBuffer.ready` - Event set when enough chunks are buffered past the seek point (threshold-based)
 
 ### Buffer Lifecycle
