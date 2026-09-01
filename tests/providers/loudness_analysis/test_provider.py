@@ -150,6 +150,25 @@ async def test_process_pcm_chunk_raises_once_the_decoder_stopped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_process_pcm_chunk_raises_when_the_pipe_breaks_mid_write() -> None:
+    """A decoder dying between the closed check and the write still fails retryably."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    ffmpeg = cast("MagicMock", session_data.ffmpeg)
+    ffmpeg.write = AsyncMock(side_effect=BrokenPipeError)
+    provider._data["sess"] = session_data
+    before = utc()
+
+    with pytest.raises(AudioAnalysisError, match="decoding failed") as excinfo:
+        await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + DECODE_FAILURE_RETRY_DELAY
+    # only chunks the decoder actually received count towards the duration gates
+    assert session_data.chunks_received == 0
+
+
+@pytest.mark.asyncio
 async def test_process_pcm_chunk_feeds_a_live_decoder() -> None:
     """While the decoder is alive the chunk is written and counted."""
     provider = _make_provider()

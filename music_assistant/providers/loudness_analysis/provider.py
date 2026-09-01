@@ -94,8 +94,16 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 "audio decoding failed during loudness measurement",
                 retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
             )
+        try:
+            await data.ffmpeg.write(pcm_chunk)
+        except OSError as err:
+            # the closed check races with ffmpeg dying mid-write: a broken pipe is the
+            # same infrastructure fault and must carry the same retry window
+            raise AudioAnalysisError(
+                "audio decoding failed during loudness measurement",
+                retry_at=utc() + DECODE_FAILURE_RETRY_DELAY,
+            ) from err
         data.chunks_received += 1
-        await data.ffmpeg.write(pcm_chunk)
         if data.chunks_received >= MAX_DURATION_SECONDS:
             # cap the analysis window for very long streams
             await self._send_eof(data)
