@@ -67,24 +67,17 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 SINGLE_ITEM_READRATE: Final[str] = "1.2"
 SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
 
-# Pacing for an item from a realtime source (streamdetails.is_realtime). The head
-# start such a source banks into the item's buffer is the only material its
-# end-of-track crossfade can be built from; the standard burst would hand it all to
-# the player at stream open and the 1.2x drain would keep the buffer empty from then
-# on. Matching the source's ceiling keeps it resident until EOF, the player still
-# receives at least playback speed, and a realtime source cannot be collected faster
-# than it plays. Buffered sources keep the standard pacing (MusicCast needs the big
-# opening burst before it will do gapless at all).
+# Pacing for a realtime-source track. The head start such a source banks is the only
+# material its end-of-track crossfade can use; the standard burst would hand it all
+# to the player at stream open. Matching the source's ceiling keeps it resident until
+# EOF while the player still receives at least playback speed. Buffered sources keep
+# the standard pacing (MusicCast needs the large burst before it will do gapless).
 REALTIME_ITEM_READRATE: Final[str] = "1.1"
 REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "5"
 
 
 def single_item_pacing_args(is_realtime: bool) -> list[str]:
-    """
-    Return the ffmpeg pacing arguments for one queue item's output stream.
-
-    :param is_realtime: Whether the item's source is marked realtime.
-    """
+    """Return the ffmpeg pacing arguments for one queue item's output stream."""
     if is_realtime:
         return [
             "-readrate",

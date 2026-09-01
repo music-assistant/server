@@ -145,56 +145,6 @@ def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) ->
     return audio_data
 
 
-# Linear amplitude below which audio counts as silence. The value ffmpeg's
-# silenceremove filter is given in strip_silence, so an incremental measurement and
-# the one the mixer runs at a boundary agree on where a track's audio ends.
-SILENCE_THRESHOLD: Final[float] = 0.02
-
-# numpy dtype and full-scale divisor per PCM flavour. Formats absent here are not
-# measured incrementally: 24-bit has no native dtype, and guessing is worse than
-# reporting nothing, which simply leaves the holdback behaving as it always did.
-_PCM_SAMPLE_SPECS: Final[dict[ContentType, tuple[str, float]]] = {
-    ContentType.PCM_S16LE: ("<i2", 32768.0),
-    ContentType.PCM_S32LE: ("<i4", 2147483648.0),
-    ContentType.PCM_F32LE: ("<f4", 1.0),
-    ContentType.PCM_F64LE: ("<f8", 1.0),
-}
-
-
-def trailing_silence_bytes(chunk: bytes, pcm_format: AudioFormat, carried: int) -> int:
-    """
-    Return the run of silence a chunk leaves at the end of a buffer, in bytes.
-
-    Silence is measured at the same threshold ffmpeg strips a fade's tail with, so a
-    quiet ending counts here exactly as it will count there. Returns 0 for a PCM
-    flavour that cannot be read sample-wise.
-
-    :param chunk: The chunk just appended to the buffer.
-    :param pcm_format: PCM format of the chunk.
-    :param carried: The silent run the buffer already ended with.
-    """
-    import numpy as np  # noqa: PLC0415  # deferred: the server import path must stay lazy
-
-    if not (spec := _PCM_SAMPLE_SPECS.get(pcm_format.content_type)):
-        return 0
-    dtype, full_scale = spec
-    samples = np.frombuffer(chunk, dtype=np.dtype(dtype))
-    if samples.size == 0:
-        return carried
-    # no abs(): it overflows the minimum signed sample, reading a full-scale
-    # negative peak as silence
-    threshold = SILENCE_THRESHOLD * full_scale
-    audible = np.flatnonzero((samples >= threshold) | (samples <= -threshold))
-    if audible.size == 0:
-        # nothing audible: this chunk continues whatever the buffer already ended with
-        return carried + len(chunk)
-    run = int(samples.size - 1 - audible[-1]) * samples.itemsize
-    # aligned down to a whole frame: a trim taken from this count must never split
-    # one, or every byte after it in a continuous stream swaps channels
-    frame_size = samples.itemsize * pcm_format.channels
-    return run - run % frame_size
-
-
 async def strip_silence(
     audio_data: bytes,
     pcm_format: AudioFormat,

@@ -132,7 +132,6 @@ from music_assistant.helpers.audio import (
     realtime_pcm_pacer,
     resample_pcm_audio,
     resolve_output_player_ids,
-    trailing_silence_bytes,
 )
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
@@ -188,16 +187,10 @@ MIN_CROSSFADE_DURATION = 3
 # and then the flow stream is better off opening the track itself.
 PREFETCH_HANDOVER_TIMEOUT = 5.0
 
-# Silence a holdback may keep on top of its window, so the window fills with audio
-# instead of a track's quiet ending. Real tracks end with a few seconds at most;
-# source-side padding is the source's own problem to suppress.
-MAX_SILENT_TAIL_HOLDBACK_SECONDS = 5
 
-
-# Bounded wait for a fade the outgoing stream is still mixing, when the incoming
-# item's own request arrives first. A speaker asks for the next url several seconds
-# before the current track ends, so without this wait a fade that is nearly ready is
-# thrown away. Kept short: the speaker is waiting on its first byte for this long.
+# Bounded wait for a fade the outgoing stream is still mixing when the incoming
+# item's request arrives first (a speaker asks for the next url before the current
+# track ends). Kept short: the speaker is waiting on its first byte for this long.
 CROSSFADE_HANDOFF_WAIT = 5.0
 
 # Bounded wait at a boundary for a realtime incoming track to start delivering.
@@ -266,12 +259,9 @@ def tail_hold_target(queue_item: QueueItem, max_bytes: int, frame_size: int) -> 
     Return how many bytes of tail may be held back for a fade right now.
 
     Nothing until the source has delivered the whole item, the full window after:
-    audio held back earlier would come out of the player's own supply and is heard
-    as a dropout at the boundary, while audio still in hand at EOF is provably not
-    something the player is waiting for. The fade is however long that leftover is.
+    an earlier hold would come out of audio the player is still waiting for.
 
-    :param queue_item: The item being streamed; its buffer is resolved here because
-        opening the stream is what creates it.
+    :param queue_item: The item being streamed.
     :param max_bytes: The full fade-out window (the cap).
     :param frame_size: PCM frame size the target is aligned down to.
     """
@@ -1992,8 +1982,6 @@ class StreamsAudio:
         # right away. After that, start accumulating the crossfade holdback buffer.
         warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
         warmup_bytes = 0
-        silent_tail = 0
-        max_silent_holdback = int(pcm_format.pcm_sample_size * MAX_SILENT_TAIL_HOLDBACK_SECONDS)
         total_chunks_received = 0
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         holding_back = crossfade_buffer_size > 0
@@ -2016,7 +2004,6 @@ class StreamsAudio:
                 del chunk
                 continue
 
-            silent_tail = trailing_silence_bytes(chunk, pcm_format, silent_tail)
             buffer.extend(chunk)
             del chunk
             hold_target = (
@@ -2024,26 +2011,19 @@ class StreamsAudio:
                 if holding_back
                 else 0
             )
-            # the window is a span of audible audio, so silence the item ends with
-            # is held on top of it rather than counted as part of it - otherwise a
-            # source that pads its tail hands the fade nothing but zeroes
-            keep = hold_target + min(silent_tail, max_silent_holdback)
-            if len(buffer) <= keep:
+            if len(buffer) <= hold_target:
                 await asyncio.sleep(0)
                 continue
             # yield everything above the current holdback window; the slice can
             # run short of a whole second when the window is small, so credit
             # what is actually yielded - a nominal full-second credit inflates
             # the play log and the reported duration
-            while len(buffer) > keep:
+            while len(buffer) > hold_target:
                 pcm_slice = bytes(buffer[: pcm_format.pcm_sample_size])
                 yield pcm_slice
                 bytes_written += len(pcm_slice)
                 del buffer[: len(pcm_slice)]
                 await asyncio.sleep(0)
-            # a silent run past the allowance is yielded like any other audio, so the
-            # run cannot describe more bytes than the buffer still holds
-            silent_tail = min(silent_tail, len(buffer))
 
         #### HANDLE END OF TRACK
 
@@ -2076,11 +2056,6 @@ class StreamsAudio:
         # a fade needs enough of the outgoing track to overlap with; a holdback that
         # armed late (or not at all) leaves less than that
         min_fade_out_size = int(pcm_format.pcm_sample_size * MIN_CROSSFADE_DURATION)
-        # what is held back is audible tail plus whatever silence the item ended with.
-        # Only the audible part can be blended, so it decides both whether this boundary
-        # can carry a fade at all and how long that fade may be. A tail with nothing
-        # audible left in it is a clean cut, not a fade of a fraction of a second.
-        audible_tail_bytes = max(0, len(buffer) - min(silent_tail, len(buffer)))
         # Claim the handoff the moment the next item is known, before the awaits that
         # size the fade: the speaker can ask for that item's url during them, and a
         # marker registered afterwards would arrive too late to be waited for.
@@ -2093,7 +2068,7 @@ class StreamsAudio:
             )
         try:
             if (
-                audible_tail_bytes >= min_fade_out_size
+                len(buffer) >= min_fade_out_size
                 and next_queue_item
                 and next_queue_item.streamdetails
             ):
@@ -2122,17 +2097,14 @@ class StreamsAudio:
                         next_queue_item.streamdetails,
                         crossfade_mode,
                         standard_crossfade_duration,
-                        fade_out_seconds=audible_tail_bytes / pcm_format.pcm_sample_size,
+                        fade_out_seconds=len(buffer) / pcm_format.pcm_sample_size,
                         playback_speed=fade_in_playback_speed,
                     )
                     crossfade_allowed = transition_mode != CrossfadeMode.DISABLED
             if not crossfade_allowed:
-                # no fade lands here, so the silence retained for one is dead air:
-                # deliver the audible part, count the rest as consumed media time
-                audible_len = len(buffer) - min(silent_tail, len(buffer))
-                uncredited_tail_bytes = len(buffer) - audible_len
-                bytes_written += audible_len
-                for pcm_slice in iter_pcm_slices(bytes(buffer[:audible_len]), pcm_format, 1000):
+                # no crossfade enabled/allowed, just yield the buffer last part
+                bytes_written += len(buffer)
+                for pcm_slice in iter_pcm_slices(bytes(buffer), pcm_format, 1000):
                     yield pcm_slice
                     await asyncio.sleep(0)
             else:
@@ -2352,7 +2324,6 @@ class StreamsAudio:
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
         queue_track = None
-        max_silent_holdback = int(pcm_format.pcm_sample_size * MAX_SILENT_TAIL_HOLDBACK_SECONDS)
         last_fadeout_part: bytes = b""
         last_streamdetails: StreamDetails | None = None
         last_queue_track: QueueItem | None = None
@@ -2602,8 +2573,6 @@ class StreamsAudio:
 
                 bytes_written = 0
                 crossfade_buffer = bytearray()
-                silent_tail = 0
-                trimmed_tail_bytes = 0
                 warmup_bytes = 0
                 first_chunk_received = False
                 # the holdback is grown out of the audio banked ahead of playback instead
@@ -2680,7 +2649,6 @@ class StreamsAudio:
                         # window, or (at a boundary) whatever of the incoming overlap
                         # arrived before the mix starts. The window is whatever the
                         # source has banked ahead of playback right now.
-                        silent_tail = trailing_silence_bytes(chunk, pcm_format, silent_tail)
                         crossfade_buffer.extend(chunk)
                         del chunk
                         hold_target = (
@@ -2688,10 +2656,7 @@ class StreamsAudio:
                             if holding_back
                             else 0
                         )
-                        # the window is a span of audible audio: silence the item ends
-                        # with is held on top of it, never counted as part of it
-                        keep = hold_target + min(silent_tail, max_silent_holdback)
-                        if not last_fadeout_part and len(crossfade_buffer) <= keep:
+                        if not last_fadeout_part and len(crossfade_buffer) <= hold_target:
                             await asyncio.sleep(0)
                             continue
                         # handle crossfade of previous track and new track
@@ -2857,13 +2822,12 @@ class StreamsAudio:
                         # small, so credit what is actually yielded - a nominal
                         # full-second credit inflates the play log and pins the
                         # queue's position mapping to the wrong track
-                        while len(crossfade_buffer) > keep:
+                        while len(crossfade_buffer) > hold_target:
                             pcm_slice = bytes(crossfade_buffer[:pcm_sample_size])
                             yield pcm_slice
                             bytes_written += len(pcm_slice)
                             del crossfade_buffer[: len(pcm_slice)]
                             await asyncio.sleep(0)
-                        silent_tail = min(silent_tail, len(crossfade_buffer))
 
                 # A source error after partial audio must not look like a completed item.
                 # Progress reporting skips items with stream_error, so the item is not
@@ -2911,22 +2875,17 @@ class StreamsAudio:
                 # a fade needs enough of the outgoing track to overlap with; a holdback that
                 # armed late (or not at all) leaves less than that
                 min_fade_out_size = int(pcm_sample_size * MIN_CROSSFADE_DURATION)
-                # the fade is gated and stashed on the audible tail: silence past it is
-                # trimmed here (counted as media time), not blended into the next track
-                audible_end = len(crossfade_buffer) - min(silent_tail, len(crossfade_buffer))
-                if audible_end >= min_fade_out_size and self.crossfade_allowed(
+                if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
                     player_id=queue.queue_id,
                     flow_mode=True,
                 ):
-                    window_start = max(0, audible_end - crossfade_buffer_size)
-                    last_fadeout_part = bytes(crossfade_buffer[window_start:audible_end])
-                    trimmed_tail_bytes = len(crossfade_buffer) - audible_end
+                    last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
                     last_streamdetails = queue_track.streamdetails
                     last_queue_track = queue_track
                     last_play_log_entry = play_log_entry
-                    remaining_bytes = bytes(crossfade_buffer[:window_start])
+                    remaining_bytes = bytes(crossfade_buffer[:-crossfade_buffer_size])
                     if remaining_bytes:
                         for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
                             yield pcm_slice
@@ -2934,14 +2893,8 @@ class StreamsAudio:
                         bytes_written += len(remaining_bytes)
                     del remaining_bytes
                 elif item_crossfade_mode != CrossfadeMode.DISABLED and crossfade_buffer:
-                    # no fade on this boundary: deliver the audible tail and skip the
-                    # trailing silence retained for a fade that never happened
-                    audible_len = len(crossfade_buffer) - min(silent_tail, len(crossfade_buffer))
-                    trimmed_tail_bytes = len(crossfade_buffer) - audible_len
-                    bytes_written += audible_len
-                    for pcm_slice in iter_pcm_slices(
-                        bytes(crossfade_buffer[:audible_len]), pcm_format, 1000
-                    ):
+                    bytes_written += len(crossfade_buffer)
+                    for pcm_slice in iter_pcm_slices(bytes(crossfade_buffer), pcm_format, 1000):
                         yield pcm_slice
                         await asyncio.sleep(0)
                 crossfade_buffer = bytearray()
@@ -2956,9 +2909,8 @@ class StreamsAudio:
                 source_buffer = queue_track.streamdetails.buffer
                 source_aborted = source_buffer is not None and source_buffer.cancelled
                 if not source_aborted:
-                    # the held-back crossfade tail still counts as this track's media-time,
-                    # and so does trailing silence that was trimmed instead of played
-                    tail_seconds = (len(last_fadeout_part) + trimmed_tail_bytes) / pcm_sample_size
+                    # the held-back crossfade tail still counts as this track's media-time
+                    tail_seconds = len(last_fadeout_part) / pcm_sample_size
                     # streamdetails.duration is in media-time; seconds_streamed is stream-time
                     # (post-atempo), so we scale by the track's playback_speed to recover media-time.
                     queue_track.streamdetails.duration = int(
@@ -3957,7 +3909,7 @@ class StreamsAudio:
         self, queue: PlayerQueue, queue_item: QueueItem
     ) -> CrossfadeData | None:
         """
-        Wait, briefly, for a fade into this item that the outgoing stream is still mixing.
+        Wait briefly for a fade into this item that is still being mixed.
 
         :param queue: The queue this request belongs to.
         :param queue_item: The item whose stream is starting.

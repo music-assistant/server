@@ -190,10 +190,9 @@ _UNCLAIMED_LIMIT_S: Final[float] = 90.0
 _MAX_RETAINED_S: Final[float] = 60.0
 _RESUME_RETAINED_S: Final[float] = 40.0
 
-# The sink renders exact-zero padding when the engine idles between items, and the
+# The sink renders exact-zero padding while the engine idles between items, and the
 # item-change event arrives after those frames landed in the outgoing item's channel.
-# Near an item's own known end, zero frames beyond a short grace are that padding,
-# not content; a quiet passage mid-track is never touched.
+# Zero frames past a short grace, inside the item's own tail zone, are that padding.
 _TAIL_PAD_ZONE_S: Final[float] = 10.0
 _TAIL_PAD_GRACE_S: Final[float] = 1.0
 # how often the tail drain checks whether the item's own audio has all arrived
@@ -2381,17 +2380,14 @@ class _ItemAudio:
             # session's clock steady but stop growing
             return
         if chunk.count(0) == len(chunk):
-            # Zero frames near the item's own end are sink padding, not content. An
-            # item no longer than the zone has no distinguishable tail, so its
-            # silence is left alone rather than read as padding.
+            # sink padding; an item no longer than the zone has no distinguishable
+            # tail, so its own silence is left alone
             target = self._duration_bytes()
             zone = int(_TAIL_PAD_ZONE_S * _BYTES_PER_SECOND)
             if target is not None and target > zone and self._written >= target - zone:
                 self._zero_run += len(chunk)
                 if self._zero_run > int(_TAIL_PAD_GRACE_S * _BYTES_PER_SECOND):
-                    # still counted as written: the drain's tail target is met by the
-                    # item's timeline, refused padding included, or it would wait out
-                    # the whole stall timeout on the run's last item
+                    # counted as written so the drain's tail target stays reachable
                     self._written += len(chunk)
                     self._last_write = time.monotonic()
                     return
