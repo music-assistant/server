@@ -224,11 +224,9 @@ class AIRadioQueueDJMixin:
             decided_before = state.decided_gap_ids
             state.decided_gap_ids = decided_before & {item.queue_item_id for item in items}
             if decided_before and not state.decided_gap_ids:
-                # not one of the tracks this history was recorded against is left, so the
-                # queue it describes is gone whatever the axis positions say
-                self._rebase_dj_history(
-                    state, state.songs_before_window, state.minutes_before_window
-                )
+                # not one of the tracks this history was recorded against is left, so every
+                # break still waiting on one went with them and may claim no guard budget
+                self._drop_unaired_dj_history(state)
 
             window = self._dj_window(items, guard_index)
             if len(window) < 2:
@@ -460,13 +458,24 @@ class AIRadioQueueDJMixin:
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
 
+    def _drop_unaired_dj_history(self, state: DJQueueState) -> None:
+        """Forget the guard history of breaks that were planned but never reached the player."""
+        # every event starts out ahead of the window and only falls behind it once the player
+        # has passed the gap it was recorded for, so the window start tells the two apart
+        state.history = {
+            section_id: [
+                (song, minute) for song, minute in events if song <= state.songs_before_window
+            ]
+            for section_id, events in state.history.items()
+        }
+
     def _rebase_dj_history(
         self, state: DJQueueState, songs_before_window: int, minutes_before_window: float
     ) -> None:
         """Re-anchor the guard history onto the given start of the planning window."""
-        # aired events move with the window so they keep their distance from it, while events
-        # that were still ahead of it belonged to clips the queue no longer holds: those are
-        # capped at the window start so they stop suppressing every gap behind them
+        # events behind the window move with it so they keep their distance, while the ones
+        # still ahead of it are capped at the window start: their clips are either gone or
+        # far enough down the queue that they must not suppress every gap in between
         song_delta = min(songs_before_window - state.songs_before_window, 0)
         minute_delta = min(minutes_before_window - state.minutes_before_window, 0.0)
         state.history = {

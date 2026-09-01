@@ -622,9 +622,9 @@ async def test_queue_clear_and_refill_speaks_again(tmp_path: Path) -> None:
 
     new_loads = queues.loads[loaded_before_clear:]
     assert new_loads
-    # the rebased history still enforces the guard, so the DJ speaks at the normal
-    # gap distance rather than being pushed all the way out to the tail
-    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[4].queue_item_id
+    # the break the clear discarded never aired, so it holds nothing back and the DJ
+    # speaks at the first gap the buffer guard allows
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
 
 
 async def test_clear_and_refill_at_the_same_position_speaks_again(tmp_path: Path) -> None:
@@ -652,6 +652,36 @@ async def test_clear_and_refill_at_the_same_position_speaks_again(tmp_path: Path
 
     new_loads = queues.loads[loaded_before_clear:]
     assert new_loads
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_a_break_that_aired_still_holds_the_dj_back_after_a_clear(tmp_path: Path) -> None:
+    """A break the listener actually heard keeps its distance across a clear and refill."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # playback reaches the track the last break announced, so that break has aired
+    queues._queue.current_index = 5
+    queues._queue.index_in_buffer = 5
+    await dummy._replan_queue("queue-1")
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+
+    fresh = [_track(index) for index in range(10)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the aired break moved with the queue, so its guard still applies from the new start
     assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[4].queue_item_id
 
 
@@ -707,15 +737,17 @@ async def test_hourly_host_speaks_again_after_a_clear_and_refill(tmp_path: Path)
     await dummy._replan_queue("queue-1")
     assert len(queues.loads) == loaded_before_clear
 
-    # long enough to clear the rebased (small) high-water mark but nowhere near the
-    # unrebased one, which would need well over an hour of fresh music to clear
-    fresh = [_track(index) for index in range(25)]
+    fresh = [_track(index) for index in range(6)]
     queues._items = fresh
     queues._queue.current_index = 0
     queues._queue.index_in_buffer = 0
     await dummy._replan_queue("queue-1")
 
-    assert len(queues.loads) > loaded_before_clear
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the discarded break never aired, so it spends none of the once-per-hour budget and
+    # the fresh queue does not have to play out an hour before hearing an hourly section
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
 
 
 async def test_replacing_the_upcoming_tracks_reanchors_the_guard(tmp_path: Path) -> None:
@@ -738,7 +770,7 @@ async def test_replacing_the_upcoming_tracks_reanchors_the_guard(tmp_path: Path)
 
     new_loads = queues.loads[loaded_after_pass1:]
     assert new_loads
-    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == new_tail[2].queue_item_id
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == new_tail[1].queue_item_id
 
 
 async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: Path) -> None:
