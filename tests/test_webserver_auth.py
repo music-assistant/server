@@ -28,6 +28,7 @@ from music_assistant.controllers.webserver.auth import (
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_ACTIVITY_PERSIST_INTERVAL,
     TOKEN_GUEST_EXPIRATION,
+    TOKEN_LIST_LIMIT,
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
@@ -672,6 +673,99 @@ async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     assert deleted_user is None
 
 
+async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that deleting a user takes its tokens, join codes and provider links with it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="cascadeadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="cascadeuser", role=UserRole.GUEST)
+    await auth_manager.create_token(user, "Device", is_long_lived=False)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
+    await auth_manager.generate_join_code(user)
+    tables = ("auth_tokens", "join_codes", "user_auth_providers")
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
+
+    set_current_user(admin)
+    await auth_manager.delete_user(user.user_id)
+
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
+async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that rows left behind by an earlier user deletion are cleaned up.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="survivinguser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Keep Me", is_long_lived=False)
+    # a live row in every table, so a sweep that is too broad cannot go unnoticed
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "live-link",
+            "user_id": user.user_id,
+            "provider_type": AuthProviderType.BUILTIN.value,
+            "provider_user_id": "live-provider-uid",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "live-code",
+            "code": "LIVECODE1234",
+            "user_id": user.user_id,
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+    # rows a pre-fix delete_user would have left behind
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": "orphan-token",
+            "user_id": "deleted-user-id",
+            "token_hash": "orphan-hash",
+            "name": "Orphan",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(days=1)).isoformat(),
+            "is_long_lived": 1,
+        },
+    )
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "orphan-link",
+            "user_id": "deleted-user-id",
+            "provider_type": AuthProviderType.HOME_ASSISTANT.value,
+            "provider_user_id": "ha-user-id",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "orphan-code",
+            "code": "ORPHANCODE12",
+            "user_id": "deleted-user-id",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    await auth_manager._prune_orphaned_user_rows()
+
+    for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        assert await auth_manager.database.get_rows(table, {"user_id": "deleted-user-id"}) == []
+        # the live user's rows are untouched
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
+
+
 async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) -> None:
     """
     Test that users cannot delete their own account.
@@ -706,6 +800,114 @@ async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     token_names = [t.name for t in tokens]
     assert "Device 1" in token_names
     assert "Device 2" in token_names
+
+
+async def test_get_user_tokens_returns_newest_first(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the token listing is capped to the newest tokens instead of the oldest.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="tokenorderuser", role=UserRole.USER)
+    set_current_user(user)
+
+    # fill the table past the listing cap, all older than the token created below
+    now = utc()
+    for index in range(TOKEN_LIST_LIMIT):
+        await auth_manager.database.insert(
+            "auth_tokens",
+            {
+                "token_id": f"old-token-{index}",
+                "user_id": user.user_id,
+                "token_hash": f"old-hash-{index}",
+                "name": f"Old Device {index}",
+                "created_at": (now - timedelta(hours=index + 1)).isoformat(),
+                "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+                "is_long_lived": 0,
+            },
+        )
+    await auth_manager.create_token(user, "Newest Device", is_long_lived=True)
+
+    tokens = await auth_manager.get_user_tokens(user.user_id)
+
+    assert len(tokens) == TOKEN_LIST_LIMIT
+    assert tokens[0].name == "Newest Device"
+    # the oldest row is the one that fell off the page, not the newest
+    assert f"Old Device {TOKEN_LIST_LIMIT - 1}" not in [token.name for token in tokens]
+
+
+async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the periodic cleanup removes only expired short-lived tokens.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="prunetokensuser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Valid", is_long_lived=False)
+    long_lived_token = await auth_manager.create_token(user, "Long Lived", is_long_lived=True)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    capped_token = await auth_manager.create_token(user, "Past Cap", is_long_lived=False)
+
+    now = utc()
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(expired_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+    # renewed late in its life, so its sliding expiry outlives the absolute lifetime cap
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(capped_token)},
+        {
+            "created_at": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)).isoformat(),
+            "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+        },
+    )
+    # an expired long-lived token stays listed so the user can still see and revoke it
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(long_lived_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+
+    await auth_manager._cleanup_expired_tokens()
+
+    remaining = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
+    assert {row["name"] for row in remaining} == {"Valid", "Long Lived"}
+
+
+async def test_periodic_cleanup_schedules_token_sweep(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that the periodic cleanup scheduler runs the token sweep, not just the join codes.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="scheduledsweepuser", role=UserRole.USER)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    token_id = auth_manager.jwt_helper.get_token_id(expired_token)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {"expires_at": (utc() - timedelta(days=1)).isoformat()},
+    )
+
+    # capture what gets scheduled instead of racing the eagerly started tasks
+    scheduled: list[Any] = []
+
+    def _capture(target: Any, *_args: Any, **_kwargs: Any) -> None:
+        scheduled.append(target)
+
+    monkeypatch.setattr(auth_manager.mass, "create_task", _capture)
+    monkeypatch.setattr(auth_manager.mass, "call_later", lambda *_args, **_kwargs: None)
+
+    auth_manager._schedule_periodic_cleanup()
+    for coro in scheduled:
+        await coro
+
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
 
 
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
@@ -1150,6 +1352,42 @@ async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManag
     assert await auth_manager.authenticate_with_token(token) is None
 
 
+async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that revoking all tokens counts and clears them beyond the default row limit.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="manytokens", role=UserRole.USER)
+    # deliberately above the default row limit of the database read helpers
+    token_count = 550
+    created_at = utc().isoformat()
+    async with auth_manager.database.deferred_commit():
+        for index in range(token_count):
+            await auth_manager.database.insert(
+                "auth_tokens",
+                {
+                    "token_id": f"token-{index}",
+                    "user_id": user.user_id,
+                    "token_hash": f"hash-{index}",
+                    "name": "Test Token",
+                    "created_at": created_at,
+                },
+            )
+
+    disconnected: list[str] = []
+    monkeypatch.setattr(
+        auth_manager.webserver, "disconnect_websockets_for_user", disconnected.append
+    )
+
+    assert await auth_manager.revoke_tokens_for_user(user) == token_count
+    assert disconnected == [user.user_id]
+    assert await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id}) == []
+
+
 async def test_access_revoked_subscription_hears_a_tokenless_revocation(
     auth_manager: AuthenticationManager,
 ) -> None:
@@ -1181,8 +1419,8 @@ async def test_access_revoked_subscription_hears_a_user_deletion(
     """
     Test that deleting a user announces the access withdrawal to subscribers.
 
-    Deletion cascades the tokens away without revoke_tokens_for_user ever running,
-    so it is a separate access-ending path that must reach subscribers itself.
+    Deletion removes the tokens without revoke_tokens_for_user ever running, so it is
+    a separate access-ending path that must reach subscribers itself.
 
     :param auth_manager: AuthenticationManager instance.
     """
