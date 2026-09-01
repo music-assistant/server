@@ -81,7 +81,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
     def _schedule_replan(self, queue_id: str) -> None:
         """No-op stand-in for the queue DJ mixin's replan scheduling."""
 
-    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """No-op stand-in for the queue DJ mixin's set_queue_dj."""
         return {}
 

@@ -48,6 +48,9 @@ class DJQueueState:
     queue_id: str
     host_id: str
     dj_session_id: str
+    # non-empty when this DJ was auto-armed by playing a show's radio item. In-memory only:
+    # after a restart it is re-derived from the queue's sources (see queue_dj)
+    station_id: str = ""
     clip_counter: int = 0
     songs_before_window: int = 0
     minutes_before_window: float = 0.0

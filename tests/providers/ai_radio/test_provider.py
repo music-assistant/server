@@ -816,7 +816,12 @@ async def test_loaded_in_mass_watches_the_loaded_providers() -> None:
     )
     assert subscribe_calls[1].args == (
         provider._on_dj_queue_event,
-        (EventType.QUEUE_ADDED, EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+        (
+            EventType.QUEUE_ADDED,
+            EventType.QUEUE_ITEMS_UPDATED,
+            EventType.QUEUE_UPDATED,
+            EventType.PLAYER_REMOVED,
+        ),
     )
     assert subscribers == [provider._on_providers_updated, provider._on_dj_queue_event]
 

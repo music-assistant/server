@@ -172,6 +172,7 @@ class AIRadioProvider(
                 (
                     EventType.QUEUE_ADDED,
                     EventType.QUEUE_ITEMS_UPDATED,
+                    EventType.QUEUE_UPDATED,
                     EventType.PLAYER_REMOVED,
                 ),
             )

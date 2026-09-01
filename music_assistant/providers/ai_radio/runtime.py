@@ -112,7 +112,9 @@ class AIRadioRuntimeMixin:
         def _schedule_replan(self, queue_id: str) -> None:
             """Request a replan pass for the given queue."""
 
-        async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+        async def set_queue_dj(
+            self, queue_id: str, host_id: str | None
+        ) -> dict[str, dict[str, str]]:
             """Enable, switch or disable the sticky AI DJ on a queue."""
 
     def _set_session_progress(
