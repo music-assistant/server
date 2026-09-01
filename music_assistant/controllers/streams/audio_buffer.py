@@ -851,6 +851,14 @@ class ProviderAudioFill:
         return not self._closed and not self._released
 
     @property
+    def capacity_seconds(self) -> float | None:
+        """Return the most seconds the backing buffer will hold, or None without one."""
+        buffer = self._buffer or (self.streamdetails.buffer if self.streamdetails else None)
+        if isinstance(buffer, AudioBuffer):
+            return float(buffer.max_size_seconds)
+        return None
+
+    @property
     def pending_seconds(self) -> float:
         """Return the seconds of written audio playback has not consumed yet."""
         pending = self._pending_bytes / self.pcm_format.pcm_sample_size

@@ -176,13 +176,14 @@ _FOLLOWER_SEARCH_DEPTH: Final[int] = 4
 # memory held and how far the engine's item can run ahead of the queue's, which
 # the item lookahead of the buffer request depends on. Resume well below the cap
 # so the sink is not flipped on every chunk.
-# Sized to bank a whole next track, so a boundary offers its full fade window the
-# moment the item is claimed (~85MB per session at s32le/44.1k/2ch when fully
-# extended). Measured against what playback has not taken out of the item buffers
-# yet, so the seek window a buffer legitimately retains behind playback does not
-# count towards it.
-_MAX_RETAINED_S: Final[float] = 240.0
-_RESUME_RETAINED_S: Final[float] = 220.0
+# How far the engine may run ahead of playback: one item beyond what is still being
+# consumed, and within an item whatever its buffer's memory-tiered capacity holds, so
+# a large host banks a whole next track. Measured against what playback has not taken
+# out of the item buffers yet, so the seek window a buffer legitimately retains behind
+# playback does not count. The fallback covers a handle consumed directly by a stream,
+# and the gap keeps the sink from flapping around the threshold.
+_RETAINED_FALLBACK_S: Final[float] = 60.0
+_RESUME_GAP_S: Final[float] = 20.0
 # how long the queue is given to open the buffer of an item the engine reached;
 # past it the item has no audio destination and _expire_idle ends the session
 _FILL_OPEN_TIMEOUT_S: Final[float] = 15.0
@@ -1908,7 +1909,8 @@ class _SoloistSession:
         rebuffering and pause silence out of the delivered PCM), a tail drain in
         progress (which needs the sink running to collect what is still in
         flight), the current item having a buffer to write into at all, and how
-        far the session has run ahead of playback — see ``_MAX_RETAINED_S``.
+        far the session has run ahead of playback (one item beyond what is
+        consumed, within the item buffer's capacity).
 
         :param engine_playing: The engine's new playing state, when this call
             is reacting to one.
@@ -1936,8 +1938,15 @@ class _SoloistSession:
                 want = False
                 backpressured = True
             else:
-                limit = _MAX_RETAINED_S if self._sink_running else _RESUME_RETAINED_S
-                want = self._retained_seconds() < limit
+                # the engine may work one item ahead of what playback still consumes,
+                # and within an item as far as its buffer will hold
+                fill = current.fill if current is not None else None
+                cap = (fill.capacity_seconds if fill is not None else None) or _RETAINED_FALLBACK_S
+                limit = cap if self._sink_running else cap - _RESUME_GAP_S
+                lead_items = sum(
+                    1 for c in self._channels if c is not current and c.pending_seconds > 0
+                )
+                want = lead_items < 2 and self._retained_seconds() < limit
                 backpressured = not want
             self._backpressured = backpressured
             if want == self._sink_running and not self._sink_state_unknown:

@@ -530,15 +530,50 @@ async def test_the_cushion_is_capped_by_suspending_the_sink(tmp_path: Path) -> N
     await session._apply_sink_state()
     sink.suspend.assert_not_awaited()
     # the engine has run this far ahead of what the player has taken
-    item.write(b"\x01" * int((soloist_backend._MAX_RETAINED_S + 1) * _BYTES_PER_SECOND))
+    item.write(b"\x01" * int((soloist_backend._RETAINED_FALLBACK_S + 1) * _BYTES_PER_SECOND))
     await session._apply_sink_state()
     sink.suspend.assert_awaited_once()
     assert session._backpressured is True
     # and it comes back once the player has drained enough of it
-    fill._pending_bytes = int(soloist_backend._RESUME_RETAINED_S * _BYTES_PER_SECOND) - 1
+    fill._pending_bytes = (
+        int(
+            (soloist_backend._RETAINED_FALLBACK_S - soloist_backend._RESUME_GAP_S)
+            * _BYTES_PER_SECOND
+        )
+        - 1
+    )
     await session._apply_sink_state()
     sink.resume.assert_awaited_once()
     assert session._backpressured is False
+
+
+async def test_the_lead_is_bounded_by_the_buffer_and_a_one_item_head_start(
+    tmp_path: Path,
+) -> None:
+    """The engine may fill one item ahead up to its buffer's capacity, and no further."""
+    session = _make_session(tmp_path)
+    session._demand_started = True
+    session._sink_running = True
+    session._engine_playing = True
+    item = session._current = session._open_channel(TRACK_A)
+    item.claim()
+    fill = _attach_fill(item)
+    audio_buffer = MagicMock(spec=AudioBuffer)
+    audio_buffer.max_size_seconds = 300
+    audio_buffer.undrained_seconds = 200.0
+    fill._buffer = audio_buffer
+    sink = _sink_of(session)
+    # 200s banked would trip a fixed one-minute cap, but fits this buffer
+    await session._apply_sink_state()
+    sink.suspend.assert_not_awaited()
+    # two earlier items still holding unconsumed audio put the engine two ahead
+    for uri in (TRACK_B, TRACK_C):
+        behind = session._open_channel(uri)
+        behind_fill = _attach_fill(behind)
+        behind_fill._pending_bytes = _BYTES_PER_SECOND
+    await session._apply_sink_state()
+    sink.suspend.assert_awaited_once()
+    assert session._backpressured is True
 
 
 async def test_a_pause_with_more_queued_suspends_the_sink(tmp_path: Path) -> None:
@@ -3435,8 +3470,9 @@ async def test_the_brake_counts_the_lead_the_item_buffers_hold(tmp_path: Path) -
     item.claim()
     fill = _attach_fill(item)
     audio_buffer = MagicMock(spec=AudioBuffer)
+    audio_buffer.max_size_seconds = 60
     # the player is well behind, but only the part it has not read is a lead
-    audio_buffer.undrained_seconds = soloist_backend._MAX_RETAINED_S + 1
+    audio_buffer.undrained_seconds = 61.0
     fill._buffer = audio_buffer
     sink = _sink_of(session)
     await session._apply_sink_state()

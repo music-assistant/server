@@ -168,8 +168,9 @@ audio prefs, wire models) is shared infrastructure owned by the Spotify Connect 
   any gap instead of making it up, since catching up would mean exactly that unpaced
   burst.
 - **Backpressure is ours to apply**: reading above realtime means the engine runs ahead
-  of the player, and nothing upstream stops it. `_MAX_RETAINED_S` caps how far ahead of
-  playback the session's audio may pile up — everything its handles still hold plus
+  of the player, and nothing upstream stops it. the session caps how far ahead of
+  playback its audio may pile up - one item beyond what is still consumed, and within
+  an item whatever its buffer's memory-tiered capacity holds — everything its handles still hold plus
   everything the item buffers hold past the furthest position playback has read, so the
   seek window a buffer legitimately keeps *behind* playback does not count — and
   suspends the capture sink past it, which stalls the engine until the player catches
