@@ -111,8 +111,10 @@ def test_another_queues_session_does_not_answer_for_normalization(normalizes: bo
     cast("MagicMock", prov.config).get_value = MagicMock(return_value=normalizes)
     backend = SoloistBackend(prov)
     prov.backend = backend
-    backend._session = _session(queue_id="queue-1", normalizes=not normalizes)
+    run = _session(queue_id="queue-1", normalizes=not normalizes)
     other_queue = _streamdetails(queue_id="queue-2")
+    run.media_key = _streamdetails(queue_id="queue-1").uri + "-other-item"
+    backend._run = run
 
     assert backend.session_normalizes(other_queue) is None
     # so the configuration answers for normalization
@@ -235,12 +237,11 @@ def _streamdetails(*, queue_id: str | None = None, item_id: str = "track-1") -> 
 
 
 def _session(*, queue_id: str, normalizes: bool = True) -> MagicMock:
-    """Return a stand-in for a running soloist session serving one queue."""
-    session = MagicMock()
-    session.usable = True
-    session.queue_id = queue_id
-    session.engine_normalizes = normalizes
-    return session
+    """Return a stand-in for a running soloist engine run."""
+    run = MagicMock()
+    run.queue_id = queue_id
+    run.engine_normalizes = normalizes
+    return run
 
 
 def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:

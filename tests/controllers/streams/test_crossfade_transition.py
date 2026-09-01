@@ -171,7 +171,8 @@ def _install_item_streams(
             size = min(CHUNK_SIZE, total - sent)
             sent += size
             consumed[item_id] += size
-            yield bytes(size)
+            # audible PCM: the holdback reads zero-filled bytes as trailing silence
+            yield (b"\x10\x20" * (size // 2 + 1))[:size]
             await asyncio.sleep(0)
         exhausted_at[item_id] = dict(consumed)
 
@@ -357,7 +358,7 @@ async def test_flow_reopens_the_incoming_track_when_the_prefetch_broke(
         while sent < total:
             size = min(CHUNK_SIZE, total - sent)
             sent += size
-            yield bytes(size)
+            yield (b"\x10\x20" * (size // 2 + 1))[:size]
             await asyncio.sleep(0)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
@@ -475,7 +476,7 @@ async def test_flow_reopens_a_track_whose_prefetch_ran_out_early(
         while sent < total:
             size = min(CHUNK_SIZE, total - sent)
             sent += size
-            yield bytes(size)
+            yield (b"\x10\x20" * (size // 2 + 1))[:size]
             await asyncio.sleep(0)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
