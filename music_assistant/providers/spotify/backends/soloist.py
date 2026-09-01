@@ -52,6 +52,7 @@ from music_assistant.providers.spotify.constants import (
     CONF_SOLOIST_CONSENT,
     CONF_SOLOIST_SESSION_DIR,
     SOLOIST_DATA_DIR_NAME,
+    SOLOIST_DEVICE_NAME,
 )
 from music_assistant.providers.spotify.helpers import soloist_session_present
 from music_assistant.providers.spotify_connect.base import (
@@ -541,6 +542,10 @@ class SoloistBackend(SpotifyPlaybackBackend):
             # and shuffle/repeat start disabled
             "--single-track",
             spotify_uri,
+            # required by the binary even though single-track mode never
+            # advertises it anywhere
+            "--device-name",
+            SOLOIST_DEVICE_NAME,
             "--api-key",
             self._api_key,
             "--data-dir",

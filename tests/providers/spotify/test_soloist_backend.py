@@ -478,14 +478,16 @@ def test_a_seek_is_confirmed_only_near_its_target(tmp_path: Path) -> None:
     assert run._seek_confirmed.is_set()
 
 
-def test_single_track_args_carry_the_uri_and_no_device_name(tmp_path: Path) -> None:
-    """The engine is spawned on exactly one URI, without advertising a Connect device."""
+def test_single_track_args_carry_the_uri(tmp_path: Path) -> None:
+    """The engine is spawned on exactly one URI, in single-track mode."""
     backend = _make_backend(tmp_path, {CONF_SOLOIST_API_KEY: "k" * 20})
     backend._binary = tmp_path / "soloist-bin"
     args = backend._session_args(TRACK_A)
     assert "--single-track" in args
     assert args[args.index("--single-track") + 1] == TRACK_A
-    assert "--device-name" not in args
+    # the binary refuses to start without a device name, even though
+    # single-track mode never advertises one
+    assert "--device-name" in args
 
 
 async def test_a_run_for_another_item_reports_capacity(tmp_path: Path) -> None:
