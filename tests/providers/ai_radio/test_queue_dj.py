@@ -171,6 +171,10 @@ class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
         self.replanned = getattr(self, "replanned", [])
         self.replanned.append(queue_id)
 
+    def _end_show_run(self, station_id: str) -> None:
+        """Drop the station's run, mirroring the real media mixin's behaviour."""
+        self._show_runs.pop(station_id, None)
+
 
 def _dj_harness(tmp_path: Path) -> DummyQueueDJ:
     """Build a queue DJ harness with a morning_show station bound to host amy."""
@@ -186,6 +190,13 @@ def _fake_queue_with_sources(dj: DummyQueueDJ, queue_id: str, source_uris: list[
     queue = FakeQueue(queue_id, None, None, sources=sources)
     dj.mass.player_queues._queue = queue
     return queue
+
+
+def _seed_show_run(dj: DummyQueueDJ, station_id: str) -> _ShowRun:
+    """Register an in-flight, not-yet-armed show run for the given station."""
+    run = _ShowRun(tracks=[])
+    dj._show_runs[station_id] = run
+    return run
 
 
 class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixin):
@@ -392,15 +403,28 @@ async def test_status_returns_mapping(tmp_path: Path) -> None:
 
 
 async def test_ensure_show_dj_arms_host_for_show_queue(tmp_path: Path) -> None:
-    """Playing a show with no DJ armed yet arms its station's host."""
+    """Playing a show with no DJ armed yet arms its station's host, once a run exists."""
     dj = _dj_harness(tmp_path)
     _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
 
     await dj._ensure_show_dj("q1")
 
     state = dj._dj_queues["q1"]
     assert state.host_id == "amy"
     assert state.station_id == "morning_show"
+    assert run.dj_armed is True
+    assert run.queue_id == "q1"
+
+
+async def test_ensure_show_dj_does_not_arm_before_a_run_exists(tmp_path: Path) -> None:
+    """A show queue with no fetched-tracks run yet is left alone (nothing to bind against)."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
 
 
 async def test_ensure_show_dj_never_overwrites_manual_host(tmp_path: Path) -> None:
@@ -458,6 +482,7 @@ async def test_on_dj_queue_event_auto_arms_a_show_queue(tmp_path: Path) -> None:
     """A queue event for a freshly loaded show arms its host without an explicit dj call."""
     dj = _dj_harness(tmp_path)
     _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
 
     await dj._on_dj_queue_event(
         cast("Any", SimpleNamespace(event=EventType.QUEUE_ADDED, object_id="q1"))
@@ -468,6 +493,72 @@ async def test_on_dj_queue_event_auto_arms_a_show_queue(tmp_path: Path) -> None:
     assert state.station_id == "morning_show"
     # armed twice: once by set_queue_dj's own arm, once by the event's usual replan request
     assert dj.replanned == ["q1", "q1"]
+
+
+async def test_on_dj_queue_event_does_not_rearm_an_ended_show_queue(tmp_path: Path) -> None:
+    """An ended queue keeps its sources; detaching must not flap-rearm on the next event."""
+    dj = _dj_harness(tmp_path)
+    queue = _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+    dj._end_show_run = Mock(wraps=dj._end_show_run)  # type: ignore[method-assign]
+
+    # first pass: arms, then immediately detaches because the queue already ended
+    queue.ended = True
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
+    )
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+    assert run.dj_armed is True  # the popped run itself stays armed; it is simply gone
+
+    # a later event on the same still-ended queue must not re-arm: the run is gone
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+    )
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+
+
+async def test_manual_disable_mid_show_is_not_rearmed(tmp_path: Path) -> None:
+    """A user disabling the DJ mid-show must not get it re-armed by the next queue event."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+
+    await dj._ensure_show_dj("q1")
+    assert "q1" in dj._dj_queues
+
+    # the user turns the DJ off from the player menu; the show keeps playing (run alive)
+    await dj.set_queue_dj("q1", None)
+    assert "q1" not in dj._dj_queues
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
+    )
+
+    assert "q1" not in dj._dj_queues
+    assert run.dj_armed is True
+
+
+async def test_replaying_a_show_arms_again_on_a_fresh_run(tmp_path: Path) -> None:
+    """A brand new run (after _end_show_run) is armed again, even for the same station."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    old_run = _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+    assert "q1" in dj._dj_queues
+    assert old_run.dj_armed is True
+
+    dj._end_show_run("morning_show")
+    await dj.set_queue_dj("q1", None)
+    assert "q1" not in dj._dj_queues
+
+    new_run = _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" in dj._dj_queues
+    assert dj._dj_queues["q1"].host_id == "amy"
+    assert new_run.dj_armed is True
 
 
 async def test_on_dj_queue_event_ends_run_for_bound_station_on_player_removed(
@@ -554,6 +645,38 @@ async def test_replan_plans_an_outro_when_the_show_run_is_exhausted(tmp_path: Pa
     await dummy._replan_queue("queue-1")
 
     final_items = dummy.player_queues.items("queue-1")
+    assert final_items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
+    assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
+
+
+async def test_replan_splices_both_intro_and_outro_in_one_pass(tmp_path: Path) -> None:
+    """
+    A short, fully-loaded, exhausted show plans and splices both intro and outro at once.
+
+    Regression test: the splice loop processes sections in descending insert_at_index order, so
+    the outro (the higher index) lands before the intro. The intro's occupied check must not
+    read a negative index (which would wrap around to the just-spliced outro at the tail) and
+    wrongly reject the intro as occupied.
+    """
+    tracks = [_track(index) for index in range(2)]
+    host = _must_host()
+    host["section_order"] = [
+        {"when": "start_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
+        {"when": "end_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
+    ]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=None, index_in_buffer=None, host=host
+    )
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    dummy._show_runs["station_a"] = _ShowRun(tracks=[], cursor=0)
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    assert len(final_items) == 4  # intro clip, both tracks, outro clip
+    assert final_items[0].extra_attributes[ATTR_QUEUE_DJ] is True
+    assert final_items[0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[0].queue_item_id
     assert final_items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
     assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
 

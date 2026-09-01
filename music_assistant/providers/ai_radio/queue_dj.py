@@ -154,22 +154,33 @@ class AIRadioQueueDJMixin:
         return state
 
     async def _ensure_show_dj(self, queue_id: str) -> None:
-        """Arm (or re-bind after a restart) the show's host on a queue playing a show."""
+        """Arm, once per run, or re-bind after a restart the show's host on a show queue."""
         station_id = self._queue_show_station(queue_id)
         if station_id is None:
             return
         state = self._dj_queues.get(queue_id)
         if state is not None:
-            # a DJ is already armed (possibly a manual pick): only restore the binding
+            # a DJ is already armed (possibly a manual pick): only restore the binding.
+            # unconditional so a restart, which restores the host from queue_dj.json but
+            # not this run-scoped station_id, can always re-derive it
             if not state.station_id:
                 state.station_id = station_id
+            return
+        run = self._show_runs.get(station_id)
+        if run is None or run.dj_armed or run.queue_id not in (None, queue_id):
+            # no run yet, already armed once this run (a detach or a manual disable must
+            # not be re-armed by a later event), or the run belongs to another queue
             return
         station = self._stations.get(station_id)
         if station is None:
             return
         await self.set_queue_dj(queue_id, str(station["host_id"]))
-        if (state := self._dj_queues.get(queue_id)) is not None:
-            state.station_id = station_id
+        if (state := self._dj_queues.get(queue_id)) is None:
+            return
+        state.station_id = station_id
+        run.dj_armed = True
+        if run.queue_id is None:
+            run.queue_id = queue_id
 
     async def _maybe_detach_show_dj(self, queue_id: str) -> None:
         """Detach an auto-armed show DJ and end its run once the queue left the show."""
@@ -421,9 +432,11 @@ class AIRadioQueueDJMixin:
         if insert_index <= guard_boundary:
             return "too_close"
         # occupied checks the slot on the insertion side of the target: behind it (the item
-        # that would follow the new clip) for an after-target splice, ahead of it otherwise
+        # that would follow the new clip) for an after-target splice, ahead of it otherwise.
+        # a leading intro's occupant_index is -1 (nothing precedes it), so it must be bounds
+        # checked on both ends or a negative index would wrap around to the last queue item
         occupant_index = insert_index if after_target else insert_index - 1
-        if occupant_index < len(items) and items[occupant_index].extra_attributes.get(
+        if 0 <= occupant_index < len(items) and items[occupant_index].extra_attributes.get(
             ATTR_QUEUE_DJ
         ):
             return "occupied"

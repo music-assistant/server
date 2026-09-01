@@ -26,11 +26,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-def show_uri(station_id: str) -> str:
-    """Return the media item uri of a show."""
-    return f"ai_radio://radio/{station_id}"
-
-
 @dataclass(slots=True)
 class _ShowRun:
     """One in-flight play-through of a show: its track snapshot and feed cursor."""
@@ -39,6 +34,9 @@ class _ShowRun:
     cursor: int = 0
     queue_id: str | None = None
     started: float = field(default_factory=time.time)
+    # True once the queue DJ has been auto-armed for this run, so a detach (queue ended, show
+    # left the sources) or a manual disable is never immediately re-armed by a later event
+    dj_armed: bool = False
 
     @property
     def exhausted(self) -> bool:
@@ -157,9 +155,11 @@ class AIRadioMediaMixin:
 
     def _find_show_queue(self, station_id: str) -> str | None:
         """Return the queue currently playing this show, identified by its sources."""
-        uri = show_uri(station_id)
+        # matches the prefix instance_id::create_uri actually stamps on a show's Radio item,
+        # not the provider domain, so a second AI Radio instance is matched correctly too
+        prefix = f"{self.instance_id}://radio/"
         for queue in self.mass.player_queues.all():
-            if any(source.uri == uri for source in queue.sources):
+            if any(source.uri == f"{prefix}{station_id}" for source in queue.sources):
                 return queue.queue_id
         return None
 
