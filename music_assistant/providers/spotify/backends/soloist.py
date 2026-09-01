@@ -708,6 +708,7 @@ class _SingleTrackRun:
         while (chunk := await self._chunks.get()) is not None:
             self._delivered += len(chunk)
             yield chunk
+        self.logger.debug("[run] stream ended for %s", self.spotify_uri)
         if self._error is not None:
             raise AudioError(self._error)
         self._validate_delivery()
@@ -965,6 +966,7 @@ class _SingleTrackRun:
         """
         await proc.wait()
         self._engine_exited = True
+        self.logger.debug("[run] engine exited for %s", self.spotify_uri)
 
     async def _read_capture(self) -> None:
         """
@@ -1086,6 +1088,11 @@ class _SingleTrackRun:
 
     def _finish_delivery(self) -> None:
         """Mark the item's audio as fully handed over."""
+        self.logger.debug(
+            "[run] delivery finished for %s (cushion holds %d chunks)",
+            self.spotify_uri,
+            self._chunks.qsize(),
+        )
         with suppress(asyncio.QueueFull):
             self._chunks.put_nowait(None)
 
@@ -1173,6 +1180,7 @@ class _SingleTrackRun:
             # and what renders now is not its audio. The daemon is put down
             # rather than left to play to nobody on the account's one stream.
             self._item_over = True
+            self.logger.debug("[run] engine wandered to %s; ending %s", uri, self.spotify_uri)
             self._finish_delivery()
             self.mass.create_task(self.backend.discard_run, self)
             return
