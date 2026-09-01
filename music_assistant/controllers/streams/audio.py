@@ -1900,13 +1900,16 @@ class StreamsAudio:
             crossfade_data = await self._await_pending_crossfade(queue, queue_item)
 
         if crossfade_data and streamdetails.seek_position > 0:
-            # don't do crossfade when seeking into track
+            # don't do crossfade when seeking into track; the mix would never be
+            # consumed, and an unconsumed one holds its incoming stream open
             self.logger.debug(
                 "Discarding crossfade data for queue %s - seeking into track (pos=%s)",
                 queue.display_name,
                 streamdetails.seek_position,
             )
+            await crossfade_data.close()
             crossfade_data = None
+            self._crossfade_data.pop(queue.queue_id, None)
         if crossfade_data and (crossfade_data.queue_item_id != queue_item.queue_item_id):
             # edge case alert: the next item changed just while we were preloading/crossfading
             self.logger.warning(

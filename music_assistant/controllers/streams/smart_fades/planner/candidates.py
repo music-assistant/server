@@ -481,7 +481,8 @@ class CandidateFactory:
             and fadein_trim_start > crossfade_duration + _MAX_UNHEARD_INTRO_S
         ):
             # deeper than the blend justifies: more of the incoming track would be
-            # skipped than the listener hears blended, so it plays from its head
+            # skipped than the listener hears blended, so it plays from its head -
+            # unpinned too, so scoring does not treat it as groove-aligned
             self._logger.log(
                 VERBOSE_LOG_LEVEL,
                 "stripping fade-in trim for spec source=%s tier=%s: %.2fs trim exceeds "
@@ -492,6 +493,7 @@ class CandidateFactory:
                 crossfade_duration,
             )
             fadein_trim_start = None
+            spec = replace(spec, entry_s=None)
 
         plan = TransitionPlan(
             tier=tier,
