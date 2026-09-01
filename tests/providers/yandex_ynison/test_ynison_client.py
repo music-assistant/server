@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
-from typing import Any
+from copy import deepcopy
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -22,11 +24,19 @@ from music_assistant.providers.yandex_ynison.constants import (
 from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
+    YnisonEmptyRedirectError,
     YnisonSendError,
     YnisonState,
     generate_device_id,
     make_version_block,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures" / "ynison"
+
+
+def _fixture(name: str) -> dict[str, Any]:
+    """Load a sanitized Ynison protocol fixture."""
+    return cast("dict[str, Any]", json.loads((FIXTURES / name).read_text()))
 
 
 @pytest.fixture
@@ -253,6 +263,148 @@ class TestYnisonClientParseState:
         client.state.active_device_id = "old-device"
         client._parse_state({"player_state": {"status": {"paused": True}}})
         assert client.state.active_device_id == "old-device"
+
+    def test_disconnect_sentinel_clears_implicit_active_device(self, client: YnisonClient) -> None:
+        """A disconnect sentinel without an explicit owner clears stale ownership."""
+        client.state.active_device_id = "test-device-id"
+
+        client._parse_state(_fixture("disconnect_sentinel.json"))
+
+        assert client.state.active_device_id is None
+
+    async def test_recent_empty_version_status_is_heartbeat_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """A matching server-normalized status is recognized as our heartbeat."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.last_update_is_echo is True
+
+    async def test_foreign_status_wins_over_matching_heartbeat(self, client: YnisonClient) -> None:
+        """A peer-authored status is authoritative even when its values match."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(180000, 240000, paused=False)
+
+        client._parse_state(_fixture("phone_seek.json"))
+
+        assert client.state.last_update_is_echo is False
+
+    async def test_delayed_heartbeat_does_not_overwrite_newer_phone_seek(
+        self, client: YnisonClient
+    ) -> None:
+        """A pre-seek heartbeat arriving late cannot roll state back."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            },
+            "status": {"paused": False, "progress_ms": "120000", "duration_ms": "240000"},
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("phone_seek.json"))
+
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
+
+        client._parse_state(_fixture("empty_version_heartbeat.json"))
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
+
+    async def test_queue_update_is_not_hidden_by_matching_status(
+        self, client: YnisonClient
+    ) -> None:
+        """An incoming queue block remains observable beside a matching heartbeat."""
+        client.state.player_state = {
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "TRACK_A"}],
+            }
+        }
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        update = _fixture("empty_version_heartbeat.json")
+        update["player_state"]["player_queue"] = {
+            "current_playable_index": 1,
+            "playable_list": [
+                {"playable_id": "TRACK_A"},
+                {"playable_id": "TRACK_B"},
+            ],
+        }
+
+        client._parse_state(update)
+
+        assert client.state.last_update_is_echo is False
+
+    async def test_matching_heartbeat_with_unchanged_queue_is_echo(
+        self, client: YnisonClient
+    ) -> None:
+        """Ynison may attach the complete unchanged queue to a status echo."""
+        queue = {
+            "current_playable_index": 0,
+            "playable_list": [{"playable_id": "TRACK_A"}],
+            "version": {"device_id": "peer", "version": "7", "timestamp_ms": "0"},
+        }
+        client.state.player_state = {"player_queue": queue}
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        update = _fixture("empty_version_heartbeat.json")
+        update["player_state"]["player_queue"] = deepcopy(queue)
+
+        client._parse_state(update)
+
+        assert client.state.last_update_is_echo is True
+
+    async def test_attached_queue_heartbeat_does_not_overwrite_newer_seek(
+        self, client: YnisonClient
+    ) -> None:
+        """An unchanged attached queue does not make a delayed status authoritative."""
+        queue = {
+            "current_playable_index": 0,
+            "playable_list": [{"playable_id": "TRACK_A"}],
+            "version": {"device_id": "peer", "version": "7", "timestamp_ms": "0"},
+        }
+        client.state.player_state = {"player_queue": queue}
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        client._ws = ws
+        await client.update_playing_status(120000, 240000, paused=False)
+        client._parse_state(_fixture("phone_seek.json"))
+        delayed = _fixture("empty_version_heartbeat.json")
+        delayed["player_state"]["player_queue"] = deepcopy(queue)
+
+        client._parse_state(delayed)
+
+        assert client.state.progress_ms == 180000
+        assert client.state.last_update_is_echo is True
 
     def test_echo_flag_true_only_when_both_authors_ours(self, client: YnisonClient) -> None:
         """AND-logic (1.9.1): both queue.version AND status.version must be ours."""
@@ -796,6 +948,187 @@ class TestMessageBuildingMethods:
         assert call_data["update_full_state"]["player_state"] == custom_state
 
 
+class TestQueueEdits:
+    """Tests for validated queue mutations sent as complete player state."""
+
+    async def test_add_playables_next_mutates_copy_after_current(
+        self, client: YnisonClient
+    ) -> None:
+        """Add-next preserves the current duplicate and waits for the server echo."""
+        original_state = {
+            "status": {"paused": False, "progress_ms": "25", "custom": "preserved"},
+            "player_queue": {
+                "current_playable_index": 1,
+                "playable_list": [
+                    {"playable_id": "duplicate", "marker": "first"},
+                    {"playable_id": "duplicate", "marker": "playing"},
+                    {"playable_id": "last"},
+                ],
+                "shuffle_optional": {"playable_indices": [2, 0, 1]},
+                "entity_type": "VARIOUS",
+                "version": {"device_id": "peer", "version": "1", "timestamp_ms": "0"},
+            },
+        }
+        client.state.player_state = original_state
+
+        with patch.object(client, "update_player_state", new_callable=AsyncMock) as update:
+            await client.add_playables_next(
+                [
+                    {"playable_id": "new-a"},
+                    {"playable_id": "duplicate", "marker": "inserted"},
+                ]
+            )
+
+        await_call = update.await_args_list[0]
+        sent_state = await_call.args[0]
+        assert await_call.kwargs == {"strict": True}
+        assert sent_state["status"] == original_state["status"]
+        assert sent_state["player_queue"]["playable_list"] == [
+            {"playable_id": "duplicate", "marker": "first"},
+            {"playable_id": "duplicate", "marker": "playing"},
+            {"playable_id": "new-a"},
+            {"playable_id": "duplicate", "marker": "inserted"},
+            {"playable_id": "last"},
+        ]
+        assert sent_state["player_queue"]["current_playable_index"] == 1
+        assert sent_state["player_queue"]["shuffle_optional"]["playable_indices"] == [4, 0, 1, 2, 3]
+        assert sent_state["player_queue"]["version"]["device_id"] == "test-device-id"
+        assert client.state.player_state is original_state
+        assert client.state.player_state["player_queue"]["playable_list"] == [
+            {"playable_id": "duplicate", "marker": "first"},
+            {"playable_id": "duplicate", "marker": "playing"},
+            {"playable_id": "last"},
+        ]
+
+    async def test_add_playables_last_appends_to_empty_queue(self, client: YnisonClient) -> None:
+        """Add-last appends without selecting an item or mutating local state."""
+        original_state = {
+            "status": {"paused": True, "progress_ms": "0"},
+            "player_queue": {
+                "current_playable_index": -1,
+                "playable_list": [],
+                "shuffle_optional": {"playable_indices": []},
+            },
+        }
+        client.state.player_state = original_state
+
+        with patch.object(client, "update_player_state", new_callable=AsyncMock) as update:
+            await client.add_playables_last(
+                [{"playable_id": "duplicate"}, {"playable_id": "duplicate"}]
+            )
+
+        await_call = update.await_args_list[0]
+        sent_state = await_call.args[0]
+        assert await_call.kwargs == {"strict": True}
+        assert sent_state["status"] == original_state["status"]
+        assert sent_state["player_queue"]["playable_list"] == [
+            {"playable_id": "duplicate"},
+            {"playable_id": "duplicate"},
+        ]
+        assert sent_state["player_queue"]["current_playable_index"] == -1
+        assert sent_state["player_queue"]["shuffle_optional"]["playable_indices"] == [0, 1]
+        assert sent_state["player_queue"]["version"]["device_id"] == "test-device-id"
+        assert client.state.player_state is original_state
+
+    async def test_remove_queue_position_preserves_current_duplicate(
+        self, client: YnisonClient
+    ) -> None:
+        """Removing before current tracks the playing entry by original position."""
+        original_state = {
+            "status": {"paused": False},
+            "player_queue": {
+                "current_playable_index": 2,
+                "playable_list": [
+                    {"playable_id": "duplicate", "marker": "remove"},
+                    {"playable_id": "middle"},
+                    {"playable_id": "duplicate", "marker": "playing"},
+                ],
+            },
+        }
+        client.state.player_state = original_state
+
+        with patch.object(client, "update_player_state", new_callable=AsyncMock) as update:
+            await client.remove_queue_position(0)
+
+        await_call = update.await_args_list[0]
+        sent_state = await_call.args[0]
+        assert await_call.kwargs == {"strict": True}
+        assert sent_state["player_queue"]["playable_list"] == [
+            {"playable_id": "middle"},
+            {"playable_id": "duplicate", "marker": "playing"},
+        ]
+        assert sent_state["player_queue"]["current_playable_index"] == 1
+        assert sent_state["status"] == original_state["status"]
+        assert client.state.player_state is original_state
+
+        update.reset_mock()
+        with pytest.raises(ValueError, match="out of range"):
+            await client.remove_queue_position(3)
+        update.assert_not_awaited()
+
+    async def test_move_queue_position_tracks_current_entry_by_identity(
+        self, client: YnisonClient
+    ) -> None:
+        """Moving across current uses original positions and preserves the exact duplicate."""
+        original_state = {
+            "status": {"paused": False},
+            "player_queue": {
+                "current_playable_index": 2,
+                "playable_list": [
+                    {"playable_id": "duplicate", "marker": "move"},
+                    {"playable_id": "middle"},
+                    {"playable_id": "duplicate", "marker": "playing"},
+                    {"playable_id": "last"},
+                ],
+                "shuffle_optional": {"playable_indices": [0, 1, 2, 3]},
+            },
+        }
+        client.state.player_state = original_state
+
+        with patch.object(client, "update_player_state", new_callable=AsyncMock) as update:
+            await client.move_queue_position(0, 3)
+
+        await_call = update.await_args_list[0]
+        sent_state = await_call.args[0]
+        assert await_call.kwargs == {"strict": True}
+        assert sent_state["player_queue"]["playable_list"] == [
+            {"playable_id": "middle"},
+            {"playable_id": "duplicate", "marker": "playing"},
+            {"playable_id": "last"},
+            {"playable_id": "duplicate", "marker": "move"},
+        ]
+        assert sent_state["player_queue"]["current_playable_index"] == 1
+        assert sent_state["player_queue"]["shuffle_optional"]["playable_indices"] == [3, 0, 1, 2]
+        assert sent_state["status"] == original_state["status"]
+        assert client.state.player_state is original_state
+
+        update.reset_mock()
+        with pytest.raises(ValueError, match="out of range"):
+            await client.move_queue_position(0, 4)
+        update.assert_not_awaited()
+
+    async def test_remove_current_resets_status_for_replacement(self, client: YnisonClient) -> None:
+        """Removing the playing item cannot carry its progress to the successor."""
+        client.state.player_state = {
+            "status": {"paused": False, "progress_ms": "90000", "duration_ms": "200000"},
+            "player_queue": {
+                "current_playable_index": 0,
+                "playable_list": [{"playable_id": "old"}, {"playable_id": "next"}],
+                "shuffle_optional": {"playable_indices": [0, 1]},
+            },
+        }
+
+        with patch.object(client, "update_player_state", new_callable=AsyncMock) as update:
+            await client.remove_queue_position(0)
+
+        assert update.await_args is not None
+        sent = update.await_args.args[0]
+        assert sent["player_queue"]["current_playable_index"] == 0
+        assert sent["player_queue"]["shuffle_optional"]["playable_indices"] == [0]
+        assert sent["status"]["progress_ms"] == "0"
+        assert sent["status"]["duration_ms"] == "0"
+
+
 # ------------------------------------------------------------------
 # _get_redirect_ticket
 # ------------------------------------------------------------------
@@ -880,7 +1213,7 @@ class TestGetRedirectTicket:
             await client._get_redirect_ticket()
 
     async def test_missing_host_ticket(self, client: YnisonClient) -> None:
-        """Missing host/ticket in response raises ConnectionError."""
+        """Missing host/ticket is identified as an authentication-suspect redirect."""
         mock_msg = MagicMock()
         mock_msg.type = aiohttp.WSMsgType.TEXT
         mock_msg.data = json.dumps({"host": "", "redirect_ticket": ""})
@@ -893,7 +1226,7 @@ class TestGetRedirectTicket:
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        with pytest.raises(ConnectionError, match="missing host or ticket"):
+        with pytest.raises(YnisonEmptyRedirectError, match="missing host or ticket"):
             await client._get_redirect_ticket()
 
     async def test_unexpected_msg_type(self, client: YnisonClient) -> None:
@@ -1690,7 +2023,7 @@ class TestTokenRefreshOnReconnect:
         assert client._token == SecretStr("old-token")
 
     async def test_auth_failure_callback_raises(self) -> None:
-        """on_auth_failure raises → logs warning, keeps retrying until stopped."""
+        """A failed refresh is attempted once per reconnect episode."""
         on_state = AsyncMock()
         on_auth_failure = AsyncMock(side_effect=RuntimeError("refresh failed"))
 
@@ -1725,10 +2058,39 @@ class TestTokenRefreshOnReconnect:
         ):
             await client._reconnect()
 
-        # Callback was called on every attempt — no cap
-        assert on_auth_failure.await_count == attempt_count
+        assert on_auth_failure.await_count == 1
         # Token unchanged since callback always fails
         assert client._token == SecretStr("old-token")
+
+    async def test_empty_redirect_triggers_one_token_refresh(self) -> None:
+        """The live invalid-token response shares the bounded refresh budget."""
+        on_auth_failure = AsyncMock(return_value=SecretStr("new-token"))
+        client = YnisonClient(
+            token=SecretStr("old-token"),
+            device_info=YnisonDeviceInfo(device_id="d1", title="T"),
+            on_state_update=AsyncMock(),
+            logger=MagicMock(),
+            on_auth_failure=on_auth_failure,
+        )
+        client._session = MagicMock(closed=False)
+        attempts = 0
+
+        async def redirect() -> tuple[str, str, int]:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise YnisonEmptyRedirectError("missing host or ticket")
+            return "host", "ticket", 1
+
+        with (
+            patch(SLEEP_PATH, new_callable=AsyncMock),
+            patch.object(client, "_get_redirect_ticket", side_effect=redirect),
+            patch.object(client, "_connect_state", new_callable=AsyncMock),
+        ):
+            await client._reconnect()
+
+        assert on_auth_failure.await_count == 1
+        assert client._token == SecretStr("new-token")
 
 
 class TestUpdateToken:

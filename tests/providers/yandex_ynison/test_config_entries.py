@@ -1,59 +1,41 @@
-"""Tests for get_config_entries (the genuine playback options surface)."""
+"""Tests for Ynison runtime configuration entries."""
 
 from __future__ import annotations
-
-from unittest.mock import MagicMock
 
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_OUTPUT_BIT_DEPTH,
     CONF_OUTPUT_SAMPLE_RATE,
+    CONF_STREAM_MODE,
+    STREAM_MODE_STABLE,
 )
 from music_assistant.providers.yandex_ynison.provider import YandexYnisonProvider
 
-# auth / account-source keys that moved to the interactive setup flow — none of
-# these may reappear on the options surface
-_FLOW_ONLY_KEYS = frozenset(
-    {
-        "auth_qr",
-        "clear_auth",
-        "remember_session",
-        "token",
-        "x_token",
-        "account_login",
-        "ym_instance",
-        "label_text",
-        "mass_player_id",
-        "publish_name",
-        "session_id",
-    }
-)
 
+async def test_runtime_config_contains_playback_options_only() -> None:
+    """Reintroducing account or identity fields must not bypass the setup flow."""
+    provider = object.__new__(YandexYnisonProvider)
 
-def _make_provider() -> YandexYnisonProvider:
-    """Build a provider instance for inspecting its options."""
-    provider = YandexYnisonProvider.__new__(YandexYnisonProvider)
-    provider.mass = MagicMock()
-    return provider
+    entries = await provider.get_config_entries()
 
-
-async def test_no_auth_or_account_source_entries() -> None:
-    """Authentication, account and device identity live only in the setup flow."""
-    entries = await _make_provider().get_config_entries()
-    keys = {e.key for e in entries}
-    assert keys.isdisjoint(_FLOW_ONLY_KEYS)
-    actions = {e.action for e in entries if e.action}
-    assert not actions
-
-
-async def test_genuine_options_present() -> None:
-    """The genuine playback options remain on the options surface."""
-    entries = await _make_provider().get_config_entries()
-    keys = {e.key for e in entries}
-    assert {
+    assert [entry.key for entry in entries] == [
         CONF_ALLOW_PLAYER_SWITCH,
+        CONF_STREAM_MODE,
         CONF_OUTPUT_SAMPLE_RATE,
         CONF_OUTPUT_BIT_DEPTH,
         CONF_DEVICE_ID,
-    } == keys
+    ]
+
+    stream_mode = next(entry for entry in entries if entry.key == CONF_STREAM_MODE)
+    assert stream_mode.default_value == STREAM_MODE_STABLE
+
+
+async def test_device_id_is_the_only_hidden_runtime_entry() -> None:
+    """Exposing device identity must not let users accidentally replace it."""
+    provider = object.__new__(YandexYnisonProvider)
+
+    entries = await provider.get_config_entries()
+    hidden = [entry.key for entry in entries if entry.hidden]
+
+    assert hidden == [CONF_DEVICE_ID]
