@@ -663,9 +663,15 @@ async def test_a_break_that_aired_still_holds_the_dj_back_after_a_clear(tmp_path
 
     await dummy._replan_queue("queue-1")
     queues = dummy.player_queues
-    # playback reaches the track the last break announced, so that break has aired
-    queues._queue.current_index = 5
-    queues._queue.index_in_buffer = 5
+    # playback reaches the track the first break announced, so that break has aired
+    clip = next(item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ))
+    aired_index = next(
+        index
+        for index, item in enumerate(queues._items)
+        if item.queue_item_id == clip.extra_attributes[ATTR_GAP_NEXT_ID]
+    )
+    queues._queue.current_index = aired_index
+    queues._queue.index_in_buffer = aired_index
     await dummy._replan_queue("queue-1")
     loaded_before_clear = len(queues.loads)
 
@@ -682,8 +688,78 @@ async def test_a_break_that_aired_still_holds_the_dj_back_after_a_clear(tmp_path
 
     new_loads = queues.loads[loaded_before_clear:]
     assert new_loads
-    # the aired break moved with the queue, so its guard still applies from the new start
-    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[4].queue_item_id
+    # the aired break moved with the queue, so its guard still applies from the new start:
+    # it sat one song behind the window and keeps that distance on the fresh queue
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[3].queue_item_id
+
+
+async def test_a_pending_break_at_the_buffer_edge_holds_nothing_after_a_clear(
+    tmp_path: Path,
+) -> None:
+    """A clear that discards a break sitting right at the buffer edge frees its budget too."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # playback advances to the track right before the first staged clip, so the clip sits
+    # one slot past the buffer and its event lands exactly on the recorded window start
+    queues._queue.current_index = 1
+    queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 2
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+
+    fresh = [_track(index) for index in range(8)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the discarded clip never aired, so nothing holds the DJ past the first allowed gap
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_an_airing_break_still_holds_the_dj_back_when_the_tail_is_swapped(
+    tmp_path: Path,
+) -> None:
+    """A break the player owns keeps its guard weight when every upcoming track is swapped."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # the first staged clip reaches the player and starts airing
+    clip_index = next(
+        index
+        for index, item in enumerate(queues._items)
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    )
+    queues._queue.current_index = clip_index
+    queues._queue.index_in_buffer = clip_index
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 2
+    loaded_before_swap = len(queues.loads)
+
+    # everything behind the airing clip is swapped out, so no decided track is left
+    head = queues._items[: clip_index + 1]
+    fresh = [_track(20 + index) for index in range(8)]
+    queues._items = [*head, *fresh]
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_swap:]
+    assert new_loads
+    # the listener is hearing that break right now, so the guard clears three songs later
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[3].queue_item_id
 
 
 async def test_jump_to_top_speaks_in_head_gaps_without_redeciding_the_tail(

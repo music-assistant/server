@@ -226,7 +226,7 @@ class AIRadioQueueDJMixin:
             if decided_before and not state.decided_gap_ids:
                 # not one of the tracks this history was recorded against is left, so every
                 # break still waiting on one went with them and may claim no guard budget
-                self._drop_unaired_dj_history(state)
+                self._drop_unaired_dj_history(state, items, guard_index)
 
             window = self._dj_window(items, guard_index)
             if len(window) < 2:
@@ -460,14 +460,19 @@ class AIRadioQueueDJMixin:
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
 
-    def _drop_unaired_dj_history(self, state: DJQueueState) -> None:
+    def _drop_unaired_dj_history(
+        self, state: DJQueueState, items: list[QueueItem], guard_index: int
+    ) -> None:
         """Forget the guard history of breaks that were planned but never reached the player."""
-        # every event starts out ahead of the window and only falls behind it once the player
-        # has passed the gap it was recorded for, so the window start tells the two apart
+        # events strictly behind the window start have aired; one exactly on it is ambiguous,
+        # since its clip may be owned by the player (airing or buffered) or still one slot
+        # beyond the guard. a clip surviving in the owned head is what tells the two apart
+        owns_clip = any(
+            item.extra_attributes.get(ATTR_QUEUE_DJ) for item in items[: guard_index + 1]
+        )
+        boundary = state.songs_before_window if owns_clip else state.songs_before_window - 1
         state.history = {
-            section_id: [
-                (song, minute) for song, minute in events if song <= state.songs_before_window
-            ]
+            section_id: [(song, minute) for song, minute in events if song <= boundary]
             for section_id, events in state.history.items()
         }
 
