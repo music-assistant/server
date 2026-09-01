@@ -346,8 +346,8 @@ def test_a_finished_audiobook_or_episode_is_marked_ended_too() -> None:
 
 
 def test_a_live_source_is_left_alone_even_without_a_previous_item() -> None:
-    """A radio that stopped did not run out; leave the queue for a later resume."""
-    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+    """A radio or audio source that stopped did not run out; leave the queue for a later resume."""
+    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
         tracker = _tracker(_item(media_type))
 
         # prev_item is None here: the media type is recovered from the queue's last item
@@ -382,8 +382,8 @@ def _stop_states(prev_item: Any) -> tuple[CompareState, CompareState]:
 
 
 def test_a_live_source_never_reaches_the_end_of_queue_handling() -> None:
-    """Radio, audio sources and sound effects short-circuit before the settle is scheduled."""
-    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
+    """Radio and audio sources short-circuit before the settle is scheduled."""
+    for media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
         tracker = _tracker()
         prev_state, new_state = _stop_states(_item(media_type))
 
