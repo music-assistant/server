@@ -44,6 +44,7 @@ from sounds.models import LiveStation, MenuItem, Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers import datetime
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -87,6 +88,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
     client: SoundsClient
     menu: Menu | None = None
+    menu_last_fetched: float | None = None
     logged_in: bool = False
 
     @property
@@ -204,6 +206,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             include_local_stations=self.show_local_stations,
             recommendations=MenuRecommendationOptions.EXCLUDE,
         )
+        self.menu_last_fetched = datetime.now_timestamp()
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:
@@ -534,6 +537,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         if not self.menu:
+            self.logger.debug("No menu set, fetching from API")
+            await self._fetch_menu()
+        elif (
+            self.menu_last_fetched is not None
+            and (datetime.now_timestamp() - self.menu_last_fetched) >= _Constants.SHORT_EXPIRATION
+        ):
+            self.logger.debug("Menu has expired, fetching from API")
             await self._fetch_menu()
         if not self.menu or not self.menu.sub_items:
             raise MusicAssistantError("Menu API response is empty or invalid")
