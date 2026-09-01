@@ -72,8 +72,8 @@ SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
 # to the player at stream open. Matching the source's ceiling keeps it resident until
 # EOF while the player still receives at least playback speed. Buffered sources keep
 # the standard pacing (MusicCast needs the large burst before it will do gapless).
-REALTIME_ITEM_READRATE: Final[str] = "1.1"
-REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "5"
+REALTIME_ITEM_READRATE: Final[str] = "1.05"
+REALTIME_ITEM_READRATE_INITIAL_BURST: Final[str] = "3"
 
 
 def single_item_pacing_args(is_realtime: bool) -> list[str]:

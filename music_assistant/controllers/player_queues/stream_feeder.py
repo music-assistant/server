@@ -34,10 +34,10 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.audio_buffer import ProviderAudioFill
 
-# How far ahead of the playing item to look for the item a live source is producing.
+# How far ahead of the playing item to look for the item a realtime source is producing.
 # A source that plays on by itself runs ahead of the player, but never far: what it
 # produces has to be held until playback gets there.
-LIVE_AUDIO_SEARCH_DEPTH: Final[int] = 3
+REALTIME_AUDIO_SEARCH_DEPTH: Final[int] = 3
 
 
 class StreamFeederMixin(_PlayerQueuesBase):
@@ -75,7 +75,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug(
-                    "No stream details for %s, cannot buffer its live audio: %s",
+                    "No stream details for %s, cannot buffer its realtime audio: %s",
                     queue_item.name,
                     err,
                 )
@@ -97,12 +97,12 @@ class StreamFeederMixin(_PlayerQueuesBase):
         # record whose audio this is, so a queue stop releases the buffer with its session
         streamdetails.queue_session_id = session_id
         self.logger.debug(
-            "Buffering live %s audio for %s on queue %s",
+            "Buffering realtime %s audio for %s on queue %s",
             provider_instance_id,
             queue_item.name,
             queue_id,
         )
-        return AudioBuffer.open_provider_fill(self.mass, streamdetails, reason="source_live")
+        return AudioBuffer.open_provider_fill(self.mass, streamdetails, reason="source_realtime")
 
     def prepare_next_audio_buffer(self, queue_id: str) -> None:
         """
@@ -184,7 +184,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         queue = self.get(queue_id)
         if queue is None or queue.current_index is None:
             return None
-        for offset in range(LIVE_AUDIO_SEARCH_DEPTH):
+        for offset in range(REALTIME_AUDIO_SEARCH_DEPTH):
             item = self.get_item(queue_id, queue.current_index + offset)
             if item is None:
                 return None

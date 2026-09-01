@@ -1141,7 +1141,7 @@ class _SoloistSession:
         """
         settled = streamdetails is None or await self._feed_follower(streamdetails, item)
         if item.fill is not None and item.fill is not fill:
-            # a buffer was opened for this item's live audio while this request was
+            # a buffer was opened for this item's realtime audio while this request was
             # being served; the request is the authoritative one, so that buffer is
             # invalidated rather than left holding half of the item
             item.end_fill(AudioError(f"The audio of {item.uri} was taken over"))
@@ -2151,7 +2151,7 @@ class _SoloistSession:
             current.close(superseded=commanded)
         if item.awaiting_fill and not commanded and not item.opening_fill:
             # a commanded jump is claimed by the request that asked for it
-            self._open_live_audio(item)
+            self._open_realtime_audio(item)
 
     async def _watch_item(self, item: _ItemState, *, boundary_settled: bool) -> None:
         """
@@ -2222,7 +2222,7 @@ class _SoloistSession:
             if starving_for >= _STALL_TIMEOUT_S:
                 raise AudioError(f"Spotify Soloist delivered no audio for {item.uri}")
 
-    def _open_live_audio(self, item: _ItemState) -> None:
+    def _open_realtime_audio(self, item: _ItemState) -> None:
         """
         Have the queue open the buffer for an item the engine just reached.
 
@@ -2233,9 +2233,9 @@ class _SoloistSession:
         :param item: The channel of the item the engine is now on.
         """
         item.opening_fill = True
-        self._spawn_task(self._open_live_audio_task(item))
+        self._spawn_task(self._open_realtime_audio_task(item))
 
-    async def _open_live_audio_task(self, item: _ItemState) -> None:
+    async def _open_realtime_audio_task(self, item: _ItemState) -> None:
         """
         Open the item's buffer and route the engine's audio for it into it.
 
@@ -2266,7 +2266,7 @@ class _SoloistSession:
         except Exception as err:
             # a lookahead convenience: any failure here means a cold start for one
             # item, never a reason to kill the session
-            self.logger.debug("No buffer for the live audio of %s: %s", item.uri, err)
+            self.logger.debug("No buffer for the realtime audio of %s: %s", item.uri, err)
             if fill is not None:
                 fill.fail(AudioError(f"No audio was routed to the buffer of {item.uri}"))
         finally:
@@ -2430,7 +2430,7 @@ class _ItemState:
         self.streamdetails: StreamDetails | None = None
         # no destination yet, so captured audio is held back rather than lost
         self.awaiting_fill = True
-        # a buffer is being opened for this item's live audio right now
+        # a buffer is being opened for this item's realtime audio right now
         self.opening_fill = False
         # the Music Assistant item whose stream reads this channel
         self.media_key: str | None = None

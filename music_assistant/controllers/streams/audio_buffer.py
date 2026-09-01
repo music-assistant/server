@@ -810,6 +810,10 @@ class ProviderAudioFill:
     """
     Write side of a buffer a provider fills itself, for audio nothing has requested yet.
 
+    Not a buffer of its own: an adapter between the provider pushing chunks and the
+    ``AudioBuffer`` pulling its producer stream, holding chunks only until the buffer's
+    filler consumes them and carrying the release contract back to the provider.
+
     The provider writes whole PCM sample frames in ``pcm_format`` as its source produces
     them, and ends the item with :meth:`close` (its audio has all been handed over) or
     :meth:`fail` (it was cut short). Writes to a handle that is no longer ``active`` are

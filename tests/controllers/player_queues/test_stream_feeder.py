@@ -226,11 +226,11 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     assert next_item.available
 
 
-def _controller_with_live_source_queue() -> tuple[PlayerQueuesController, list[Any], MagicMock]:
+def _controller_with_realtime_source_queue() -> tuple[PlayerQueuesController, list[Any], MagicMock]:
     """Build a bare controller whose queue holds two tracks on one provider instance."""
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
-    items = [_live_source_item("playing", "aaa"), _live_source_item("upcoming", "bbb")]
+    items = [_realtime_source_item("playing", "aaa"), _realtime_source_item("upcoming", "bbb")]
     queue = SimpleNamespace(current_index=0, display_name="Queue")
     controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
     controller.get_item = MagicMock(  # type: ignore[method-assign]
@@ -244,8 +244,8 @@ def _controller_with_live_source_queue() -> tuple[PlayerQueuesController, list[A
     return controller, items, mass
 
 
-def _live_source_item(queue_item_id: str, provider_item_id: str) -> Any:
-    """Build a queue item stand-in mapped to the live-source provider instance."""
+def _realtime_source_item(queue_item_id: str, provider_item_id: str) -> Any:
+    """Build a queue item stand-in mapped to the realtime-source provider instance."""
     media_item = SimpleNamespace(
         provider="spotify--a", item_id=provider_item_id, provider_mappings=[]
     )
@@ -258,9 +258,9 @@ def _live_source_item(queue_item_id: str, provider_item_id: str) -> Any:
     )
 
 
-async def test_a_live_source_gets_the_buffer_of_the_item_it_is_producing() -> None:
+async def test_a_realtime_source_gets_the_buffer_of_the_item_it_is_producing() -> None:
     """The buffer is opened for the upcoming item the produced audio actually belongs to."""
-    controller, items, mass = _controller_with_live_source_queue()
+    controller, items, mass = _controller_with_realtime_source_queue()
     streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
     mass.streams.audio.get_stream_details = AsyncMock(return_value=streamdetails)
     fill = MagicMock()
@@ -271,12 +271,12 @@ async def test_a_live_source_gets_the_buffer_of_the_item_it_is_producing() -> No
     assert items[1].streamdetails is streamdetails
     # the buffer becomes this session's audio, so its stop releases it
     assert streamdetails.queue_session_id == "session-1"
-    open_fill.assert_called_once_with(mass, streamdetails, reason="source_live")
+    open_fill.assert_called_once_with(mass, streamdetails, reason="source_realtime")
 
 
 async def test_a_provider_mapping_locates_the_item_the_queue_reordered() -> None:
     """An item is found by its provider mapping, not by the position it was fed at."""
-    controller, items, mass = _controller_with_live_source_queue()
+    controller, items, mass = _controller_with_realtime_source_queue()
     items[1].media_item.provider = "library"
     items[1].media_item.item_id = "42"
     items[1].media_item.provider_mappings = [
@@ -290,7 +290,7 @@ async def test_a_provider_mapping_locates_the_item_the_queue_reordered() -> None
 
 async def test_no_buffer_for_audio_the_queue_has_no_item_for() -> None:
     """Audio for an item that is not (or no longer) upcoming is not buffered."""
-    controller, _items, mass = _controller_with_live_source_queue()
+    controller, _items, mass = _controller_with_realtime_source_queue()
     mass.streams.audio.get_stream_details = AsyncMock()
     with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
         assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "zzz") is None
@@ -300,7 +300,7 @@ async def test_no_buffer_for_audio_the_queue_has_no_item_for() -> None:
 
 async def test_no_buffer_once_the_queue_resolved_the_item_elsewhere() -> None:
     """A queue that settled on another provider for the item is not handed this audio."""
-    controller, items, _mass = _controller_with_live_source_queue()
+    controller, items, _mass = _controller_with_realtime_source_queue()
     items[1].streamdetails = SimpleNamespace(provider="tidal--b", buffer=None)
     with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
         assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
@@ -309,7 +309,7 @@ async def test_no_buffer_once_the_queue_resolved_the_item_elsewhere() -> None:
 
 async def test_no_second_buffer_for_an_item_that_already_has_one() -> None:
     """A buffer another request is already filling must not be split with a second one."""
-    controller, items, _mass = _controller_with_live_source_queue()
+    controller, items, _mass = _controller_with_realtime_source_queue()
     warm = MagicMock()
     warm.has_error = False
     warm.is_valid.return_value = True
@@ -320,8 +320,8 @@ async def test_no_second_buffer_for_an_item_that_already_has_one() -> None:
 
 
 async def test_a_failed_buffer_is_replaced_rather_than_left_holding_the_item() -> None:
-    """A buffer whose fill failed is no reason to leave the live audio nowhere to go."""
-    controller, items, _mass = _controller_with_live_source_queue()
+    """A buffer whose fill failed is no reason to leave the realtime audio nowhere to go."""
+    controller, items, _mass = _controller_with_realtime_source_queue()
     broken = MagicMock()
     broken.has_error = True
     broken.is_valid.return_value = True
@@ -336,14 +336,14 @@ async def test_a_failed_buffer_is_replaced_rather_than_left_holding_the_item() -
     broken.clear.assert_awaited_once()
 
 
-async def test_a_stopped_queue_declines_live_audio() -> None:
+async def test_a_stopped_queue_declines_realtime_audio() -> None:
     """
-    A queue whose playback session ended must not accept a live fill.
+    A queue whose playback session ended must not accept a realtime fill.
 
     The stop just released everything this would re-arm, and nothing will read
     the buffer - the source daemon would linger holding the account's stream.
     """
-    controller, _items, _mass = _controller_with_live_source_queue()
+    controller, _items, _mass = _controller_with_realtime_source_queue()
     controller._queue_data["queue-1"].session_id = None
     with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
         assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
@@ -352,7 +352,7 @@ async def test_a_stopped_queue_declines_live_audio() -> None:
 
 async def test_a_stop_during_stream_details_resolution_declines_the_fill() -> None:
     """A stop that completes while stream details resolve must not re-arm a fresh buffer."""
-    controller, _items, mass = _controller_with_live_source_queue()
+    controller, _items, mass = _controller_with_realtime_source_queue()
     streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
 
     async def _stop_completes(**_kwargs: object) -> SimpleNamespace:
@@ -368,7 +368,7 @@ async def test_a_stop_during_stream_details_resolution_declines_the_fill() -> No
 
 async def test_a_duplicate_of_the_playing_track_is_declined_not_taken_over() -> None:
     """The playing occurrence's audio belongs to its own stream, whatever its buffer's state."""
-    controller, items, _mass = _controller_with_live_source_queue()
+    controller, items, _mass = _controller_with_realtime_source_queue()
     # the playing item IS the announced item (a duplicate up next), with a buffer
     # whose head has been evicted - taking it over would cut playback mid-track
     stale = MagicMock()
@@ -382,9 +382,9 @@ async def test_a_duplicate_of_the_playing_track_is_declined_not_taken_over() -> 
     open_fill.assert_not_called()
 
 
-async def test_unresolvable_stream_details_leave_the_live_audio_unbuffered() -> None:
+async def test_unresolvable_stream_details_leave_the_realtime_audio_unbuffered() -> None:
     """An item whose stream details cannot be resolved gets no buffer, and no exception."""
-    controller, _items, mass = _controller_with_live_source_queue()
+    controller, _items, mass = _controller_with_realtime_source_queue()
     mass.streams.audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("gone"))
     with patch.object(AudioBuffer, "open_provider_fill") as open_fill:
         assert await controller.open_provider_audio_fill("queue-1", "spotify--a", "bbb") is None
