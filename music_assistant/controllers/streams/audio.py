@@ -3946,8 +3946,13 @@ class StreamsAudio:
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
             await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
-        # popped, not read: ownership of the one-shot mix moves to this request
-        handover = self._crossfade_handover.pop(queue.queue_id, None)
+        # claimed (popped) only when it is this item's own boundary; a stale entry
+        # for another item stays for its own request
+        handover = self._crossfade_handover.get(queue.queue_id)
+        if handover is not None and handover.queue_item_id == queue_item.queue_item_id:
+            self._crossfade_handover.pop(queue.queue_id, None)
+        else:
+            handover = None
         if handover is None and self._crossfade_pending.get(queue.queue_id) is pending:
             # the wait was given up: un-claim the boundary so it is not published
             # later, playing an intro this request is about to play itself

@@ -128,7 +128,7 @@ _JUMP_TIMEOUT_S: Final[float] = 5.0
 _CONNECT_POLL_S: Final[float] = 0.05
 _SEEK_CONFIRM_TIMEOUT_S: Final[float] = 15.0
 # a seek is re-sent at this interval until a position anchor confirms it
-_SEEK_RETRY_INTERVAL_S: Final[float] = 2.0
+_SEEK_RETRY_INTERVAL_S: Final[float] = 0.5
 # position reported by a seek anchor may fall slightly before the requested target
 _SEEK_TOLERANCE_MS: Final[int] = 2000
 # Infrastructure silence precedes the session's first decoded sample; trim at

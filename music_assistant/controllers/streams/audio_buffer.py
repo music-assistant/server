@@ -106,7 +106,6 @@ class AudioBuffer:
         self._discarded_chunks = 0
         # furthest chunk playback has taken, as an absolute chunk number; passive
         # (analysis) reads deliberately leave it alone
-        self._served_chunks = 0
         self._lock = asyncio.Lock()
         self._data_available = asyncio.Condition(self._lock)
         self._space_available = asyncio.Condition(self._lock)
@@ -674,7 +673,6 @@ class AudioBuffer:
 
         result = self._chunks.popleft()
         self._discarded_chunks += 1
-        self._served_chunks = self._discarded_chunks
         self._space_available.notify_all()
         return result
 
@@ -710,7 +708,6 @@ class AudioBuffer:
             buffer_index = chunk_number - self._discarded_chunks
 
         result = self._chunks[buffer_index]
-        self._served_chunks = max(self._served_chunks, chunk_number + 1)
 
         # free space for the producer when buffer is at capacity,
         # but only if the producer is still running and needs space
@@ -873,7 +870,6 @@ def _new_buffer(
     # get_raw_stream(seek_position_ms) requests the correct chunk number
     audio_buffer._discarded_chunks = buffer_seek_seconds
     # nothing has been read yet, so the source is not ahead of playback here
-    audio_buffer._served_chunks = buffer_seek_seconds
     # set the chunk number at which the buffer should signal ready,
     # accounting for seek position so we have enough data past the seek point
     seek_chunk = seek_position_ms // 1000
