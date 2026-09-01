@@ -81,6 +81,10 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         data = self._data.get(session_id)
         if not data or data.eof_sent:
             return
+        if data.ffmpeg.closed:
+            # writes to a closed process are dropped silently, so without this the rest of
+            # the track streams into nothing and the session ends with no measurement
+            raise AudioAnalysisError("audio decoding failed during loudness measurement")
         data.chunks_received += 1
         await data.ffmpeg.write(pcm_chunk)
         if data.chunks_received >= MAX_DURATION_SECONDS:
@@ -161,7 +165,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             # rather than crashing finalize.
             self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
             await data.ffmpeg.close()
-            return None
+            raise AudioAnalysisError("audio decoding failed during loudness measurement") from err
 
         metrics = _parse_ebur128_metrics(data.ffmpeg.log_history)
         await data.ffmpeg.close()
@@ -179,7 +183,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
                 "Could not determine loudness of %s from buffer analysis",
                 session.streamdetails.uri,
             )
-            return None
+            raise AudioAnalysisError("could not measure loudness of this track")
 
         if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             # ebur128 reports ~-70 LUFS on a near-silent track; below the reliability floor

@@ -33,7 +33,7 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.helpers.json import json_dumps
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -219,6 +219,29 @@ async def test_distribute_chunk_records_failure_when_provider_raises() -> None:
     raises.abort.assert_called_once()
     assert raises.abort.call_args.args[0] == session_key
     assert "boom" in raises.abort.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_keeps_the_provider_failure_reason() -> None:
+    """A reason the provider states itself reaches the failure record unwrapped."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("audio decoding failed during loudness measurement")
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(
+        session_key, "audio decoding failed during loudness measurement"
+    )
 
 
 @pytest.mark.asyncio

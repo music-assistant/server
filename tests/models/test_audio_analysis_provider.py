@@ -59,7 +59,7 @@ async def test_abort_records_a_blocking_failure_and_drops_the_session() -> None:
     provider = _make_provider()
     session = MagicMock()
     provider._sessions["sess"] = session
-    provider._record_failure = AsyncMock()
+    provider._record_failure = AsyncMock()  # type: ignore[method-assign]
 
     await provider.abort("sess", "audio processing failed (boom)")
 
@@ -73,7 +73,7 @@ async def test_abort_records_a_blocking_failure_and_drops_the_session() -> None:
 async def test_abort_on_unknown_session_records_nothing() -> None:
     """Aborting a session that already ended must not record a failure."""
     provider = _make_provider()
-    provider._record_failure = AsyncMock()
+    provider._record_failure = AsyncMock()  # type: ignore[method-assign]
 
     await provider.abort("missing", "audio processing failed (boom)")
 

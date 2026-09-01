@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,7 +45,9 @@ def _make_session_data() -> tuple[LoudnessSessionData, MagicMock]:
     ffmpeg = MagicMock()
     ffmpeg.wait = AsyncMock()
     ffmpeg.close = AsyncMock()
+    ffmpeg.write = AsyncMock()
     ffmpeg.write_eof = AsyncMock()
+    ffmpeg.closed = False
     ffmpeg.log_history = []
 
     session_data = LoudnessSessionData(ffmpeg=ffmpeg)
@@ -123,6 +126,76 @@ async def test_finalize_raises_when_insufficient_duration() -> None:
 
     with pytest.raises(AudioAnalysisError, match="too short"):
         await provider._finalize(session_id)
+
+
+@pytest.mark.asyncio
+async def test_process_pcm_chunk_raises_once_the_decoder_stopped() -> None:
+    """A chunk handed to a stopped decoder must fail the session rather than be dropped."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    ffmpeg = cast("MagicMock", session_data.ffmpeg)
+    ffmpeg.closed = True
+    provider._data["sess"] = session_data
+
+    with pytest.raises(AudioAnalysisError, match="decoding failed"):
+        await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    ffmpeg.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_pcm_chunk_feeds_a_live_decoder() -> None:
+    """While the decoder is alive the chunk is written and counted."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    provider._data["sess"] = session_data
+
+    await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    cast("MagicMock", session_data.ffmpeg).write.assert_awaited_once()
+    assert session_data.chunks_received == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_no_metrics_were_produced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that produced no loudness reading is reported rather than dropped."""
+    provider = _make_provider()
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    provider._data["sess"] = session_data
+    provider._sessions["sess"] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (None, None, None),
+    )
+
+    with pytest.raises(AudioAnalysisError, match="could not measure loudness"):
+        await provider._finalize("sess")
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_the_decoder_failed() -> None:
+    """A decoder that exited badly is reported rather than dropped."""
+    provider = _make_provider()
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    cast("MagicMock", session_data.ffmpeg).wait = AsyncMock(side_effect=RuntimeError("ffmpeg died"))
+    provider._data["sess"] = session_data
+    provider._sessions["sess"] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    with pytest.raises(AudioAnalysisError, match="decoding failed"):
+        await provider._finalize("sess")
 
 
 # ---------------------------------------------------------------------------

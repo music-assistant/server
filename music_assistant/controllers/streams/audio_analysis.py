@@ -35,7 +35,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -1441,6 +1441,13 @@ class AudioAnalysisController:
                 # a timeout tracks server load rather than the audio, so the track stays
                 # pending for the next run instead of being recorded against it
                 return prov_id, None
+            except AudioAnalysisError as err:
+                # the provider judged this track unanalyzable, so its own wording is what
+                # the user should see in the failures overview
+                self.logger.warning(
+                    "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
+                )
+                return prov_id, err.reason
             except Exception as err:
                 # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
                 # the provider that fails on a chunk rather than crashing the session.
