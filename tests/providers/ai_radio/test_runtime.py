@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-import random
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from types import SimpleNamespace
@@ -1304,68 +1303,3 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     # the resolved media item travels on the normalized dict, unchanged
     assert [track["media_item"] for track in tracks] == [good_track_1, good_track_2]
     assert any("Track Two" in record.message for record in caplog.records)
-
-
-def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:
-    """Leave the source list untouched when the station does not request shuffling."""
-    runtime = DummyRuntime()
-    tracks = [{"index": 0, "uri": "a"}, {"index": 1, "uri": "b"}]
-    station = {"shuffle_source_tracks": False}
-
-    result = runtime._apply_source_shuffle(tracks, station)
-
-    assert result is tracks
-
-
-def test_apply_source_shuffle_reorders_and_records_source_index(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Shuffle every track into a new order while keeping all of them and their origin."""
-    # capture the real class before patching it away: runtime.random is the same shared
-    # stdlib module object, so the lambda below would otherwise re-look-up itself
-    original_random_cls = random.Random
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.random.Random",
-        lambda: original_random_cls(1234),
-    )
-    runtime = DummyRuntime()
-    tracks = [{"uri": f"track/{i}"} for i in range(5)]
-    station = {"shuffle_source_tracks": True}
-
-    result = runtime._apply_source_shuffle(tracks, station)
-
-    assert [track["index"] for track in result] == list(range(len(tracks)))
-    assert {track["uri"] for track in result} == {track["uri"] for track in tracks}
-    for track in result:
-        assert tracks[track["source_index"]]["uri"] == track["uri"]
-    # a seeded shuffle must actually reorder, not silently pass through in place
-    assert [track["source_index"] for track in result] != list(range(len(tracks)))
-
-
-def test_apply_track_duration_limit_keeps_prefix_of_given_order() -> None:
-    """Truncate to the playtime cap by walking the given order, no shuffling."""
-    runtime = DummyRuntime()
-    tracks = [
-        {"uri": "a", "duration": 120},
-        {"uri": "b", "duration": 120},
-        {"uri": "c", "duration": 120},
-        {"uri": "d", "duration": 120},
-    ]
-    station = {"max_duration_minutes": 3}
-
-    result = runtime._apply_track_duration_limit(tracks, station)
-
-    assert [track["uri"] for track in result] == ["a", "b"]
-    assert [track["index"] for track in result] == [0, 1]
-    assert [track["source_index"] for track in result] == [0, 1]
-
-
-def test_apply_track_duration_limit_zero_cap_is_noop() -> None:
-    """A cap of 0 disables truncation entirely."""
-    runtime = DummyRuntime()
-    tracks = [{"uri": "a", "duration": 120}, {"uri": "b", "duration": 120}]
-    station = {"max_duration_minutes": 0}
-
-    result = runtime._apply_track_duration_limit(tracks, station)
-
-    assert result is tracks

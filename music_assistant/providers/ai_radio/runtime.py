@@ -177,55 +177,6 @@ class AIRadioRuntimeMixin:
             return create_uri(MediaType.TRACK, mapping.provider_instance, mapping.item_id)
         return ""
 
-    def _apply_source_shuffle(
-        self, tracks: list[dict[str, Any]], station: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Return the source tracks in random order when the station asks for it."""
-        if not station.get("shuffle_source_tracks", True) or not tracks:
-            return tracks
-        indices = list(range(len(tracks)))
-        random.Random().shuffle(indices)
-        result: list[dict[str, Any]] = []
-        for new_index, old_index in enumerate(indices):
-            updated = deepcopy(tracks[old_index])
-            updated["index"] = new_index
-            updated["source_index"] = old_index
-            result.append(updated)
-        self.logger.info("Shuffled %d source tracks", len(result))
-        return result
-
-    def _apply_track_duration_limit(
-        self, tracks: list[dict[str, Any]], station: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Truncate the given tracks to the configured playtime cap, preserving their order."""
-        max_duration = float(station.get("max_duration_minutes", 0) or 0)
-        if max_duration <= 0 or not tracks:
-            return tracks
-        chosen: list[int] = []
-        total_minutes = 0.0
-        for index, track in enumerate(tracks):
-            duration = track.get("duration")
-            seconds = (
-                float(duration) if isinstance(duration, (int, float)) and duration > 0 else 210.0
-            )
-            chosen.append(index)
-            total_minutes += seconds / 60.0
-            if total_minutes > max_duration:
-                break
-        result: list[dict[str, Any]] = []
-        for new_index, old_index in enumerate(chosen):
-            updated = deepcopy(tracks[old_index])
-            updated["index"] = new_index
-            updated["source_index"] = old_index
-            result.append(updated)
-        self.logger.info(
-            "Applied source playtime cap: %.1f min requested, %d -> %d tracks selected",
-            max_duration,
-            len(tracks),
-            len(result),
-        )
-        return result
-
     def _plan_sections(  # noqa: PLR0915
         self,
         session_id: str,
