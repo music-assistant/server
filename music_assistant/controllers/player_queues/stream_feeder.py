@@ -10,7 +10,8 @@ and reads/mutates the controller's `PlayerQueueData` records.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Final
+import itertools
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     MediaType,
@@ -33,11 +34,6 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.streams.audio_buffer import ProviderAudioFill
-
-# How far ahead of the playing item to look for the item a realtime source is producing.
-# A source that plays on by itself runs ahead of the player, but never far: what it
-# produces has to be held until playback gets there.
-REALTIME_AUDIO_SEARCH_DEPTH: Final[int] = 3
 
 
 class StreamFeederMixin(_PlayerQueuesBase):
@@ -184,7 +180,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
         queue = self.get(queue_id)
         if queue is None or queue.current_index is None:
             return None
-        for offset in range(REALTIME_AUDIO_SEARCH_DEPTH):
+        # the source is fed items in queue order, so the nearest unplayed occurrence is
+        # the one it is producing, however many short tracks it has run ahead of playback
+        for offset in itertools.count():
             item = self.get_item(queue_id, queue.current_index + offset)
             if item is None:
                 return None

@@ -350,6 +350,21 @@ async def test_a_stopped_queue_declines_realtime_audio() -> None:
     open_fill.assert_not_called()
 
 
+async def test_short_tracks_do_not_outrun_the_upcoming_item_search() -> None:
+    """A source many short tracks ahead of playback still finds the item it produces."""
+    controller, items, mass = _controller_with_realtime_source_queue()
+    items[:] = [_realtime_source_item(f"item-{i}", f"id-{i}") for i in range(6)]
+    items[0].streamdetails = SimpleNamespace(provider="spotify--a", buffer=None)
+    streamdetails = SimpleNamespace(provider="spotify--a", buffer=None, queue_session_id=None)
+    mass.streams.audio.get_stream_details = AsyncMock(return_value=streamdetails)
+
+    with patch.object(AudioBuffer, "open_provider_fill", return_value=MagicMock()):
+        result = await controller.open_provider_audio_fill("queue-1", "spotify--a", "id-4")
+
+    assert result is not None
+    assert items[4].streamdetails is streamdetails
+
+
 async def test_a_stop_during_stream_details_resolution_declines_the_fill() -> None:
     """A stop that completes while stream details resolve must not re-arm a fresh buffer."""
     controller, _items, mass = _controller_with_realtime_source_queue()
