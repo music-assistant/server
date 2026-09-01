@@ -725,6 +725,13 @@ class _SingleTrackRun:
             return
         self._stopped = True
         self._release_waiters()
+        if self._engine_exited and (proc := self._proc) is not None:
+            # The engine exited on its own: reap it before anything else, so
+            # close() below finds a returncode and returns right away. Closing
+            # an unreaped process instead silently waits out its stream-lock
+            # and flush budgets - ten seconds on every natural track end.
+            with suppress(Exception):
+                await asyncio.wait_for(proc.wait(), 5)
         await _cancel_and_join(self._tasks)
         self._tasks.clear()
         if self._transport is not None:
