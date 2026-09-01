@@ -1140,7 +1140,7 @@ class _SoloistSession:
             which Music Assistant item it is and where it sits in the queue.
         """
         settled = streamdetails is None or await self._feed_follower(streamdetails, item)
-        if item.fill is not None and item.fill is not fill:
+        if item.fill is not None:
             # a buffer was opened for this item's realtime audio while this request was
             # being served; the request is the authoritative one, so that buffer is
             # invalidated rather than left holding half of the item
@@ -1709,7 +1709,7 @@ class _SoloistSession:
             if (delay := resume_at - loop.time()) > 0:
                 await asyncio.sleep(delay)
 
-    def _write_if_wanted(self, chunk: bytes) -> bool:
+    def _write_if_wanted(self, chunk: bytes) -> None:
         """
         Route captured audio to the current item, unless it is stale.
 
@@ -1717,25 +1717,22 @@ class _SoloistSession:
         hands it over again once the item has a buffer to write into.
 
         :param chunk: Whole sample frames just read from the capture FIFO.
-        :return: Whether the item took the audio.
         """
         if self._discard_until is not None or self._seeking:
             # the marker drops everything, an earlier jump's remainder included
             self._stale_budget = max(0, self._stale_budget - len(chunk))
-            return True
+            return
         if self._stale_budget > 0:
             # both are whole frames - the budget floored, the chunk shaped - so
             # what is kept stays on the session's frame grid
             drop = min(self._stale_budget, len(chunk))
             self._stale_budget -= drop
             if not (chunk := chunk[drop:]):
-                return True
+                return
         if (item := self._current) is None:
-            return True
-        if item.write(chunk):
-            return True
-        self._held_chunk = (item, chunk)
-        return False
+            return
+        if not item.write(chunk):
+            self._held_chunk = (item, chunk)
 
     def _hand_over_held_chunk(self) -> bool:
         """

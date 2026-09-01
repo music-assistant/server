@@ -187,7 +187,6 @@ MIN_CROSSFADE_DURATION = 3
 # and then the flow stream is better off opening the track itself.
 PREFETCH_HANDOVER_TIMEOUT = 5.0
 
-
 # Bounded wait for a fade the outgoing stream is still mixing when the incoming
 # item's request arrives first (a speaker asks for the next url before the current
 # track ends). Kept short: the speaker is waiting on its first byte for this long.
@@ -1984,7 +1983,6 @@ class StreamsAudio:
         warmup_bytes = 0
         total_chunks_received = 0
         playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
-        holding_back = crossfade_buffer_size > 0
         async for chunk in self.get_queue_item_stream(
             queue_item,
             pcm_format,
@@ -2006,11 +2004,7 @@ class StreamsAudio:
 
             buffer.extend(chunk)
             del chunk
-            hold_target = (
-                tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
-                if holding_back
-                else 0
-            )
+            hold_target = tail_hold_target(queue_item, crossfade_buffer_size, frame_size)
             if len(buffer) <= hold_target:
                 await asyncio.sleep(0)
                 continue
@@ -2450,9 +2444,7 @@ class StreamsAudio:
                 track_playback_speed = cast(
                     "float", queue_track.extra_attributes.get("playback_speed", 1.0)
                 )
-                # calculate crossfade buffer size; a realtime source's holdback only
-                # ever withholds its banked surplus, so the smart window is a
-                # ceiling there
+                # calculate crossfade buffer size: the ceiling for this item's holdback
                 crossfade_buffer_duration = (
                     SMART_CROSSFADE_DURATION
                     if item_crossfade_mode == CrossfadeMode.SMART_CROSSFADE
@@ -2575,9 +2567,6 @@ class StreamsAudio:
                 crossfade_buffer = bytearray()
                 warmup_bytes = 0
                 first_chunk_received = False
-                # the holdback is grown out of the audio banked ahead of playback instead
-                # of armed as one fixed window, so a source delivering near playback pace
-                # keeps feeding the player
                 holding_back = item_crossfade_mode != CrossfadeMode.DISABLED
 
                 item_stream = await incoming_prefetcher.take(queue_track, int(raw_seek_position))
@@ -2647,8 +2636,7 @@ class StreamsAudio:
 
                         # accumulate chunks in the crossfade buffer: the outgoing tail
                         # window, or (at a boundary) whatever of the incoming overlap
-                        # arrived before the mix starts. The window is whatever the
-                        # source has banked ahead of playback right now.
+                        # arrived before the mix starts
                         crossfade_buffer.extend(chunk)
                         del chunk
                         hold_target = (

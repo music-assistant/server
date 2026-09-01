@@ -278,7 +278,7 @@ async def test_held_audio_never_opens_the_item_that_follows_it(tmp_path: Path) -
     leaving = session._current = session._open_channel(TRACK_A)
     leaving.started.set()
     # nowhere to write it: the reader holds it back for this item
-    assert session._write_if_wanted(b"\x01" * 32) is False
+    session._write_if_wanted(b"\x01" * 32)
     held = session._held_chunk
     assert held is not None
     assert held[0] is leaving
@@ -293,7 +293,8 @@ async def test_held_audio_never_opens_the_item_that_follows_it(tmp_path: Path) -
     assert session._held_chunk is None
     assert not fill._chunks
     # only what is read for the new item reaches it
-    assert session._write_if_wanted(b"\x02" * 32) is True
+    session._write_if_wanted(b"\x02" * 32)
+    assert session._held_chunk is None
     assert b"".join(fill._chunks) == b"\x02" * 32
 
 
@@ -302,7 +303,9 @@ async def test_held_audio_is_handed_over_once_the_buffer_arrives(tmp_path: Path)
     session = _make_session(tmp_path)
     item = session._current = session._open_channel(TRACK_A)
     item.started.set()
-    assert session._write_if_wanted(b"\x01" * 32) is False
+    session._write_if_wanted(b"\x01" * 32)
+    held = session._held_chunk
+    assert held is not None
     # still nowhere to put it, so the reader keeps holding
     assert session._hand_over_held_chunk() is False
     item.claim()
@@ -2961,7 +2964,8 @@ async def test_a_channel_with_no_buffer_holds_nothing_at_all(tmp_path: Path) -> 
     item = _feed(session, TRACK_B)
     await session._observe_current(TRACK_B, 200_000, track_changed=True)
     # the reader is told to hold the chunk back rather than the channel keeping it
-    assert session._write_if_wanted(b"\x01" * 4096) is False
+    session._write_if_wanted(b"\x01" * 4096)
+    assert session._held_chunk is not None
     assert session._retained_seconds() == 0
     assert item.written == 0
 

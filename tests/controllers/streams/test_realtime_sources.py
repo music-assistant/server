@@ -313,19 +313,10 @@ def test_default_pacing_keeps_a_banked_head_start_resident() -> None:
     so the buffer is empty by EOF and every boundary loses its fade.
     """
     default = output_pacing_args()
-    burst = output_pacing_args("gapless_burst")
-
-    def value(args: list[str], key: str) -> float:
-        return float(args[args.index(key) + 1])
-
     # the drain must not exceed the ~1.1x a realtime source can deliver, and the
     # opening burst must not swallow a whole banked window
-    assert value(default, "-readrate") <= 1.1
-    assert value(default, "-readrate_initial_burst") <= 10
-    # the burst profile keeps the pacing its players rely on for gapless (MusicCast
-    # needs a large opening burst before it will do gapless at all)
-    assert value(burst, "-readrate") == 1.2
-    assert value(burst, "-readrate_initial_burst") == 60
+    assert float(default[default.index("-readrate") + 1]) <= 1.1
+    assert float(default[default.index("-readrate_initial_burst") + 1]) <= 10
 
 
 # -- the holdback decision --

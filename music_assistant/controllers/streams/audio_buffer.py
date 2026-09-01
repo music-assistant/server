@@ -162,8 +162,7 @@ class AudioBuffer:
         """
         Return the seconds of buffered audio past the furthest position playback has read.
 
-        How far the source is running ahead of playback: a source that hands its audio
-        over faster than it is played can be held back on this.
+        What a source that produces faster than playback is held back on.
         """
         produced = self._discarded_chunks + len(self._chunks)
         return max(0.0, float(produced - self._served_chunks))
@@ -811,8 +810,7 @@ class ProviderAudioFill:
     Write side of a buffer a provider fills itself, for audio nothing has requested yet.
 
     Not a buffer of its own: an adapter between the provider pushing chunks and the
-    ``AudioBuffer`` pulling its producer stream, holding chunks only until the buffer's
-    filler consumes them and carrying the release contract back to the provider.
+    ``AudioBuffer`` pulling them, carrying the release contract back to the provider.
 
     The provider writes whole PCM sample frames in ``pcm_format`` as its source produces
     them, and ends the item with :meth:`close` (its audio has all been handed over) or
@@ -854,12 +852,7 @@ class ProviderAudioFill:
 
     @property
     def pending_seconds(self) -> float:
-        """
-        Return the seconds of written audio playback has not consumed yet.
-
-        How far the source is running ahead of playback: everything still held here plus
-        everything the buffer holds past the furthest position playback has read.
-        """
+        """Return the seconds of written audio playback has not consumed yet."""
         pending = self._pending_bytes / self.pcm_format.pcm_sample_size
         # the buffer written to directly, or - for a handle handed over as a stream -
         # the one the item's audio is being streamed into
@@ -912,9 +905,6 @@ class ProviderAudioFill:
                         raise self._error
                     return
                 self._data_available.clear()
-                if self._chunks or self._closed:
-                    # written while the flag was being cleared
-                    continue
                 await self._data_available.wait()
         finally:
             self._release()
