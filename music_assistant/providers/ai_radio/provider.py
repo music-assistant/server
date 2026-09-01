@@ -33,6 +33,7 @@ from .constants import (
 )
 from .helpers import utc_now_iso
 from .hosts import AIRadioHostsMixin
+from .media import AIRadioMediaMixin
 from .models import DJQueueState, SessionState
 from .queue_dj import AIRadioQueueDJMixin
 from .rendering import AIRadioRenderMixin
@@ -61,6 +62,7 @@ class AIRadioProvider(
     AIRadioHostsMixin,
     AIRadioQueueDJMixin,
     AIRadioStorageMixin,
+    AIRadioMediaMixin,
     PluginProvider,
 ):
     """Implementation of the AI Radio plugin provider."""
@@ -107,6 +109,7 @@ class AIRadioProvider(
         await self._seed_preset_hosts()
         await self._load_queue_dj()
         await self._wait_for_engines()
+        await self._sync_show_library_items()
         self.logger.info(
             "AI Radio initialized for instance '%s' with %d stations, %d hosts and %d sections",
             self.instance_id,
@@ -221,6 +224,7 @@ class AIRadioProvider(
             normalized = self._normalize_station(station_payload)
             self._stations[normalized["id"]] = normalized
             await self._write_stations()
+        await self._sync_show_library_items()
         self.logger.info("AI Radio station saved: %s (%s)", normalized["id"], normalized["name"])
         return deepcopy(normalized)
 
@@ -231,6 +235,7 @@ class AIRadioProvider(
                 raise KeyError(f"Unknown station id: {station_id}")
             self._stations.pop(station_id)
             await self._write_stations()
+        await self._sync_show_library_items()
         self.logger.info("AI Radio station deleted: %s", station_id)
 
     async def validate_station(self, station: dict[str, Any]) -> dict[str, Any]:
