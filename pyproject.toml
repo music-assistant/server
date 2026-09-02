@@ -47,6 +47,7 @@ dependencies = [
   # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
   "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",
   "pyjwt[crypto]>=2.10.1",
+  "yoto-api==4.3.4",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -69,7 +70,7 @@ test = [
   "pytest-xdist==3.8.0",
   "syrupy==5.5.3",
   "tomli==2.4.1",
-  "ruff==0.15.22",
+  "ruff==0.16.5",
   "yappi==1.7.6",
 ]
 
@@ -224,6 +225,8 @@ ignore = [
   "ASYNC240", # Not relevant, we use asyncio not trio/anyio
   "UP047", # Not yet ready to migrate to type parameters
   "PLW0108", # Just annoying, not really useful
+  "CPY001", # Just annoying, not really useful
+  "LOG004", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
@@ -253,6 +256,8 @@ ignore = [
   "TRY300",
   "S608",
   "ANN204",
+  "ISC004", # To implement later
+  "PLR0917", # To implement later
 ]
 
 select = ["ALL"]

@@ -22,10 +22,10 @@ aiovban==1.1.0
 alexapy==1.30.0
 async-upnp-client==0.48.0
 audible==0.10.0
-auntie-sounds==2.0.5
+auntie-sounds==2.0.7
 av==16.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.2.2
+bandcamp-async-api==0.2.4
 beat-this==1.1.0
 bidict==0.23.1
 certifi==2025.11.12
@@ -75,7 +75,7 @@ PyChromecast==14.0.10
 pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
-pylast==7.0.2
+pylast==7.1.0
 python-fullykiosk==0.0.15
 python-google-drive-api==0.1.0
 python-mpd2>=3.1.1
@@ -109,6 +109,7 @@ ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==2.0.1
 yandex-music==3.0.0
 yappi==1.7.6
+yoto-api==4.3.4
 ytmusicapi==1.12.2
 zeroconf==0.149.16
 zvuk-music[async]==0.6.1

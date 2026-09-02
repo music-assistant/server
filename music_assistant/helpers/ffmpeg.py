@@ -567,7 +567,9 @@ def get_ffmpeg_args(
                 "-f",
                 input_format.content_type.value,
             ]
-        if input_format.codec_type != ContentType.UNKNOWN:
+        elif input_format.codec_type != ContentType.UNKNOWN:
+            # ffmpeg honours the last -acodec it is given, so this must not follow the
+            # raw PCM decoder declared above
             input_args += ["-acodec", input_format.codec_type.name.lower()]
 
         # add input path at the end
