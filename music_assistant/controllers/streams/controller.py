@@ -1018,17 +1018,15 @@ class StreamsController(CoreController):
                                 )
                             break
             except AudioError as err:
-                # The response is already being written, so a failed item has to
-                # end it here. Raising instead answers a response that is long
-                # gone, which aiohttp reports as two unhandled tracebacks for
-                # what is an ordinary playback failure.
+                # the response is already being written: raising answers one that is
+                # long gone, which aiohttp logs as two unhandled tracebacks
                 queue_item.streamdetails.stream_error = True
                 stream_failure = err
             finally:
                 self._active_output_streams -= 1
             if queue_item.streamdetails.stream_error:
                 # the encode ffmpeg puts its log tail in the error it raises, and
-                # nothing else logs that, so the reason is reported here
+                # nothing else logs it
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s: %s",
                     queue_item.name,
@@ -1036,11 +1034,9 @@ class StreamsController(CoreController):
                     queue.display_name,
                     stream_failure or "see the preceding log for the cause",
                 )
-                # The body stops short of the content length announced for a
-                # forced_content_length player, and aiohttp derives keep-alive from
-                # the request, so the 'Connection: close' we advertise is relayed but
-                # never applied. Without this the player waits out a stream that has
-                # already ended instead of moving on (same reason as the flow route).
+                # the body stops short of an announced content length, and aiohttp
+                # relays the 'Connection: close' we advertise without applying it -
+                # so the player waits out a stream that already ended (as the flow route)
                 resp.force_close()
             elif (
                 bytes_sent > 0

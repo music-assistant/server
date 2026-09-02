@@ -133,9 +133,8 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # how far short of an item's duration its delivered PCM may end before it is
 # rejected as incomplete (reported durations are approximate)
 _SHORT_DELIVERY_TOLERANCE_MS: Final[int] = 10000
-# A refusal is the engine reporting the item as playing, rendering a moment of
-# audio and then ending the run cleanly. Below this much audio, and only on that
-# clean exit, a short delivery is that refusal rather than a starved or crashed run.
+# below this much audio, on a clean exit, a short delivery is the engine
+# refusing the item rather than a run that starved or crashed
 _REFUSED_DELIVERY_MS: Final[int] = 1000
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
@@ -842,31 +841,27 @@ class _SingleTrackRun:
             return
         played_ms = self._delivered / _BYTES_PER_SECOND * 1000
         delivered_ms = played_ms + self._seek_target_ms
-        # the tolerance never swallows an item whole, or an item shorter than it
-        # would pass however little of it arrived
+        # scaled by duration, or a short item passes whatever little it delivered
         tolerance_ms = min(_SHORT_DELIVERY_TOLERANCE_MS, self._duration_ms // 2)
         if delivered_ms >= self._duration_ms - tolerance_ms:
             return
         proc = self._proc
-        # the exit code separates a refusal from a crash: both end the run early,
-        # but only the refusal is the engine deciding it has nothing to play
+        # the exit code is what separates a refusal from a crash: both end early
         if (
             self._engine_exited
             and proc is not None
             and proc.returncode == 0
             and played_ms <= _REFUSED_DELIVERY_MS
         ):
-            # Spotify would not serve this item to this session. The cause is
-            # logged here because it is lost on the way out: the ffmpeg stage
-            # between the provider and the player replaces the message.
+            # logged here because the cause is lost on the way out: the ffmpeg
+            # stage between the provider and the player replaces the message
             message = (
                 f"Spotify would not play {self.spotify_uri}: it is unavailable for this "
                 "account or region, or Spotify refused it for now"
             )
             self.logger.warning(message)
             raise AudioError(message)
-        # the exit code is reported because it is what the refusal above is judged
-        # on: a refusal landing here instead names the code to widen that test with
+        # names the code the refusal is judged on, so one landing here shows its value
         raise AudioError(
             f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
             f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms, engine exit code "

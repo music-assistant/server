@@ -452,8 +452,7 @@ async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
     run._finish_delivery()
     with pytest.raises(AudioError, match="would not play"):
         await _collect(run)
-    # the cause is logged where it is still known: the message does not survive
-    # the ffmpeg stage between the provider and the player
+    # logged where the cause is still known: the ffmpeg stage replaces it
     logger = cast("MagicMock", run.logger)
     logger.warning.assert_called_once()
     assert TRACK_A in logger.warning.call_args.args[0]
@@ -466,8 +465,7 @@ async def test_a_crashed_run_is_not_reported_as_a_refusal(tmp_path: Path) -> Non
     run._proc = MagicMock(returncode=1)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    # the code the refusal is judged on is named, so a refusal that turns out to
-    # exit non-zero can be recognised from the log
+    # names the code, so a refusal that turns out to exit non-zero is recognisable
     with pytest.raises(AudioError, match="engine exit code 1"):
         await _collect(run)
 
