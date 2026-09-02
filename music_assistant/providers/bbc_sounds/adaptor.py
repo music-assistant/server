@@ -430,7 +430,7 @@ class PodcastConverter(BaseConverter):
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
             # Try to work out the best network/series name to display
-            title = "Unknown title"
+            title = None
             if source_obj.network and source_obj.network.id == "bbc_webonly":
                 title = "BBC News"
             elif source_obj.network:
@@ -438,7 +438,7 @@ class PodcastConverter(BaseConverter):
             elif source_obj.container:
                 title = source_obj.container.title
             elif source_obj.titles:
-                title = self._get_attr(source_obj, "titles.primary")
+                title = self._get_attr(source_obj, "titles.primary", "")
             elif episode.metadata and episode.metadata.description:
                 title = episode.metadata.description
 
