@@ -86,6 +86,8 @@ class AIRadioProvider(
         self._show_runs: dict[str, _ShowRun] = {}
         self._show_runs_lock = asyncio.Lock()
         self._show_library_ids: dict[str, str] = {}
+        # render contracts of the clips woven into a show's feed, by clip id (see media)
+        self._feed_clip_contracts: dict[str, dict[str, Any]] = {}
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"

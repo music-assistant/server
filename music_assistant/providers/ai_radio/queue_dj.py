@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import aiofiles
-from music_assistant_models.enums import EventType
+from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.player_queues.helpers import committed_index
@@ -338,10 +338,9 @@ class AIRadioQueueDJMixin:
                 for track in window_tracks[1:]
                 if track["item_id"] not in state.decided_gap_ids
             }
+            # a show's intro is not planned here: it rides the feed's first page, since the
+            # queue starts playing that page in the very call that loads it
             allowed_slot_when = ["between_songs"]
-            if self._dj_guard_index(queue) < 0:
-                # playback has not started: the show intro can still lead the queue
-                allowed_slot_when.append("start_of_playlist")
             run = self._show_runs.get(state.station_id) if state.station_id else None
             outro_target: dict[str, Any] | None = None
             if run is not None and run.exhausted:
@@ -449,21 +448,15 @@ class AIRadioQueueDJMixin:
         # the insertion point shifts one slot past the target for an after-target splice, so
         # its guard check is the before-target one shifted by that same one slot
         insert_index = target_index + 1 if after_target else target_index
-        # every other target keeps one full slot of margin from the guard, since it may still
-        # be handed to the player at any moment; start_of_playlist's target *is* that slot (the
-        # queue has not started, so there is nothing to keep clear of yet), so it only has to
-        # stay ahead of what the player already owns
-        guard_boundary = guard_index if section.when == "start_of_playlist" else guard_index + 1
-        if insert_index <= guard_boundary:
+        # the target keeps one full slot of margin from the guard, since the slot right after
+        # the guard may still be handed to the player at any moment
+        if insert_index <= guard_index + 1:
             return "too_close"
         # occupied checks the slot on the insertion side of the target: behind it (the item
         # that would follow the new clip) for an after-target splice, ahead of it otherwise.
-        # a leading intro's occupant_index is -1 (nothing precedes it), so it must be bounds
-        # checked on both ends or a negative index would wrap around to the last queue item
+        # an outro behind the queue tail has no such slot
         occupant_index = insert_index if after_target else insert_index - 1
-        if 0 <= occupant_index < len(items) and items[occupant_index].extra_attributes.get(
-            ATTR_QUEUE_DJ
-        ):
+        if occupant_index < len(items) and self._is_ai_radio_clip(items[occupant_index]):
             return "occupied"
         # the planner numbers its clips from zero every pass, so the id comes from the
         # state counter instead to stay unique for the lifetime of the session
@@ -566,11 +559,7 @@ class AIRadioQueueDJMixin:
         """Return the upcoming music items that this pass may plan against."""
         # every upcoming track, decided or not: the planner counts songs and minutes over a
         # contiguous run, and per gap decisions are what keeps the work from being redone
-        return [
-            item
-            for item in items[guard_index + 1 :]
-            if not item.extra_attributes.get(ATTR_QUEUE_DJ)
-        ]
+        return [item for item in items[guard_index + 1 :] if not self._is_ai_radio_clip(item)]
 
     def _dj_window_offsets(self, items: list[QueueItem], window_start_id: str) -> tuple[int, float]:
         """Return the songs and minutes of music playing before the first window track."""
@@ -578,10 +567,21 @@ class AIRadioQueueDJMixin:
         for item in items:
             if item.queue_item_id == window_start_id:
                 break
-            if not item.extra_attributes.get(ATTR_QUEUE_DJ):
+            if not self._is_ai_radio_clip(item):
                 behind.append(item)
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
+
+    def _is_ai_radio_clip(self, item: QueueItem) -> bool:
+        """Return True for one of this provider's spoken clips, DJ-placed or fed by a show."""
+        if item.extra_attributes.get(ATTR_QUEUE_DJ):
+            return True
+        media_item = item.media_item
+        return (
+            media_item is not None
+            and media_item.media_type == MediaType.SOUND_EFFECT
+            and media_item.provider == self.instance_id
+        )
 
     def _drop_unaired_dj_history(
         self, state: DJQueueState, items: list[QueueItem], guard_index: int

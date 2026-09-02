@@ -469,6 +469,12 @@ class AIRadioRuntimeMixin:
         section: PlannedSection,
     ) -> QueueItem:
         """Build the queue item for a not-yet-rendered clip."""
+        queue_item = build_queue_item(queue_id, self._section_to_sound_effect(section))
+        queue_item.extra_attributes.update(self._clip_render_contract(session_id, program, section))
+        return queue_item
+
+    def _section_to_sound_effect(self, section: PlannedSection) -> SoundEffect:
+        """Build the sound effect media item a planned clip is played as."""
         clip = SoundEffect(
             item_id=section.clip_id,
             provider=self.instance_id,
@@ -491,20 +497,22 @@ class AIRadioRuntimeMixin:
                 )
             ]
         )
-        queue_item = build_queue_item(queue_id, clip)
+        return clip
+
+    def _clip_render_contract(
+        self, session_id: str, program: dict[str, Any], section: PlannedSection
+    ) -> dict[str, Any]:
+        """Return the queue item attributes the render path needs to voice a planned clip."""
         # the section name already travels as the item's own name, so it is not duplicated here
-        queue_item.extra_attributes.update(
-            {
-                ATTR_SESSION_ID: session_id,
-                ATTR_STATION_ID: str(program.get("id") or ""),
-                ATTR_HOST_ID: str(program.get("host_id") or ""),
-                ATTR_PROMPT: section.prompt,
-                ATTR_MAX_CHARS: section.max_chars,
-                ATTR_WEB_SEARCH_MODE: section.web_search_mode,
-                ATTR_WEATHER_REQUIRED: section.weather_required,
-            }
-        )
-        return queue_item
+        return {
+            ATTR_SESSION_ID: session_id,
+            ATTR_STATION_ID: str(program.get("id") or ""),
+            ATTR_HOST_ID: str(program.get("host_id") or ""),
+            ATTR_PROMPT: section.prompt,
+            ATTR_MAX_CHARS: section.max_chars,
+            ATTR_WEB_SEARCH_MODE: section.web_search_mode,
+            ATTR_WEATHER_REQUIRED: section.weather_required,
+        }
 
     @staticmethod
     def _ai_radio_cover_image_path() -> str:
@@ -519,14 +527,20 @@ class AIRadioRuntimeMixin:
 
     async def _prepare_weather_tokens(self) -> dict[str, str]:
         """Return the weather placeholder tokens, fetching them at most once per cache window."""
-        cached = self._weather_tokens_cache
-        if cached is not None and (time.monotonic() - cached[0]) < WEATHER_TOKENS_CACHE_SECONDS:
-            return dict(cached[1])
+        if (cached := self._cached_weather_tokens()) is not None:
+            return cached
         tokens = await self._fetch_weather_tokens()
         # failed and disabled lookups are cached too, so a broken forecast source cannot
         # put its timeout in front of every replan pass
         self._weather_tokens_cache = (time.monotonic(), tokens)
         return dict(tokens)
+
+    def _cached_weather_tokens(self) -> dict[str, str] | None:
+        """Return the weather tokens of a still-fresh lookup, or None when there is none."""
+        cached = self._weather_tokens_cache
+        if cached is None or (time.monotonic() - cached[0]) >= WEATHER_TOKENS_CACHE_SECONDS:
+            return None
+        return dict(cached[1])
 
     async def _fetch_weather_tokens(self) -> dict[str, str]:
         """Fetch and format weather placeholder tokens from the configured provider."""

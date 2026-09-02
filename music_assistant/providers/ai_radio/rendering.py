@@ -97,6 +97,7 @@ class AIRadioRenderMixin:
         config: ProviderConfig
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
+        _feed_clip_contracts: dict[str, dict[str, Any]]
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -112,6 +113,13 @@ class AIRadioRenderMixin:
         queue_item = self._find_clip_item(item_id)
         if queue_item is None:
             raise MediaNotFoundError(f"AI Radio clip {item_id} is not in any queue")
+        if ATTR_PROMPT not in queue_item.extra_attributes and (
+            (contract := self._feed_clip_contracts.get(item_id)) is not None
+        ):
+            # a clip that arrived through a show's feed reaches the queue as a bare media
+            # item: it picks up its render contract on first play and keeps it from then on
+            queue_item.extra_attributes.update(contract)
+            self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
         prompt = str(queue_item.extra_attributes.get(ATTR_PROMPT) or "")
         if not prompt:
             self.logger.warning(

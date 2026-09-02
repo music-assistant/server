@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.media_items import ProviderMapping, SoundEffect, Track
 
+from music_assistant.providers.ai_radio.constants import (
+    ATTR_HOST_ID,
+    ATTR_PROMPT,
+    ATTR_STATION_ID,
+)
 from music_assistant.providers.ai_radio.media import AIRadioMediaMixin
+from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
+from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 STATION = {
     "id": "morning_show",
@@ -36,14 +44,52 @@ class _Media(AIRadioMediaMixin):
         self._show_runs_lock = asyncio.Lock()
         self._show_library_ids: dict[str, str] = {}
         self._hosts: dict[str, Any] = {}
+        self._feed_clip_contracts: dict[str, dict[str, Any]] = {}
         self.instance_id = "ai_radio"
         self.domain = "ai_radio"
-        self.mass: MagicMock = MagicMock()
+        # the mixins declare `mass: MusicAssistant`; a mock stands in for tests
+        self.mass: Any = MagicMock()
         self.logger = MagicMock()
 
     def _ai_radio_cover_image_path(self) -> str:
         """Return a fake cover image path."""
         return "/tmp/air.png"  # noqa: S108
+
+
+class _StubConfig:
+    """Minimal ProviderConfig stand-in exposing get_value."""
+
+    def get_value(self, key: str, default: Any = None) -> Any:
+        """Return the default for every config key."""
+        return default
+
+
+class _ShowMedia(AIRadioRuntimeMixin, AIRadioStorageMixin, _Media):
+    """Harness combining the media mixin with the real planner, for the intro-in-feed path."""
+
+    def __init__(self, stations: dict[str, dict[str, Any]]) -> None:
+        """Stamp the planner state on top of the bare media harness."""
+        super().__init__(stations)
+        self.config = cast("Any", _StubConfig())
+        self._sections: dict[str, dict[str, Any]] = {
+            "Intro": {
+                "id": "Intro",
+                "name": "Show Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "Welcome, first up <next_songinfo>",
+                "constraints": {"max_chars": 200},
+            }
+        }
+        self._hosts["amy"] = {
+            "id": "amy",
+            "name": "Amy",
+            "instructions": "x",
+            "tts_engine": "",
+            "section_ids": ["Intro"],
+            "section_order": [{"when": "start_of_playlist", "flow": [{"MUST": "Intro"}]}],
+            "merge_section_id": "",
+        }
 
 
 async def test_get_radio_builds_dynamic_radio() -> None:
@@ -101,15 +147,31 @@ def _track(item_id: str) -> Track:
 
 
 def _media_with_show(track_count: int, max_duration_minutes: float = 0.0) -> _Media:
-    """Build a _Media harness with a station whose source playlist has track_count tracks."""
+    """
+    Build a bare _Media harness with a station whose source playlist has track_count tracks.
+
+    Its show names a host the harness does not hold, so no intro is ever planned for it.
+    """
     station = {**STATION, "max_duration_minutes": max_duration_minutes}
-    media = _Media({"morning_show": station})
+    return _stub_source_tracks(_Media({"morning_show": station}), track_count)
+
+
+def _show_media(track_count: int) -> _ShowMedia:
+    """Build a planner-backed harness whose show's host opens every show with an intro."""
+    return _stub_source_tracks(_ShowMedia({"morning_show": STATION}), track_count)
+
+
+def _stub_source_tracks[MediaT: _Media](media: MediaT, track_count: int) -> MediaT:
+    """Stub the harness's source playlist with track_count tracks and no queue playing it."""
     media._fetch_source_tracks = AsyncMock(  # type: ignore[method-assign]
         return_value=(
             [
                 {
                     "index": i,
                     "item_id": f"t{i}",
+                    "name": f"Track t{i}",
+                    "artist": "",
+                    "songinfo": f"Track t{i}",
                     "duration": 210,
                     "media_item": _track(f"t{i}"),
                 }
@@ -275,3 +337,137 @@ async def test_unknown_station_raises() -> None:
     media = _Media({})
     with pytest.raises(MediaNotFoundError):
         await media.get_dynamic_radio_tracks("nope")
+
+
+async def test_first_page_of_a_consume_opens_with_the_intro() -> None:
+    """The first feed page leads with the show's intro clip, whose render contract is stored."""
+    media = _show_media(30)
+    _attach_show_queue(media)
+
+    page1 = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert len(page1) == 20  # the intro takes one of the page's slots
+    intro = page1[0]
+    assert isinstance(intro, SoundEffect)
+    assert intro.provider == "ai_radio"
+    assert all(isinstance(item, Track) for item in page1[1:])
+    contract = media._feed_clip_contracts[intro.item_id]
+    assert contract[ATTR_STATION_ID] == "morning_show"
+    assert contract[ATTR_HOST_ID] == "amy"
+    # the intro announces the track it precedes, whichever one the shuffle put first
+    assert contract[ATTR_PROMPT].startswith(f"Welcome, first up {page1[1].name}")
+    assert media._show_runs["morning_show"].clip_ids == [intro.item_id]
+    # the rest of the show pages on as before
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 11
+    assert await media.get_dynamic_radio_tracks("morning_show") == []
+
+
+async def test_a_sample_carries_no_intro() -> None:
+    """A details-view sample lists the music only and stores no contract."""
+    media = _show_media(30)
+    _attach_show_queue(media)
+
+    page = await media.get_dynamic_radio_tracks("morning_show", sample=True)
+
+    assert len(page) == 20
+    assert all(isinstance(item, Track) for item in page)
+    assert media._feed_clip_contracts == {}
+    assert media._show_runs == {}
+
+
+async def test_a_consume_without_a_queue_carries_no_intro() -> None:
+    """A one-off batch for a stray fetch binds no run, so it also plans no intro."""
+    media = _show_media(30)
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert all(isinstance(item, Track) for item in page)
+    assert media._feed_clip_contracts == {}
+
+
+async def test_ending_the_run_drops_the_intros_contract() -> None:
+    """Ending a run releases its intro's render contract."""
+    media = _show_media(3)
+    _attach_show_queue(media)
+    intro = (await media.get_dynamic_radio_tracks("morning_show"))[0]
+    assert intro.item_id in media._feed_clip_contracts
+
+    media._end_show_run("morning_show")
+
+    assert media._feed_clip_contracts == {}
+    assert media._show_runs == {}
+
+
+async def test_a_replay_gets_a_fresh_intro_clip_id() -> None:
+    """A replayed show mints a new intro clip id, so it never collides with the played one."""
+    media = _show_media(3)
+    _attach_show_queue(media)
+    first = (await media.get_dynamic_radio_tracks("morning_show"))[0]
+    media._end_show_run("morning_show")
+
+    second = (await media.get_dynamic_radio_tracks("morning_show"))[0]
+
+    assert isinstance(second, SoundEffect)
+    assert second.item_id != first.item_id
+
+
+async def test_a_show_whose_intro_cannot_be_planned_still_plays() -> None:
+    """A host without sections cannot plan an intro; the show plays its music regardless."""
+    media = _show_media(3)
+    media._hosts["amy"]["section_ids"] = []
+    media._hosts["amy"]["section_order"] = []
+    _attach_show_queue(media)
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert len(page) == 3
+    assert all(isinstance(item, Track) for item in page)
+    assert media._feed_clip_contracts == {}
+    cast("MagicMock", media.logger).warning.assert_called_once()
+
+
+def _weather_guarded_intro(media: _ShowMedia) -> None:
+    """Make the harness host's intro OPTIONAL, guarded on a present hourly forecast."""
+    media._hosts["amy"]["section_order"] = [
+        {
+            "when": "start_of_playlist",
+            "flow": [
+                {
+                    "OPTIONAL": {
+                        "section": "Intro",
+                        "chance": 1.0,
+                        "guards": {"require_placeholders_present": ["<weather_hourly>"]},
+                    }
+                }
+            ],
+        }
+    ]
+
+
+async def test_intro_planning_never_fetches_the_weather() -> None:
+    """A weather-guarded intro sees no forecast unless a recent lookup is cached."""
+    media = _show_media(3)
+    _weather_guarded_intro(media)
+    media._fetch_weather_tokens = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("playback start must not wait for a weather lookup")
+    )
+    _attach_show_queue(media)
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert all(isinstance(item, Track) for item in page)
+
+
+async def test_intro_planning_uses_a_cached_forecast() -> None:
+    """A weather-guarded intro is planned when a still-fresh forecast lookup is cached."""
+    media = _show_media(3)
+    _weather_guarded_intro(media)
+    media._weather_tokens_cache = (time.monotonic(), {"<weather_hourly>": "sunny"})
+    media._fetch_weather_tokens = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("a fresh cache entry must be served without a lookup")
+    )
+    _attach_show_queue(media)
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert isinstance(page[0], SoundEffect)

@@ -66,6 +66,7 @@ class DummyRenderer(AIRadioRenderMixin):
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
         self._hosts: dict[str, dict[str, Any]] = {}
+        self._feed_clip_contracts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
         self.tts_options: list[dict[str, Any] | None] = []
@@ -432,6 +433,28 @@ async def test_clip_without_prompt_raises_media_not_found() -> None:
 
     with pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+
+async def test_a_feed_clip_picks_up_its_contract_on_first_play() -> None:
+    """A clip fed into the queue as a bare media item renders from its stored contract."""
+    renderer = DummyRenderer()
+    renderer._hosts["amy"] = {"id": "amy", "instructions": "Be brief"}
+    item = _clip_item("show_000")
+    contract = dict(item.extra_attributes)
+    contract[ATTR_HOST_ID] = "amy"
+    item.extra_attributes.clear()
+    renderer._feed_clip_contracts["show_000"] = contract
+    signals = _attach_queue(renderer, [item])
+
+    streamdetails = await renderer.get_stream_details("show_000", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.item_id == "show_000"
+    # the contract now travels on the item itself, persisted like any rendered attribute
+    assert item.extra_attributes[ATTR_PROMPT] == contract[ATTR_PROMPT]
+    assert item.extra_attributes[ATTR_HOST_ID] == "amy"
+    assert item.extra_attributes[ATTR_RENDERED_TEXT]
+    assert signals == [True, True]
+    assert renderer.llm_prompts[0].startswith("It is ")
 
 
 async def test_llm_failure_raises_media_not_found() -> None:
