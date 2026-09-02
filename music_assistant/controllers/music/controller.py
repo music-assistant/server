@@ -2161,7 +2161,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return uri
             if provider != provider_instance:
                 return uri
-            ctrl = self.get_controller(media_type)
+            try:
+                ctrl = self.get_controller(media_type)
+            except NotImplementedError:
+                return None
             if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
                 return f"library://{media_type.value}/{library_item.item_id}"
             return None
@@ -2178,7 +2181,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return uri
             if provider != "library":
                 return uri
-            ctrl = self.get_controller(media_type)
+            try:
+                ctrl = self.get_controller(media_type)
+            except NotImplementedError:
+                return uri
             try:
                 await ctrl.get_library_item(item_id)
             except MediaNotFoundError, ValueError:
