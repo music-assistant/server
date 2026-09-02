@@ -959,6 +959,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
@@ -1016,14 +1017,22 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+            except AudioError as err:
+                # The response is already being written, so a failed item has to
+                # end it here. Raising instead answers a response that is long
+                # gone, which aiohttp reports as two unhandled tracebacks for
+                # what is an ordinary playback failure.
+                queue_item.streamdetails.stream_error = True
+                stream_failure = err
             finally:
                 self._active_output_streams -= 1
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
-                    "Error streaming QueueItem %s (%s) to %s",
+                    "Error streaming QueueItem %s (%s) to %s%s",
                     queue_item.name,
                     queue_item.uri,
                     queue.display_name,
+                    f": {stream_failure}" if stream_failure is not None else "",
                 )
             elif (
                 bytes_sent > 0

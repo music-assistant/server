@@ -18,7 +18,7 @@ from music_assistant_models.enums import (
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import AudioError, QueueEmpty
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -1593,6 +1593,9 @@ class _FakeStreamResponse:
     async def prepare(self, request: Any) -> None:
         """Accept the response start."""
 
+    async def write(self, chunk: bytes) -> None:
+        """Accept a written chunk."""
+
 
 def _single_item_handler(
     *,
@@ -1611,6 +1614,7 @@ def _single_item_handler(
         queue_id="queue-1",
         queue_item_id="item-1",
         name="Track",
+        uri="library://track/1",
         duration=180,
         streamdetails=streamdetails,
         media_item=None,
@@ -1745,6 +1749,27 @@ async def test_single_item_handler_paces_by_player(
         await controller.serve_queue_item_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(profile)  # type: ignore[arg-type]
+
+
+async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The response is already sent, so a failed item ends it and is logged once."""
+    controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    controller._active_output_streams = 0
+
+    async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        yield b"\x01" * 64
+        raise AudioError("Spotify would not play spotify:track:aaa")
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _failing_stream)
+
+    await controller.serve_queue_item_stream(request)
+
+    queue_item = controller.mass.player_queues.get_item.return_value
+    assert queue_item.streamdetails.stream_error is True
+    logged = controller.logger.error.call_args
+    assert "would not play" in logged.args[0] % logged.args[1:]
 
 
 # -- StreamsAudio.get_stream_details --

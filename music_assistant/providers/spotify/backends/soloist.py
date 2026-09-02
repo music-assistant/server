@@ -134,6 +134,10 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # rejected as incomplete (an engine that refuses an unavailable item exits
 # within moments; reported durations are approximate)
 _SHORT_DELIVERY_TOLERANCE_MS: Final[int] = 10000
+# A refusal is the engine reporting the item as playing, rendering a moment of
+# audio and then ending the run itself. Below this much audio a short delivery
+# is that refusal rather than a stream that starved part-way through.
+_REFUSED_DELIVERY_MS: Final[int] = 1000
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
 # holds well under a second, so the reader must keep draining it whenever the
@@ -831,18 +835,30 @@ class _SingleTrackRun:
         """
         Raise when the engine ended the item long before its own duration.
 
-        An engine that refuses an item (unavailable to the account or region)
-        exits within moments; crediting that as a completed stream would mark
-        the track as played and hide the real cause.
+        Crediting a run that stopped short as a completed stream would mark the
+        track as played and hide the cause. An engine that ends the run itself
+        having played nothing refused the item, and is reported as that.
         """
         if self._stopped or self._duration_ms is None:
             return
-        delivered_ms = self._delivered / _BYTES_PER_SECOND * 1000 + self._seek_target_ms
-        if delivered_ms < self._duration_ms - _SHORT_DELIVERY_TOLERANCE_MS:
-            raise AudioError(
-                f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
-                f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms)"
+        played_ms = self._delivered / _BYTES_PER_SECOND * 1000
+        delivered_ms = played_ms + self._seek_target_ms
+        if delivered_ms >= self._duration_ms - _SHORT_DELIVERY_TOLERANCE_MS:
+            return
+        if self._engine_exited and played_ms <= _REFUSED_DELIVERY_MS:
+            # Spotify would not serve this item to this session. The cause is
+            # logged here because it is lost on the way out: the ffmpeg stage
+            # between the provider and the player replaces the message.
+            message = (
+                f"Spotify would not play {self.spotify_uri}: it is unavailable for this "
+                "account or region, or Spotify refused it for now"
             )
+            self.logger.warning(message)
+            raise AudioError(message)
+        raise AudioError(
+            f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
+            f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms)"
+        )
 
     def _engine_normalization_enabled(self) -> bool:
         """
