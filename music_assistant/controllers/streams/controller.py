@@ -724,42 +724,6 @@ class StreamsController(CoreController):
         audio_source_provider: PluginProvider | None = None
         audio_source_id: str | None = None
         stream_session_id = uuid4().hex
-        if (
-            is_audio_source
-            and queue_item.media_item is not None
-            and (prov := self.mass.get_provider(queue_item.media_item.provider))
-            and isinstance(prov, PluginProvider)
-        ):
-            audio_source_id = queue_item.media_item.item_id
-            # Wire the provider into the finally block BEFORE awaiting the
-            # hook: if the provider partially mutates state (claims the lock,
-            # records the session id) and then raises a non-RuntimeError
-            # exception (buggy plugin, asyncio.CancelledError, etc.), the
-            # finally must still fire on_source_unselected so the lock gets
-            # released. The provider's session-id guard makes a spurious
-            # release a no-op if the lock was never actually claimed.
-            audio_source_provider = prov
-            try:
-                await prov.on_source_selected(
-                    audio_source_id, player_id, queue_id, stream_session_id
-                )
-            except RuntimeError as err:
-                # Provider intentionally aborts the original request (e.g.
-                # allow_player_switch=False has just redirected play_media to
-                # the configured target). Surface as 404 so the disallowed
-                # player drops the connection cleanly instead of treating an
-                # uncaught 500 as transient and retrying. The provider
-                # contract requires raising BEFORE claiming, so this is a
-                # clean abort — but we still let the finally run, where the
-                # session-id guard makes the unselect a no-op.
-                self.logger.info(
-                    "AudioSource %s aborted stream for player %s: %s",
-                    audio_source_id,
-                    player_id,
-                    err,
-                )
-                raise web.HTTPNotFound(reason=str(err))
-
         # registered before any await below: a session rotation mid-setup must be
         # able to abort this response too, or a stale request keeps its connection
         # open (gating some players' cutover) until the player times it out
@@ -770,6 +734,41 @@ class StreamsController(CoreController):
                 # rotated between the validation above and the registration: the
                 # sweep may already have run, so nothing else catches this one
                 raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
+            if (
+                is_audio_source
+                and queue_item.media_item is not None
+                and (prov := self.mass.get_provider(queue_item.media_item.provider))
+                and isinstance(prov, PluginProvider)
+            ):
+                audio_source_id = queue_item.media_item.item_id
+                # Wire the provider into the finally block BEFORE awaiting the
+                # hook: if the provider partially mutates state (claims the lock,
+                # records the session id) and then raises a non-RuntimeError
+                # exception (buggy plugin, asyncio.CancelledError, etc.), the
+                # finally must still fire on_source_unselected so the lock gets
+                # released. The provider's session-id guard makes a spurious
+                # release a no-op if the lock was never actually claimed.
+                audio_source_provider = prov
+                try:
+                    await prov.on_source_selected(
+                        audio_source_id, player_id, queue_id, stream_session_id
+                    )
+                except RuntimeError as err:
+                    # Provider intentionally aborts the original request (e.g.
+                    # allow_player_switch=False has just redirected play_media to
+                    # the configured target). Surface as 404 so the disallowed
+                    # player drops the connection cleanly instead of treating an
+                    # uncaught 500 as transient and retrying. The provider
+                    # contract requires raising BEFORE claiming, so this is a
+                    # clean abort — but we still let the finally run, where the
+                    # session-id guard makes the unselect a no-op.
+                    self.logger.info(
+                        "AudioSource %s aborted stream for player %s: %s",
+                        audio_source_id,
+                        player_id,
+                        err,
+                    )
+                    raise web.HTTPNotFound(reason=str(err))
             if not queue_item.streamdetails:
                 try:
                     queue_item.streamdetails = await self.audio.get_stream_details(
