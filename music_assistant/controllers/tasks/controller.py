@@ -886,6 +886,10 @@ class TasksController(CoreController):
 
     def _set_persisted_task_states(self, states: dict[str, Any]) -> None:
         """Persist runtime state for scheduled tasks."""
+        # this state lives next to the config values rather than inside them, so the core
+        # config block has to be created up front. a bare set() would build the parent
+        # dicts on the fly and leave a block that no longer parses as a CoreConfig.
+        self.mass.config.ensure_core_config_base(self.domain)
         self.mass.config.set(f"core/{self.domain}/{TASK_STATE_CONFIG_KEY}", states)
 
     @staticmethod
