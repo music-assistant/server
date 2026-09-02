@@ -1207,7 +1207,6 @@ class BuiltinProvider(MusicProvider):
                     return tracks
         return []
 
-    @use_cache(expiration=30, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])

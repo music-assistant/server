@@ -9,7 +9,6 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, Track
 
 from music_assistant.providers.builtin import BuiltinProvider
-from tests.common import use_real_create_task
 
 
 def _make_provider() -> BuiltinProvider:
@@ -24,20 +23,10 @@ def _make_provider() -> BuiltinProvider:
     return provider
 
 
-def _install_cache_mocks(provider: BuiltinProvider) -> None:
-    """Make the @use_cache decorator treat every call as a cache miss."""
-    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
-        return_value=(None, False, False)
-    )
-    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
-    use_real_create_task(provider.mass)
-
-
 @pytest.mark.asyncio
 async def test_recently_played_resolves_library_rows() -> None:
     """A playlog row for a library-originated play is resolved to its library track."""
     provider = _make_provider()
-    _install_cache_mocks(provider)
     library_track = Track(
         item_id="42",
         provider="library",
@@ -65,18 +54,14 @@ async def test_recently_played_resolves_library_rows() -> None:
         extra_query_params={"item_ids": [42]},
         in_library_only=False,
     )
-    assert len(result) == 1
-    # use_cache clones the flight result, so compare identity fields rather than object identity
-    assert result[0].item_id == library_track.item_id
-    assert result[0].provider == "library"
-    assert result[0].position == 1
+    assert result == [library_track]
+    assert library_track.position == 1
 
 
 @pytest.mark.asyncio
 async def test_recently_played_skips_library_row_removed_from_library() -> None:
     """A library row is skipped when the batched lookup returns no track for it."""
     provider = _make_provider()
-    _install_cache_mocks(provider)
     provider.mass.music.tracks.get_library_items_by_query = AsyncMock(  # type: ignore[method-assign]
         return_value=[]
     )
@@ -100,7 +85,6 @@ async def test_recently_played_skips_library_row_removed_from_library() -> None:
 async def test_recently_played_skips_library_query_when_no_library_rows() -> None:
     """The batched library query is skipped entirely when no row is library-originated."""
     provider = _make_provider()
-    _install_cache_mocks(provider)
     item_provider = MagicMock()
     item_provider.domain = "spotify"
     item_provider.instance_id = "spotify--test"
@@ -125,10 +109,33 @@ async def test_recently_played_skips_library_query_when_no_library_rows() -> Non
 
 
 @pytest.mark.asyncio
+async def test_recently_played_rereads_playlog_on_every_call() -> None:
+    """Consecutive calls each re-read the playlog instead of sharing a cached result."""
+    provider = _make_provider()
+    first = ItemMapping(item_id="1", provider="library", name="First", media_type=MediaType.TRACK)
+    second = ItemMapping(item_id="2", provider="library", name="Second", media_type=MediaType.TRACK)
+    provider.mass.music.recently_played = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[[first], [second]]
+    )
+    provider.mass.music.tracks.get_library_items_by_query = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [Track(item_id="1", provider="library", name="First", provider_mappings=set())],
+            [Track(item_id="2", provider="library", name="Second", provider_mappings=set())],
+        ]
+    )
+
+    first_result = await provider._get_builtin_playlist_recently_played()
+    second_result = await provider._get_builtin_playlist_recently_played()
+
+    assert provider.mass.music.recently_played.await_count == 2
+    assert [t.item_id for t in first_result] == ["1"]
+    assert [t.item_id for t in second_result] == ["2"]
+
+
+@pytest.mark.asyncio
 async def test_recently_played_builds_stub_track_for_real_provider() -> None:
     """A row naming a real provider instance still yields a stub Track for that provider."""
     provider = _make_provider()
-    _install_cache_mocks(provider)
     item_provider = MagicMock()
     item_provider.domain = "spotify"
     item_provider.instance_id = "spotify--test"
@@ -160,7 +167,6 @@ async def test_recently_played_builds_stub_track_for_real_provider() -> None:
 async def test_recently_played_skips_row_for_unknown_provider() -> None:
     """A row naming a provider instance that is no longer registered is dropped."""
     provider = _make_provider()
-    _install_cache_mocks(provider)
     provider.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
     provider.mass.music.recently_played = AsyncMock(  # type: ignore[method-assign]
         return_value=[
