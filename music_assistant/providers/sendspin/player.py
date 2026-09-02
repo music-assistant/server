@@ -92,6 +92,7 @@ from .constants import (
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
+    CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -102,6 +103,7 @@ from .constants import (
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
+    PAIR_METHOD_TOKEN,
     SOURCE_AUTOSTART_OFF,
     SOURCE_INPUT_DISMISS,
     SOURCE_INPUT_PAIR,
@@ -491,7 +493,12 @@ class SendspinBasePlayer(Player):
                 step_id="select_method",
             )
             method = str(values[CONF_PAIRING_METHOD])
-        await self._run_pin_pairing_flow(session, provider, static=method == PAIR_METHOD_STATIC_PIN)
+        if method == PAIR_METHOD_TOKEN:
+            await self._run_token_pairing_flow(session, provider)
+        else:
+            await self._run_pin_pairing_flow(
+                session, provider, static=method == PAIR_METHOD_STATIC_PIN
+            )
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
@@ -967,8 +974,12 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        # Token pairing is deliberately absent: it is how a server enrols itself (the web
-        # player does exactly that), not something an operator can carry out by hand.
+        if not options and any(
+            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
+        ):
+            # Token pairing is machine-to-machine only and must never be user facing
+            # when a proper pairing method (PIN) is available.
+            options.append(PAIR_METHOD_TOKEN)
         return options
 
     def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
@@ -1088,6 +1099,32 @@ class SendspinBasePlayer(Player):
                 provider.clear_pin_session(self.player_id)
             elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
+
+    async def _run_token_pairing_flow(
+        self, session: SetupSession, provider: SendspinProvider
+    ) -> None:
+        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
+        errors: dict[str, str] | None = None
+        while True:
+            token_values = await session.form(
+                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                step_id="enter_token",
+                errors=errors,
+            )
+            try:
+                await provider.pair_with_token(
+                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
+                )
+            except (
+                SecurityActionError,
+                PairingError,
+                HandshakeAbortedError,
+                TimeoutError,
+                OSError,
+            ) as err:
+                errors = {"base": error_alert(err).key}
+                continue
+            return
 
     async def _await_pin_request(
         self,
