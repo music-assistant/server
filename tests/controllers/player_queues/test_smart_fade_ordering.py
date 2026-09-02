@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +11,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues.smart_fade_ordering import (
     _energy_score,
+    _features,
     _pair_score,
     _tempo_score,
     order_queue_items,
@@ -65,16 +65,16 @@ def _track(item_id: str, *, artist: str = "A") -> Track:
 
 def test_missing_analysis_is_exactly_neutral() -> None:
     """No analysis is neutral; it is neither a bonus nor a penalty."""
-    known = _analysis()
-    assert _pair_score(None, known) == 0.0
-    assert _pair_score(known, None) == 0.0
+    known = _features(_analysis())
+    assert _pair_score(_features(None), known) == 0.0
+    assert _pair_score(known, _features(None)) == 0.0
 
 
 def test_partial_analysis_has_lower_confidence_than_full_match() -> None:
     """Missing fields stay at zero; known fields do not get extra weight."""
-    outgoing = _analysis(bpm=120.0, key="C", mode="major", tail=0.5)
-    partial = AudioAnalysisData(key="G", mode="major")
-    full = _analysis(bpm=120.0, key="G", mode="major", head=0.5)
+    outgoing = _features(_analysis(bpm=120.0, key="C", mode="major", tail=0.5))
+    partial = _features(AudioAnalysisData(key="G", mode="major"))
+    full = _features(_analysis(bpm=120.0, key="G", mode="major", head=0.5))
 
     partial_score = _pair_score(outgoing, partial)
     full_score = _pair_score(outgoing, full)
@@ -102,21 +102,21 @@ def test_outside_stretch_window_scores_negative() -> None:
 
 def test_good_harmonic_energy_pair_beats_bad_pair() -> None:
     """A better tempo/key/energy match should get the better score."""
-    outgoing = _analysis(bpm=120.0, key="C", mode="major", tail=0.5)
-    good = _analysis(bpm=122.0, key="G", mode="major", head=0.5)
-    bad = _analysis(bpm=145.0, key="F#", mode="minor", head=0.05)
+    outgoing = _features(_analysis(bpm=120.0, key="C", mode="major", tail=0.5))
+    good = _features(_analysis(bpm=122.0, key="G", mode="major", head=0.5))
+    bad = _features(_analysis(bpm=145.0, key="F#", mode="minor", head=0.05))
 
     assert _pair_score(outgoing, good) > _pair_score(outgoing, bad)
 
 
 def test_energy_score_prefers_matching_edges() -> None:
     """Matching end-to-start energy should score better."""
-    outgoing = _analysis(tail=0.5)
-    matching = _analysis(head=0.5)
-    dropping = _analysis(head=0.05)
+    outgoing = _features(_analysis(tail=0.5))
+    matching = _features(_analysis(head=0.5))
+    dropping = _features(_analysis(head=0.05))
 
-    good_score = _energy_score(outgoing, matching)
-    bad_score = _energy_score(outgoing, dropping)
+    good_score = _energy_score(outgoing.tail_level, matching.head_level)
+    bad_score = _energy_score(outgoing.tail_level, dropping.head_level)
 
     assert good_score is not None
     assert bad_score is not None
@@ -125,10 +125,10 @@ def test_energy_score_prefers_matching_edges() -> None:
 
 def test_energy_score_ignores_silent_outgoing_tail() -> None:
     """A silent outgoing tail does not create a misleading energy match."""
-    outgoing = _analysis(tail=0.005)
-    incoming = _analysis(head=0.005)
+    outgoing = _features(_analysis(tail=0.005))
+    incoming = _features(_analysis(head=0.005))
 
-    assert _energy_score(outgoing, incoming) is None
+    assert _energy_score(outgoing.tail_level, incoming.head_level) is None
 
 
 @pytest.mark.asyncio
@@ -215,7 +215,7 @@ async def test_order_tracks_prefers_different_artist_before_transition_score(
 
 
 @pytest.mark.asyncio
-async def test_fixed_queue_considers_tracks_beyond_dynamic_window(
+async def test_fixed_queue_considers_tracks_beyond_first_few_positions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fixed queue can select the best transition from the full population."""
@@ -250,19 +250,14 @@ async def test_fixed_queue_considers_tracks_beyond_dynamic_window(
 
 
 @pytest.mark.asyncio
-async def test_analysis_lookups_are_bounded_to_local_window() -> None:
-    """Only look up the small local set we are actually considering."""
+async def test_analysis_lookup_happens_once_per_distinct_track() -> None:
+    """Precomputed features mean each distinct track's analysis is fetched only once."""
     anchor = _track("anchor")
     tracks = [_track(f"track-{index}") for index in range(20)]
-    active = 0
-    peak = 0
+    calls: dict[str, int] = {}
 
-    async def lookup(*_args: object, **_kwargs: object) -> AudioAnalysisData:
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0)
-        active -= 1
+    async def lookup(item_id: str, *_args: object, **_kwargs: object) -> AudioAnalysisData:
+        calls[item_id] = calls.get(item_id, 0) + 1
         return _analysis()
 
     mass = MagicMock()
@@ -270,7 +265,41 @@ async def test_analysis_lookups_are_bounded_to_local_window() -> None:
 
     await order_tracks(mass, tracks, preceding_track=anchor)
 
-    assert peak <= 6
+    assert all(count == 1 for count in calls.values())
+
+
+@pytest.mark.asyncio
+async def test_dynamic_batch_considers_the_full_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 25-track refill batch can still pair tracks that start far apart in the batch."""
+    anchor = _track("anchor")
+    good_analysis = _analysis(bpm=120.0, key="C", mode="major", head=0.5, tail=0.5)
+    bad_analysis = _analysis(bpm=145.0, key="F#", mode="minor", head=0.05, tail=0.05)
+
+    first = _track("first")
+    partner = _track("partner")
+    fillers = [_track(f"filler-{index}") for index in range(23)]
+    tracks = [first, *fillers[:19], partner, *fillers[19:]]
+
+    rows = {
+        "anchor": good_analysis,
+        "first": good_analysis,
+        "partner": good_analysis,
+        **{track.item_id: bad_analysis for track in fillers},
+    }
+    mass = MagicMock()
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        side_effect=lambda item_id, *_args, **_kwargs: rows.get(item_id)
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_fade_ordering.random.choice",
+        lambda values: values[0],
+    )
+
+    ordered = await order_tracks(mass, tracks, preceding_track=anchor)
+
+    assert abs(ordered.index(first) - ordered.index(partner)) == 1
 
 
 @pytest.mark.asyncio

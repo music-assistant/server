@@ -4,9 +4,9 @@ Smart Fades-aware ordering for Smart Shuffle.
 This only reorders tracks MA has already selected. It uses stored tempo, key and end-to-start
 energy; missing analysis stays neutral and nothing is analysed just to place a track in the queue.
 
-Dynamic refills use a small local candidate window because new batches keep arriving. Fixed queues
-can consider the full movable population within each recency tier. Close choices retain some
-randomness.
+Both dynamic refills and fixed queues consider every remaining track in the run being ordered;
+dynamic mode simply orders one refill batch at a time from the queue tail. Close choices retain
+some randomness.
 
 This does not call the full transition planner to rank candidates. Smart Fades still decides the
 actual transition.
@@ -18,6 +18,7 @@ import asyncio
 import math
 import random
 from collections.abc import Callable
+from dataclasses import dataclass
 from statistics import median
 from typing import TYPE_CHECKING, TypeVar
 
@@ -35,10 +36,11 @@ if TYPE_CHECKING:
 
 ItemT = TypeVar("ItemT")
 
-# Dynamic refills only need a few sensible next choices, not a perfect route through the whole queue.
-_DYNAMIC_LOOKAHEAD = 6
 _ANALYSIS_BATCH_SIZE = 32
 _MOVE_PENALTY = 0.03
+# The order-preservation penalty stops growing after a few positions so distant candidates
+# stay reachable.
+_MOVE_PENALTY_CAP_STEPS = 5
 _NEAR_TIE_DELTA = 0.08
 _EDGE_WINDOW_SECONDS = 15.0
 _SILENT_TAIL_CUTOFF = 0.01
@@ -48,6 +50,34 @@ _SILENT_TAIL_CUTOFF = 0.01
 _TEMPO_WEIGHT = 0.45
 _KEY_WEIGHT = 0.30
 _ENERGY_WEIGHT = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class _TrackFeatures:
+    """Precomputed per-track fields used to score a transition."""
+
+    bpm: float | None
+    key: str | None
+    mode: str | None
+    head_level: float | None
+    tail_level: float | None
+    known: bool
+
+
+def _features(analysis: AudioAnalysisData | None) -> _TrackFeatures:
+    """Extract the fields ordering needs once, instead of rescanning the analysis per pair."""
+    if analysis is None:
+        return _TrackFeatures(
+            bpm=None, key=None, mode=None, head_level=None, tail_level=None, known=False
+        )
+    return _TrackFeatures(
+        bpm=analysis.bpm,
+        key=analysis.key,
+        mode=analysis.mode,
+        head_level=_edge_energy(analysis, from_start=True),
+        tail_level=_edge_energy(analysis, from_start=False),
+        known=True,
+    )
 
 
 async def order_queue_items(
@@ -74,7 +104,6 @@ async def order_queue_items(
             run,
             get_track=get_track,
             preceding_track=anchor,
-            candidate_limit=None,
         )
         result.extend(ordered)
         anchor = get_track(ordered[-1]) if ordered else None
@@ -105,7 +134,6 @@ async def order_tracks(
         list(tracks),
         get_track=lambda track: track,
         preceding_track=preceding_track,
-        candidate_limit=_DYNAMIC_LOOKAHEAD,
     )
 
 
@@ -115,7 +143,6 @@ async def _order_run(
     *,
     get_track: Callable[[ItemT], Track | None],
     preceding_track: Track | None,
-    candidate_limit: int | None,
 ) -> list[ItemT]:
     """Pick good neighbours and keep randomness between close choices."""
     if len(items) <= 1:
@@ -126,67 +153,71 @@ async def _order_run(
         # The public wrapper splits non-track boundaries before calling this function.
         return list(items)
     typed_tracks = [track for track in tracks if track is not None]
-    remaining = list(zip(items, typed_tracks, strict=True))
-    analysis_cache: dict[Track, AudioAnalysisData | None] = {}
 
-    async def analysis_for(track: Track) -> AudioAnalysisData | None:
-        if track not in analysis_cache:
-            analysis_cache[track] = await _stored_analysis(mass, track)
-        return analysis_cache[track]
+    distinct_tracks = list(dict.fromkeys(typed_tracks))
+    if preceding_track is not None and preceding_track not in distinct_tracks:
+        distinct_tracks.append(preceding_track)
 
-    async def analyses_for(indices: list[int]) -> list[AudioAnalysisData | None]:
-        pending: list[Track] = []
-        seen: set[Track] = set()
-        for index in indices:
-            track = remaining[index][1]
-            if track not in analysis_cache and track not in seen:
-                pending.append(track)
-                seen.add(track)
-        for start in range(0, len(pending), _ANALYSIS_BATCH_SIZE):
-            batch = pending[start : start + _ANALYSIS_BATCH_SIZE]
-            loaded = await asyncio.gather(*(_stored_analysis(mass, track) for track in batch))
-            analysis_cache.update(zip(batch, loaded, strict=True))
-        return [analysis_cache[remaining[index][1]] for index in indices]
+    analysis_by_track: dict[Track, AudioAnalysisData | None] = {}
+    for start in range(0, len(distinct_tracks), _ANALYSIS_BATCH_SIZE):
+        batch = distinct_tracks[start : start + _ANALYSIS_BATCH_SIZE]
+        loaded = await asyncio.gather(*(_stored_analysis(mass, track) for track in batch))
+        analysis_by_track.update(zip(batch, loaded, strict=True))
 
-    current_track = preceding_track
-    current_analysis = await analysis_for(preceding_track) if preceding_track is not None else None
-    ordered: list[ItemT] = []
+    features = [_features(analysis_by_track[track]) for track in typed_tracks]
+    seam_features = (
+        _features(analysis_by_track[preceding_track]) if preceding_track is not None else None
+    )
+
+    # The pick loop is O(N^2) pure CPU and must not run on the event loop.
+    order = await asyncio.to_thread(
+        _pick_order, features, typed_tracks, seam_features, preceding_track
+    )
+    return [items[index] for index in order]
+
+
+def _pick_order(
+    features: list[_TrackFeatures],
+    tracks: list[Track],
+    seam: _TrackFeatures | None,
+    seam_track: Track | None,
+) -> list[int]:
+    """Greedily pick the next best neighbour, keeping ties random."""
+    remaining = list(range(len(features)))
+    current = seam
+    current_track = seam_track
+    order: list[int] = []
 
     while remaining:
-        window_size = (
-            len(remaining) if candidate_limit is None else min(candidate_limit, len(remaining))
-        )
-        window = list(range(window_size))
-        window = _prefer_different_artist(window, remaining, current_track)
+        window = _prefer_different_artist(remaining, tracks, current_track)
 
-        if current_analysis is None:
-            picked_index = window[0]
-            picked_analysis = await analysis_for(remaining[picked_index][1])
+        if current is None or not current.known:
+            picked = window[0]
         else:
-            candidate_analyses = await analyses_for(window)
+            positions = {index: pos for pos, index in enumerate(remaining)}
             scored = [
                 (
-                    _pair_score(current_analysis, analysis)
-                    - (_MOVE_PENALTY * min(index, _DYNAMIC_LOOKAHEAD - 1)),
+                    _pair_score(current, features[index])
+                    - (_MOVE_PENALTY * min(positions[index], _MOVE_PENALTY_CAP_STEPS)),
                     index,
                 )
-                for index, analysis in zip(window, candidate_analyses, strict=True)
+                for index in window
             ]
             best = max(score for score, _index in scored)
             near_ties = [index for score, index in scored if score >= (best - _NEAR_TIE_DELTA)]
-            picked_index = random.choice(near_ties)
-            picked_analysis = candidate_analyses[window.index(picked_index)]
+            picked = random.choice(near_ties)
 
-        item, current_track = remaining.pop(picked_index)
-        ordered.append(item)
-        current_analysis = picked_analysis
+        remaining.remove(picked)
+        order.append(picked)
+        current = features[picked]
+        current_track = tracks[picked]
 
-    return ordered
+    return order
 
 
 def _prefer_different_artist(
     indices: list[int],
-    remaining: list[tuple[ItemT, Track]],
+    tracks: list[Track],
     current_track: Track | None,
 ) -> list[int]:
     """Keep the existing same-artist spacing when a local alternative exists."""
@@ -194,7 +225,7 @@ def _prefer_different_artist(
     if not current_artists:
         return indices
     alternatives = [
-        index for index in indices if current_artists.isdisjoint(_artist_names(remaining[index][1]))
+        index for index in indices if current_artists.isdisjoint(_artist_names(tracks[index]))
     ]
     return alternatives or indices
 
@@ -233,11 +264,11 @@ async def _stored_analysis(
 
 
 def _pair_score(
-    outgoing: AudioAnalysisData | None,
-    incoming: AudioAnalysisData | None,
+    outgoing: _TrackFeatures | None,
+    incoming: _TrackFeatures | None,
 ) -> float:
     """Score known compatibility; missing information adds zero."""
-    if outgoing is None or incoming is None:
+    if outgoing is None or incoming is None or not outgoing.known or not incoming.known:
         return 0.0
 
     weighted = 0.0
@@ -255,7 +286,7 @@ def _pair_score(
         # Normalize affinity onto the existing penalty/point scale.
         weighted += _KEY_WEIGHT * (affinity * 1.5 - 0.5)
 
-    if (energy := _energy_score(outgoing, incoming)) is not None:
+    if (energy := _energy_score(outgoing.tail_level, incoming.head_level)) is not None:
         weighted += _ENERGY_WEIGHT * energy
 
     return weighted
@@ -278,12 +309,10 @@ def _tempo_score(outgoing_bpm: float | None, incoming_bpm: float | None) -> floa
 
 
 def _energy_score(
-    outgoing: AudioAnalysisData,
-    incoming: AudioAnalysisData,
+    out_level: float | None,
+    in_level: float | None,
 ) -> float | None:
     """Compare outgoing-tail energy with incoming-head energy."""
-    out_level = _edge_energy(outgoing, from_start=False)
-    in_level = _edge_energy(incoming, from_start=True)
     if out_level is None or in_level is None:
         return None
     if out_level <= _SILENT_TAIL_CUTOFF:

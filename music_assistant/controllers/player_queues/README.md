@@ -239,8 +239,8 @@ part it already considers safe to move. Within each recency tier, the full movab
 be considered when choosing the next track. The last fixed track is used as the starting point.
 
 In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
-accepted batch from the existing queue tail, using a small local candidate window because new
-batches keep arriving.
+accepted batch from the existing queue tail. Both modes consider every remaining track in the run
+being ordered; Dynamic Mode simply orders one refill batch at a time.
 
 No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
 key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
