@@ -806,9 +806,10 @@ class TracksController(MediaControllerBase[Track]):
         failed_provider_instances: set[str] | None = None,
         evidence_provider_instances: set[str] | None = None,
         known_dead_mappings: frozenset[tuple[str, str]] | None = None,
+        search_non_streaming_without_mapping: bool = False,
     ) -> TrackProviderEnrichment:
         """
-        Resolve missing streaming-provider mappings without updating the library.
+        Resolve missing provider mappings without updating the library.
 
         :param track: Provider track to enrich.
         :param minimum_confidence: Lowest confidence that may be accepted.
@@ -822,6 +823,11 @@ class TracksController(MediaControllerBase[Track]):
             from.
         :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has already
             authoritatively confirmed unresolvable, so they are not hydrated again here.
+        :param search_non_streaming_without_mapping: Search a non-streaming provider (e.g.
+            filesystem) even without a pre-existing mapping to it. Only safe when
+            ``provider_instance_ids`` is the caller's own deliberate, explicit selection of
+            match targets - otherwise a non-streaming provider is only ever confirmed
+            through a mapping it already carries, never blindly searched.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -861,6 +867,7 @@ class TracksController(MediaControllerBase[Track]):
             failed_provider_instances=failed_provider_instances,
             failed_providers=failed_providers,
             known_dead_mappings=known_dead_mappings,
+            search_non_streaming_without_mapping=search_non_streaming_without_mapping,
         )
         (
             provider_matches,
@@ -1311,7 +1318,7 @@ class TracksController(MediaControllerBase[Track]):
             accepted.extend(tier)
         return accepted, ambiguous_providers
 
-    async def _query_provider_matches(
+    async def _query_provider_matches(  # noqa: PLR0913
         self,
         track: Track,
         providers: list[MusicProvider],
@@ -1323,6 +1330,7 @@ class TracksController(MediaControllerBase[Track]):
         failed_provider_instances: set[str] | None,
         failed_providers: list[str],
         known_dead_mappings: frozenset[tuple[str, str]] | None = None,
+        search_non_streaming_without_mapping: bool = False,
     ) -> tuple[
         list[tuple[MusicProvider, TrackProviderMatch]], list[str], TrackMatchConfidence | None
     ]:
@@ -1350,8 +1358,10 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if provider.domain in existing_domains:
                 continue
-            if not provider.is_streaming_provider and not (
-                self._get_provider_mapping(mapping_source, provider)
+            if (
+                not provider.is_streaming_provider
+                and not search_non_streaming_without_mapping
+                and not self._get_provider_mapping(mapping_source, provider)
             ):
                 continue
             if not base_album_loaded:

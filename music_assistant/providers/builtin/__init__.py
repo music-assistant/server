@@ -1137,6 +1137,12 @@ class BuiltinProvider(MusicProvider):
                 # match_providers filter would starve EXACT matching of evidence that is
                 # still on one of the user's own, merely un-searched, accounts
                 evidence_provider_instances=set(allowed_provider_instances),
+                # search_provider_instances is the initiating user's own deliberate
+                # selection of fallback targets - a non-streaming provider (e.g.
+                # filesystem) chosen there must actually be searched, not silently
+                # skipped for lacking a mapping no freshly imported track could ever
+                # already carry
+                search_non_streaming_without_mapping=True,
             )
         except (
             ResourceTemporarilyUnavailable,

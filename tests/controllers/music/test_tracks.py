@@ -1472,6 +1472,72 @@ async def test_enrich_provider_mappings_skips_album_lookup_for_existing_domains(
     find_provider_match.assert_not_awaited()
 
 
+async def test_enrich_provider_mappings_skips_unmapped_non_streaming_provider_by_default(
+    music: MusicController,
+) -> None:
+    """A non-streaming provider without an existing mapping is skipped by default."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "filesystem_1"
+    provider.domain = "filesystem"
+    provider.available = True
+    provider.is_streaming_provider = False
+    find_provider_match = AsyncMock()
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "find_provider_match", find_provider_match),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"filesystem_1"},
+        )
+
+    assert result.matches == ()
+    find_provider_match.assert_not_awaited()
+
+
+async def test_enrich_provider_mappings_searches_non_streaming_provider_when_opted_in(
+    music: MusicController,
+) -> None:
+    """An explicitly selected non-streaming provider is searched when opted in."""
+    source = create_track("spotify_1", "source")
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "filesystem_1"
+    provider.domain = "filesystem"
+    provider.available = True
+    provider.is_streaming_provider = False
+    filesystem_track = create_track("filesystem_1", "filesystem-track")
+    filesystem_mapping = next(iter(filesystem_track.provider_mappings))
+    filesystem_match = TrackProviderMatch(
+        track=filesystem_track,
+        mapping=filesystem_mapping,
+        confidence=TrackMatchConfidence.LIKELY,
+    )
+
+    with (
+        patch.object(music.tracks, "get_library_match", AsyncMock(return_value=None)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        patch.object(
+            music.tracks,
+            "find_provider_match",
+            AsyncMock(return_value=TrackProviderMatchResult(match=filesystem_match)),
+        ),
+        patch.object(music.mass, "get_provider", return_value=provider),
+    ):
+        result = await music.tracks.enrich_provider_mappings(
+            source,
+            provider_instance_ids={"filesystem_1"},
+            # the caller (e.g. import matching) explicitly selected this instance as a
+            # match target, so it must be searched even without a pre-existing mapping
+            search_non_streaming_without_mapping=True,
+        )
+
+    assert result.matches == (filesystem_match,)
+
+
 async def test_enrich_provider_mappings_hydrates_evidence_from_wider_allowed_scope(
     music: MusicController,
 ) -> None:

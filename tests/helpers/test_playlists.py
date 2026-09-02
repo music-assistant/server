@@ -1153,6 +1153,33 @@ def test_media_item_to_playlist_item_merges_equivalent_external_ids() -> None:
     assert playlist_item.metadata["mb_track"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
+def test_media_item_to_playlist_item_omits_uncorroborated_multi_domain_mb_track() -> None:
+    """A lone MB_TRACK claim on a multi-domain item is not exported as release evidence."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            ProviderMapping(
+                item_id="abc123", provider_domain="spotify", provider_instance="spotify_1"
+            ),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
+        },
+        # only one provider mapping actually contributed this value - there is no
+        # record of which one, so it cannot be trusted to describe whichever
+        # mapping ends up chosen as the exported entry's primary URI
+        external_ids={
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+
+
 def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
     """
     EXACT is only reachable when the parsed M3U carries release-track evidence.
