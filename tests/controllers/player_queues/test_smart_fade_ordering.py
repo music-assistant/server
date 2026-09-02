@@ -10,6 +10,7 @@ from music_assistant_models.media_items import ItemMapping, ProviderMapping, Tra
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues.smart_fade_ordering import (
+    _edge_energy,
     _energy_score,
     _features,
     _pair_score,
@@ -126,11 +127,18 @@ def test_energy_score_prefers_matching_edges() -> None:
 
 
 def test_energy_score_ignores_silent_outgoing_tail() -> None:
-    """A silent outgoing tail does not create a misleading energy match."""
-    outgoing = _features(_analysis(tail=0.005))
-    incoming = _features(_analysis(head=0.005))
+    """A silent portion at the edge is excluded; only the audible level counts."""
+    padded_tail = AudioAnalysisData(
+        duration=300.0,
+        rms_energy=[0.5] * 1700 + [0.0] * 100,
+    )
+    fully_silent = AudioAnalysisData(
+        duration=300.0,
+        rms_energy=[0.0] * 1800,
+    )
 
-    assert _energy_score(outgoing.tail_level, incoming.head_level) is None
+    assert _edge_energy(padded_tail, from_start=False) == pytest.approx(0.5)
+    assert _edge_energy(fully_silent, from_start=False) is None
 
 
 @pytest.mark.asyncio

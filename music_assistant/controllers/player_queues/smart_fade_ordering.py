@@ -43,7 +43,8 @@ _MOVE_PENALTY = 0.03
 _MOVE_PENALTY_CAP_STEPS = 5
 _NEAR_TIE_DELTA = 0.08
 _EDGE_WINDOW_SECONDS = 15.0
-_SILENT_TAIL_CUTOFF = 0.01
+# Normalized RMS at or below this is padding, not the music at the edge.
+_SILENCE_FLOOR = 0.01
 
 # Missing pieces stay at zero. Do not boost the pieces we do know just because
 # something else is missing.
@@ -323,8 +324,6 @@ def _energy_score(
     """Compare outgoing-tail energy with incoming-head energy."""
     if out_level is None or in_level is None:
         return None
-    if out_level <= _SILENT_TAIL_CUTOFF:
-        return None
 
     # RMS is normalized by the analysis provider. Equal edges score +1, a 0.5 jump is neutral,
     # and the largest possible mismatch approaches -1.
@@ -352,12 +351,18 @@ def _edge_energy(
     if len(clean) < 4:
         return None
 
+    audible = [value for value in clean if value > _SILENCE_FLOOR]
+    if len(audible) < 4:
+        return None
+
     if analysis.duration and analysis.duration > 0:
+        # Bins are uniform in time, so this keeps the window "15 seconds worth of bins"
+        # even though it is sliced from the audible values.
         bins_per_second = len(clean) / analysis.duration
         window_size = round(_EDGE_WINDOW_SECONDS * bins_per_second)
     else:
         window_size = len(clean) // 20
-    window_size = max(4, min(len(clean), window_size))
+    window_size = max(4, min(len(audible), window_size))
 
-    edge = clean[:window_size] if from_start else clean[-window_size:]
+    edge = audible[:window_size] if from_start else audible[-window_size:]
     return median(edge)
