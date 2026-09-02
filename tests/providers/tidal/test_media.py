@@ -443,16 +443,29 @@ async def test_get_artist_toptracks(media_manager: TidalMediaManager, provider_m
 async def test_get_artist_tracks(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
     """Test the full artist track list paginated from the official relationship endpoint."""
     doc = _load_doc("artist_toptracks.json")
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-    async def _pages(*_a: Any, **_k: Any) -> Any:
+    async def _pages(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        yield doc
         yield doc
 
     provider_mock.api.paginate_jsonapi = _pages
 
     tracks = await media_manager.get_artist_tracks("4184211")
 
-    assert len(tracks) == 20
+    assert len(tracks) == 40
     assert all(track.item_id for track in tracks)
+    assert calls == [
+        (
+            ("artists/4184211/relationships/tracks",),
+            {
+                "params": {"collapseBy": "FINGERPRINT"},
+                "include": ["tracks.artists", "tracks.albums.coverArt"],
+                "replace_media": "tracks",
+            },
+        )
+    ]
 
 
 async def test_get_artist_albums_skips_unparsable_album(
