@@ -1346,7 +1346,13 @@ class StreamsController(CoreController):
                         metadata += b"\x00"
                     length = len(metadata)
                     length_b = chr(int(length / 16)).encode()
-                    await resp.write(length_b + metadata)
+                    try:
+                        await resp.write(length_b + metadata)
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                        # same as the chunk write above: a superseded response is
+                        # aborted under us and this is its normal end
+                        client_disconnected = True
+                        break
         except AbortFlowStream:
             await audio_bytes.aclose()
         finally:
