@@ -207,6 +207,10 @@ def _get_publish_addresses(
     return list(publish_candidates)
 
 
+class AbortFlowStream(Exception):
+    """Raised to end a flow response whose session rotated during its setup."""
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -1301,6 +1305,11 @@ class StreamsController(CoreController):
         stream_entry = (session_id, cast("web.BaseRequest", request))
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
+            if queue_data.session_id != session_id:
+                # rotated during the setup above: the sweep could not see this
+                # response yet, so it must end itself instead of streaming stale
+                client_disconnected = True
+                raise AbortFlowStream
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
             # mid-stream, instead of lingering until garbage collection finalizes
@@ -1338,6 +1347,8 @@ class StreamsController(CoreController):
                     length = len(metadata)
                     length_b = chr(int(length / 16)).encode()
                     await resp.write(length_b + metadata)
+        except AbortFlowStream:
+            await audio_bytes.aclose()
         finally:
             self._active_output_streams -= 1
             if entries := self._open_item_streams.get(queue_id):

@@ -367,6 +367,55 @@ async def test_a_successful_load_releases_the_replaced_sessions_streams() -> Non
     close_stale.assert_called_once_with(QUEUE_ID, "session-2")
 
 
+async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() -> None:
+    """A flow-mode queue (overlay) streams via play_stream_url; the sweep still runs."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_stream_url = AsyncMock()
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
+        await player.play_media(
+            PlayerMedia(
+                uri="http://ma/flow/abc.flac",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="session-2",
+            )
+        )
+
+    client.player.group.play_stream_url.assert_awaited_once()
+    close_stale = cast("MagicMock", player.mass.streams.close_superseded_item_streams)
+    close_stale.assert_called_once_with(QUEUE_ID, "session-2")
+
+
+async def test_a_failed_forced_flow_load_keeps_the_old_sessions_streams_alive() -> None:
+    """A flow load the speaker refused must not cut the audio that is still playing."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_stream_url = AsyncMock(side_effect=FailedCommand("no can do"))
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
+        with pytest.raises(FailedCommand):
+            await player.play_media(
+                PlayerMedia(
+                    uri="http://ma/flow/abc.flac",
+                    media_type=MediaType.TRACK,
+                    source_id=QUEUE_ID,
+                    queue_item_id="track0",
+                    queue_session_id="session-2",
+                )
+            )
+
+    cast("MagicMock", player.mass.streams.close_superseded_item_streams).assert_not_called()
+
+
 async def test_a_failed_load_keeps_the_old_sessions_streams_alive() -> None:
     """A load the speaker refused must not cut the audio that is still playing."""
     player, _ = _make_player([_make_queue_item("track0")])
