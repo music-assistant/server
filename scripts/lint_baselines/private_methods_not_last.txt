@@ -31,9 +31,6 @@ music_assistant/providers/internet_archive/helpers.py	6
 music_assistant/providers/internet_archive/provider.py	13
 music_assistant/providers/itunes_podcasts/__init__.py	5
 music_assistant/providers/jellyfin/__init__.py	14
-music_assistant/providers/kion_music/api_client.py	43
-music_assistant/providers/kion_music/provider.py	24
-music_assistant/providers/kion_music/streaming.py	2
 music_assistant/providers/lastfm_recommendations/__init__.py	3
 music_assistant/providers/lastfm_recommendations/api_client.py	12
 music_assistant/providers/lastfm_recommendations/recommendations.py	2
