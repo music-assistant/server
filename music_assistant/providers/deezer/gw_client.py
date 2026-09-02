@@ -25,7 +25,7 @@ USER_AGENT_HEADER = (
 )
 
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
-GET_URL_URL = "https://media.deezer.com/v1/get_url"
+MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
 
 
 class DeezerGWError(Exception):
@@ -196,7 +196,7 @@ class GWClient:
             "track_tokens": [track_token],
         }
         url_response = await self.session.post(
-            GET_URL_URL,
+            MEDIA_GET_URL,
             json=url_data,
             headers={"User-Agent": USER_AGENT_HEADER},
             cookies=self._request_cookies(),
