@@ -8,7 +8,12 @@ from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
-from music_assistant_models.errors import InvalidDataError, InvalidProviderID, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    InvalidProviderID,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -452,6 +457,47 @@ async def test_transient_stream_failure_retains_original_without_confirmation() 
     prov_any._write_m3u_file.assert_not_awaited()
     report_markdown = set_report.call_args.args[0]
     assert "| Retained | 1 |" in report_markdown
+
+
+async def test_transient_source_failure_is_not_reprobed_per_entry() -> None:
+    """A transient source-provider error is remembered, not retried once per entry."""
+    get_provider_item = AsyncMock(side_effect=ResourceTemporarilyUnavailable("Timed out"))
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        provider_entries=[("spotify", "spotify_1", True)],
+        get_provider_item=get_provider_item,
+    )
+    items = [
+        _make_playlist_item(
+            path="spotify://track/track_one",
+            title="Artist - Song One",
+            providers=[
+                ProviderMappingInfo(domain="spotify", item_id="track_one", instance_id="spotify_1")
+            ],
+        ),
+        _make_playlist_item(
+            path="spotify://track/track_two",
+            title="Artist - Song Two",
+            providers=[
+                ProviderMappingInfo(domain="spotify", item_id="track_two", instance_id="spotify_1")
+            ],
+        ),
+    ]
+    prov_any = _prepare(prov, generate_m3u("Imported", items))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report"):
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            1,
+            PlaylistMatchPolicy.BEST_EFFORT,
+            _allowed(prov, "builtin", "spotify_1"),
+        )
+
+    # the second entry's identical failing instance is skipped outright, sparing it
+    # a second timeout rather than probing (and failing) it again
+    assert get_provider_item.await_count == 1
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_not_awaited()
 
 
 async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:

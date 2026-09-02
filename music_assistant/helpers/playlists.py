@@ -913,12 +913,15 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     # unlike a recording MBID (shared by every release of the same performance), a
     # track MBID identifies one specific release's track listing entry - a library
     # item spanning more than one domain merges external ids from whichever provider
-    # contributed them, with no record of which one, so a lone value could be an
-    # unverified claim from a mapping other than the chosen primary URI (below).
-    # Require corroboration from a second, independently-formatted value in that
-    # case; two providers agreeing is itself evidence the value is not isolated.
-    if mb_track := _unambiguous_external_id(
-        full_item, ExternalID.MB_TRACK, require_corroboration=len(mapped_domains) > 1
+    # contributed them, with no record of which one, so there is no way to confirm
+    # a merged MB_TRACK actually belongs to the release the chosen primary URI (below)
+    # points at; only trust it when every mapping is the same domain's own catalog.
+    # Even multiple raw values agreeing once normalized isn't reliable corroboration:
+    # external_ids is a plain set, so identical reports from two providers collapse
+    # into one value, while a single provider that just reformatted its own claim
+    # over time can supply two distinct raw values - neither is distinguishable here.
+    if len(mapped_domains) <= 1 and (
+        mb_track := _unambiguous_external_id(full_item, ExternalID.MB_TRACK)
     ):
         metadata["mb_track"] = mb_track
 
@@ -981,9 +984,7 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     )
 
 
-def _unambiguous_external_id(
-    full_item: MediaItem, external_id_type: ExternalID, *, require_corroboration: bool = False
-) -> str | None:
+def _unambiguous_external_id(full_item: MediaItem, external_id_type: ExternalID) -> str | None:
     """
     Return an external ID value only when the item carries exactly one of that type.
 
@@ -994,23 +995,15 @@ def _unambiguous_external_id(
     release evidence on export. Values are canonicalized before comparing so
     equivalent identifiers in different provider formats (casing, separators,
     braces) are not mistaken for a genuine conflict.
-
-    :param require_corroboration: There is no record of which provider mapping
-        contributed a given external ID, so a single raw value could be a lone
-        claim from a mapping other than the one exported as the primary URI.
-        When set, at least two distinct raw values (agreeing once normalized)
-        are required, since independent providers reporting the identical
-        value is itself evidence that it is not an isolated, unverified claim.
     """
-    raw_values = {
-        value for current_type, value in full_item.external_ids if current_type == external_id_type
+    canonical_values = {
+        normalize_external_id(external_id_type, value)
+        for current_type, value in full_item.external_ids
+        if current_type == external_id_type
     }
-    canonical_values = {normalize_external_id(external_id_type, value) for value in raw_values}
-    if len(canonical_values) != 1:
-        return None
-    if require_corroboration and len(raw_values) < 2:
-        return None
-    return next(iter(canonical_values))
+    if len(canonical_values) == 1:
+        return next(iter(canonical_values))
+    return None
 
 
 # --------------------------------------------------------------------------- #

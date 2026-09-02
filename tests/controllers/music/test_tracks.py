@@ -901,6 +901,48 @@ async def test_find_provider_match_skips_search_result_with_malformed_id(
     assert result.match.confidence == TrackMatchConfidence.EXACT
 
 
+async def test_find_provider_match_skips_known_dead_search_result(
+    music: MusicController,
+) -> None:
+    """A search result matching a known-dead pair is never hydrated as a substitute."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = create_track("spotify_1", "base", isrc="USRC17607839")
+    base.external_ids.add(mb_track)
+    # this search result carries the exact (instance, item id) a caller already
+    # authoritatively confirmed dead moments ago - a stale cached hit must not
+    # resurrect it as a confident substitute
+    dead = create_track("qobuz_1", "dead", isrc="USRC17607839")
+    dead.external_ids.add(mb_track)
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    get_provider_item_mock = AsyncMock()
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[dead])),
+        ),
+        patch.object(music.tracks, "get_provider_item", get_provider_item_mock),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LOOSE,
+            known_dead_mappings=frozenset({("qobuz_1", "dead")}),
+        )
+
+    get_provider_item_mock.assert_not_awaited()
+    assert result.match is None
+
+
 async def test_find_provider_match_checks_every_artist_credit_query(
     music: MusicController,
 ) -> None:

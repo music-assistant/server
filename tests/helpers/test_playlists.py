@@ -1138,23 +1138,26 @@ def test_media_item_to_playlist_item_merges_equivalent_external_ids() -> None:
             ),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
         },
-        # both providers actually agree on the same MusicBrainz track ID, just
+        # both providers actually agree on the same MusicBrainz recording ID, just
         # formatted differently (braces + uppercase vs bare lowercase) - this must
-        # still be recognized as the single, unambiguous release-track identifier
+        # still be recognized as the single, unambiguous identifier. Unlike a
+        # release-specific MB_TRACK, a recording MBID is safely shared across every
+        # release of the same performance, so it isn't subject to the same
+        # multi-domain provenance restriction.
         external_ids={
-            (ExternalID.MB_TRACK, "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
-            (ExternalID.MB_TRACK, "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"),
+            (ExternalID.MB_RECORDING, "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+            (ExternalID.MB_RECORDING, "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"),
         },
     )
 
     playlist_item = media_item_to_playlist_item(track)
 
     assert playlist_item.metadata is not None
-    assert playlist_item.metadata["mb_track"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    assert playlist_item.metadata["mbid"] == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
-def test_media_item_to_playlist_item_omits_uncorroborated_multi_domain_mb_track() -> None:
-    """A lone MB_TRACK claim on a multi-domain item is not exported as release evidence."""
+def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
+    """A multi-domain item's merged MB_TRACK is never exported as release evidence."""
     track = Track(
         item_id="abc123",
         provider="library",
@@ -1166,9 +1169,9 @@ def test_media_item_to_playlist_item_omits_uncorroborated_multi_domain_mb_track(
             ),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
         },
-        # only one provider mapping actually contributed this value - there is no
-        # record of which one, so it cannot be trusted to describe whichever
-        # mapping ends up chosen as the exported entry's primary URI
+        # external_ids merges whichever provider mapping happened to contribute a
+        # value, with no record of which one - even a single, unambiguous value
+        # cannot be tied to whichever mapping ends up chosen as the primary URI
         external_ids={
             (ExternalID.MB_TRACK, "release-track-mbid"),
         },

@@ -693,6 +693,10 @@ class BuiltinProvider(MusicProvider):
             else set(search_provider_instances)
         )
         failed_provider_instances: set[str] = set()
+        # a transient (e.g. network) failure verifying an original source instance is
+        # remembered for the rest of this pass, so a large playlist repeating that same
+        # instance doesn't re-probe (and re-time-out on) it once per entry
+        failed_source_instances: set[str] = set()
         total = len(parsed_items)
         counts = dict.fromkeys(
             (
@@ -738,6 +742,7 @@ class BuiltinProvider(MusicProvider):
                     allowed_provider_instance_map,
                     search_provider_instance_set,
                     failed_provider_instances,
+                    failed_source_instances,
                 )
                 resolved_by_entry[entry_key] = result
             self._tally_import_track_result(
@@ -1058,6 +1063,7 @@ class BuiltinProvider(MusicProvider):
         allowed_provider_instances: Mapping[str, str],
         search_provider_instances: set[str],
         failed_provider_instances: set[str],
+        failed_source_instances: set[str],
     ) -> _ImportTrackMatchResult:
         """Resolve one imported playlist entry against the allowed providers."""
         # a bare URI without #EXTMA metadata (e.g. a hand-written or foreign M3U entry)
@@ -1078,7 +1084,9 @@ class BuiltinProvider(MusicProvider):
             is_playable,
             confirmed_mapping,
             confirmed_dead_mappings,
-        ) = await self._original_source_is_playable(item, allowed_provider_instances)
+        ) = await self._original_source_is_playable(
+            item, allowed_provider_instances, failed_source_instances
+        )
         if is_playable:
             # the original source still resolves, or its provider is merely down right
             # now - either way there is nothing to substitute
@@ -1209,7 +1217,10 @@ class BuiltinProvider(MusicProvider):
         )
 
     async def _original_source_is_playable(
-        self, item: PlaylistItem, allowed_provider_instances: Mapping[str, str]
+        self,
+        item: PlaylistItem,
+        allowed_provider_instances: Mapping[str, str],
+        failed_source_instances: set[str],
     ) -> tuple[bool, ProviderMappingInfo | None, frozenset[tuple[str, str]]]:
         """
         Check whether an imported entry's original source is still usable.
@@ -1242,6 +1253,10 @@ class BuiltinProvider(MusicProvider):
         every ``(instance_id, item_id)`` pair that was just authoritatively confirmed
         dead here, so a subsequent matching pass does not force-refresh the exact same
         candidate a second time.
+
+        :param failed_source_instances: Instances that already failed verification
+            with a transient error earlier this pass, mutated in place - skipped
+            here without probing (and potentially timing out on) them again.
         """
         candidates: list[tuple[str, str, bool]] = []
         seen: set[tuple[str, str]] = set()
@@ -1286,6 +1301,11 @@ class BuiltinProvider(MusicProvider):
                 ):
                     candidates.append((instance_id, raw_item_id, needs_provider_metadata))
         for provider_instance, provider_item_id, needs_provider_metadata in candidates:
+            if provider_instance in failed_source_instances:
+                # a transient error already confirmed this instance unreachable
+                # earlier this pass - assume it is still fine (the same verdict a
+                # fresh probe would give) rather than time out on it again
+                return True, None, frozenset(confirmed_dead)
             provider = self.mass.get_provider(provider_instance, return_unavailable=True)
             if provider is None or not provider.available:
                 # every candidate here already passed the allowed-instances snapshot, so
@@ -1326,7 +1346,10 @@ class BuiltinProvider(MusicProvider):
                 TimeoutError,
             ):
                 # could not verify right now (network blip) - assume it is still fine
-                # rather than substitute it
+                # rather than substitute it, and remember this instance for the rest
+                # of the pass so a large playlist doesn't retry (and re-time-out on)
+                # it once per entry
+                failed_source_instances.add(provider.instance_id)
                 return True, None, frozenset(confirmed_dead)
             else:
                 if not needs_provider_metadata:

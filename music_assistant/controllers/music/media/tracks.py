@@ -775,6 +775,7 @@ class TracksController(MediaControllerBase[Track]):
             allowed_provider_instances,
             trust_base_mapping,
             mapped_match,
+            known_dead_mappings,
         )
 
         if not candidates:
@@ -986,8 +987,15 @@ class TracksController(MediaControllerBase[Track]):
         allowed_provider_instances: set[str] | None,
         allow_item_id_match: bool,
         mapped_match: TrackProviderMatch | None,
+        known_dead_mappings: frozenset[tuple[str, str]] | None = None,
     ) -> list[tuple[int, TrackProviderMatch]]:
-        """Return ranked provider candidates from every credited-artist search query."""
+        """
+        Return ranked provider candidates from every credited-artist search query.
+
+        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has
+            already authoritatively confirmed unresolvable, skipped here even if a
+            search result happens to hydrate the same pair from provider caches.
+        """
         search_queries = list(
             dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
         )
@@ -1015,6 +1023,11 @@ class TracksController(MediaControllerBase[Track]):
                 if candidate_key in seen_candidates or not search_result.available:
                     continue
                 seen_candidates.add(candidate_key)
+                if known_dead_mappings and candidate_key in known_dead_mappings:
+                    # a caller already authoritatively confirmed this exact
+                    # (instance, item id) pair dead moments ago - a stale cached
+                    # hit here must not resurrect it as a confident substitute
+                    continue
                 if not compare_track_title(base_track.name, search_result.name):
                     continue
                 try:
