@@ -43,7 +43,7 @@ def _limit(provider_cls: type[MusicProvider]) -> int | None:
         (QobuzProvider, 5),
         (LocalFileSystemProvider, None),
         (SpotifyProvider, 2),
-        (YoutubeMusicProvider, 6),
+        (YoutubeMusicProvider, 3),
         (AppleMusicProvider, 1),
         (PandoraProvider, 1),
     ],

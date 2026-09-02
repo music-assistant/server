@@ -186,8 +186,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def max_concurrent_streams(self) -> int:
-        """A YouTube Music family plan allows up to six simultaneous streams."""
-        return 6
+        """Allow a few parallel fetches and leave YouTube to enforce its account allowance."""
+        return 3
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
