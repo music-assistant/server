@@ -22,7 +22,14 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    ProviderMapping,
+    SoundEffect,
+    Track,
+    UniqueList,
+)
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
@@ -36,9 +43,11 @@ from music_assistant.helpers.tags import AudioTags
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_FEED_CLIP,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_QUEUE_DJ,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
@@ -53,11 +62,12 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 
-class DummyRenderer(AIRadioRenderMixin):
-    """Minimal harness exposing the render path."""
+class DummyRenderer(AIRadioRenderMixin, AIRadioQueueDJMixin):
+    """Minimal harness exposing the render path; the DJ mixin only supplies its queue reads."""
 
     domain = "ai_radio"
     instance_id = "ai_radio--test"
@@ -166,6 +176,39 @@ def _clip_item(clip_id: str, queue_id: str = "player_a", **overrides: Any) -> Qu
         duration=None,
         media_item=media_item,
         extra_attributes=attributes,
+    )
+
+
+def _music_item(item_id: str, artist: str, name: str, queue_id: str = "player_a") -> QueueItem:
+    """Build a queue item for a music track."""
+    track = Track(
+        item_id=item_id,
+        provider="library",
+        name=name,
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=f"artist_{item_id}",
+                    provider="library",
+                    name=artist,
+                )
+            ]
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local",
+            )
+        },
+    )
+    return QueueItem(
+        queue_id=queue_id,
+        queue_item_id=f"qi_{item_id}",
+        name=f"{artist} - {name}",
+        duration=200,
+        media_item=track,
     )
 
 
@@ -455,6 +498,67 @@ async def test_a_feed_clip_picks_up_its_contract_on_first_play() -> None:
     assert item.extra_attributes[ATTR_RENDERED_TEXT]
     assert signals == [True, True]
     assert renderer.llm_prompts[0].startswith("It is ")
+
+
+INTRO_PROMPT = "Before: <prev_songinfo>. First up <next_songinfo>, then <very_next_songinfo>."
+
+
+async def test_a_feed_clip_announces_the_music_actually_behind_it() -> None:
+    """A show intro names the tracks the queue holds behind it, not the snapshot's order."""
+    renderer = DummyRenderer()
+    intro = _clip_item("show_000")
+    intro.extra_attributes.clear()
+    renderer._feed_clip_contracts["show_000"] = {
+        ATTR_SESSION_ID: "show",
+        ATTR_STATION_ID: "st",
+        ATTR_PROMPT: INTRO_PROMPT,
+        ATTR_MAX_CHARS: 300,
+        ATTR_WEB_SEARCH_MODE: "disabled",
+        ATTR_FEED_CLIP: True,
+    }
+    # a DJ break spliced right behind the intro is not music, so it is looked past
+    dj_attributes: dict[str, Any] = {ATTR_QUEUE_DJ: True, ATTR_PROMPT: "p"}
+    dj_break = _clip_item("dj_000", **dj_attributes)
+    _attach_queue(
+        renderer,
+        [
+            intro,
+            dj_break,
+            _music_item("t2", "Beta", "Two"),
+            _music_item("t3", "Gamma", "Three"),
+            _music_item("t1", "Alpha", "One"),
+        ],
+    )
+
+    await renderer.get_stream_details("show_000", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Before: . First up Beta - Two, then Gamma - Three."]
+    # the tokens stay on the item, like the other deferred placeholders
+    assert intro.extra_attributes[ATTR_PROMPT] == INTRO_PROMPT
+
+
+async def test_a_feed_clip_with_nothing_behind_it_announces_nothing() -> None:
+    """A feed clip that ended up last in its queue gets neutral values for the missing songs."""
+    renderer = DummyRenderer()
+    attributes: dict[str, Any] = {ATTR_PROMPT: INTRO_PROMPT, ATTR_FEED_CLIP: True}
+    outro = _clip_item("show_001", **attributes)
+    _attach_queue(renderer, [_music_item("t1", "Alpha", "One"), outro])
+
+    await renderer.get_stream_details("show_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Before: Alpha - One. First up , then ."]
+
+
+async def test_a_dj_clip_keeps_its_planned_prompt() -> None:
+    """A DJ-spliced clip's prompt was settled at plan time; the render path leaves it alone."""
+    renderer = DummyRenderer()
+    attributes: dict[str, Any] = {ATTR_QUEUE_DJ: True, ATTR_PROMPT: "Next: <next_songinfo>."}
+    clip = _clip_item("sess_001", **attributes)
+    _attach_queue(renderer, [clip, _music_item("t2", "Beta", "Two")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Next: <next_songinfo>."]
 
 
 async def test_llm_failure_raises_media_not_found() -> None:

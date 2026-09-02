@@ -125,10 +125,16 @@ ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
+# marks a clip that rode a show's feed: its song placeholders are filled from the queue it
+# landed in, since the managed pool may reorder the tracks behind it after the feed snapshot
+ATTR_FEED_CLIP = "ai_radio_feed_clip"
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
 DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_daily>"})
+
+# placeholders naming the music around a clip: the song before it, after it, and after that one
+SONG_PLACEHOLDER_TOKENS = ("<prev_songinfo>", "<next_songinfo>", "<very_next_songinfo>")
 
 # the deferred placeholders that need a successful weather fetch to say anything at all
 WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")

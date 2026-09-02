@@ -20,7 +20,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
+from .constants import ATTR_FEED_CLIP, FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
@@ -83,6 +83,7 @@ class AIRadioMediaMixin:
             allowed_slot_when: list[str] | None,
             runtime_tokens: dict[str, str],
             decided_next_item_ids: set[str] | None = None,
+            defer_song_tokens: bool = False,
         ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]: ...
         def _section_to_sound_effect(self, section: PlannedSection) -> SoundEffect: ...
         def _clip_render_contract(
@@ -311,6 +312,9 @@ class AIRadioMediaMixin:
                 # placeholder guards, so playback start never waits for a lookup: the guards
                 # see a still-fresh cached forecast or none at all
                 runtime_tokens=self._cached_weather_tokens() or {},
+                # the pool may reorder the tracks behind the intro, so the songs it announces
+                # are resolved at render time from the queue it actually sits in
+                defer_song_tokens=True,
             )
         except MusicAssistantError as err:
             self.logger.warning("Show %s starts without an intro: %s", station["id"], err)
@@ -318,7 +322,7 @@ class AIRadioMediaMixin:
         return [
             (
                 self._section_to_sound_effect(section),
-                self._clip_render_contract(session_id, program, section),
+                {**self._clip_render_contract(session_id, program, section), ATTR_FEED_CLIP: True},
             )
             for section in planned
         ]

@@ -818,6 +818,61 @@ def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
     assert "B - Two" in prompt
 
 
+def test_plan_sections_can_defer_the_song_tokens() -> None:
+    """With deferred song tokens the prompt keeps them verbatim while guards still see them."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Intro",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "First up <next_songinfo>, then <very_next_songinfo>. <weather_hourly>",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "start_of_playlist",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Intro",
+                            "chance": 100,
+                            "guards": {"require_placeholders_present": ["<next_songinfo>"]},
+                        }
+                    }
+                ],
+            }
+        ],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["start_of_playlist"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+        defer_song_tokens=True,
+    )
+
+    assert len(planned) == 1
+    prompt = planned[0].prompt
+    assert prompt.startswith(
+        "First up <next_songinfo>, then <very_next_songinfo>. <weather_hourly>"
+    )
+    assert "A - One" not in prompt
+
+
 def _weather_guarded_station() -> dict[str, Any]:
     """Return a station whose only section requires the weather-hourly token to be present."""
     return {

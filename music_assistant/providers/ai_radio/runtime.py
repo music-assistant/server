@@ -54,6 +54,7 @@ from .constants import (
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
     FAHRENHEIT_COUNTRY_CODES,
+    SONG_PLACEHOLDER_TOKENS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
     WEATHER_PLACEHOLDER_TOKENS,
@@ -67,7 +68,7 @@ from .helpers import (
     is_empty_section,
     pick_weighted_choice,
     slugify,
-    track_songinfo,
+    song_placeholder_values,
 )
 from .models import (
     PlannedSection,
@@ -188,8 +189,15 @@ class AIRadioRuntimeMixin:
         allowed_slot_when: list[str] | None,
         runtime_tokens: dict[str, str],
         decided_next_item_ids: set[str] | None = None,
+        defer_song_tokens: bool = False,
     ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]:
-        """Evaluate section rules and produce planning entries."""
+        """
+        Evaluate section rules and produce planning entries.
+
+        :param defer_song_tokens: Keep the song placeholders verbatim in the planned prompts,
+            for a clip whose neighbours are only known once it sits in a queue. Guards still
+            see them resolved against the given track order.
+        """
         sections = program.get("sections", [])
         section_order = program.get("section_order", [])
         if not isinstance(sections, list) or not sections:
@@ -242,6 +250,12 @@ class AIRadioRuntimeMixin:
             # guards may require a deferred token to be present, so they see the merged view;
             # only the static half is substituted into the stored prompt
             guard_values = {**deferred, **static}
+            if defer_song_tokens:
+                static = {
+                    key: value
+                    for key, value in static.items()
+                    if key not in SONG_PLACEHOLDER_TOKENS
+                }
             for rule in matching_rules:
                 flow = rule.get("flow", [])
                 if not isinstance(flow, list):
@@ -857,11 +871,7 @@ class AIRadioRuntimeMixin:
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
         next_track = tracks[slot.next_index] if slot.next_index is not None else None
         very_next_track = tracks[slot.very_next_index] if slot.very_next_index is not None else None
-        static = {
-            "<prev_songinfo>": track_songinfo(prev_track),
-            "<next_songinfo>": track_songinfo(next_track),
-            "<very_next_songinfo>": track_songinfo(very_next_track),
-        }
+        static = song_placeholder_values(prev_track, next_track, very_next_track)
         deferred = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         deferred["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         for key, value in runtime_tokens.items():

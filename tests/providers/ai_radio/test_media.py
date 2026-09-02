@@ -14,6 +14,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping, SoundEffect, Track
 
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_FEED_CLIP,
     ATTR_HOST_ID,
     ATTR_PROMPT,
     ATTR_STATION_ID,
@@ -430,8 +431,10 @@ async def test_first_page_of_a_consume_opens_with_the_intro() -> None:
     contract = media._feed_clip_contracts[intro.item_id]
     assert contract[ATTR_STATION_ID] == "morning_show"
     assert contract[ATTR_HOST_ID] == "amy"
-    # the intro announces the track it precedes, whichever one the shuffle put first
-    assert contract[ATTR_PROMPT].startswith(f"Welcome, first up {page1[1].name}")
+    # the pool may reorder the tracks behind the intro, so the song it announces is only
+    # filled in at render time from the queue: the contract keeps the token and says so
+    assert contract[ATTR_PROMPT].startswith("Welcome, first up <next_songinfo>")
+    assert contract[ATTR_FEED_CLIP] is True
     assert media._show_runs["morning_show"].clip_ids == [intro.item_id]
     # the rest of the show pages on as before
     assert len(await media.get_dynamic_radio_tracks("morning_show")) == 11
