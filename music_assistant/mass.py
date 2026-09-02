@@ -578,6 +578,7 @@ class MusicAssistant:
         :param provider_type: Optional type hint for the expected provider type (unused at runtime).
         """
         # lookup by instance_id first
+        stale_instance = False
         if prov := self._providers.get(provider_instance_or_domain):
             if return_unavailable or prov.available:
                 return prov
@@ -585,10 +586,18 @@ class MusicAssistant:
                 # no need to lookup other instances because this provider has unique data
                 return None
             provider_instance_or_domain = prov.domain
+        elif "--" in provider_instance_or_domain:
+            # instance ID not found (provider was deleted), extract the domain
+            # so the domain fallback below can try another instance
+            provider_instance_or_domain = provider_instance_or_domain.rsplit("--", 1)[0]
+            stale_instance = True
         # fallback to match on domain
         for prov in list(self._providers.values()):
             if prov.domain != provider_instance_or_domain:
                 continue
+            if stale_instance and not getattr(prov, "is_streaming_provider", None):
+                # a deleted non-streaming instance can't be served by another instance
+                return None
             if return_unavailable or prov.available:
                 return prov
         return None
