@@ -28,6 +28,7 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
+from music_assistant.controllers.streams.smart_fades.vocal import COLLISION_SECONDS_LIMIT
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 from .conftest import _analysis_with_bands
@@ -332,6 +333,9 @@ class TestFallbackCrossfadeOnUnreliableMasks:
 
         assert plan is not None
         assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        # the metrics really read as severe: only the unreliable flag kept the
+        # fallback from deferring to the handoff
+        assert plan.metrics.collision_seconds >= 2 * COLLISION_SECONDS_LIMIT
         assert plan.eq_plan.mid_out is None
         assert plan.eq_plan.mid_in is None
 

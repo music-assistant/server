@@ -142,16 +142,20 @@ class PlanAssembler:
         # the winner's metrics ride along: consumers read them off the plan
         return replace(
             candidate.plan,
-            eq_plan=self._choose_eq(candidate.plan),
+            eq_plan=self._choose_eq(candidate.plan, candidate.spec.strategy),
             fadeout_curve=self._choose_fadeout_curve(candidate.plan),
             metrics=candidate.metrics,
         )
 
-    def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
+    def _choose_eq(self, plan: TransitionPlan, strategy: TransitionStrategy) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
         # an unsynced quick fade has no beatmatched handover to stage: shelving
-        # the decks would only bury the incoming track's entry
-        if plan.tier is TransitionTier.QUICK_FADE:
+        # the decks would only bury the incoming track's entry; the long lazy
+        # overlay (also QUICK_FADE tier) keeps its handover EQ
+        if (
+            plan.tier is TransitionTier.QUICK_FADE
+            and strategy is not TransitionStrategy.LAZY_OVERLAY
+        ):
             return EqPlan.neutral(swap_at=0.6 * plan.crossfade_duration)
         ctx = self._ctx
         effective_end = plan.fade_out_window
