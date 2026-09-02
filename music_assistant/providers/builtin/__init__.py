@@ -1754,13 +1754,18 @@ class BuiltinProvider(MusicProvider):
         """
         Reserve a unique playlist ID and write its initial M3U file with given content.
 
-        The uniqueness check, generation bump, and initial content write all happen
-        under the same lock: otherwise two concurrent creates for the same name could
-        both see the id as free, both claim it, and race each other's generation bump
-        and file write. Writing the given ``entries`` directly - rather than always
-        starting from an empty file - also means the file never appears on disk in an
-        intermediate state that a concurrent add/remove on the same (predictable) id
-        could observe or silently overwrite.
+        Every candidate ID is checked and, if free, claimed and written while holding
+        its own per-playlist edit lock (in the same outer-then-`_playlist_lock` order
+        `library_remove` uses) - not just `_playlist_lock` alone. Otherwise a
+        concurrent add/remove already mid-flight against that exact ID, having read
+        its old content before releasing its lock, could still overwrite this
+        reservation's freshly written file once it finally does release it: taking
+        the same per-ID lock here means such an edit is either fully finished (and
+        this reservation's existence check already sees its result) or fully blocked
+        until this reservation is done. Writing the given ``entries`` directly -
+        rather than always starting from an empty file - also means the file never
+        appears on disk in an intermediate state that a concurrent add/remove could
+        observe or silently overwrite.
 
         Returns the reserved ID together with its creation generation, so a caller
         that defers work against this exact playlist instance can detect a later
@@ -1771,23 +1776,27 @@ class BuiltinProvider(MusicProvider):
         :param playlist_image_url: Optional playlist image URL to embed in the header.
         """
         base_id = self._sanitize_playlist_id(name)
-        async with self._playlist_lock:
-            playlist_id = base_id
-            counter = 1
-            while await asyncio.to_thread(
-                os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-            ):
-                playlist_id = f"{base_id} ({counter})"
-                counter += 1
-            # bump this ID's generation before creating its file: a delete followed by a
-            # recreation under the same sanitized ID must be distinguishable from an
-            # in-place rewrite of the same playlist, even if the filesystem happens to
-            # reuse the freed inode for the new file
-            generation = self._playlist_generations[playlist_id] = (
-                self._playlist_generations.get(playlist_id, 0) + 1
-            )
-            await self._write_m3u_file_locked(playlist_id, name, entries, playlist_image_url)
-        return playlist_id, generation
+        playlist_id = base_id
+        counter = 1
+        while True:
+            async with self._get_playlist_lock(playlist_id), self._playlist_lock:
+                if not await asyncio.to_thread(
+                    os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+                ):
+                    # bump this ID's generation before creating its file: a delete
+                    # followed by a recreation under the same sanitized ID must be
+                    # distinguishable from an in-place rewrite of the same playlist,
+                    # even if the filesystem happens to reuse the freed inode for the
+                    # new file
+                    generation = self._playlist_generations[playlist_id] = (
+                        self._playlist_generations.get(playlist_id, 0) + 1
+                    )
+                    await self._write_m3u_file_locked(
+                        playlist_id, name, entries, playlist_image_url
+                    )
+                    return playlist_id, generation
+            playlist_id = f"{base_id} ({counter})"
+            counter += 1
 
     async def _write_m3u_file(
         self,

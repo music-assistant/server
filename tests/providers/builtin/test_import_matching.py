@@ -264,6 +264,62 @@ async def test_import_playlist_never_exposes_empty_intermediate_file() -> None:
     assert "abc123" in writes[0]
 
 
+async def test_reserve_playlist_file_waits_for_in_flight_edit_on_same_id() -> None:
+    """
+    A create/import reusing an id must wait for an in-flight edit already holding it.
+
+    Without also taking that same per-playlist edit lock, a create/import could run
+    to completion entirely while a slow add is still resolving new tracks - so once
+    that add finally writes back the entries it built before the create/import ever
+    happened, it would clobber the freshly (re)created file.
+    """
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    prov_any._playlist_generations = {}
+    prov_any._read_m3u_file = AsyncMock(return_value="")
+    prov_any.get_playlist = AsyncMock(side_effect=lambda pid: _make_playlist(pid))
+    prov_any._write_m3u_file = AsyncMock()
+    prov_any._write_m3u_file_locked = AsyncMock()
+    order: list[str] = []
+
+    add_resolving = asyncio.Event()
+    release_add = asyncio.Event()
+
+    async def slow_build_entry(uri: str) -> PlaylistItem:
+        add_resolving.set()
+        await release_add.wait()
+        return PlaylistItem(path=uri, title="New")
+
+    prov_any._build_m3u_entry_from_uri = AsyncMock(side_effect=slow_build_entry)
+
+    async def run_add() -> None:
+        await prov.add_playlist_tracks("foo", ["spotify://track/new"])
+        order.append("add")
+
+    async def run_reserve() -> None:
+        await add_resolving.wait()
+        with patch("music_assistant.providers.builtin.os.path.isfile", return_value=False):
+            await prov._reserve_playlist_file("foo", [])
+        order.append("reserve")
+
+    add_task = asyncio.ensure_future(run_add())
+    reserve_task = asyncio.ensure_future(run_reserve())
+    await add_resolving.wait()
+    # give reserve every chance to run ahead if it were not actually blocked
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert prov_any._write_m3u_file_locked.await_count == 0
+
+    release_add.set()
+    await add_task
+    await reserve_task
+
+    # the in-flight add must fully finish (and release the lock) before the
+    # create/import reusing its id is allowed to proceed
+    assert order == ["add", "reserve"]
+
+
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
     """Test that rewriting a playlist after track removal keeps the playlist image."""
     prov = _make_provider()
