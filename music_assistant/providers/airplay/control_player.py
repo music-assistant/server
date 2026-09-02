@@ -1194,18 +1194,21 @@ class AirPlayControlPlayer(AirPlayPlayer):
         exception: Exception | None = None,
     ) -> None:
         """Handle a pyatv connection closing."""
-        companion_closed = False
-        if source == "companion" and self._companion_device is device:
+        companion_closed = source == "companion" and self._companion_device is device
+        mrp_closed = source == "mrp" and self._mrp_device is device
+        if companion_closed:
             self._companion_device = None
             self._companion_listener = None
-            companion_closed = True
-        elif source == "mrp" and self._mrp_device is device:
+        elif mrp_closed:
             self._mrp_device = None
             self._mrp_state_listener = None
             self._mrp_push_listener = None
-            self._clear_external_state()
         else:
             return
+        # pyatv leaves the facade and the aiohttp session it created open on a drop.
+        device.close()
+        if mrp_closed:
+            self._clear_external_state()
         if exception:
             self.logger.debug("Apple %s connection lost for %s: %s", source, self.name, exception)
         if companion_closed:
