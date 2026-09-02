@@ -352,7 +352,7 @@ class TracksController(MediaControllerBase[Track]):
         if search and len(result) < 25 and not offset:
             # append artist items to result
             artist_search_str = create_safe_string(search, True, True)
-            if order_by and "track_artist_name" in order_by:
+            if artist_join_added:
                 # JOIN already exists for sorting, only add WHERE clause
                 extra_query_parts.append(
                     search_name_match_clause(
