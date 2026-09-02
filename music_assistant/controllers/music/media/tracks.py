@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderID,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -735,9 +736,10 @@ class TracksController(MediaControllerBase[Track]):
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
-                except MediaNotFoundError, InvalidDataError:
-                    # a stale mapping (deleted catalog id, unreadable stream) is not
-                    # fatal - fall through to a fresh search below instead of aborting
+                except MediaNotFoundError, InvalidDataError, InvalidProviderID:
+                    # a stale mapping (deleted catalog id, unreadable stream, malformed
+                    # id) is not fatal - fall through to a fresh search below instead
+                    # of aborting
                     mapped_candidate = None
             if mapped_candidate:
                 confidence, resolved_base_album = await self._get_match_confidence(
@@ -1015,7 +1017,7 @@ class TracksController(MediaControllerBase[Track]):
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
-                except MediaNotFoundError, InvalidDataError:
+                except MediaNotFoundError, InvalidDataError, InvalidProviderID:
                     # this hydrated search result is unusable - skip it, other
                     # candidates from this same search are still worth trying
                     continue
@@ -1109,9 +1111,14 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if mapping.provider_instance == provider.instance_id:
                 return mapping
+            # is_unique=None means "use the provider's default", and non-streaming
+            # providers (e.g. filesystem) default to instance-unique - mirror that
+            # same effective-uniqueness rule here, or a falsy-but-unset value could
+            # wrongly expand an instance-unique mapping across a different instance
+            effective_is_unique = mapping.is_unique or not provider.is_streaming_provider
             if (
                 mapping.provider_domain == provider.domain
-                and not mapping.is_unique
+                and not effective_is_unique
                 and domain_mapping is None
             ):
                 domain_mapping = mapping

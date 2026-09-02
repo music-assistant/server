@@ -8,6 +8,7 @@ import pytest
 from music_assistant_models.enums import ContentType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderID,
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
@@ -848,6 +849,58 @@ async def test_find_provider_match_prefers_exact_candidate(
     )
 
 
+async def test_find_provider_match_skips_search_result_with_malformed_id(
+    music: MusicController,
+) -> None:
+    """A search result with a malformed id is skipped, other candidates still resolve."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = create_track("spotify_1", "base", isrc="USRC17607839")
+    base.external_ids.add(mb_track)
+    malformed = create_track("qobuz_1", "malformed", isrc="MALFORMED")
+    exact = create_track("qobuz_1", "exact", isrc="USRC17607839")
+    exact.provider = "qobuz"
+    exact.external_ids.add(mb_track)
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    async def get_provider_item(item_id: str, *_args: object, **_kwargs: object) -> Track:
+        if item_id == "malformed":
+            # this candidate's own id no longer matches the provider's expected
+            # format (e.g. a provider like Yoto that validates id shape)
+            raise InvalidProviderID("Malformed id")
+        return exact
+
+    get_provider_item_mock = AsyncMock(side_effect=get_provider_item)
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[malformed, exact])),
+        ),
+        patch.object(
+            music.tracks,
+            "get_provider_item",
+            get_provider_item_mock,
+        ),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            base,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LOOSE,
+        )
+
+    assert result.match is not None
+    assert result.match.track.item_id == "exact"
+    assert result.match.confidence == TrackMatchConfidence.EXACT
+
+
 async def test_find_provider_match_checks_every_artist_credit_query(
     music: MusicController,
 ) -> None:
@@ -1141,6 +1194,44 @@ async def test_find_provider_match_falls_through_search_after_invalid_mapped_can
             # resolving the trusted mapping directly - simulate a stale, unreadable
             # catalog entry rather than a confirmed removal
             raise InvalidDataError("Unreadable catalog entry")
+        return search_candidate
+
+    with (
+        patch.object(
+            music,
+            "search_provider",
+            AsyncMock(return_value=SearchResults(tracks=[search_candidate])),
+        ),
+        patch.object(music.tracks, "get_provider_item", AsyncMock(side_effect=get_provider_item)),
+        patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+    ):
+        result = await music.tracks.find_provider_match(
+            source,
+            provider,
+            minimum_confidence=TrackMatchConfidence.LIKELY,
+            trust_base_mapping=False,
+        )
+
+    assert result.match is not None
+
+
+async def test_find_provider_match_falls_through_search_after_malformed_mapped_candidate_id(
+    music: MusicController,
+) -> None:
+    """A malformed mapped candidate id falls through to search, instead of aborting."""
+    source = create_track("qobuz_1", "source")
+    search_candidate = create_track("qobuz_1", "found")
+    provider = MagicMock()
+    provider.instance_id = "qobuz_1"
+    provider.domain = "qobuz"
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.TRACK}
+
+    async def get_provider_item(item_id: str, *_args: object, **_kwargs: object) -> Track:
+        if item_id == "source":
+            # the persisted mapping's own id no longer matches this provider's
+            # expected format (e.g. a provider like Yoto that validates id shape)
+            raise InvalidProviderID("Malformed id")
         return search_candidate
 
     with (
@@ -2522,6 +2613,36 @@ def test_get_provider_mapping_breaks_quality_ties_deterministically() -> None:
     assert resolved_forward.item_id == "track_a"
     assert resolved_reversed is not None
     assert resolved_reversed.item_id == "track_a"
+
+
+def test_get_provider_mapping_non_streaming_default_is_unique() -> None:
+    """
+    A mapping with unset ``is_unique`` from a non-streaming provider is not expanded.
+
+    ``is_unique=None`` means "use the provider's default", and non-streaming
+    providers (filesystem, plex) default to instance-unique - the same effective
+    uniqueness rule ``MusicProvider._check_provider_mappings`` already applies.
+    """
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = "filesystem_2"
+    provider.domain = "filesystem"
+    provider.is_streaming_provider = False
+    # is_unique left at its default (None) - as if the provider never set it,
+    # the same as most real non-streaming provider mappings in practice
+    mapping = ProviderMapping(
+        item_id="track_a",
+        provider_domain="filesystem",
+        provider_instance="filesystem_1",
+        audio_format=AudioFormat(),
+    )
+    track = create_track("spotify_1", "source")
+    track.provider_mappings = cast("set[ProviderMapping]", [mapping])
+
+    resolved = TracksController._get_provider_mapping(track, provider)
+
+    # this instance's own filesystem library has no mapping for this track - a
+    # sibling instance's mapping must not be reused as if it were portable
+    assert resolved is None
 
 
 async def test_overwrite_update_keeps_artists_when_none_are_given(

@@ -1404,20 +1404,54 @@ class BuiltinProvider(MusicProvider):
         not registered on this server (e.g. a playlist imported from a different
         Music Assistant install, where instance ids are randomly generated per
         install) - every one of the caller's allowed instances of the entry's own
-        domain is tried instead: the single, arbitrary instance the shared library
-        would otherwise resolve a bare domain to, or silently giving up on a foreign
-        instance id that matches nothing here, would both be wrong. The snapshot
-        maps every instance the caller has configured to its domain, whether or not
-        the instance is currently loaded, so this never depends on the provider's
-        current load state - including for the domain-based expansion.
+        domain is tried instead, but only when that domain's item ids are actually
+        portable across instances (a shared streaming catalog): the single,
+        arbitrary instance the shared library would otherwise resolve a bare domain
+        to, or silently giving up on a foreign instance id that matches nothing
+        here, would both be wrong. For a non-streaming domain (e.g. filesystem),
+        each instance mints its own local ids, so a foreign or missing instance id
+        cannot be assumed valid on any of the caller's own same-domain instances -
+        expanding it could authoritatively confirm an unrelated file and wrongly
+        mark the true original as still playable. The snapshot maps every instance
+        the caller has configured to its domain, whether or not the instance is
+        currently loaded, so this never depends on the provider's current load
+        state - including for the domain-based expansion.
         """
         if instance_id and instance_id in allowed_provider_instances:
             return [instance_id]
+        if not self._domain_is_streaming(domain, allowed_provider_instances):
+            return []
         return [
             allowed_instance_id
             for allowed_instance_id, allowed_domain in allowed_provider_instances.items()
             if allowed_domain == domain
         ]
+
+    def _domain_is_streaming(
+        self, domain: str, allowed_provider_instances: Mapping[str, str]
+    ) -> bool:
+        """
+        Return whether providers of this domain share a single portable catalog.
+
+        Every instance of a domain shares the same provider class and therefore the
+        same ``is_streaming_provider`` trait, so any one allowed instance of it is
+        representative. Defaults to ``True`` when no instance of this domain can be
+        resolved at all, consistent with how an unresolvable provider is treated
+        everywhere else in this matching pass - a missing provider is never treated
+        as reason to force a substitution.
+
+        :param domain: The provider domain to check.
+        :param allowed_provider_instances: (instance_id, domain) pairs to search for a
+            representative instance of this domain.
+        """
+        for allowed_instance_id, allowed_domain in allowed_provider_instances.items():
+            if allowed_domain != domain:
+                continue
+            if provider := self.mass.get_provider(
+                allowed_instance_id, return_unavailable=True, provider_type=MusicProvider
+            ):
+                return provider.is_streaming_provider
+        return True
 
     def _get_stored_item(
         self, item: PlaylistItem, stored_by_media_type: Mapping[str, Mapping[str, StoredItem]]

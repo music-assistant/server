@@ -1251,6 +1251,49 @@ async def test_extprov_naming_unregistered_instance_falls_back_to_allowed_siblin
     assert "| Retained | 1 |" in report_markdown
 
 
+async def test_non_streaming_domain_does_not_expand_foreign_instance_to_sibling() -> None:
+    """A non-streaming domain's foreign instance id is never probed against a sibling."""
+    # filesystem--1 does not exist in this server's registry at all - as if the M3U
+    # was exported from a different Music Assistant install - but unlike a streaming
+    # catalog, filesystem--1's own item ids are local to that install and are not
+    # guaranteed to mean anything on the allowed filesystem--2 sibling; probing that
+    # sibling could authoritatively confirm a wholly unrelated file
+    prov = _make_provider(
+        provider_entries=[("filesystem", "filesystem--2", True)],
+        get_provider_item=AsyncMock(return_value=MagicMock()),
+    )
+    for provider in cast("list[MagicMock]", prov.mass.providers):
+        if provider.domain == "filesystem":
+            provider.is_streaming_provider = False
+    item = _make_playlist_item(
+        path="music_assistant://track/filesystem--1/track_a",
+        providers=[
+            ProviderMappingInfo(domain="filesystem", instance_id="filesystem--1", item_id="a"),
+        ],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    enrichment = TrackProviderEnrichment(
+        track=_make_track("Song", artists=["Artist"]),
+        matches=(),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        await prov.match_imported_playlist_tracks(
+            "playlist_1", 1, PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "filesystem--2")
+        )
+
+    # the sibling instance is never probed - its own local id namespace cannot
+    # authoritatively confirm a foreign install's id, so the entry falls through to
+    # ordinary matching instead of being wrongly retained as still playable
+    prov_any.mass.music.tracks.get_provider_item.assert_not_awaited()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Unmatched | 1 |" in report_markdown
+
+
 async def test_domain_only_reference_to_unloaded_instance_is_retained() -> None:
     """A domain-only reference expands from the configured snapshot, not the live registry."""
     # spotify--1 is deliberately absent from the registry (failed setup), but it is
