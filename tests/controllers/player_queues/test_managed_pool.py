@@ -519,3 +519,62 @@ def test_dynamic_feed_sound_effect_leads_its_batch() -> None:
         preceding_artists={"a"},
     )
     assert _ids(result) == ["intro", "t2", "t1"]
+
+
+@pytest.mark.asyncio
+async def test_fill_keeps_sound_effect_in_place_when_smart_fade_reorders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Smart Fades reorders only the tracks in a batch; a woven-in sound effect keeps its slot."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    queue = MagicMock(queue_id="q1", current_index=None)
+    tail = _artist_track("tail", "Tail Artist")
+    queue_data = SimpleNamespace(
+        queue=queue,
+        userid=None,
+        items=[SimpleNamespace(media_item=tail)],
+    )
+
+    queues.queue_data_or_none.return_value = queue_data
+    queues.recency_windows.return_value = RecencyWindows()
+    queues.smart_fade_ordering_enabled.return_value = True
+    queues.mass.music.recency.snapshot = AsyncMock(return_value=_snapshot())
+
+    sound_effect = _sound_effect("intro")
+    t1, t2, t3 = _artist_track("t1", "A1"), _artist_track("t2", "A2"), _artist_track("t3", "A3")
+    source = DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=1,
+        fill_mode=DynamicFillMode.TRACKS,
+        candidates=[sound_effect, t1, t2, t3],
+    )
+    pool._collect_sources = AsyncMock(return_value=[source])  # type: ignore[method-assign]
+    reconcile = AsyncMock()
+    pool._reconcile_tracks = reconcile  # type: ignore[method-assign]
+
+    async def reverse_tracks(
+        _mass: object, tracks: list[Track], *, preceding_track: Track | None = None
+    ) -> list[Track]:
+        del preceding_track
+        return list(reversed(tracks))
+
+    order_tracks = AsyncMock(side_effect=reverse_tracks)
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.managed_pool.order_tracks",
+        order_tracks,
+    )
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert result == [sound_effect, t3, t2, t1]
+
+    order_call = order_tracks.await_args
+    assert order_call is not None
+    assert order_call.args[1] == [t1, t2, t3]
+    assert order_call.kwargs["preceding_track"] is tail
+
+    reconcile.assert_awaited_once()
+    call = reconcile.await_args
+    assert call is not None
+    assert call.args[2] == [sound_effect, t3, t2, t1]

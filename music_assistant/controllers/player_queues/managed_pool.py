@@ -32,7 +32,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import SoundEffect, Track
 
 from music_assistant.constants import DynamicFeedItem
 from music_assistant.controllers.music.recency import song_keys
@@ -178,12 +178,16 @@ class ManagedPool:
         )
         if chosen and self.queues.smart_fade_ordering_enabled(queue):
             # Dynamic Mode already picked the refill tracks. Reorder only that
-            # batch, starting from the queue tail.
-            chosen = await order_tracks(
-                self.mass,
-                chosen,
-                preceding_track=preceding_track,
+            # batch, starting from the queue tail. A sound effect woven into the feed keeps
+            # its slot; only the tracks around it are reordered by fade compatibility.
+            ordered = iter(
+                await order_tracks(
+                    self.mass,
+                    [item for item in chosen if isinstance(item, Track)],
+                    preceding_track=preceding_track,
+                )
             )
+            chosen = [item if isinstance(item, SoundEffect) else next(ordered) for item in chosen]
         # Keep the existing finite-source bookkeeping after ordering: mark dispatched tracks,
         # page more in and retire exhausted sources.
         await self._reconcile_tracks(queue_id, sources, chosen, snapshot, windows)
