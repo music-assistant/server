@@ -589,22 +589,28 @@ class BuiltinProvider(MusicProvider):
 
         The playlist name is used as the filename (sanitized for filesystem safety).
         """
-        playlist_id = self._sanitize_playlist_id(name)
-        # ensure uniqueness
-        counter = 1
-        base_id = playlist_id
-        while await asyncio.to_thread(
-            os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        ):
-            playlist_id = f"{base_id} ({counter})"
-            counter += 1
-        # bump this ID's generation before creating its file: a delete followed by a
-        # recreation under the same sanitized ID must be distinguishable from an
-        # in-place rewrite of the same playlist, even if the filesystem happens to
-        # reuse the freed inode for the new file
-        self._playlist_generations[playlist_id] = self._playlist_generations.get(playlist_id, 0) + 1
-        # create empty M3U file with header
-        await self._write_m3u_file(playlist_id, name, [])
+        base_id = self._sanitize_playlist_id(name)
+        # the uniqueness check, generation bump and initial file creation must all
+        # happen under the same lock: otherwise two concurrent creates for the same
+        # name can both see the id as free, both claim it, and race each other's
+        # generation bump and file write.
+        async with self._playlist_lock:
+            playlist_id = base_id
+            counter = 1
+            while await asyncio.to_thread(
+                os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+            ):
+                playlist_id = f"{base_id} ({counter})"
+                counter += 1
+            # bump this ID's generation before creating its file: a delete followed by a
+            # recreation under the same sanitized ID must be distinguishable from an
+            # in-place rewrite of the same playlist, even if the filesystem happens to
+            # reuse the freed inode for the new file
+            self._playlist_generations[playlist_id] = (
+                self._playlist_generations.get(playlist_id, 0) + 1
+            )
+            # create empty M3U file with header
+            await self._write_m3u_file_locked(playlist_id, name, [])
         return await self.get_playlist(playlist_id)
 
     async def import_playlist(self, m3u_data: str) -> Playlist:
@@ -1751,12 +1757,29 @@ class BuiltinProvider(MusicProvider):
         playlist_image_url: str | None = None,
     ) -> None:
         """Write an M3U playlist file to disk."""
+        async with self._playlist_lock:
+            await self._write_m3u_file_locked(
+                playlist_id, playlist_name, entries, playlist_image_url
+            )
+
+    async def _write_m3u_file_locked(
+        self,
+        playlist_id: str,
+        playlist_name: str,
+        entries: list[PlaylistItem],
+        playlist_image_url: str | None = None,
+    ) -> None:
+        """
+        Write an M3U playlist file to disk, assuming the caller already holds `_playlist_lock`.
+
+        :param playlist_id: The provider-side playlist ID to write.
+        :param playlist_name: The playlist's display name to embed in the M3U header.
+        :param entries: The playlist items to write.
+        :param playlist_image_url: Optional playlist image URL to embed in the M3U header.
+        """
         m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        async with (
-            self._playlist_lock,
-            aiofiles.open(playlist_file, "w", encoding="utf-8") as _file,
-        ):
+        async with aiofiles.open(playlist_file, "w", encoding="utf-8") as _file:
             await _file.write(m3u_content)
 
     def _get_playlist_lock(self, playlist_id: str) -> asyncio.Lock:

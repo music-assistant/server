@@ -1447,6 +1447,76 @@ async def test_concurrent_deletes_of_the_same_playlist_do_not_race() -> None:
     remove_mock.assert_called_once()
 
 
+async def test_concurrent_create_playlist_with_same_name_does_not_race() -> None:
+    """Two concurrent creates for the same name must not collide on the same file/generation."""
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    prov_any._playlist_generations = {}
+    # get_playlist's own read-back path isn't what this test is exercising
+    prov_any.get_playlist = AsyncMock(side_effect=lambda pid: MagicMock(item_id=pid))
+    files: dict[str, str] = {}
+
+    def fake_isfile(path: str) -> bool:
+        return path in files
+
+    class _FakeM3uFile:
+        """Stand-in for aiofiles' write-mode open() that records into the fake filesystem."""
+
+        def __init__(self, path: str) -> None:
+            self._path = path
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def write(self, content: str) -> None:
+            # simulate the write actually landing on "disk" only once the writer
+            # is done, the same way a real file create becomes visible to a
+            # concurrent isfile() check only after the write completes
+            files[self._path] = content
+
+        async def read(self) -> str:
+            return files.get(self._path, "")
+
+    def fake_open(path: str, _mode: str = "r", **_kwargs: object) -> _FakeM3uFile:
+        return _FakeM3uFile(path)
+
+    async def fake_to_thread(func: Any, *args: object) -> object:
+        # mimic a real thread pool: the check runs immediately (possibly before the
+        # other concurrent caller has written anything), and only the *return* of
+        # that already-computed result is delayed, so two callers can genuinely
+        # race the same stale "file does not exist" answer
+        result = func(*args)
+        await asyncio.sleep(0.01)
+        return result
+
+    with (
+        patch("music_assistant.providers.builtin.os.path.isfile", side_effect=fake_isfile),
+        patch("music_assistant.providers.builtin.aiofiles.open", side_effect=fake_open),
+        patch("music_assistant.providers.builtin.asyncio.to_thread", side_effect=fake_to_thread),
+    ):
+        # both calls race the uniqueness check/generation bump/initial write for the
+        # exact same sanitized name; without serializing the whole sequence under a
+        # single lock, both could see the id as free and collide on it
+        playlist_a, playlist_b = await asyncio.gather(
+            prov.create_playlist("My Playlist", media_types={MediaType.PLAYLIST}),
+            prov.create_playlist("My Playlist", media_types={MediaType.PLAYLIST}),
+        )
+
+    # each concurrent create must land on its own distinct id
+    assert playlist_a.item_id != playlist_b.item_id
+    assert {playlist_a.item_id, playlist_b.item_id} == {"My Playlist", "My Playlist (1)"}
+    # both files must actually exist on the fake filesystem, i.e. neither create
+    # silently overwrote the other's file
+    assert len(files) == 2
+    # each id's generation was bumped exactly once, not raced into a shared value
+    assert prov_any._playlist_generations["My Playlist"] == 1
+    assert prov_any._playlist_generations["My Playlist (1)"] == 1
+
+
 async def test_read_m3u_file_existence_check_is_atomic_with_delete() -> None:
     """A read's existence check and file open cannot be split by a concurrent delete."""
     prov = _make_provider()
